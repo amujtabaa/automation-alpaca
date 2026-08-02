@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from copy import copy
+from dataclasses import replace
 from decimal import Decimal
+from fractions import Fraction
 from unittest.mock import patch
 
 import pytest
@@ -51,17 +54,25 @@ from app.execution_core.values import (
     TickMetadata,
 )
 from app.execution_core.venue import (
+    AcceptanceContradiction,
+    AcceptanceProof,
+    AcceptanceProofKind,
+    AcceptanceSetState,
     BrokerEffectState,
+    CancelBeforeDispatch,
     DiscoverVenueLeg,
     EffectKind,
     ObserveVenueStatus,
+    PendingVenueOperation,
     RecordDispatchClaim,
     RecordTransportOutcome,
+    RecoverClaimedEffect,
     RequestedEffect,
     VenueAttemptState,
     VenueRecoveryBook,
     VenueRecoveryDisposition,
     VenueScope,
+    _audit_hydrate_book,
     apply_venue_recovery_input,
 )
 
@@ -333,18 +344,10 @@ def _released_state(
 
 def _verified_internal_rebuild(
     book: VenueRecoveryBook,
+    execution: ExecutionSnapshot,
     **changes: object,
 ) -> VenueRecoveryBook:
-    rebuild = getattr(venue_module, "_rebuild_book", None)
-    if rebuild is not None:
-        assert callable(rebuild)
-        return rebuild(book, **changes)
-
-    legacy_rebuild = getattr(book, "_evolve", None)
-    assert callable(legacy_rebuild), (
-        "venue._rebuild_book must be the module-private verified rebuild path"
-    )
-    return legacy_rebuild(**changes)
+    return _audit_hydrate_book(book, execution, **changes)
 
 
 def _move_record_before(
@@ -406,6 +409,7 @@ def test_rebuild_rejects_first_human_source_before_effect_needs_review() -> None
     with pytest.raises(ValueError):
         _verified_internal_rebuild(
             ingested.book,
+            ingested.execution,
             input_records=_move_record_before(
                 ingested.book.input_records,
                 human,
@@ -439,6 +443,7 @@ def test_rebuild_rejects_first_human_source_before_leg_needs_review() -> None:
     with pytest.raises(ValueError):
         _verified_internal_rebuild(
             ingested.book,
+            ingested.execution,
             input_records=_move_record_before(
                 ingested.book.input_records,
                 human,
@@ -448,7 +453,7 @@ def test_rebuild_rejects_first_human_source_before_leg_needs_review() -> None:
 
 
 def test_rebuild_rejects_removed_leg_gate_from_released_checkpoint() -> None:
-    book, _, _, _ = _released_state()
+    book, execution, _, _ = _released_state()
     retained = tuple(
         record
         for record in book.input_records
@@ -460,11 +465,11 @@ def test_rebuild_rejects_removed_leg_gate_from_released_checkpoint() -> None:
     )
 
     with pytest.raises(ValueError):
-        _verified_internal_rebuild(book, input_records=retained)
+        _verified_internal_rebuild(book, execution, input_records=retained)
 
 
 def test_rebuild_rejects_first_human_source_moved_after_release() -> None:
-    book, _, _, _ = _released_state()
+    book, execution, _, _ = _released_state()
     human = next(
         record
         for record in book.input_records
@@ -480,11 +485,15 @@ def test_rebuild_rejects_first_human_source_moved_after_release() -> None:
     reordered.insert(reordered.index(release) + 1, human)
 
     with pytest.raises(ValueError):
-        _verified_internal_rebuild(book, input_records=tuple(reordered))
+        _verified_internal_rebuild(
+            book,
+            execution,
+            input_records=tuple(reordered),
+        )
 
 
 def test_rebuild_rejects_sibling_leg_gate_substitution() -> None:
-    book, _, _, _ = _released_state(
+    book, execution, _, _ = _released_state(
         target_leg=LEG_B,
         leg_keys=(LEG_A, LEG_B),
         suffix="b",
@@ -506,7 +515,7 @@ def test_rebuild_rejects_sibling_leg_gate_substitution() -> None:
     )
 
     with pytest.raises(ValueError):
-        _verified_internal_rebuild(book, input_records=retained)
+        _verified_internal_rebuild(book, execution, input_records=retained)
 
 
 def test_exact_semantic_human_replay_after_release_remains_zero_economic() -> None:
@@ -601,7 +610,1156 @@ def test_explicit_slow_audit_views_materialize_terminal_and_input_history() -> N
 
     assert [closure.closure_id for closure in closure_audit] == [release.closure_id]
     assert any(
-        isinstance(record.item, ReleaseVenueLeg)
-        and record.input_id == release.input_id
+        isinstance(record.item, ReleaseVenueLeg) and record.input_id == release.input_id
         for record in input_audit
     )
+
+
+@pytest.mark.parametrize(
+    ("scope_changes", "message"),
+    [
+        (
+            {"account": AccountId("different-paper-account")},
+            "effect scope must match the exact book scope",
+        ),
+        (
+            {"quantity": Quantity(0)},
+            "effect scope quantity must be positive",
+        ),
+        (
+            {"economic_scope": b""},
+            "effect scope economic_scope must be nonempty bytes",
+        ),
+    ],
+)
+def test_audit_rejects_invalid_effect_scope(
+    scope_changes: dict[str, object],
+    message: str,
+) -> None:
+    book, execution = _seed_needs_review(effect_gate_first=False)
+    effect = book.effects[0]
+    corrupted = replace(
+        effect,
+        scope=replace(effect.scope, **scope_changes),
+    )
+
+    with pytest.raises(ValueError, match=message):
+        _verified_internal_rebuild(book, execution, effects=(corrupted,))
+
+
+def test_audit_rejects_effect_state_without_complete_lifecycle_provenance() -> None:
+    book, execution = _seed_needs_review(effect_gate_first=False)
+    corrupted = replace(book.effects[0], state=BrokerEffectState.ACKNOWLEDGED)
+
+    with pytest.raises(
+        ValueError,
+        match="effect state requires complete lifecycle input provenance",
+    ):
+        _verified_internal_rebuild(book, execution, effects=(corrupted,))
+
+
+def test_audit_rejects_claim_detached_from_canonical_effect_scope() -> None:
+    book, execution = _seed_needs_review(effect_gate_first=False)
+    claim = book.claims[0]
+    corrupted = replace(
+        claim,
+        effect_scope=replace(claim.effect_scope, economic_scope=b"detached-claim"),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="claim must bind the registered canonical effect scope",
+    ):
+        _verified_internal_rebuild(book, execution, claims=(corrupted,))
+
+
+def test_audit_rejects_owner_detached_from_canonical_effect_scope() -> None:
+    book, execution = _seed_needs_review(effect_gate_first=False)
+    owner = book.owners[0]
+    corrupted = replace(
+        owner,
+        effect_scope=replace(owner.effect_scope, economic_scope=b"detached-owner"),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="owner must bind the canonical registered effect scope",
+    ):
+        _verified_internal_rebuild(book, execution, owners=(corrupted,))
+
+
+@pytest.mark.parametrize(
+    ("attempt_changes", "message"),
+    [
+        (
+            {"status": VenueAttemptState.CANCELED},
+            "active attempt cannot carry a terminal status",
+        ),
+        (
+            {"pending_operation": PendingVenueOperation.NONE},
+            "pending operation absence must be None",
+        ),
+        (
+            {
+                "last_observation_id": VenueObservationId(
+                    "unproven-current-observation"
+                )
+            },
+            "active attempt requires exact observation and pending provenance",
+        ),
+    ],
+)
+def test_audit_rejects_invalid_or_unproven_active_attempt(
+    attempt_changes: dict[str, object],
+    message: str,
+) -> None:
+    book, execution = _seed_needs_review(effect_gate_first=False)
+    corrupted = replace(book.active_attempts[0], **attempt_changes)
+
+    with pytest.raises(ValueError, match=message):
+        _verified_internal_rebuild(
+            book,
+            execution,
+            active_attempts=(corrupted,),
+        )
+
+
+@pytest.mark.parametrize(
+    ("closure_changes", "message"),
+    [
+        (
+            {"ordinal": 0},
+            "closure ordinal must be a positive integer",
+        ),
+        (
+            {"reason": "  "},
+            "operator closure must carry an external broker terminal state",
+        ),
+        (
+            {"evidence_digest": b"short"},
+            "closure.evidence_digest must contain exactly 32 bytes",
+        ),
+    ],
+)
+def test_audit_rejects_invalid_terminal_closure(
+    closure_changes: dict[str, object],
+    message: str,
+) -> None:
+    book, execution, _, _ = _released_state()
+    corrupted = replace(book.closure_history[0], **closure_changes)
+
+    with pytest.raises(ValueError, match=message):
+        _verified_internal_rebuild(
+            book,
+            execution,
+            closure_history=(corrupted,),
+            closure_heads=(corrupted,),
+        )
+
+
+def test_audit_rejects_closure_without_exact_source_input_provenance() -> None:
+    book, execution, _, _ = _released_state()
+    corrupted = replace(
+        book.closure_history[0],
+        evidence_reference=EvidenceReference("unproven-closure-evidence"),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="closure requires exact source-input provenance",
+    ):
+        _verified_internal_rebuild(
+            book,
+            execution,
+            closure_history=(corrupted,),
+            closure_heads=(corrupted,),
+        )
+
+
+@pytest.mark.parametrize(
+    ("removed_type", "message"),
+    [
+        (
+            RequestedEffect,
+            "effect requires requested-effect input provenance",
+        ),
+        (
+            RecordDispatchClaim,
+            "claim edge requires dispatch-claim input provenance",
+        ),
+        (
+            DiscoverVenueLeg,
+            "owner edge requires leg-discovery input provenance",
+        ),
+    ],
+)
+def test_audit_rejects_missing_lifecycle_input_provenance(
+    removed_type: type[object],
+    message: str,
+) -> None:
+    book, execution = _seed_needs_review(effect_gate_first=False)
+    retained = tuple(
+        record
+        for record in book.input_records
+        if not isinstance(record.item, removed_type)
+    )
+
+    with pytest.raises(ValueError, match=message):
+        _verified_internal_rebuild(book, execution, input_records=retained)
+
+
+def test_audit_rejects_claim_ordered_before_its_requested_predecessor() -> None:
+    book, execution = _seed_needs_review(effect_gate_first=False)
+    request = next(
+        record for record in book.input_records if isinstance(record.item, RequestedEffect)
+    )
+    claim = next(
+        record
+        for record in book.input_records
+        if isinstance(record.item, RecordDispatchClaim)
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="claim lifecycle input has no requested predecessor",
+    ):
+        _verified_internal_rebuild(
+            book,
+            execution,
+            input_records=_move_record_before(book.input_records, claim, request),
+        )
+
+
+def test_audit_rejects_input_record_identity_detached_from_item() -> None:
+    book, execution = _seed_needs_review(effect_gate_first=False)
+    original = book.input_records[0]
+    corrupted = replace(
+        original,
+        input_id=VenueInputId("detached-input-record-identity"),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="input record identity must match its immutable item",
+    ):
+        _verified_internal_rebuild(
+            book,
+            execution,
+            input_records=(corrupted, *book.input_records[1:]),
+        )
+
+
+def test_audit_rejects_semantic_alias_without_earlier_direct_source() -> None:
+    book, execution = _seed_needs_review(effect_gate_first=False)
+    original = book.input_records[0]
+    corrupted = replace(
+        original,
+        semantic_alias_of=VenueInputId("missing-direct-semantic-source"),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="semantic input alias requires an earlier direct source",
+    ):
+        _verified_internal_rebuild(
+            book,
+            execution,
+            input_records=(corrupted, *book.input_records[1:]),
+        )
+
+
+@pytest.mark.parametrize(
+    ("changes", "exception", "message"),
+    [
+        (
+            {"execution_registry_count": True},
+            ValueError,
+            "execution_registry_count",
+        ),
+        (
+            {"execution_registry_count": -1},
+            ValueError,
+            "execution_registry_count",
+        ),
+        (
+            {"execution_registry_commitment": b"short"},
+            ValueError,
+            "execution_registry_commitment",
+        ),
+        (
+            {
+                "execution_registry_count": None,
+                "execution_registry_commitment": b"\x01" * 32,
+            },
+            ValueError,
+            "retained together",
+        ),
+        (
+            {"execution_bindings": ()},
+            ValueError,
+            "every effect symbol requires exactly one",
+        ),
+        (
+            {"active_attempts": ()},
+            ValueError,
+            "one active attempt or closure head",
+        ),
+        (
+            {"execution_reconciliations": (object(),)},
+            TypeError,
+            "execution reconciliation entries",
+        ),
+        (
+            {"reconciliations": (object(),)},
+            TypeError,
+            "typed reconciliation record",
+        ),
+        (
+            {"effects": (object(),)},
+            TypeError,
+            "effect append must be BrokerEffect",
+        ),
+    ],
+)
+def test_audit_rejects_registry_and_entry_shape_corruption(
+    changes: dict[str, object],
+    exception: type[Exception],
+    message: str,
+) -> None:
+    book, execution = _seed_needs_review(effect_gate_first=False)
+
+    with pytest.raises(exception, match=message):
+        _verified_internal_rebuild(book, execution, **changes)
+
+
+def test_audit_rejects_orphan_and_negative_active_attempts() -> None:
+    book, execution = _seed_needs_review(effect_gate_first=False)
+    attempt = book.active_attempts[0]
+
+    with pytest.raises(ValueError, match="require retained owners"):
+        _verified_internal_rebuild(
+            book,
+            execution,
+            active_attempts=(replace(attempt, leg_key=LEG_B),),
+        )
+
+    negative = object.__new__(Quantity)
+    object.__setattr__(negative, "value", -1)
+    with pytest.raises(ValueError, match="cannot be negative"):
+        _verified_internal_rebuild(
+            book,
+            execution,
+            active_attempts=(replace(attempt, cumulative_quantity=negative),),
+        )
+
+
+def test_audit_rejects_terminal_history_gaps_branches_and_active_coexistence() -> (
+    None
+):
+    released, execution, _, _ = _released_state()
+    [closure] = released.closure_history
+
+    with pytest.raises(ValueError, match="current closure history heads"):
+        _verified_internal_rebuild(
+            released,
+            execution,
+            closure_heads=(),
+        )
+
+    active_book, _ = _seed_needs_review(effect_gate_first=False)
+    with pytest.raises(ValueError, match="cannot coexist with an active attempt"):
+        _verified_internal_rebuild(
+            released,
+            execution,
+            active_attempts=active_book.active_attempts,
+        )
+
+    ordinal_gap = replace(closure, ordinal=2)
+    with pytest.raises(ValueError, match="ordinals must be contiguous"):
+        _verified_internal_rebuild(
+            released,
+            execution,
+            closure_history=(ordinal_gap,),
+            closure_heads=(ordinal_gap,),
+        )
+
+    wrong_predecessor = replace(
+        closure,
+        predecessor_closure_id=ClosureId("unrelated-predecessor"),
+    )
+    with pytest.raises(ValueError, match="immediate predecessor"):
+        _verified_internal_rebuild(
+            released,
+            execution,
+            closure_history=(wrong_predecessor,),
+            closure_heads=(wrong_predecessor,),
+        )
+
+    advanced = apply_venue_recovery_input(
+        released,
+        execution,
+        _broker_successor(
+            input_suffix="audit-chain",
+            closure_id=ClosureId("audit-chain-successor"),
+        ),
+    )
+    assert advanced.disposition is VenueRecoveryDisposition.APPLIED
+    first, second = advanced.book.closure_history
+    economic_root = replace(second, ordinal=1, predecessor_closure_id=None)
+    with pytest.raises(ValueError, match="must succeed a terminal closure"):
+        _verified_internal_rebuild(
+            advanced.book,
+            advanced.execution,
+            closure_history=(economic_root,),
+            closure_heads=(economic_root,),
+        )
+
+    changed_terminal = replace(second, status=VenueAttemptState.CANCELED)
+    with pytest.raises(ValueError, match="preserve terminal identity"):
+        _verified_internal_rebuild(
+            advanced.book,
+            advanced.execution,
+            closure_history=(first, changed_terminal),
+            closure_heads=(changed_terminal,),
+        )
+
+
+def test_audit_rejects_duplicate_and_reordered_lifecycle_inputs() -> None:
+    book, execution = _seed_needs_review(effect_gate_first=False)
+    request_record = next(
+        record for record in book.input_records if isinstance(record.item, RequestedEffect)
+    )
+    claim_record = next(
+        record
+        for record in book.input_records
+        if isinstance(record.item, RecordDispatchClaim)
+    )
+    discovery_record = next(
+        record for record in book.input_records if isinstance(record.item, DiscoverVenueLeg)
+    )
+    review_record = next(
+        record
+        for record in book.input_records
+        if isinstance(record.item, ObserveVenueStatus)
+    )
+
+    changed_request = replace(
+        request_record.item,
+        economic_scope=b"changed-request-scope",
+    )
+    with pytest.raises(ValueError, match="requested-effect input provenance"):
+        _verified_internal_rebuild(
+            book,
+            execution,
+            input_records=(
+                replace(request_record, item=changed_request),
+                *book.input_records[1:],
+            ),
+        )
+
+    changed_claim = replace(
+        claim_record.item,
+        claim_occurrence_id=ClaimOccurrenceId("changed-claim-occurrence"),
+    )
+    with pytest.raises(ValueError, match="dispatch-claim input provenance"):
+        _verified_internal_rebuild(
+            book,
+            execution,
+            input_records=tuple(
+                replace(record, item=changed_claim)
+                if record is claim_record
+                else record
+                for record in book.input_records
+            ),
+        )
+
+    duplicate_request = replace(
+        request_record.item,
+        input_id=VenueInputId("duplicate-request-input"),
+    )
+    duplicate_record = replace(
+        request_record,
+        input_id=duplicate_request.input_id,
+        item=duplicate_request,
+    )
+    with pytest.raises(ValueError, match="duplicate direct semantic input"):
+        _verified_internal_rebuild(
+            book,
+            execution,
+            input_records=(request_record, duplicate_record, *book.input_records[1:]),
+        )
+
+    with pytest.raises(ValueError, match="observation precedes leg discovery"):
+        _verified_internal_rebuild(
+            book,
+            execution,
+            input_records=_move_record_before(
+                book.input_records,
+                review_record,
+                discovery_record,
+            ),
+        )
+
+    regressed_item = replace(
+        review_record.item,
+        input_id=VenueInputId("regressed-working-observation"),
+        status=VenueAttemptState.WORKING,
+        observation_id=VenueObservationId("regressed-working-observation"),
+    )
+    regressed_record = replace(
+        review_record,
+        input_id=regressed_item.input_id,
+        item=regressed_item,
+    )
+    with pytest.raises(ValueError, match="status history cannot regress"):
+        _verified_internal_rebuild(
+            book,
+            execution,
+            input_records=(*book.input_records, regressed_record),
+        )
+
+
+def _corroborated_human_state():
+    book, execution = _seed_needs_review(effect_gate_first=False)
+    human_fact = _human_fill(LEG_A, "audit-corroboration")
+    attested = _ingest(
+        book,
+        execution,
+        human_fact,
+        "audit-corroboration-human-input",
+    )
+    assert attested.disposition is VenueRecoveryDisposition.APPLIED
+    broker_fact = BrokerFillFact(
+        key=ExecutionFactKey(
+            broker=BROKER,
+            environment=ENVIRONMENT,
+            account=ACCOUNT,
+            source_event_id=SourceEventId("audit-corroboration-broker-source"),
+        ),
+        scope=human_fact.scope,
+        root_fill_id=RootFillId("audit-corroboration-broker-root"),
+        quantity=human_fact.quantity,
+        price=human_fact.price,
+    )
+    corroborated = apply_venue_recovery_input(
+        attested.book,
+        attested.execution,
+        RecordBrokerFillEvidence(
+            input_id=VenueInputId("audit-corroboration-broker-input"),
+            effect_id=EFFECT,
+            leg_key=LEG_A,
+            prior_cumulative_quantity=Quantity(0),
+            resulting_cumulative_quantity=Quantity(4),
+            fact=broker_fact,
+            evidence_digest=b"\xe1" * 32,
+        ),
+    )
+    assert corroborated.disposition is VenueRecoveryDisposition.APPLIED
+    released = apply_venue_recovery_input(
+        corroborated.book,
+        corroborated.execution,
+        ReleaseVenueLeg(
+            input_id=VenueInputId("audit-corroboration-release-input"),
+            effect_id=EFFECT,
+            leg_key=LEG_A,
+            claim_occurrence_id=CLAIM,
+            venue_cumulative_quantity=Quantity(4),
+            broker_terminal_state=VenueAttemptState.CANCELED,
+            actor=ACTOR,
+            reason="exact corroborated economics and terminal broker evidence",
+            evidence_reference=EvidenceReference("audit-corroboration-release"),
+            closure_id=ClosureId("audit-corroboration-release-closure"),
+            evidence_digest=b"\xe2" * 32,
+        ),
+    )
+    assert released.disposition is VenueRecoveryDisposition.APPLIED
+    return released.book, released.execution
+
+
+def test_audit_rejects_corrupted_human_coverage_authority_and_provenance() -> (
+    None
+):
+    book, execution = _corroborated_human_state()
+    [coverage] = book.human_coverages
+
+    cases = (
+        (
+            replace(coverage, effect_id=EffectId("missing-coverage-effect")),
+            "owned canonical effect",
+        ),
+        (
+            replace(
+                coverage,
+                fact=replace(
+                    coverage.fact,
+                    scope=replace(
+                        coverage.fact.scope,
+                        symbol_id=SymbolId("MSFT"),
+                    ),
+                ),
+            ),
+            "owner economic scope",
+        ),
+        (
+            replace(
+                coverage,
+                fact=replace(
+                    coverage.fact,
+                    quantity=Quantity(11),
+                    resulting_cumulative_quantity=Quantity(11),
+                ),
+            ),
+            "cannot exceed immutable effect capacity",
+        ),
+        (
+            replace(
+                coverage,
+                fact=replace(
+                    coverage.fact,
+                    claim_occurrence_id=ClaimOccurrenceId("wrong-coverage-claim"),
+                ),
+            ),
+            "exact claim occurrence",
+        ),
+        (
+            replace(
+                coverage,
+                source_input_id=VenueInputId("missing-human-source-input"),
+            ),
+            "prior ordered review authority",
+        ),
+        (
+            replace(
+                coverage,
+                broker_fact=replace(coverage.broker_fact, price=_price(101)),
+            ),
+            "match committed human economics",
+        ),
+        (
+            replace(
+                coverage,
+                broker_source_input_id=VenueInputId("missing-broker-source-input"),
+            ),
+            "exact source-input provenance",
+        ),
+    )
+    for corrupted, message in cases:
+        with pytest.raises(ValueError, match=message):
+            _verified_internal_rebuild(
+                book,
+                execution,
+                human_coverages=(corrupted,),
+            )
+
+
+def _acceptance_proof_for_effect(effect, kind: AcceptanceProofKind):
+    return AcceptanceProof(
+        kind=kind,
+        effect_scope=effect.scope,
+        claim_occurrence_id=(
+            None if kind is AcceptanceProofKind.NEVER_DISPATCHED else CLAIM
+        ),
+        evidence_reference=EvidenceReference(
+            f"checkpoint-edge-proof-{kind.value.lower()}"
+        ),
+        evidence_digest=b"\xf1" * 32,
+    )
+
+
+def test_acceptance_proof_constructor_rejects_claim_kind_mismatch() -> None:
+    book, _ = _seed_needs_review(effect_gate_first=False)
+    effect = book.effects[0]
+    external = _acceptance_proof_for_effect(
+        effect,
+        AcceptanceProofKind.CONTRACT_COMPLETE_RESPONSE,
+    )
+
+    with pytest.raises(ValueError, match="never-dispatched proof cannot name a claim"):
+        replace(external, kind=AcceptanceProofKind.NEVER_DISPATCHED)
+    with pytest.raises(ValueError, match="external completeness proof must name"):
+        AcceptanceProof(
+            kind=AcceptanceProofKind.CONTRACT_COMPLETE_RESPONSE,
+            effect_scope=effect.scope,
+            claim_occurrence_id=None,
+            evidence_reference=external.evidence_reference,
+            evidence_digest=external.evidence_digest,
+        )
+
+
+def test_effect_edge_validator_rejects_claim_and_acceptance_contradictions() -> (
+    None
+):
+    book, _ = _seed_needs_review(effect_gate_first=False)
+    effect = book.effects[0]
+    claim = book.claims[0]
+    owner = book.owners[0]
+    effects = {EFFECT: effect}
+    claims = {EFFECT: claim}
+    owners = {LEG_A: owner}
+    external = _acceptance_proof_for_effect(
+        effect,
+        AcceptanceProofKind.CONTRACT_COMPLETE_RESPONSE,
+    )
+
+    book._validate_effect_edges(effects, claims, owners, {})
+
+    with pytest.raises(ValueError, match="state and immutable claim edge disagree"):
+        book._validate_effect_edges(
+            {EFFECT: replace(effect, state=BrokerEffectState.REQUESTED)},
+            claims,
+            owners,
+            {},
+        )
+    with pytest.raises(ValueError, match="exactly one claim record"):
+        book._validate_effect_edges(effects, {}, owners, {})
+    with pytest.raises(ValueError, match="match the effect claim occurrence"):
+        book._validate_effect_edges(
+            effects,
+            {
+                EFFECT: replace(
+                    claim,
+                    claim_occurrence_id=ClaimOccurrenceId(
+                        "checkpoint-edge-wrong-claim"
+                    ),
+                )
+            },
+            owners,
+            {},
+        )
+    with pytest.raises(ValueError, match="open acceptance set cannot carry proof"):
+        book._validate_effect_edges(
+            {EFFECT: replace(effect, acceptance_proof=external)},
+            claims,
+            owners,
+            {},
+        )
+    with pytest.raises(ValueError, match="requires proof"):
+        book._validate_effect_edges(
+            {
+                EFFECT: replace(
+                    effect,
+                    acceptance_set_state=AcceptanceSetState.CLOSED,
+                )
+            },
+            claims,
+            owners,
+            {},
+        )
+    with pytest.raises(ValueError, match="bind exact effect scope and claim"):
+        book._validate_effect_edges(
+            {
+                EFFECT: replace(
+                    effect,
+                    acceptance_set_state=AcceptanceSetState.CLOSED,
+                    acceptance_proof=replace(
+                        external,
+                        effect_scope=replace(
+                            external.effect_scope,
+                            economic_scope=b"checkpoint-edge-wrong-scope",
+                        ),
+                    ),
+                )
+            },
+            claims,
+            owners,
+            {},
+        )
+
+    never_dispatched = _acceptance_proof_for_effect(
+        effect,
+        AcceptanceProofKind.NEVER_DISPATCHED,
+    )
+    with pytest.raises(ValueError, match="requires local cancellation"):
+        book._validate_effect_edges(
+            {
+                EFFECT: replace(
+                    effect,
+                    state=BrokerEffectState.REQUESTED,
+                    claim_occurrence_id=None,
+                    acceptance_set_state=AcceptanceSetState.CLOSED,
+                    acceptance_proof=never_dispatched,
+                )
+            },
+            {},
+            owners,
+            {},
+        )
+
+    forged_external = object.__new__(AcceptanceProof)
+    for name, value in (
+        ("kind", AcceptanceProofKind.CONTRACT_COMPLETE_RESPONSE),
+        ("effect_scope", effect.scope),
+        ("claim_occurrence_id", None),
+        ("evidence_reference", external.evidence_reference),
+        ("evidence_digest", external.evidence_digest),
+    ):
+        object.__setattr__(forged_external, name, value)
+    with pytest.raises(ValueError, match="requires an immutable claim"):
+        book._validate_effect_edges(
+            {
+                EFFECT: replace(
+                    effect,
+                    state=BrokerEffectState.CANCELED_BEFORE_DISPATCH,
+                    claim_occurrence_id=None,
+                    acceptance_set_state=AcceptanceSetState.CLOSED,
+                    acceptance_proof=forged_external,
+                )
+            },
+            {},
+            owners,
+            {},
+        )
+
+    with pytest.raises(ValueError, match="requires contradiction evidence"):
+        book._validate_effect_edges(
+            {
+                EFFECT: replace(
+                    effect,
+                    acceptance_set_state=AcceptanceSetState.INVALIDATED,
+                    acceptance_proof=external,
+                )
+            },
+            claims,
+            owners,
+            {},
+        )
+    wrong_owner = AcceptanceContradiction(
+        leg_key=LEG_B,
+        observation_id=VenueObservationId("checkpoint-edge-wrong-owner"),
+    )
+    with pytest.raises(ValueError, match="owned leg of its effect"):
+        book._validate_effect_edges(
+            {
+                EFFECT: replace(
+                    effect,
+                    acceptance_set_state=AcceptanceSetState.INVALIDATED,
+                    acceptance_proof=external,
+                    contradiction_evidence=(wrong_owner,),
+                )
+            },
+            claims,
+            owners,
+            {},
+        )
+    wrong_observation = AcceptanceContradiction(
+        leg_key=LEG_A,
+        observation_id=VenueObservationId("checkpoint-edge-wrong-observation"),
+    )
+    with pytest.raises(ValueError, match="owner observation"):
+        book._validate_effect_edges(
+            {
+                EFFECT: replace(
+                    effect,
+                    acceptance_set_state=AcceptanceSetState.INVALIDATED,
+                    acceptance_proof=external,
+                    contradiction_evidence=(wrong_observation,),
+                )
+            },
+            claims,
+            owners,
+            {},
+        )
+
+
+def test_operator_reconciled_edge_requires_closed_complete_clean_legs() -> None:
+    book, _, _, _ = _released_state()
+    effect = book.effects[0]
+    claim = book.claims[0]
+    owner = book.owners[0]
+    head = book.closure_heads[0]
+    proof = _acceptance_proof_for_effect(
+        effect,
+        AcceptanceProofKind.COVERED_RECONCILIATION,
+    )
+    operator = replace(
+        effect,
+        state=BrokerEffectState.OPERATOR_RECONCILED,
+        acceptance_set_state=AcceptanceSetState.CLOSED,
+        acceptance_proof=proof,
+    )
+    claims = {EFFECT: claim}
+    owners = {LEG_A: owner}
+    heads = {LEG_A: head}
+
+    book._validate_effect_edges({EFFECT: operator}, claims, owners, heads)
+
+    with pytest.raises(ValueError, match="at least one owned leg"):
+        book._validate_effect_edges({EFFECT: operator}, claims, {}, {})
+
+    valid_contradiction = AcceptanceContradiction(
+        leg_key=LEG_A,
+        observation_id=owner.observation_id,
+    )
+    with pytest.raises(ValueError, match="requires closed acceptance"):
+        book._validate_effect_edges(
+            {
+                EFFECT: replace(
+                    operator,
+                    acceptance_set_state=AcceptanceSetState.INVALIDATED,
+                    contradiction_evidence=(valid_contradiction,),
+                )
+            },
+            claims,
+            owners,
+            heads,
+        )
+    with pytest.raises(ValueError, match="every leg closed"):
+        book._validate_effect_edges({EFFECT: operator}, claims, owners, {})
+
+    mismatched_head = replace(head, cumulative_quantity=Quantity(3))
+    with pytest.raises(ValueError, match="canonical covered quantity"):
+        book._validate_effect_edges(
+            {EFFECT: operator},
+            claims,
+            owners,
+            {LEG_A: mismatched_head},
+        )
+
+    short_filled_head = replace(
+        head,
+        status=VenueAttemptState.FILLED,
+        broker_terminal_state=VenueAttemptState.FILLED,
+    )
+    with pytest.raises(ValueError, match="filled operator closure"):
+        book._validate_effect_edges(
+            {EFFECT: operator},
+            claims,
+            owners,
+            {LEG_A: short_filled_head},
+        )
+
+
+def test_venue_canonical_helpers_cover_every_admitted_shape_and_reject_others() -> (
+    None
+):
+    book, execution = _seed_needs_review(effect_gate_first=False)
+    request = next(
+        record.item
+        for record in book.input_records
+        if isinstance(record.item, RequestedEffect)
+    )
+
+    with pytest.raises(TypeError, match="must be a tuple"):
+        venue_module._require_tuple("audit tuple", [])
+    with pytest.raises(TypeError, match="must be bytes"):
+        venue_module._require_digest("audit digest", "not-bytes")
+    with pytest.raises(TypeError, match="must be VenueInputId"):
+        venue_module._require_input_id("audit input", object())
+    assert not venue_module._execution_head_matches_fact(object(), object())
+
+    human_fact = _human_fill(LEG_A, "canonical-helper")
+    ingested = _ingest(
+        book,
+        execution,
+        human_fact,
+        "canonical-helper-human-input",
+    )
+    assert ingested.disposition is VenueRecoveryDisposition.APPLIED
+    head = ingested.execution.root_heads.get(human_fact.root_key)
+    assert head is not None
+    assert venue_module._execution_head_matches_fact(head, human_fact)
+    assert not venue_module._execution_head_matches_fact(
+        replace(
+            head,
+            current_source_event_id=SourceEventId("canonical-helper-other-source"),
+        ),
+        human_fact,
+    )
+
+    admitted_values = (
+        None,
+        True,
+        7,
+        "canonical text",
+        b"canonical bytes",
+        Decimal("1.25"),
+        Fraction(5, 4),
+        BrokerEffectState.REQUESTED,
+        execution,
+        request,
+    )
+    commitments = tuple(
+        venue_module._canonical_value_commitment(value) for value in admitted_values
+    )
+    assert all(type(commitment) is bytes and len(commitment) == 32 for commitment in commitments)
+    assert len(set(commitments)) == len(commitments)
+
+    with pytest.raises(TypeError, match="unsupported canonical audit value"):
+        venue_module._canonical_value_commitment(object())
+    with pytest.raises(TypeError, match="exact venue-recovery command type"):
+        venue_module._input_command_identity(object(), include_input_id=True)
+
+    with pytest.raises(ValueError, match="quantity must be positive"):
+        replace(request, quantity=Quantity(0))
+    with pytest.raises(ValueError, match="economic_scope must be nonempty"):
+        replace(request, economic_scope=b"")
+
+
+def _book_with_audit_input_records(
+    book: VenueRecoveryBook,
+    records: tuple[object, ...],
+) -> VenueRecoveryBook:
+    forged = copy(book)
+    ledger = venue_module._PersistentSequence.from_values(
+        records,
+        venue_module._input_record_commitment,
+    )
+    object.__setattr__(forged, "_input_ledger", ledger)
+    return forged
+
+
+def _run_input_fold(book: VenueRecoveryBook) -> dict[VenueInputId, object]:
+    return book._validated_inputs(
+        {effect.effect_id: effect for effect in book.effects},
+        {claim.effect_id: claim for claim in book.claims},
+        {owner.leg_key: owner for owner in book.owners},
+    )
+
+
+def test_ordered_input_fold_rejects_missing_lifecycle_predecessors() -> None:
+    book, _ = _seed_needs_review(effect_gate_first=False)
+    first_record = book.input_records[0]
+    invalid_commands = (
+        (
+            CancelBeforeDispatch(
+                input_id=VenueInputId("fold-cancel-without-request"),
+                effect_id=EFFECT,
+            ),
+            "cancel lifecycle input has no requested predecessor",
+        ),
+        (
+            RecoverClaimedEffect(
+                input_id=VenueInputId("fold-recover-without-claim"),
+                effect_id=EFFECT,
+            ),
+            "recovery lifecycle input has no claimed predecessor",
+        ),
+        (
+            RecordTransportOutcome(
+                input_id=VenueInputId("fold-transport-without-claim"),
+                effect_id=EFFECT,
+                state=BrokerEffectState.OUTCOME_UNKNOWN,
+            ),
+            "transport lifecycle input has no valid predecessor",
+        ),
+    )
+    for command, message in invalid_commands:
+        record = replace(
+            first_record,
+            input_id=command.input_id,
+            item=command,
+        )
+        forged = _book_with_audit_input_records(
+            book,
+            (record, *book.input_records),
+        )
+        with pytest.raises(ValueError, match=message):
+            _run_input_fold(forged)
+
+
+def test_ordered_input_fold_rejects_owner_and_closed_leg_history_rewrites() -> None:
+    book, _ = _seed_needs_review(effect_gate_first=False)
+    discovery = next(
+        record for record in book.input_records if isinstance(record.item, DiscoverVenueLeg)
+    )
+    changed_discovery = replace(
+        discovery.item,
+        observation_id=VenueObservationId("fold-detached-owner-observation"),
+    )
+    detached_records = tuple(
+        replace(record, item=changed_discovery) if record is discovery else record
+        for record in book.input_records
+    )
+    with pytest.raises(ValueError, match="leg-discovery input provenance"):
+        _run_input_fold(_book_with_audit_input_records(book, detached_records))
+
+    review = next(
+        record
+        for record in book.input_records
+        if isinstance(record.item, ObserveVenueStatus)
+    )
+    terminal = replace(
+        review.item,
+        input_id=VenueInputId("fold-terminal-observation"),
+        status=VenueAttemptState.CANCELED,
+        observation_id=VenueObservationId("fold-terminal-observation"),
+        closure_id=ClosureId("fold-terminal-closure"),
+        evidence_reference=EvidenceReference("fold-terminal-evidence"),
+    )
+    reactivated = replace(
+        review.item,
+        input_id=VenueInputId("fold-reactivated-observation"),
+        status=VenueAttemptState.WORKING,
+        observation_id=VenueObservationId("fold-reactivated-observation"),
+    )
+    terminal_record = replace(
+        review,
+        input_id=terminal.input_id,
+        item=terminal,
+    )
+    reactivated_record = replace(
+        review,
+        input_id=reactivated.input_id,
+        item=reactivated,
+    )
+    with pytest.raises(ValueError, match="closed venue leg cannot become active"):
+        _run_input_fold(
+            _book_with_audit_input_records(
+                book,
+                (*book.input_records, terminal_record, reactivated_record),
+            )
+        )
+
+
+def test_ordered_input_fold_accepts_valid_cancel_and_claim_recovery_histories() -> None:
+    request = RequestedEffect(
+        input_id=VenueInputId("fold-valid-request"),
+        effect_id=EffectId("fold-valid-effect"),
+        request_occurrence_id=RequestOccurrenceId("fold-valid-request-occurrence"),
+        mandate_id=MandateId("fold-valid-mandate"),
+        kind=EffectKind.SUBMIT,
+        client_order_id=ClientOrderId("fold-valid-client"),
+        symbol_id=SYMBOL,
+        side=ExecutionSide.BUY,
+        quantity=Quantity(1),
+        economic_scope=b"AAPL|BUY|fold-valid",
+    )
+    base_book = VenueRecoveryBook.empty(VENUE_SCOPE)
+    base_execution = ExecutionSnapshot.flat(POSITION_SCOPE)
+
+    requested_book, requested_execution = _apply(base_book, base_execution, request)
+    canceled_book, _ = _apply(
+        requested_book,
+        requested_execution,
+        CancelBeforeDispatch(
+            input_id=VenueInputId("fold-valid-cancel"),
+            effect_id=request.effect_id,
+        ),
+    )
+    assert set(_run_input_fold(canceled_book)) == {
+        request.input_id,
+        VenueInputId("fold-valid-cancel"),
+    }
+
+    claimed_book, claimed_execution = _apply(
+        requested_book,
+        requested_execution,
+        RecordDispatchClaim(
+            input_id=VenueInputId("fold-valid-claim"),
+            effect_id=request.effect_id,
+            claim_occurrence_id=ClaimOccurrenceId("fold-valid-claim-occurrence"),
+        ),
+    )
+    recovered_book, _ = _apply(
+        claimed_book,
+        claimed_execution,
+        RecoverClaimedEffect(
+            input_id=VenueInputId("fold-valid-recovery"),
+            effect_id=request.effect_id,
+        ),
+    )
+    assert set(_run_input_fold(recovered_book)) == {
+        request.input_id,
+        VenueInputId("fold-valid-claim"),
+        VenueInputId("fold-valid-recovery"),
+    }

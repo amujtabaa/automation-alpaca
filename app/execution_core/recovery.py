@@ -33,6 +33,7 @@ from .identity import (
     VenueLegKey,
 )
 from .position import (
+    ExecutionReconciliationCursor,
     ExecutionSnapshot,
     ExecutionTransition,
     PositionIntegrity,
@@ -57,17 +58,19 @@ from .venue import (
     VenueRecoveryBook,
     VenueRecoveryDisposition,
     VenueRecoveryTransition,
+    _BookEvolver,
+    _TransitionFactory,
     _book_close_attempt,
     _book_to_execution,
     _book_with_input,
     _book_with_input_and_execution,
-    _demote_operator_effects_for_scope,
+    _input_commands_equal,
     _maybe_finalize_effect,
 )
 
 
 def _require_exact_type(name: str, value: object, expected: type[object]) -> None:
-    if not isinstance(value, expected):
+    if type(value) is not expected:
         raise TypeError(f"{name} must be {expected.__name__}")
 
 
@@ -268,12 +271,15 @@ class HumanCoverage:
                 self.broker_source_input_id,
                 VenueInputId,
             )
-        has_evidence = (
-            self.broker_fact is not None
-            and self.broker_evidence_digest is not None
-            and self.broker_source_input_id is not None
+        evidence_presence = (
+            self.broker_fact is not None,
+            self.broker_evidence_digest is not None,
+            self.broker_source_input_id is not None,
         )
-        if self.broker_corroborated != has_evidence:
+        has_evidence = all(evidence_presence)
+        if self.broker_corroborated != has_evidence or any(
+            evidence_presence
+        ) != has_evidence:
             raise ValueError("broker corroboration requires fact and evidence digest")
 
 
@@ -291,7 +297,6 @@ class _BrokerCoverage:
     head_fact: BrokerExecutionFact
     head_evidence_digest: bytes
     head_source_input_id: VenueInputId
-    revision_source_input_ids: tuple[VenueInputId, ...] = ()
     mapping_exact: bool = True
 
     def __post_init__(self) -> None:
@@ -319,11 +324,6 @@ class _BrokerCoverage:
         _require_exact_type(
             "head_source_input_id", self.head_source_input_id, VenueInputId
         )
-        if type(self.revision_source_input_ids) is not tuple or any(
-            not isinstance(input_id, VenueInputId)
-            for input_id in self.revision_source_input_ids
-        ):
-            raise TypeError("revision_source_input_ids must be VenueInputId tuple")
         if type(self.mapping_exact) is not bool:
             raise TypeError("mapping_exact must be bool")
         if self.head_fact.root_key != self.fact.root_key:
@@ -409,21 +409,6 @@ def _snapshot_from_transition(transition: ExecutionTransition) -> ExecutionSnaps
     )
 
 
-def _transition(
-    book: VenueRecoveryBook,
-    execution: ExecutionSnapshot,
-    disposition: VenueRecoveryDisposition,
-    *,
-    quantity_delta: int = 0,
-) -> VenueRecoveryTransition:
-    return VenueRecoveryTransition(
-        book=book,
-        execution=execution,
-        disposition=disposition,
-        quantity_delta=quantity_delta,
-    )
-
-
 def _same_leg_scope(book: VenueRecoveryBook, leg_key: VenueLegKey) -> bool:
     return (
         leg_key.broker == book.scope.broker
@@ -437,7 +422,7 @@ def _bound_effect_and_owner(
     effect_id: EffectId,
     leg_key: VenueLegKey,
 ) -> tuple[BrokerEffect | None, VenueIdentityOwner | None]:
-    effect = book.effect(effect_id)
+    effect = book._current_effect(effect_id)
     owner = book.owner(leg_key)
     if (
         effect is None
@@ -450,81 +435,25 @@ def _bound_effect_and_owner(
 
 
 def _coverage_frontier(book: VenueRecoveryBook, leg_key: VenueLegKey) -> int:
-    human_coverages = cast(tuple[HumanCoverage, ...], book.coverage_for_leg(leg_key))
-    broker_coverages = cast(
-        tuple[_BrokerCoverage, ...], book.broker_coverage_for_leg(leg_key)
-    )
-    human = [
-        coverage.fact.resulting_cumulative_quantity.value
-        for coverage in human_coverages
-    ]
-    broker = [
-        coverage.resulting_cumulative_quantity.value for coverage in broker_coverages
-    ]
-    return max((*human, *broker), default=0)
+    return book._coverage_current(leg_key).frontier
 
 
 def _leg_canonical_total(book: VenueRecoveryBook, leg_key: VenueLegKey) -> int:
-    total = _coverage_frontier(book, leg_key)
-    for record in book.reconciliations:
-        if (
-            isinstance(record, RevisionReconciliationRecord)
-            and record.leg_key == leg_key
-            and record.canonical_applied
-        ):
-            total = record.resulting_venue_cumulative_quantity.value
-    return total
+    return book._coverage_current(leg_key).canonical_total
 
 
 def _effect_canonical_total(
     book: VenueRecoveryBook,
     effect_id: EffectId,
 ) -> int:
-    return sum(
-        _leg_canonical_total(book, owner.leg_key)
-        for owner in book.owners
-        if owner.effect_id == effect_id
-    )
+    return book._effect_canonical_total(effect_id)
 
 
 def _leg_economic_high_water(
     book: VenueRecoveryBook,
     leg_key: VenueLegKey,
 ) -> int:
-    high_water = max(
-        (
-            *(
-                coverage.fact.resulting_cumulative_quantity.value
-                for coverage in book.human_coverages
-                if coverage.leg_key == leg_key
-            ),
-            *(
-                coverage.prior_cumulative_quantity.value + coverage.fact.quantity.value
-                for coverage in book.broker_coverages
-                if coverage.leg_key == leg_key
-            ),
-        ),
-        default=0,
-    )
-    rejected_revision_inputs = {
-        record.input_id
-        for record in book.reconciliations
-        if isinstance(record, RevisionReconciliationRecord)
-        and not record.canonical_applied
-    }
-    for record in book.input_records:
-        item = record.item
-        if (
-            isinstance(item, RecordBrokerRevisionEvidence)
-            and item.leg_key == leg_key
-            and item.input_id not in rejected_revision_inputs
-        ):
-            high_water = max(
-                high_water,
-                item.prior_venue_cumulative_quantity.value,
-                item.resulting_venue_cumulative_quantity.value,
-            )
-    return high_water
+    return book._economic_high_water(leg_key)
 
 
 def _fact_matches_owner(
@@ -568,15 +497,10 @@ def _matching_human_coverage(
     effect_id: EffectId,
     fact: HumanAttestedFillFact,
 ) -> HumanCoverage | None:
-    coverages = cast(tuple[HumanCoverage, ...], book.coverage_for_leg(fact.leg_key))
-    return next(
-        (
-            coverage
-            for coverage in coverages
-            if coverage.effect_id == effect_id and coverage.fact == fact
-        ),
-        None,
-    )
+    coverage = book._human_coverage_for_root(fact.root_key)
+    if coverage is None or coverage.effect_id != effect_id or coverage.fact != fact:
+        return None
+    return coverage
 
 
 def _has_unattributed_broker_root(
@@ -586,20 +510,17 @@ def _has_unattributed_broker_root(
 ) -> bool:
     """Detect same-order broker economics the venue book cannot attribute."""
 
-    represented_broker_roots = {
-        coverage.fact.root_key
-        for coverage in book.broker_coverages
-        if coverage.fact.scope == fact.scope
-    }
-    return execution.root_heads.broker_root_count(fact.scope) > len(
-        represented_broker_roots
-    )
+    return execution.root_heads.broker_root_count(
+        fact.scope
+    ) > book._attributed_broker_root_count(fact.scope)
 
 
 def _apply_human_fill(
     book: VenueRecoveryBook,
     execution: ExecutionSnapshot,
     item: IngestHumanAttestedFill,
+    evolve: _BookEvolver,
+    _transition: _TransitionFactory,
 ) -> VenueRecoveryTransition:
     effect, owner = _bound_effect_and_owner(book, item.effect_id, item.fact.leg_key)
     fact = item.fact
@@ -621,18 +542,23 @@ def _apply_human_fill(
                     VenueRecoveryDisposition.RECONCILIATION_REQUIRED,
                 )
             return _transition(
-                _book_with_input(book, item),
+                _book_with_input(evolve, book, execution, item),
                 execution,
                 VenueRecoveryDisposition.APPLIED,
             )
         if replayed.disposition is TransitionDisposition.FACT_CONFLICT:
             return _transition(
-                _book_to_execution(book, replayed_execution),
+                _book_to_execution(
+                    evolve,
+                    book,
+                    execution,
+                    replayed_execution,
+                ),
                 replayed_execution,
                 VenueRecoveryDisposition.CONFLICT,
             )
         return _transition(
-            _book_to_execution(book, replayed_execution),
+            _book_to_execution(evolve, book, execution, replayed_execution),
             replayed_execution,
             VenueRecoveryDisposition.RECONCILIATION_REQUIRED,
         )
@@ -693,14 +619,14 @@ def _apply_human_fill(
         source_input_id=item.input_id,
     )
     next_book = _book_with_input_and_execution(
+        evolve,
         book,
         item,
+        execution,
         next_execution,
-        active_attempts=tuple(
-            updated_attempt if entry.leg_key == updated_attempt.leg_key else entry
-            for entry in book.active_attempts
-        ),
-        human_coverages=book.human_coverages + (coverage,),
+        canonical_economic_input=True,
+        _attempt_replace=updated_attempt,
+        _human_coverage_append=coverage,
     )
     return _transition(
         next_book,
@@ -714,6 +640,8 @@ def _apply_release(
     book: VenueRecoveryBook,
     execution: ExecutionSnapshot,
     item: ReleaseVenueLeg,
+    evolve: _BookEvolver,
+    _transition: _TransitionFactory,
 ) -> VenueRecoveryTransition:
     effect, owner = _bound_effect_and_owner(book, item.effect_id, item.leg_key)
     attempt = book.active_attempt(item.leg_key)
@@ -743,7 +671,10 @@ def _apply_release(
         )
     ):
         return _transition(book, execution, VenueRecoveryDisposition.REFUSED)
-    if not book._execution_matches(execution, effect.scope.position_scope):
+    if (
+        execution.position.scope != effect.scope.position_scope
+        or not book._execution_pair_matches_fast(execution)
+    ):
         return _transition(
             book,
             execution,
@@ -755,15 +686,8 @@ def _apply_release(
     )
     if (
         execution.integrity & unresolved_execution
-        or any(
-            record.effect_id == item.effect_id and record.leg_key == item.leg_key
-            for record in book.reconciliations
-        )
-        or any(
-            record.position_scope == effect.scope.position_scope
-            and not record.attribution_resolved
-            for record in book.execution_reconciliations
-        )
+        or book._has_unresolved_reconciliation(item.leg_key)
+        or book._has_unresolved_execution_reconciliation(effect.scope.position_scope)
     ):
         return _transition(
             book,
@@ -772,8 +696,11 @@ def _apply_release(
         )
 
     next_book = _maybe_finalize_effect(
+        evolve,
         _book_close_attempt(
+            evolve,
             book,
+            prior_execution=execution,
             leg_key=item.leg_key,
             closure_id=item.closure_id,
             status=VenueAttemptState.OPERATOR_RECONCILED,
@@ -793,20 +720,13 @@ def _apply_release(
     return _transition(next_book, execution, VenueRecoveryDisposition.APPLIED)
 
 
-def _intervals_overlap(
-    left_prior: int,
-    left_resulting: int,
-    right_prior: int,
-    right_resulting: int,
-) -> bool:
-    return max(left_prior, right_prior) < min(left_resulting, right_resulting)
-
-
 def _reconciliation(
     book: VenueRecoveryBook,
     execution: ExecutionSnapshot,
     item: RecordBrokerFillEvidence,
     reason: str,
+    evolve: _BookEvolver,
+    _transition: _TransitionFactory,
 ) -> VenueRecoveryTransition:
     recorded = _record_execution_reconciliation(
         execution.position,
@@ -827,10 +747,12 @@ def _reconciliation(
         reason=reason,
     )
     next_book = _book_with_input_and_execution(
+        evolve,
         book,
         item,
+        execution,
         next_execution,
-        reconciliations=book.reconciliations + (record,),
+        _reconciliation_append=record,
     )
     return _transition(
         next_book,
@@ -843,6 +765,8 @@ def _apply_broker_evidence(
     book: VenueRecoveryBook,
     execution: ExecutionSnapshot,
     item: RecordBrokerFillEvidence,
+    evolve: _BookEvolver,
+    _transition: _TransitionFactory,
 ) -> VenueRecoveryTransition:
     effect, owner = _bound_effect_and_owner(book, item.effect_id, item.leg_key)
     prior = item.prior_cumulative_quantity.value
@@ -856,24 +780,17 @@ def _apply_broker_evidence(
     ):
         return _transition(book, execution, VenueRecoveryDisposition.REFUSED)
 
-    prior_commands = tuple(
-        record
-        for record in book.input_records
-        if isinstance(record.item, RecordBrokerFillEvidence)
-        and record.item.fact.key == item.fact.key
-    )
-    if prior_commands:
-        same_payload = next(
-            (
-                record
-                for record in prior_commands
-                if replace(
-                    cast(RecordBrokerFillEvidence, record.item),
-                    input_id=item.input_id,
-                )
-                == item
-            ),
-            None,
+    prior_command = book._fact_input_record(item.fact.key)
+    if prior_command is not None:
+        same_payload = (
+            prior_command
+            if isinstance(prior_command.item, RecordBrokerFillEvidence)
+            and _input_commands_equal(
+                prior_command.item,
+                item,
+                include_input_id=False,
+            )
+            else None
         )
         if same_payload is None:
             return _reconciliation(
@@ -881,48 +798,30 @@ def _apply_broker_evidence(
                 execution,
                 item,
                 "seen broker fact identity carries changed attribution or evidence",
+                evolve,
+                _transition,
             )
-        if any(
-            reconciliation.input_id == same_payload.input_id
-            for reconciliation in book.reconciliations
-        ):
+        if book._reconciliation_for_input(same_payload.input_id) is not None:
             return _transition(
-                _book_with_input(book, item),
+                _book_with_input(evolve, book, execution, item),
                 execution,
                 VenueRecoveryDisposition.RECONCILIATION_REQUIRED,
             )
         return _transition(
-            _book_with_input(book, item),
+            _book_with_input(evolve, book, execution, item),
             execution,
             VenueRecoveryDisposition.APPLIED,
         )
 
     width_matches = resulting - prior == item.fact.quantity.value
-    human = cast(tuple[HumanCoverage, ...], book.coverage_for_leg(item.leg_key))
-    exact = next(
-        (
-            coverage
-            for coverage in human
-            if coverage.fact.prior_cumulative_quantity.value == prior
-            and coverage.fact.resulting_cumulative_quantity.value == resulting
-        ),
-        None,
+    exact = book._human_coverage_for_interval(
+        item.leg_key,
+        prior,
+        resulting,
     )
-    overlaps = any(
-        _intervals_overlap(
-            prior,
-            resulting,
-            coverage.fact.prior_cumulative_quantity.value,
-            coverage.fact.resulting_cumulative_quantity.value,
-        )
-        for coverage in human
-    )
-    mapped_to_another_interval = any(
-        coverage is not exact
-        and coverage.broker_fact is not None
-        and coverage.broker_fact.key == item.fact.key
-        for coverage in human
-    )
+    overlaps = exact is None and prior < _coverage_frontier(book, item.leg_key)
+    mapped = book._human_coverage_for_broker_fact(item.fact.key)
+    mapped_to_another_interval = mapped is not None and mapped is not exact
 
     if exact is not None and width_matches and item.fact.price == exact.fact.price:
         if mapped_to_another_interval:
@@ -931,6 +830,8 @@ def _apply_broker_evidence(
                 execution,
                 item,
                 "broker fact identity is already mapped to another human interval",
+                evolve,
+                _transition,
             )
         if exact.broker_corroborated:
             if not (
@@ -942,6 +843,8 @@ def _apply_broker_evidence(
                     execution,
                     item,
                     "human interval already has different broker corroboration",
+                    evolve,
+                    _transition,
                 )
         reserved = _record_broker_corroboration(
             execution.position,
@@ -959,9 +862,11 @@ def _apply_broker_evidence(
                 execution,
                 item,
                 "broker corroboration identity conflicts with canonical execution facts",
+                evolve,
+                _transition,
             )
         next_execution = _snapshot_from_transition(reserved)
-        next_coverages = book.human_coverages
+        coverage_replacement: tuple[HumanCoverage, HumanCoverage] | None = None
         if not exact.broker_corroborated:
             corroborated = replace(
                 exact,
@@ -970,15 +875,14 @@ def _apply_broker_evidence(
                 broker_evidence_digest=item.evidence_digest,
                 broker_source_input_id=item.input_id,
             )
-            next_coverages = tuple(
-                corroborated if coverage == exact else coverage
-                for coverage in book.human_coverages
-            )
+            coverage_replacement = (exact, corroborated)
         next_book = _book_with_input_and_execution(
+            evolve,
             book,
             item,
+            execution,
             next_execution,
-            human_coverages=next_coverages,
+            _human_coverage_replace=coverage_replacement,
         )
         return _transition(
             next_book,
@@ -992,6 +896,8 @@ def _apply_broker_evidence(
             execution,
             item,
             "broker interval overlaps or disagrees with committed human economics",
+            evolve,
+            _transition,
         )
 
     attempt = book.active_attempt(item.leg_key)
@@ -1007,6 +913,8 @@ def _apply_broker_evidence(
             execution,
             item,
             "broker interval cannot be mapped to an active next uncovered capacity",
+            evolve,
+            _transition,
         )
 
     applied = apply_broker_execution_fact(
@@ -1022,6 +930,8 @@ def _apply_broker_evidence(
             execution,
             item,
             "broker reducer did not admit the attributed disjoint fill",
+            evolve,
+            _transition,
         )
     next_execution = _snapshot_from_transition(applied)
     if (
@@ -1053,21 +963,23 @@ def _apply_broker_evidence(
             ),
         )
         next_book = _book_with_input_and_execution(
+            evolve,
             book,
             item,
+            execution,
             next_execution,
-            active_attempts=tuple(
-                updated_attempt if entry.leg_key == updated_attempt.leg_key else entry
-                for entry in book.active_attempts
-            ),
-            broker_coverages=book.broker_coverages + (coverage,),
+            canonical_economic_input=True,
+            _attempt_replace=updated_attempt,
+            _broker_coverage_append=coverage,
         )
     else:
         assert closure_head is not None
         assert item.closure_id is not None
         assert item.evidence_reference is not None
         next_book = _book_close_attempt(
+            evolve,
             book,
+            prior_execution=execution,
             leg_key=item.leg_key,
             closure_id=item.closure_id,
             status=closure_head.status,
@@ -1078,9 +990,10 @@ def _apply_broker_evidence(
             source_event_id=item.fact.key.source_event_id,
             broker_terminal_state=closure_head.broker_terminal_state,
             source_input=item,
-            execution=next_execution,
+            resulting_execution=next_execution,
+            canonical_economic_input=True,
             evidence_digest=item.evidence_digest,
-            evolution_changes={"broker_coverages": book.broker_coverages + (coverage,)},
+            evolution_changes={"_broker_coverage_append": coverage},
         )
     return _transition(
         next_book,
@@ -1111,31 +1024,20 @@ def _is_tail_broker_coverage(
     book: VenueRecoveryBook,
     target: _BrokerCoverage,
 ) -> bool:
-    later_human = any(
-        coverage.leg_key == target.leg_key
-        and coverage.fact.prior_cumulative_quantity.value
-        >= target.resulting_cumulative_quantity.value
-        for coverage in book.human_coverages
-    )
-    later_broker = any(
-        coverage.leg_key == target.leg_key
-        and coverage is not target
-        and coverage.prior_cumulative_quantity.value
-        >= target.resulting_cumulative_quantity.value
-        for coverage in book.broker_coverages
-    )
-    return not (later_human or later_broker)
+    return book._coverage_current(target.leg_key).tail_root_key == target.fact.root_key
 
 
 def _revision_reconciliation(
     book: VenueRecoveryBook,
-    execution: ExecutionSnapshot,
+    prior_execution: ExecutionSnapshot,
+    resulting_execution: ExecutionSnapshot,
     item: RecordBrokerRevisionEvidence,
+    evolve: _BookEvolver,
+    _transition: _TransitionFactory,
     *,
     reason: str,
     canonical_applied: bool,
     quantity_delta: int,
-    broker_coverages: tuple[_BrokerCoverage, ...] | None = None,
 ) -> VenueRecoveryTransition:
     record = RevisionReconciliationRecord(
         input_id=item.input_id,
@@ -1150,23 +1052,21 @@ def _revision_reconciliation(
         reason=reason,
     )
     changes: dict[str, object] = {
-        "reconciliations": book.reconciliations + (record,),
-        "effects": _demote_operator_effects_for_scope(
-            book,
-            item.fact.scope.position_scope,
-        ),
+        "_reconciliation_append": record,
+        "_demote_scope": item.fact.scope.position_scope,
     }
-    if broker_coverages is not None:
-        changes["broker_coverages"] = broker_coverages
     next_book = _book_with_input_and_execution(
+        evolve,
         book,
         item,
-        execution,
+        prior_execution,
+        resulting_execution,
+        canonical_economic_input=canonical_applied,
         **changes,
     )
     return _transition(
         next_book,
-        execution,
+        resulting_execution,
         VenueRecoveryDisposition.RECONCILIATION_REQUIRED,
         quantity_delta=quantity_delta,
     )
@@ -1176,6 +1076,8 @@ def _apply_broker_revision_evidence(
     book: VenueRecoveryBook,
     execution: ExecutionSnapshot,
     item: RecordBrokerRevisionEvidence,
+    evolve: _BookEvolver,
+    _transition: _TransitionFactory,
 ) -> VenueRecoveryTransition:
     effect, owner = _bound_effect_and_owner(book, item.effect_id, item.leg_key)
     if (
@@ -1185,25 +1087,19 @@ def _apply_broker_revision_evidence(
     ):
         return _transition(book, execution, VenueRecoveryDisposition.REFUSED)
 
-    prior_commands = tuple(
-        record
-        for record in book.input_records
-        if isinstance(record.item, RecordBrokerRevisionEvidence)
-        and record.item.fact.key == item.fact.key
+    prior_command = book._fact_input_record(item.fact.key)
+    same_payload = (
+        prior_command
+        if prior_command is not None
+        and isinstance(prior_command.item, RecordBrokerRevisionEvidence)
+        and _input_commands_equal(
+            prior_command.item,
+            item,
+            include_input_id=False,
+        )
+        else None
     )
-    same_payload = next(
-        (
-            record
-            for record in prior_commands
-            if replace(
-                cast(RecordBrokerRevisionEvidence, record.item),
-                input_id=item.input_id,
-            )
-            == item
-        ),
-        None,
-    )
-    if prior_commands:
+    if prior_command is not None:
         replayed = apply_broker_execution_fact(
             execution.position,
             execution.integrity,
@@ -1216,13 +1112,11 @@ def _apply_broker_revision_evidence(
             replayed.disposition is TransitionDisposition.EXACT_REPLAY
             and same_payload is not None
         ):
-            unresolved = any(
-                isinstance(record, RevisionReconciliationRecord)
-                and record.input_id == same_payload.input_id
-                for record in book.reconciliations
+            unresolved = (
+                book._reconciliation_for_input(same_payload.input_id) is not None
             )
             return _transition(
-                _book_with_input(book, item),
+                _book_with_input(evolve, book, execution, item),
                 execution,
                 (
                     VenueRecoveryDisposition.RECONCILIATION_REQUIRED
@@ -1237,8 +1131,11 @@ def _apply_broker_revision_evidence(
             )
         return _revision_reconciliation(
             book,
+            execution,
             replayed_execution,
             item,
+            evolve,
+            _transition,
             reason="seen broker revision identity carries changed attribution or evidence",
             canonical_applied=False,
             quantity_delta=0,
@@ -1264,8 +1161,11 @@ def _apply_broker_revision_evidence(
     if applied.disposition is not TransitionDisposition.APPLIED:
         return _revision_reconciliation(
             book,
+            execution,
             next_execution,
             item,
+            evolve,
+            _transition,
             reason="broker revision lineage or authority is not canonically applicable",
             canonical_applied=False,
             quantity_delta=0,
@@ -1286,16 +1186,11 @@ def _apply_broker_revision_evidence(
         )
 
     prior_head = execution.root_heads.get(item.fact.root_key)
-    coverage = next(
-        (
-            entry
-            for entry in book.broker_coverages
-            if entry.effect_id == item.effect_id
-            and entry.leg_key == item.leg_key
-            and entry.fact.root_key == item.fact.root_key
-        ),
-        None,
-    )
+    coverage = book._broker_coverage_for_root(item.fact.root_key)
+    if coverage is not None and (
+        coverage.effect_id != item.effect_id or coverage.leg_key != item.leg_key
+    ):
+        coverage = None
     current_total = _revision_venue_cumulative(book, item.leg_key)
     exact_mapping = (
         prior_head is not None
@@ -1306,20 +1201,11 @@ def _apply_broker_revision_evidence(
         and coverage is not None
         and coverage.mapping_exact
         and _is_tail_broker_coverage(book, coverage)
-        and all(
-            entry.mapping_exact
-            for entry in book.broker_coverages
-            if entry.leg_key == item.leg_key
-        )
-        and not any(
-            isinstance(record, RevisionReconciliationRecord)
-            and record.leg_key == item.leg_key
-            and record.canonical_applied
-            for record in book.reconciliations
-        )
+        and book._coverage_current(item.leg_key).inexact_broker_count == 0
+        and not book._has_canonical_revision(item.leg_key)
     )
 
-    next_coverages = book.broker_coverages
+    coverage_change = {}
     if coverage is not None:
         updated_coverage = replace(
             coverage,
@@ -1331,14 +1217,11 @@ def _apply_broker_revision_evidence(
             head_fact=item.fact,
             head_evidence_digest=item.evidence_digest,
             head_source_input_id=item.input_id,
-            revision_source_input_ids=(
-                coverage.revision_source_input_ids + (item.input_id,)
-            ),
             mapping_exact=exact_mapping,
         )
-        next_coverages = tuple(
-            updated_coverage if entry is coverage else entry
-            for entry in book.broker_coverages
+        coverage_change["_broker_coverage_replace"] = (
+            coverage,
+            updated_coverage,
         )
 
     reconciliation = None
@@ -1357,19 +1240,7 @@ def _apply_broker_revision_evidence(
             canonical_applied=True,
             reason="broker revision applied but venue interval mapping is unresolved",
         )
-    next_reconciliations = (
-        book.reconciliations
-        if reconciliation is None
-        else book.reconciliations + (reconciliation,)
-    )
-    next_effects = (
-        book.effects
-        if reconciliation is None
-        else _demote_operator_effects_for_scope(
-            book,
-            item.fact.scope.position_scope,
-        )
-    )
+    demote_scope = None if reconciliation is None else item.fact.scope.position_scope
 
     if attempt is not None:
         updated_attempt = replace(
@@ -1382,23 +1253,25 @@ def _apply_broker_revision_evidence(
             ),
         )
         next_book = _book_with_input_and_execution(
+            evolve,
             book,
             item,
+            execution,
             next_execution,
-            active_attempts=tuple(
-                updated_attempt if entry.leg_key == item.leg_key else entry
-                for entry in book.active_attempts
-            ),
-            broker_coverages=next_coverages,
-            reconciliations=next_reconciliations,
-            effects=next_effects,
+            canonical_economic_input=True,
+            _attempt_replace=updated_attempt,
+            **coverage_change,
+            _reconciliation_append=reconciliation,
+            _demote_scope=demote_scope,
         )
     else:
         assert closure_head is not None
         assert item.closure_id is not None
         assert item.evidence_reference is not None
         next_book = _book_close_attempt(
+            evolve,
             book,
+            prior_execution=execution,
             leg_key=item.leg_key,
             closure_id=item.closure_id,
             status=closure_head.status,
@@ -1409,12 +1282,13 @@ def _apply_broker_revision_evidence(
             source_event_id=item.fact.key.source_event_id,
             broker_terminal_state=closure_head.broker_terminal_state,
             source_input=item,
-            execution=next_execution,
+            resulting_execution=next_execution,
+            canonical_economic_input=True,
             evidence_digest=item.evidence_digest,
             evolution_changes={
-                "broker_coverages": next_coverages,
-                "reconciliations": next_reconciliations,
-                "effects": next_effects,
+                **coverage_change,
+                "_reconciliation_append": reconciliation,
+                "_demote_scope": demote_scope,
             },
         )
 
@@ -1436,12 +1310,17 @@ def _replay_venue_hydration_snapshot(
     *,
     authorized_human_facts: tuple[HumanAttestedFillFact, ...],
     authorized_corroborations: tuple[BrokerFillFact, ...],
+    limit: int | None = None,
 ) -> ExecutionSnapshot:
     """Re-derive one symbol while authenticating recovery-only observations."""
 
+    if limit is None:
+        limit = seen_facts.count
+    if type(limit) is not int or limit < 0 or limit > seen_facts.count:
+        raise ValueError("limit must be within the retained registry")
     account_seen = SeenFactIndex.empty(scope)
     symbol_snapshots: dict[PositionScope, ExecutionSnapshot] = {}
-    for index in range(seen_facts.count):
+    for index in range(limit):
         observation = seen_facts.observation_at(index)
         observation_scope = observation.position_scope
         if observation_scope is None:
@@ -1521,10 +1400,7 @@ def _replay_venue_hydration_snapshot(
         replayed.root_heads,
         account_seen,
     )
-    if (
-        replayed.seen_facts.entries != seen_facts.entries
-        or replayed.seen_facts.commitment != seen_facts.commitment
-    ):
+    if not seen_facts.has_prefix(limit, replayed.seen_facts.commitment):
         raise ValueError("seen-fact replay did not close exactly")
     return replayed
 
@@ -1535,14 +1411,28 @@ def bind_venue_execution_snapshot(
     integrity: PositionIntegrity,
     root_heads: RootHeadIndex,
     seen_facts: SeenFactIndex,
+    *,
+    expected_reconciliation_cursor: ExecutionReconciliationCursor,
 ) -> ExecutionSnapshot:
-    """Bind restart state using exact human/corroboration venue provenance."""
+    """Bind restart state against independently retained reconciliation authority."""
 
-    _require_exact_type("book", book, VenueRecoveryBook)
+    if type(book) is not VenueRecoveryBook:
+        raise TypeError("book must be the exact opaque VenueRecoveryBook type")
     _require_exact_type("position", position, PositionState)
     _require_exact_type("integrity", integrity, PositionIntegrity)
     _require_exact_type("root_heads", root_heads, RootHeadIndex)
     _require_exact_type("seen_facts", seen_facts, SeenFactIndex)
+    _require_exact_type("position.scope", position.scope, PositionScope)
+    _require_exact_type(
+        "root_heads.position_scope",
+        root_heads.position_scope,
+        PositionScope,
+    )
+    _require_exact_type(
+        "expected_reconciliation_cursor",
+        expected_reconciliation_cursor,
+        ExecutionReconciliationCursor,
+    )
     seen_facts = seen_facts._for_position_scope(position.scope)
     if root_heads.position_scope != position.scope:
         raise ValueError("root index and position must share exact scope")
@@ -1580,7 +1470,20 @@ def bind_venue_execution_snapshot(
         integrity,
         root_heads,
         seen_facts,
+        account_reconciliation_required=(
+            expected_reconciliation_cursor.account_reconciliation_required
+        ),
+        reconciliation_transition_count=(
+            expected_reconciliation_cursor.transition_count
+        ),
+        reconciliation_transition_head=(
+            expected_reconciliation_cursor.transition_head
+        ),
     )
+    if snapshot.commitment != expected_reconciliation_cursor.snapshot_commitment:
+        raise ValueError(
+            "hydrated execution does not match the independently retained snapshot"
+        )
     if not book._execution_matches(snapshot, position.scope):
         raise ValueError("hydrated execution does not match venue high-water")
     return snapshot
@@ -1590,14 +1493,35 @@ def _apply_recovery_input(
     book: VenueRecoveryBook,
     execution: ExecutionSnapshot,
     item: object,
+    evolve: _BookEvolver,
+    transition: _TransitionFactory,
 ) -> VenueRecoveryTransition:
     """Apply one recovery command after venue-wide replay/conflict checks."""
 
+    def _transition(
+        resulting_book: VenueRecoveryBook,
+        resulting_execution: ExecutionSnapshot,
+        disposition: VenueRecoveryDisposition,
+        *,
+        quantity_delta: int = 0,
+    ) -> VenueRecoveryTransition:
+        return transition(
+            resulting_book,
+            execution,
+            resulting_execution,
+            disposition,
+            item=item,
+            quantity_delta=quantity_delta,
+        )
+
     effect_id = getattr(item, "effect_id", None)
     if isinstance(effect_id, EffectId):
-        effect = book.effect(effect_id)
+        effect = book._current_effect(effect_id)
         if effect is not None:
-            if not book._execution_matches(execution, effect.scope.position_scope):
+            if (
+                execution.position.scope != effect.scope.position_scope
+                or not book._execution_pair_matches_fast(execution)
+            ):
                 return _transition(
                     book,
                     execution,
@@ -1605,11 +1529,17 @@ def _apply_recovery_input(
                 )
 
     if isinstance(item, IngestHumanAttestedFill):
-        return _apply_human_fill(book, execution, item)
+        return _apply_human_fill(book, execution, item, evolve, _transition)
     if isinstance(item, ReleaseVenueLeg):
-        return _apply_release(book, execution, item)
+        return _apply_release(book, execution, item, evolve, _transition)
     if isinstance(item, RecordBrokerFillEvidence):
-        return _apply_broker_evidence(book, execution, item)
+        return _apply_broker_evidence(book, execution, item, evolve, _transition)
     if isinstance(item, RecordBrokerRevisionEvidence):
-        return _apply_broker_revision_evidence(book, execution, item)
+        return _apply_broker_revision_evidence(
+            book,
+            execution,
+            item,
+            evolve,
+            _transition,
+        )
     raise TypeError("item must be a venue-recovery input")

@@ -206,6 +206,291 @@ All earlier green and the blocked full-suite baseline remain inadmissible as fin
 Fresh focused/stateful/static/mutation/R2/full-coverage evidence plus a new reviewer-owned exact-head
 remediation result with no unresolved P0/P1 are mandatory after the next production freeze.
 
+## Final-freeze review stop and fourth bounded re-gate (2026-08-01)
+
+The preliminary final-freeze review invalidated source hash
+`1b5e53c6b6c582d4af989d2900d940db044a9d69f9662c01c38d610c89dccd75` after reproducing two
+additional CatchUp P0s. First, an unresolved independently advanced MSFT registry could set the new
+account-wide reconciliation gate while leaving an already finalized AAPL effect effectively
+`OPERATOR_RECONCILED`; the source-symbol epoch did not revoke sibling authority already issued in
+the same account. Second, a healthy same-registry cross-symbol target projection persisted its
+`CatchUpExecutionRegistry` input without a direct immutable outcome, so the live `APPLIED`
+checkpoint failed verified audit hydration. The same pass also found and the implementation seat
+already closed a related zero-economic provenance path by refusing to evolve registry-only progress
+whose position/root/integrity binding had not changed; that repair remains subject to this new
+freeze and review.
+
+The two new P0s trigger this work order's mandatory stop. Work paused before any formal acceptance,
+commit, push, CI, WO-0147 activation, runtime/schema/database/broker activity, merge, deletion, or
+cleanup. Incomplete account-authority-epoch scaffolding had begun when the reviewer reiterated the
+two-P0 stop; it is unverified partial work and carries no green or completion claim.
+
+Ameen's explicit standing authorization for all in-flight findings and refinements, together with
+the approved options 1-4, re-gates only the directly necessary WO-0146 repair:
+
+- add one constant-work account authority epoch so an unresolved account reconciliation lazily
+  demotes every previously finalized effect without scanning symbols/effects, while preserving the
+  existing effect-local closure demotion and scope-specific execution epochs;
+- retain a bounded immutable direct outcome for same-registry target projection, bind it to the
+  declared target/source registry and exact resulting target binding, classify exact replay from
+  the indexed outcome, and include it in verified hydration/direct-provenance checks; and
+- add RED cross-symbol already-finalized, healthy projection restart, changed replay, mutation, and
+  audit-parity pins, then repeat every focused/static/stateful/full-coverage and independent review
+  gate on a new exact freeze.
+
+This re-gate does not activate WO-0147, authorize persistence/schema/DDL/SQL, broker or credential
+use, runtime wiring, PR/merge, branch/worktree retirement, deletion, cleanup, or rely on the
+inadmissible R1 DDL execution. All evidence from the invalidated freeze is diagnostic only.
+
+## Mixed-account proof review stop and fifth bounded re-gate (2026-08-01)
+
+The fourth-gate production freeze at `venue.py` SHA-256
+`0e0df3b452006d881fb1e3bf1c3c14ae611870d61827fe06e979ecbd5cb74fda` is invalidated. A fresh
+read-only reviewer reproduced two additional P0s in the same execution-registry outcome proof root.
+First, a healthy target-only projection from a canonical mixed-symbol account registry was accepted
+live but could fail audit hydration: live validation correctly treated the account high-water to
+source high-water suffix as empty, while hydration incorrectly required the target's entire older
+lag interval to belong to the source symbol. Second, one mutable record shape represented both an
+unresolved source advance and a resolved target projection; hydration inferred the security-relevant
+kind from an unauthenticated boolean plus internally compared commitments. Replacing an unresolved
+record's fields could therefore relabel it as resolved and consistently clear the account-wide
+reconciliation count and authority epoch.
+
+The same pass found one P1 in the target identity boundary: `CatchUpExecutionRegistry` accepted a
+`PositionScope` subclass through generic `isinstance` validation even though replay identity relied
+on equality. An overloaded subclass could therefore compare equal to more than one runtime target.
+
+These two P0s trigger the mandatory stop. The repository-wide coverage run against the invalidated
+freeze was terminated as diagnostic-only before completion. No production edit, acceptance,
+commit, push, CI, WO-0147 activation, runtime/schema/database/broker activity, merge, retirement,
+deletion, or cleanup followed that freeze.
+
+Ameen's explicit standing authorization for in-flight findings and refinements re-gates only the
+directly necessary WO-0146 correction:
+
+- separate unresolved source-advance and resolved target-projection outcomes with an exact typed
+  discriminator that hydration does not infer from caller-controlled equality or a boolean;
+- bind each outcome to its retained `CatchUpExecutionRegistry` source, target scope, exact canonical
+  account prefix/result, and the appropriate exact source or target execution binding;
+- require the exact target checkpoint and `PositionScope` type at construction and replay;
+- apply the one-symbol suffix proof only to genuinely new account history, never to a target's
+  already-canonical mixed-symbol lag interval; and
+- add RED three-symbol mixed-history restart and forged kind/commitment/attribution hydration pins,
+  then repeat all focused, static, stateful, repository-coverage, mutation, and independent-review
+  gates on a new exact freeze.
+
+This fifth re-gate does not activate WO-0147 or authorize persistence/schema/DDL/SQL, broker or
+credential use, runtime wiring, PR/merge, branch/worktree retirement, deletion, or cleanup. All
+evidence from the invalidated freeze remains diagnostic only.
+
+## Coordinated recovery-rewrite stop and sixth bounded re-gate (2026-08-01)
+
+The fifth-gate source freeze at `venue.py` SHA-256
+`3b86ca2e3b2c578036eea45af47de36cb8963a75213eb74c0e4dd9a771f86680` and `recovery.py`
+SHA-256 `656a75d298058f7deb1cb85d570df4133d095f9b8e2a3130d84f14939e9f30b2` is invalidated.
+Its 403-case pure suite, 61-case R2 oracle, static checks, and six import contracts passed, but those
+results are diagnostic only. The repository-wide branch-coverage run was stopped before completion.
+
+A fresh independent pass reproduced one P0 that the same-symbol relabel pin did not cover. The new
+concrete outcome types prevented rewriting only the outcome. Audit hydration still allowed both the
+retained `CatchUpExecutionRegistry` command and outcome to be substituted together. For a
+cross-symbol unresolved source advance whose target economics stayed unchanged, replacing the
+command's claimed prior account point and source binding with the result, then supplying a matching
+resolved projection outcome, passed all self-consistency checks and rebuilt the account unresolved
+count and authority epoch as zero. The command commitment authenticated only the replacement
+command; it did not chain that command to the actual preceding book registry and binding heads.
+
+Ameen's explicit standing authorization for in-flight findings and refinements re-gates only the
+directly necessary WO-0146 correction:
+
+- add a predecessor-linked, domain-separated account-registry transition chain and exact per-scope
+  binding-head chain whose retained prior commitments are authenticated in input order;
+- require every CatchUp command precondition to equal the then-current chained account and source
+  heads, and require each outcome to produce the uniquely chained result heads;
+- anchor the final reconstructed account and per-scope heads to the book's exact indexed current
+  state before deriving unresolved counts or authority epochs; and
+- add a RED cross-symbol coordinated command-plus-outcome rewrite pin, chain omission/reordering and
+  predecessor mutation pins, then repeat all focused, stateful, static, mutation, R2, repository
+  coverage, and independent-review gates on a new exact freeze.
+
+This sixth re-gate does not activate WO-0147 or authorize persistence/schema/DDL/SQL, broker or
+credential use, runtime wiring, PR/merge, branch/worktree retirement, deletion, or cleanup. No
+evidence from the invalidated fifth freeze is admissible for acceptance.
+
+## Self-anchored transition-chain stop and seventh bounded re-gate (2026-08-01)
+
+The sixth-gate source freeze at `venue.py` SHA-256
+`24eb986e36d902d64821142c123effe80780e6663dcad4572f9d78178c204b1e` and `recovery.py`
+SHA-256 `656a75d298058f7deb1cb85d570df4133d095f9b8e2a3130d84f14939e9f30b2` is invalidated.
+Its 28-case binding-recovery and 179-case focused recovery/hardening suites, Ruff, mypy, and diff
+checks passed, but those results are diagnostic only. The full pure execution-core run was stopped
+after the P0 was established.
+
+Three independent passes converged on one P0: the predecessor-linked transition proof remained
+self-anchored inside the mutable hydration book. It authenticated the order and content of the
+retained command/outcome pair only against other retained fields. A coordinated rewrite could
+therefore replace the command, outcome, proof nodes, and stored head together; a coordinated
+omission could remove the entire tuple; and a coordinated reorder could rebuild a syntactically
+valid chain. Because replay skipped unowned broker facts and did not carry the actual account and
+per-scope semantic heads through every transition to an externally supplied final state, each
+coordinated mutation could erase or relabel an unresolved source advance and clear the account-wide
+authority revocation.
+
+Ameen's explicit standing authorization for in-flight findings and refinements re-gates only the
+directly necessary WO-0146 correction:
+
+- derive recovery completeness from the externally supplied exact execution snapshot rather than
+  treating a mutually consistent set of retained book fields as its own authority;
+- carry a bounded account-wide reconciliation state through exact snapshot binding and every
+  cross-symbol registry projection, and close replay's final account state to that external value;
+- require every externally observed canonical registry advance not attributable to a direct venue
+  command to have one exact unresolved source-advance origin, so coordinated record omission is
+  independently detectable; and
+- add RED fully coordinated rewrite, omission, and reorder pins that rebuild all internal proof
+  fields, then repeat every focused, stateful, static, mutation, R2, repository-coverage, and
+  independent-review gate on a new exact freeze.
+
+This seventh re-gate does not activate WO-0147 or authorize persistence/schema/DDL/SQL, broker or
+credential use, runtime wiring, PR/merge, branch/worktree retirement, deletion, or cleanup. No
+evidence from the invalidated sixth freeze is admissible for acceptance.
+
+## Inner-component subclass stop and eighth bounded re-gate (2026-08-01)
+
+The seventh-gate source freeze at `venue.py` SHA-256
+`2df56baaaaad51692b3804bbf575f0fe360a959f2ae136b635396fdd9f76c413`, `position.py` SHA-256
+`6a992d98ef78fa916c4c6d19c5b8a00749807ff3c2bc77ae9636bc594467b160`, and `recovery.py`
+SHA-256 `20a58133e9fdbae9ddb7606664674397947adaea0e13b8033ace1f8d79ba2bce` is invalidated. Its 406-case
+pure execution-core suite, Ruff, mypy, import contracts, diff check, and 61-case R2 oracle passed;
+all are diagnostic only. The repository-wide branch-coverage run was terminated immediately when
+the P0 below was reproduced, and its partial coverage file remains preserved.
+
+A fresh constructor-boundary pass found one P0 beneath the exact outer `ExecutionSnapshot` check.
+`ExecutionSnapshot.bind_verified` and the common component binder admitted `PositionState`,
+`RootHeadIndex`, and `SeenFactIndex` subclasses. Their `type(self)` constructors preserved the
+subclass inside an exact outer snapshot. An overridden registry prefix/suffix/count/commitment
+method could therefore behave safely during binding and differently during CatchUp validation,
+forging monotonicity or source-scope attribution while satisfying the outer exact-type check.
+
+Ameen's standing authorization for in-flight findings and refinements re-gates only the directly
+necessary WO-0146 correction:
+
+- require exact component types at every public snapshot construction and canonical fact-reducer
+  entry, not merely an exact outer snapshot;
+- prevent internal rebinding, projection, and venue CatchUp from preserving or accepting component
+  subclasses or overloaded identity/registry behavior;
+- add RED delayed-behavior `SeenFactIndex`, `RootHeadIndex`, and `PositionState` subclass pins for
+  public binding, direct fact application, exact snapshot construction, recovery binding, and
+  CatchUp source/target inputs; and
+- repeat every focused, stateful, static, mutation, R2, repository-coverage, and independent-review
+  gate on a new exact freeze.
+
+This eighth re-gate does not activate WO-0147 or authorize persistence/schema/DDL/SQL, broker or
+credential use, runtime wiring, PR/merge, branch/worktree retirement, deletion, or cleanup. No
+evidence from the invalidated seventh freeze is admissible for acceptance.
+
+## Fresh-book bootstrap stop and ninth bounded re-gate (2026-08-01)
+
+The eighth-gate source freeze at `venue.py` SHA-256
+`80f84e166c9bda6d1cce1122098ec8630aad7b4d08e83ba315ad2e4e2acde967` and `position.py`
+SHA-256 `0e87b8889ed1573491dbf6090d6b51069d2635b9fa8e11d1900e3f2faea3a1d0` is invalidated. Its
+418-case pure execution-core suite, Ruff, mypy, diff check, and 61-case R2 oracle passed, but all
+results are diagnostic only. The repository-wide branch-coverage run was terminated immediately
+after the P0 below was reproduced; no new coverage artifact had been emitted at termination, and
+the previously preserved coverage artifacts remain unchanged. The terminated run is inadmissible.
+
+A fresh restart-boundary pass reproduced one P0 through pure public APIs. After an independent
+same-symbol registry advance, the legitimate pre-CatchUp execution snapshot still carried the
+genesis reconciliation cursor and no account restriction. Although CatchUp correctly produced a
+new restricted snapshot, the retained pre-CatchUp snapshot could be paired with a new
+same-generation `VenueRecoveryBook.empty(...)`. Because genesis is a valid prefix of an empty
+book, the first `RequestedEffect` registered successfully and erased the later unresolved account
+restriction and reconciliation history.
+
+Ameen's standing authorization for in-flight findings and refinements re-gates only the directly
+necessary WO-0146 correction:
+
+- admit the first effect in a brand-new venue book only against the unique exact flat execution
+  genesis; any nonempty registry, economics, integrity restriction, or advanced cursor requires a
+  separately authenticated hydration/bootstrap authority outside this constructor;
+- refuse both a restricted post-CatchUp snapshot and a retained nonempty genesis-cursor snapshot
+  when either is paired with a fresh same-generation book;
+- preserve the declared deferred boundary: later persistence/cutover work must independently pin
+  the latest trusted book/snapshot pair and may not treat a newly minted empty book as authority;
+  and
+- repeat every focused, stateful, static, mutation, R2, repository-coverage, and independent-review
+  gate on a new exact freeze.
+
+This ninth re-gate does not activate WO-0147 or authorize persistence/schema/DDL/SQL, broker or
+credential use, runtime wiring, PR/merge, branch/worktree retirement, deletion, or cleanup. No
+evidence from the invalidated eighth freeze is admissible for acceptance.
+
+## Validation-order stop and tenth bounded re-gate (2026-08-01)
+
+The ninth-gate source freeze at `venue.py` SHA-256
+`d8c2f1980d601e7d7146d36272e27799ee546c15669d4354cfb9106ab4d2922b` and `position.py`
+SHA-256 `0e87b8889ed1573491dbf6090d6b51069d2635b9fa8e11d1900e3f2faea3a1d0` is invalidated. Its
+419-case pure execution-core suite, Ruff, mypy, import/scope/diff checks, 61-case R2 oracle, and one
+independent restart/cursor ACCEPT are diagnostic only. The repository coverage run was terminated
+before completion when a separate component-boundary reviewer returned the two P1s below; no new
+coverage artifact had been emitted.
+
+The exact component types were enforced at public venue entry, but two secondary seams performed
+work in the wrong order. Internal account-registry projection called an overridable source prefix
+proof before its own exact component validation. Venue recovery hydration checked exact outer
+component types but compared an embedded `PositionScope` subclass before the common exact-scope
+guard. The same review identified `VenueExecutionCheckpoint.from_execution` as an unverified
+parallel seam that read inner registry properties after checking only the outer snapshot.
+
+Ameen's standing authorization for in-flight findings and refinements re-gates only the directly
+necessary WO-0146 correction:
+
+- run the common exact component/scope guard before any target or source property/proof access in
+  internal registry projection;
+- reject non-exact position and root-index scopes before recovery hydration performs scope binding,
+equality, replay, or registry work;
+- apply the same early component guard in the public checkpoint factory and explicit audit
+  hydration factory; and
+- add RED delayed prefix-proof, delayed scope-equality, and delayed checkpoint-property pins, then
+  repeat every focused, stateful, static, mutation, R2, repository-coverage, and independent-review
+  gate on a new exact freeze.
+
+This tenth re-gate does not activate WO-0147 or authorize persistence/schema/DDL/SQL, broker or
+credential use, runtime wiring, PR/merge, branch/worktree retirement, deletion, or cleanup. No
+evidence from the invalidated ninth freeze is admissible for acceptance.
+
+## Coverage-discovery stop and eleventh bounded re-gate (2026-08-01)
+
+The tenth-gate source freeze and all evidence derived from it are invalidated. Its 4,998-passed,
+11-skipped, one-xfailed behavioral repository run is diagnostic only because the unchanged 93%
+coverage gate failed at 91.34%. The subsequent coverage-remediation pass was required to add
+failure-capable tests without lowering or excluding the gate; it exposed two new defects before a
+new acceptance freeze could be declared.
+
+First, `HumanCoverage` accepted a partially populated broker-corroboration tuple when
+`broker_corroborated` was false. Audit hydration later treated any retained `broker_fact` as
+attributed even when its matching evidence digest and source input were absent. That could suppress
+the required unowned-observation external-origin rejection without exact corroboration provenance.
+This is a P0 audit-provenance bypass. Second, `_audit_hydrate_book` inspected
+`attribution_resolved` on retained execution-reconciliation entries before enforcing their exact
+outcome types. The malformed case failed closed, but an untrusted property could run before the
+declared type boundary; this is a P1 validation-order defect.
+
+Ameen's standing authorization for in-flight WO-0146 findings and refinements re-gates only the
+directly necessary correction:
+
+- require broker corroboration fields to be an all-or-none tuple whose presence exactly matches
+  `broker_corroborated`;
+- reject non-exact execution-reconciliation entries before audit hydration reads any property;
+- retain the RED partial-corroboration and malformed-entry pins, plus the broader failure-capable
+  coverage matrices that discovered them; and
+- repeat every focused, stateful, static, mutation, R2, repository-coverage, and independent-review
+  gate on a new exact freeze.
+
+No tenth-gate coverage union, timed-out coverage run, or pre-fix independent review is admissible
+for acceptance. This eleventh re-gate does not activate WO-0147 or authorize persistence,
+schema/DDL/SQL, broker or credential use, runtime wiring, PR/merge, branch/worktree retirement,
+deletion, or cleanup.
+
 ## Frozen semantic contract
 
 - Add exact generation/effect/occurrence/client/claim/closure/evidence identities and immutable full

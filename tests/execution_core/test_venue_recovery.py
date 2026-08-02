@@ -14,6 +14,7 @@ from fractions import Fraction
 
 import pytest
 
+import app.execution_core.recovery as recovery_module
 from app.execution_core.fills import (
     BrokerFillFact,
     BrokerTradeBustFact,
@@ -89,7 +90,7 @@ from app.execution_core.venue import (
     VenueRecoveryBook,
     VenueRecoveryDisposition,
     VenueScope,
-    _rebuild_book,
+    _audit_hydrate_book,
     apply_venue_recovery_input,
 )
 
@@ -611,16 +612,16 @@ def test_attestation_refuses_wrong_effect_or_account_identity() -> None:
 
 
 def test_checkpoint_construction_cannot_drop_the_immutable_claim_edge() -> None:
-    book, _ = _seed_needs_review()
+    book, execution = _seed_needs_review()
 
     with pytest.raises(ValueError, match="claim"):
-        _rebuild_book(book, claims=())
+        _audit_hydrate_book(book, execution, claims=())
 
 
 def test_checkpoint_cannot_be_rebuilt_outside_verified_provenance_path() -> None:
     book, _ = _seed_needs_review()
 
-    with pytest.raises(ValueError, match="claim|provenance"):
+    with pytest.raises(TypeError, match="opaque|verified|reducer"):
         replace(book, input_records=())
 
 
@@ -631,7 +632,7 @@ def test_checkpoint_cannot_be_rebuilt_outside_verified_provenance_path() -> None
 def test_checkpoint_edges_require_their_exact_source_input(
     source_type: type[object],
 ) -> None:
-    book, _ = _seed_needs_review()
+    book, execution = _seed_needs_review()
     retained = tuple(
         record
         for record in book.input_records
@@ -639,7 +640,7 @@ def test_checkpoint_edges_require_their_exact_source_input(
     )
 
     with pytest.raises(ValueError, match="input|provenance"):
-        _rebuild_book(book, input_records=retained)
+        _audit_hydrate_book(book, execution, input_records=retained)
 
 
 def test_checkpoint_human_coverage_requires_its_source_input() -> None:
@@ -652,11 +653,15 @@ def test_checkpoint_human_coverage_requires_its_source_input() -> None:
     )
 
     with pytest.raises(ValueError, match="coverage|input|provenance"):
-        _rebuild_book(attested.book, input_records=retained)
+        _audit_hydrate_book(
+            attested.book,
+            attested.execution,
+            input_records=retained,
+        )
 
 
 def test_checkpoint_operator_closure_requires_its_release_input() -> None:
-    book, _, _ = _released_state()
+    book, execution, _ = _released_state()
     retained = tuple(
         record
         for record in book.input_records
@@ -664,11 +669,11 @@ def test_checkpoint_operator_closure_requires_its_release_input() -> None:
     )
 
     with pytest.raises(ValueError, match="closure|input|provenance"):
-        _rebuild_book(book, input_records=retained)
+        _audit_hydrate_book(book, execution, input_records=retained)
 
 
 def test_checkpoint_effect_state_requires_complete_lifecycle_input_history() -> None:
-    book, _ = _seed_needs_review()
+    book, execution = _seed_needs_review()
     retained = tuple(
         record
         for record in book.input_records
@@ -676,11 +681,11 @@ def test_checkpoint_effect_state_requires_complete_lifecycle_input_history() -> 
     )
 
     with pytest.raises(ValueError, match="lifecycle|state|provenance"):
-        _rebuild_book(book, input_records=retained)
+        _audit_hydrate_book(book, execution, input_records=retained)
 
 
 def test_checkpoint_attempt_state_requires_its_observation_input() -> None:
-    book, _ = _seed_needs_review()
+    book, execution = _seed_needs_review()
     retained = tuple(
         record
         for record in book.input_records
@@ -688,7 +693,7 @@ def test_checkpoint_attempt_state_requires_its_observation_input() -> None:
     )
 
     with pytest.raises(ValueError, match="attempt|observation|provenance"):
-        _rebuild_book(book, input_records=retained)
+        _audit_hydrate_book(book, execution, input_records=retained)
 
 
 def test_checkpoint_pending_operation_requires_its_source_input() -> None:
@@ -709,7 +714,11 @@ def test_checkpoint_pending_operation_requires_its_source_input() -> None:
     )
 
     with pytest.raises(ValueError, match="pending|attempt|provenance"):
-        _rebuild_book(pending.book, input_records=retained)
+        _audit_hydrate_book(
+            pending.book,
+            pending.execution,
+            input_records=retained,
+        )
 
 
 def test_attestation_requires_typed_nonblank_actor_reason_and_evidence() -> None:
@@ -851,23 +860,38 @@ def test_human_attested_sell_cannot_cross_long_quantity_below_zero() -> None:
 
 
 def test_known_matching_broker_economics_prevent_a_second_human_delta() -> None:
-    broker_execution = _apply_broker(
-        ExecutionSnapshot.flat(POSITION_SCOPE),
-        _broker_fill(
-            "known-broker-source",
-            "known-broker-root",
-            quantity=4,
-            units=100,
+    book, execution = _seed_needs_review()
+    broker_first = apply_venue_recovery_input(
+        book,
+        execution,
+        RecordBrokerFillEvidence(
+            input_id=VenueInputId("known-broker-evidence"),
+            effect_id=EFFECT,
+            leg_key=LEG_A,
+            prior_cumulative_quantity=Quantity(0),
+            resulting_cumulative_quantity=Quantity(4),
+            fact=_broker_fill(
+                "known-broker-source",
+                "known-broker-root",
+                quantity=4,
+                units=100,
+            ),
+            evidence_digest=b"\x89" * 32,
         ),
     )
-    book, execution = _seed_needs_review(execution=broker_execution)
+    assert broker_first.disposition is VenueRecoveryDisposition.APPLIED
+    assert broker_first.quantity_delta == 4
 
-    refused = _ingest(book, execution, _human_fill())
+    refused = _ingest(
+        broker_first.book,
+        broker_first.execution,
+        _human_fill(),
+    )
 
     assert refused.disposition is VenueRecoveryDisposition.REFUSED
     assert refused.quantity_delta == 0
-    assert refused.book == book
-    assert refused.execution == execution
+    assert refused.book == broker_first.book
+    assert refused.execution == broker_first.execution
 
 
 def test_release_is_non_economic_leg_local_and_exactly_replayable() -> None:
@@ -1041,22 +1065,55 @@ def test_release_requires_exact_owner_terminal_evidence_and_fill_parity(
 
 
 def test_release_preserves_a_preexisting_overfill_quarantine_latch() -> None:
-    execution = _apply_broker(
-        ExecutionSnapshot.flat(POSITION_SCOPE),
-        _broker_fill(
-            "prior-broker-sell",
-            "prior-broker-sell-root",
-            side=ExecutionSide.SELL,
-            quantity=2,
+    book, execution = _seed_needs_review(capacity=4)
+    overfill = apply_venue_recovery_input(
+        book,
+        execution,
+        RecordBrokerFillEvidence(
+            input_id=VenueInputId("pre-release-overfill"),
+            effect_id=EFFECT,
+            leg_key=LEG_A,
+            prior_cumulative_quantity=Quantity(0),
+            resulting_cumulative_quantity=Quantity(5),
+            fact=_broker_fill(
+                "pre-release-overfill-source",
+                "pre-release-overfill-root",
+                quantity=5,
+            ),
+            evidence_digest=b"\x8a" * 32,
         ),
     )
-    assert execution.integrity & PositionIntegrity.OVERFILL_QUARANTINE
-    book, released, _ = _released_state(execution=execution)
+    assert overfill.disposition is VenueRecoveryDisposition.APPLIED
+    assert overfill.execution.integrity & PositionIntegrity.OVERFILL_QUARANTINE
+    released = apply_venue_recovery_input(
+        overfill.book,
+        overfill.execution,
+        ReleaseVenueLeg(
+            input_id=VenueInputId("release-after-overfill"),
+            effect_id=EFFECT,
+            leg_key=LEG_A,
+            claim_occurrence_id=CLAIM,
+            venue_cumulative_quantity=Quantity(5),
+            broker_terminal_state=VenueAttemptState.CANCELED,
+            actor=ACTOR,
+            reason="terminal report closes an overfilled broker leg",
+            evidence_reference=EVIDENCE,
+            closure_id=ClosureId("release-after-overfill-closure"),
+            evidence_digest=b"\x8b" * 32,
+        ),
+    )
 
-    assert released.position.raw_quantity == 2
-    assert released.integrity & PositionIntegrity.OVERFILL_QUARANTINE
-    assert released.position.integrity_floor & PositionIntegrity.OVERFILL_QUARANTINE
-    assert book.effect(EFFECT).acceptance_set_state is AcceptanceSetState.OPEN
+    assert released.disposition is VenueRecoveryDisposition.APPLIED
+    assert released.execution.position.raw_quantity == 5
+    assert released.execution.integrity & PositionIntegrity.OVERFILL_QUARANTINE
+    assert (
+        released.execution.position.integrity_floor
+        & PositionIntegrity.OVERFILL_QUARANTINE
+    )
+    assert (
+        released.book.effect(EFFECT).acceptance_set_state
+        is AcceptanceSetState.OPEN
+    )
 
 
 def test_human_fill_cannot_be_appended_after_the_leg_was_released() -> None:
@@ -1336,6 +1393,61 @@ def test_terminal_status_without_canonical_fill_parity_cannot_finalize_effect() 
     assert closed.book.effect(EFFECT).acceptance_set_state is AcceptanceSetState.CLOSED
     assert closed.book.effect(EFFECT).state is BrokerEffectState.NEEDS_REVIEW
     assert closed.execution.position.raw_quantity == 0
+
+
+def test_late_exact_fill_finalizes_a_closed_status_only_effect() -> None:
+    book, execution = _seed_needs_review(capacity=4)
+    terminal = apply_venue_recovery_input(
+        book,
+        execution,
+        ObserveVenueStatus(
+            input_id=VenueInputId("status-before-late-exact-fill"),
+            leg_key=LEG_A,
+            status=VenueAttemptState.FILLED,
+            observation_id=VenueObservationId("status-before-late-fill-observation"),
+            cumulative_quantity=Quantity(4),
+            closure_id=ClosureId("status-before-late-fill-closure"),
+            evidence_reference=EvidenceReference("status-before-late-fill-evidence"),
+        ),
+    )
+    closed = apply_venue_recovery_input(
+        terminal.book,
+        terminal.execution,
+        CloseAcceptanceSet(
+            input_id=VenueInputId("close-before-late-exact-fill"),
+            effect_id=EFFECT,
+            proof=_acceptance_proof(
+                terminal.book,
+                AcceptanceProofKind.CONTRACT_COMPLETE_RESPONSE,
+                "proof-before-late-exact-fill",
+            ),
+        ),
+    )
+    assert closed.book.effect(EFFECT).state is BrokerEffectState.NEEDS_REVIEW
+
+    filled = apply_venue_recovery_input(
+        closed.book,
+        closed.execution,
+        RecordBrokerFillEvidence(
+            input_id=VenueInputId("late-exact-fill-after-parent-close"),
+            effect_id=EFFECT,
+            leg_key=LEG_A,
+            prior_cumulative_quantity=Quantity(0),
+            resulting_cumulative_quantity=Quantity(4),
+            fact=_broker_fill(
+                "late-exact-fill-source", "late-exact-fill-root", quantity=4
+            ),
+            evidence_digest=b"\xa0" * 32,
+            closure_id=ClosureId("late-exact-fill-successor"),
+            evidence_reference=EvidenceReference("late-exact-fill-evidence"),
+        ),
+    )
+
+    assert filled.disposition is VenueRecoveryDisposition.APPLIED
+    assert filled.quantity_delta == 4
+    assert filled.book._leg_summary(EFFECT).finalization_ready_count == 1
+    assert filled.book.effect(EFFECT).state is BrokerEffectState.OPERATOR_RECONCILED
+    assert _audit_hydrate_book(filled.book, filled.execution) == filled.book
 
 
 def test_invalidated_acceptance_set_permanently_refuses_operator_release() -> None:
@@ -2293,6 +2405,95 @@ def test_broker_bust_after_release_applies_and_appends_a_closure_successor() -> 
     assert head.source_event_id == SourceEventId("broker-bust-source")
 
 
+def test_broker_bust_after_finalization_demotes_stale_operator_authority() -> None:
+    book, execution = _seed_needs_review(capacity=4)
+    filled = apply_venue_recovery_input(
+        book,
+        execution,
+        RecordBrokerFillEvidence(
+            input_id=VenueInputId("broker-root-before-finalized-bust"),
+            effect_id=EFFECT,
+            leg_key=LEG_A,
+            prior_cumulative_quantity=Quantity(0),
+            resulting_cumulative_quantity=Quantity(4),
+            fact=_broker_fill(
+                "finalized-bust-root-source", "finalized-bust-root", quantity=4
+            ),
+            evidence_digest=b"\xa3" * 32,
+        ),
+    )
+    released = apply_venue_recovery_input(
+        filled.book,
+        filled.execution,
+        ReleaseVenueLeg(
+            input_id=VenueInputId("release-before-finalized-bust"),
+            effect_id=EFFECT,
+            leg_key=LEG_A,
+            claim_occurrence_id=CLAIM,
+            venue_cumulative_quantity=Quantity(4),
+            broker_terminal_state=VenueAttemptState.FILLED,
+            actor=ACTOR,
+            reason="exact filled terminal report",
+            evidence_reference=EVIDENCE,
+            closure_id=ClosureId("release-before-finalized-bust"),
+            evidence_digest=b"\xa4" * 32,
+        ),
+    )
+    finalized = apply_venue_recovery_input(
+        released.book,
+        released.execution,
+        CloseAcceptanceSet(
+            input_id=VenueInputId("close-before-finalized-bust"),
+            effect_id=EFFECT,
+            proof=_acceptance_proof(
+                released.book,
+                AcceptanceProofKind.COVERED_RECONCILIATION,
+                "proof-before-finalized-bust",
+            ),
+        ),
+    )
+    assert finalized.book.effect(EFFECT).state is BrokerEffectState.OPERATOR_RECONCILED
+
+    busted = apply_venue_recovery_input(
+        finalized.book,
+        finalized.execution,
+        RecordBrokerRevisionEvidence(
+            input_id=VenueInputId("apply-finalized-broker-bust"),
+            effect_id=EFFECT,
+            leg_key=LEG_A,
+            prior_root_quantity=Quantity(4),
+            prior_venue_cumulative_quantity=Quantity(4),
+            resulting_venue_cumulative_quantity=Quantity(0),
+            fact=BrokerTradeBustFact(
+                key=ExecutionFactKey(
+                    broker=BROKER,
+                    environment=ENVIRONMENT,
+                    account=ACCOUNT,
+                    source_event_id=SourceEventId("finalized-bust-source"),
+                ),
+                scope=_execution_scope(),
+                root_fill_id=RootFillId("finalized-bust-root"),
+                predecessor_source_event_id=SourceEventId(
+                    "finalized-bust-root-source"
+                ),
+                reported_price=_price(100),
+            ),
+            evidence_digest=b"\xa5" * 32,
+            closure_id=ClosureId("finalized-bust-successor"),
+            evidence_reference=EvidenceReference("finalized-bust-evidence"),
+        ),
+    )
+
+    assert busted.disposition is VenueRecoveryDisposition.APPLIED
+    assert busted.quantity_delta == -4
+    assert busted.book.effect(EFFECT).state is BrokerEffectState.NEEDS_REVIEW
+    assert busted.book.effect(EFFECT).acceptance_set_state is AcceptanceSetState.CLOSED
+    assert busted.book._leg_summary(EFFECT).finalization_ready_count == 0
+    hydrated = _audit_hydrate_book(busted.book, busted.execution)
+    assert hydrated.effect(EFFECT).state is BrokerEffectState.NEEDS_REVIEW
+    assert hydrated._leg_summary(EFFECT).finalization_ready_count == 0
+
+
 def test_bound_revision_of_a_human_root_requires_reconciliation_without_delta() -> None:
     book, execution = _seed_needs_review()
     attested = _ingest(book, execution, _human_fill())
@@ -3147,3 +3348,168 @@ def test_wo0146_red_active_revision_replay_is_classified_after_leg_closure(
     assert classified.execution.position.raw_quantity == 4
     assert len(classified.book.reconciliations) == expected_reconciliations
     assert len(classified.book.closure_history) == 1
+
+
+def _recovery_value_object_facts():
+    fill = _broker_fill(
+        "recovery-value-object-fill-source",
+        "recovery-value-object-root",
+        quantity=4,
+    )
+    correction = BrokerTradeCorrectFact(
+        key=ExecutionFactKey(
+            broker=BROKER,
+            environment=ENVIRONMENT,
+            account=ACCOUNT,
+            source_event_id=SourceEventId("recovery-value-object-correct-source"),
+        ),
+        scope=fill.scope,
+        root_fill_id=fill.root_fill_id,
+        predecessor_source_event_id=fill.key.source_event_id,
+        revised_quantity=Quantity(3),
+        revised_price=_price(101),
+    )
+    bust = BrokerTradeBustFact(
+        key=ExecutionFactKey(
+            broker=BROKER,
+            environment=ENVIRONMENT,
+            account=ACCOUNT,
+            source_event_id=SourceEventId("recovery-value-object-bust-source"),
+        ),
+        scope=fill.scope,
+        root_fill_id=fill.root_fill_id,
+        predecessor_source_event_id=fill.key.source_event_id,
+    )
+    return fill, correction, bust
+
+
+def test_recovery_commands_reject_incomplete_evidence_and_invalid_equations() -> None:
+    fill, correction, _ = _recovery_value_object_facts()
+    release = ReleaseVenueLeg(
+        input_id=VenueInputId("recovery-value-object-release"),
+        effect_id=EFFECT,
+        leg_key=LEG_A,
+        claim_occurrence_id=CLAIM,
+        venue_cumulative_quantity=Quantity(4),
+        broker_terminal_state=VenueAttemptState.FILLED,
+        actor=ACTOR,
+        reason="exact terminal evidence closes one reconciled leg",
+        evidence_reference=EVIDENCE,
+        closure_id=ClosureId("recovery-value-object-release-closure"),
+        evidence_digest=b"\xd1" * 32,
+    )
+    for field_name, value, exception, message in (
+        ("reason", 1, TypeError, "reason must be a string"),
+        ("reason", " ", ValueError, "reason must be nonblank"),
+        ("evidence_digest", "digest", TypeError, "evidence_digest must be bytes"),
+        ("evidence_digest", b"short", ValueError, "exactly 32 bytes"),
+    ):
+        with pytest.raises(exception, match=message):
+            replace(release, **{field_name: value})
+
+    fill_command = RecordBrokerFillEvidence(
+        input_id=VenueInputId("recovery-value-object-fill"),
+        effect_id=EFFECT,
+        leg_key=LEG_A,
+        prior_cumulative_quantity=Quantity(0),
+        resulting_cumulative_quantity=Quantity(4),
+        fact=fill,
+        evidence_digest=b"\xd2" * 32,
+    )
+    with pytest.raises(ValueError, match="supplied together"):
+        replace(
+            fill_command,
+            closure_id=ClosureId("recovery-value-object-fill-closure"),
+        )
+    with pytest.raises(ValueError, match="supplied together"):
+        replace(fill_command, evidence_reference=EVIDENCE)
+
+    revision = RecordBrokerRevisionEvidence(
+        input_id=VenueInputId("recovery-value-object-revision"),
+        effect_id=EFFECT,
+        leg_key=LEG_A,
+        prior_root_quantity=Quantity(4),
+        prior_venue_cumulative_quantity=Quantity(4),
+        resulting_venue_cumulative_quantity=Quantity(3),
+        fact=correction,
+        evidence_digest=b"\xd3" * 32,
+    )
+    with pytest.raises(TypeError, match="BrokerTradeCorrectFact"):
+        replace(revision, fact=fill)
+    with pytest.raises(ValueError, match="supplied together"):
+        replace(
+            revision,
+            closure_id=ClosureId("recovery-value-object-revision-closure"),
+        )
+    with pytest.raises(ValueError, match="resulting venue cumulative"):
+        replace(revision, resulting_venue_cumulative_quantity=Quantity(2))
+    with pytest.raises(ValueError, match="resulting venue cumulative"):
+        replace(
+            revision,
+            prior_root_quantity=Quantity(5),
+            prior_venue_cumulative_quantity=Quantity(4),
+            resulting_venue_cumulative_quantity=Quantity(0),
+        )
+
+
+def test_recovery_coverage_records_reject_incomplete_or_cross_root_provenance() -> (
+    None
+):
+    fill, correction, bust = _recovery_value_object_facts()
+    human = recovery_module.HumanCoverage(
+        effect_id=EFFECT,
+        leg_key=LEG_A,
+        fact=_human_fill(input_suffix="recovery-value-object-human"),
+        source_input_id=VenueInputId("recovery-value-object-human-input"),
+    )
+    with pytest.raises(TypeError, match="broker_corroborated"):
+        replace(human, broker_corroborated=1)
+    with pytest.raises(ValueError, match="broker corroboration"):
+        replace(human, broker_corroborated=True)
+    with pytest.raises(ValueError, match="broker corroboration"):
+        replace(human, broker_fact=fill)
+
+    coverage = recovery_module._BrokerCoverage(
+        effect_id=EFFECT,
+        leg_key=LEG_A,
+        prior_cumulative_quantity=Quantity(0),
+        resulting_cumulative_quantity=Quantity(4),
+        fact=fill,
+        evidence_digest=b"\xd4" * 32,
+        root_source_input_id=VenueInputId("recovery-value-object-root-input"),
+        head_fact=fill,
+        head_evidence_digest=b"\xd5" * 32,
+        head_source_input_id=VenueInputId("recovery-value-object-head-input"),
+    )
+    with pytest.raises(TypeError, match="canonical broker execution fact"):
+        replace(coverage, head_fact=object())
+    with pytest.raises(TypeError, match="mapping_exact"):
+        replace(coverage, mapping_exact=1)
+    other_fill = _broker_fill(
+        "recovery-value-object-other-source",
+        "recovery-value-object-other-root",
+        quantity=1,
+    )
+    with pytest.raises(ValueError, match="immutable root"):
+        replace(coverage, head_fact=other_fill)
+
+    reconciliation = recovery_module.RevisionReconciliationRecord(
+        input_id=VenueInputId("recovery-value-object-reconciliation"),
+        effect_id=EFFECT,
+        leg_key=LEG_A,
+        prior_root_quantity=Quantity(4),
+        prior_venue_cumulative_quantity=Quantity(4),
+        resulting_venue_cumulative_quantity=Quantity(3),
+        fact=correction,
+        evidence_digest=b"\xd6" * 32,
+        canonical_applied=False,
+        reason="the revision cannot be attributed without guessing",
+    )
+    with pytest.raises(TypeError, match="BrokerTradeCorrectFact"):
+        replace(reconciliation, fact=fill)
+    with pytest.raises(TypeError, match="canonical_applied"):
+        replace(reconciliation, canonical_applied=1)
+
+    assert recovery_module._revision_root_quantity(fill) == 4
+    assert recovery_module._revision_root_quantity(correction) == 3
+    assert recovery_module._revision_root_quantity(bust) == 0

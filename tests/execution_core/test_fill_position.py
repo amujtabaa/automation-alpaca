@@ -19,6 +19,7 @@ from typing import Callable, Union
 
 import pytest
 
+import app.execution_core.fills as fills_module
 import app.execution_core.position as position_module
 from app.execution_core.fills import (
     BrokerFillFact,
@@ -1108,6 +1109,38 @@ def test_seen_registry_commitment_carries_overfill_summary() -> None:
         )
 
 
+def test_bind_verified_rejects_forged_seen_registry_tail_scope_proof() -> None:
+    authentic, _ = _Kernel.flat().apply(
+        _fill(
+            "tail-proof-source",
+            "tail-proof-root",
+            side=ExecutionSide.BUY,
+            quantity=1,
+            units=100,
+        )
+    )
+    position, roots, seen = _unbound_hydration_parts(authentic)
+    forged = SeenFactIndex._from_parts(
+        by_key=seen._by_key,
+        order=seen._order,
+        observed_roots=seen._observed_roots,
+        overfill_scopes=seen._overfill_scopes,
+        prefix_commitments=seen._prefix_commitments,
+        account_scope=seen.account_scope,
+        tail_position_scope=OTHER_POSITION_SCOPE,
+        tail_position_scope_start=0,
+    )
+
+    assert forged.commitment != seen.commitment
+    with pytest.raises(ValueError, match="seen-fact replay did not close exactly"):
+        ExecutionSnapshot.bind_verified(
+            position,
+            authentic.integrity,
+            roots,
+            forged,
+        )
+
+
 def test_seen_fact_commits_reconciliation_evaluation_scope() -> None:
     misrouted = _fill(
         "misrouted",
@@ -1820,6 +1853,200 @@ def test_incoherent_snapshot_preserves_position_integrity_floor() -> None:
         PositionIntegrity.EXECUTION_RECONCILIATION_REQUIRED
     )
     assert after.position.integrity_floor & PositionIntegrity.OVERFILL_QUARANTINE
+
+
+def test_execution_snapshot_recomputes_its_aggregate_binding_commitment() -> None:
+    snapshot = ExecutionSnapshot.flat(POSITION_SCOPE)
+    binding = snapshot.position.binding
+    assert binding is not None
+    forged_binding = replace(binding, snapshot_commitment=b"\xff" * 32)
+
+    with pytest.raises(ValueError, match="coherently bound"):
+        ExecutionSnapshot(
+            position=snapshot.position._with_binding(forged_binding),
+            integrity=snapshot.integrity,
+            root_heads=snapshot.root_heads._with_binding(forged_binding),
+            seen_facts=snapshot.seen_facts._with_binding(forged_binding),
+        )
+
+
+@pytest.mark.parametrize("component", ["position", "root_heads", "seen_facts"])
+def test_bind_verified_rejects_execution_component_subclasses(
+    component: str,
+) -> None:
+    class PositionStateSubclass(PositionState):
+        pass
+
+    class RootHeadIndexSubclass(RootHeadIndex):
+        pass
+
+    class SeenFactIndexSubclass(SeenFactIndex):
+        def has_prefix(self, _count: int, _commitment: bytes) -> bool:
+            return True
+
+        def suffix_belongs_to(
+            self,
+            _count: int,
+            _position_scope: PositionScope,
+        ) -> bool:
+            return True
+
+    position = (
+        PositionStateSubclass.flat(POSITION_SCOPE)
+        if component == "position"
+        else PositionState.flat(POSITION_SCOPE)
+    )
+    root_heads = (
+        RootHeadIndexSubclass.empty(POSITION_SCOPE)
+        if component == "root_heads"
+        else RootHeadIndex.empty(POSITION_SCOPE)
+    )
+    seen_facts = (
+        SeenFactIndexSubclass.empty(POSITION_SCOPE)
+        if component == "seen_facts"
+        else SeenFactIndex.empty(POSITION_SCOPE)
+    )
+
+    with pytest.raises(TypeError, match=f"{component} must be"):
+        ExecutionSnapshot.bind_verified(
+            position,
+            PositionIntegrity.CONSISTENT,
+            root_heads,
+            seen_facts,
+        )
+
+
+@pytest.mark.parametrize("component", ["position", "root_heads", "seen_facts"])
+def test_execution_snapshot_constructor_rejects_component_subclasses(
+    component: str,
+) -> None:
+    class PositionStateSubclass(PositionState):
+        pass
+
+    class RootHeadIndexSubclass(RootHeadIndex):
+        pass
+
+    class SeenFactIndexSubclass(SeenFactIndex):
+        pass
+
+    snapshot = ExecutionSnapshot.flat(POSITION_SCOPE)
+    position = (
+        PositionStateSubclass.flat(POSITION_SCOPE)
+        if component == "position"
+        else snapshot.position
+    )
+    root_heads = (
+        RootHeadIndexSubclass.empty(POSITION_SCOPE)
+        if component == "root_heads"
+        else snapshot.root_heads
+    )
+    seen_facts = (
+        SeenFactIndexSubclass.empty(POSITION_SCOPE)
+        if component == "seen_facts"
+        else snapshot.seen_facts
+    )
+
+    with pytest.raises(TypeError, match=f"{component} must be"):
+        ExecutionSnapshot(
+            position=position,
+            integrity=snapshot.integrity,
+            root_heads=root_heads,
+            seen_facts=seen_facts,
+        )
+
+
+def test_execution_snapshot_rejects_a_position_scope_subclass() -> None:
+    class PositionScopeSubclass(PositionScope):
+        pass
+
+    scope = PositionScopeSubclass(
+        broker=POSITION_SCOPE.broker,
+        environment=POSITION_SCOPE.environment,
+        account=POSITION_SCOPE.account,
+        symbol_id=POSITION_SCOPE.symbol_id,
+    )
+
+    with pytest.raises(TypeError, match="scope must be the exact PositionScope"):
+        ExecutionSnapshot.flat(scope)
+    with pytest.raises(TypeError, match="position scope must be"):
+        ExecutionSnapshot.bind_verified(
+            PositionState.flat(scope),
+            PositionIntegrity.CONSISTENT,
+            RootHeadIndex.empty(scope),
+            SeenFactIndex.empty(scope),
+        )
+
+
+def test_registry_projection_rejects_inner_subclass_before_prefix_proof() -> None:
+    class DelayedSeenFactIndex(SeenFactIndex):
+        def has_prefix(self, _count: int, _commitment: bytes) -> bool:
+            raise AssertionError("untrusted projection prefix proof was invoked")
+
+    target = ExecutionSnapshot.flat(POSITION_SCOPE)
+    source = object.__new__(ExecutionSnapshot)
+    object.__setattr__(source, "position", target.position)
+    object.__setattr__(source, "integrity", target.integrity)
+    object.__setattr__(source, "root_heads", target.root_heads)
+    object.__setattr__(
+        source,
+        "seen_facts",
+        DelayedSeenFactIndex.empty(POSITION_SCOPE),
+    )
+
+    with pytest.raises(TypeError, match="seen_facts must be"):
+        position_module._project_execution_registry(
+            target,
+            source,
+            reconciliation_transition_count=(
+                target.reconciliation_transition_count
+            ),
+            reconciliation_transition_head=target.reconciliation_transition_head,
+        )
+
+
+@pytest.mark.parametrize("component", ["position", "root_heads", "seen_facts"])
+def test_fact_reducer_rejects_execution_component_subclasses(
+    component: str,
+) -> None:
+    class PositionStateSubclass(PositionState):
+        pass
+
+    class RootHeadIndexSubclass(RootHeadIndex):
+        pass
+
+    class SeenFactIndexSubclass(SeenFactIndex):
+        pass
+
+    position = (
+        PositionStateSubclass.flat(POSITION_SCOPE)
+        if component == "position"
+        else PositionState.flat(POSITION_SCOPE)
+    )
+    root_heads = (
+        RootHeadIndexSubclass.empty(POSITION_SCOPE)
+        if component == "root_heads"
+        else RootHeadIndex.empty(POSITION_SCOPE)
+    )
+    seen_facts = (
+        SeenFactIndexSubclass.empty(POSITION_SCOPE)
+        if component == "seen_facts"
+        else SeenFactIndex.empty(POSITION_SCOPE)
+    )
+
+    with pytest.raises(TypeError, match=f"{component} must be"):
+        apply_broker_execution_fact(
+            position,
+            PositionIntegrity.CONSISTENT,
+            root_heads,
+            seen_facts,
+            _fill(
+                f"subclass-{component}",
+                f"subclass-{component}-root",
+                side=ExecutionSide.BUY,
+                quantity=1,
+                units=100,
+            ),
+        )
 
 
 @pytest.mark.parametrize("binding_source", ["position", "root_heads", "seen_facts"])
@@ -4060,3 +4287,620 @@ def test_execution_kernel_public_entrypoints_reject_untyped_components() -> None
             snapshot.position,
             object(),
         )
+
+
+@pytest.mark.parametrize(
+    ("field_name", "message"),
+    (
+        ("_root_fill_sequence", "_root_fill_sequence must be persistent"),
+        ("_effective_head_ids", "_effective_head_ids must be persistent"),
+    ),
+)
+def test_position_state_rejects_nonpersistent_internal_sequences(
+    field_name: str,
+    message: str,
+) -> None:
+    position = PositionState.flat(POSITION_SCOPE)
+
+    with pytest.raises(TypeError, match=message):
+        replace(position, **{field_name: object(), "_binding": None})
+
+
+@pytest.mark.parametrize(
+    ("changes", "expected_error", "message"),
+    (
+        (
+            {"transition_count": True},
+            ValueError,
+            "transition_count must be a non-negative exact integer",
+        ),
+        (
+            {"transition_count": -1},
+            ValueError,
+            "transition_count must be a non-negative exact integer",
+        ),
+        (
+            {"transition_head": object()},
+            ValueError,
+            "transition_head must contain exactly 32 bytes",
+        ),
+        (
+            {"snapshot_commitment": b"short"},
+            ValueError,
+            "snapshot_commitment must contain exactly 32 bytes",
+        ),
+        (
+            {"account_reconciliation_required": 1},
+            TypeError,
+            "account_reconciliation_required must be bool",
+        ),
+    ),
+)
+def test_reconciliation_cursor_rejects_malformed_high_water(
+    changes: dict[str, object],
+    expected_error: type[Exception],
+    message: str,
+) -> None:
+    values: dict[str, object] = {
+        "transition_count": 0,
+        "transition_head": b"\x00" * 32,
+        "account_reconciliation_required": False,
+        "snapshot_commitment": b"\x01" * 32,
+    }
+    values.update(changes)
+
+    with pytest.raises(expected_error, match=message):
+        position_module.ExecutionReconciliationCursor(**values)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "property_name",
+    (
+        "commitment",
+        "account_reconciliation_required",
+        "reconciliation_transition_count",
+        "reconciliation_transition_head",
+    ),
+)
+def test_unbound_snapshot_properties_fail_closed(property_name: str) -> None:
+    unbound = object.__new__(ExecutionSnapshot)
+    object.__setattr__(unbound, "position", PositionState.flat(POSITION_SCOPE))
+    object.__setattr__(unbound, "integrity", PositionIntegrity.CONSISTENT)
+    object.__setattr__(unbound, "root_heads", RootHeadIndex.empty(POSITION_SCOPE))
+    object.__setattr__(unbound, "seen_facts", SeenFactIndex.empty(POSITION_SCOPE))
+
+    with pytest.raises(RuntimeError, match="no binding"):
+        getattr(unbound, property_name)
+
+
+def test_bind_verified_rejects_each_materialized_axis_mismatch() -> None:
+    flat = ExecutionSnapshot.flat(POSITION_SCOPE)
+
+    with pytest.raises(ValueError, match="root index and position must share"):
+        ExecutionSnapshot.bind_verified(
+            flat.position,
+            flat.integrity,
+            RootHeadIndex.empty(OTHER_POSITION_SCOPE),
+            flat.seen_facts,
+        )
+
+    with pytest.raises(ValueError, match="root economics and position quantity"):
+        ExecutionSnapshot.bind_verified(
+            replace(flat.position, raw_quantity=1, _binding=None),
+            flat.integrity,
+            RootHeadIndex.empty(POSITION_SCOPE),
+            SeenFactIndex.empty(POSITION_SCOPE),
+        )
+
+    first, _ = _Kernel.flat().apply(
+        _fill(
+            "bind-axis-first",
+            "bind-axis-first-root",
+            side=ExecutionSide.BUY,
+            quantity=1,
+            units=100,
+        )
+    )
+    second, _ = _Kernel.flat().apply(
+        _fill(
+            "bind-axis-second",
+            "bind-axis-second-root",
+            side=ExecutionSide.BUY,
+            quantity=1,
+            units=100,
+        )
+    )
+    position, roots, seen = _unbound_hydration_parts(first)
+
+    with pytest.raises(ValueError, match="position root order"):
+        ExecutionSnapshot.bind_verified(
+            replace(
+                position,
+                _root_fill_sequence=second.position._root_fill_sequence,
+                _binding=None,
+            ),
+            first.integrity,
+            roots,
+            seen,
+        )
+
+    with pytest.raises(ValueError, match="position head IDs"):
+        ExecutionSnapshot.bind_verified(
+            replace(
+                position,
+                _effective_head_ids=second.position._effective_head_ids,
+                _binding=None,
+            ),
+            first.integrity,
+            roots,
+            seen,
+        )
+
+    other_scope = _scope(
+        order_id=BUY_ORDER,
+        side=ExecutionSide.BUY,
+        symbol_id=OTHER_SYMBOL,
+    )
+    other, _ = _Kernel.flat(OTHER_POSITION_SCOPE).apply(
+        _fill(
+            "bind-axis-other-symbol",
+            "bind-axis-other-symbol-root",
+            side=ExecutionSide.BUY,
+            quantity=1,
+            units=100,
+            scope=other_scope,
+        )
+    )
+    relabelled_position = replace(
+        other.position,
+        _scope=POSITION_SCOPE,
+        _binding=None,
+    )
+    relabelled_roots = RootHeadIndex(
+        entries=other.root_heads.entries,
+        position_scope=OTHER_POSITION_SCOPE,
+    )
+    object.__setattr__(relabelled_roots, "position_scope", POSITION_SCOPE)
+    account_seen = SeenFactIndex(
+        entries=other.seen_facts.entries,
+        position_scope=POSITION_SCOPE,
+    )
+
+    with pytest.raises(ValueError, match="root head is outside exact position scope"):
+        ExecutionSnapshot.bind_verified(
+            relabelled_position,
+            other.integrity,
+            relabelled_roots,
+            account_seen,
+        )
+
+
+def test_component_binding_rejects_cursor_and_structure_divergence() -> None:
+    flat = ExecutionSnapshot.flat(POSITION_SCOPE)
+    genesis_head = flat.reconciliation_transition_head
+
+    with pytest.raises(TypeError, match="account_reconciliation_required"):
+        position_module._bind_components(
+            flat.position,
+            flat.integrity,
+            flat.root_heads,
+            flat.seen_facts,
+            account_reconciliation_required=1,
+        )
+    with pytest.raises(ValueError, match="cursor fields must be supplied together"):
+        position_module._bind_components(
+            flat.position,
+            flat.integrity,
+            flat.root_heads,
+            flat.seen_facts,
+            reconciliation_transition_count=0,
+        )
+    with pytest.raises(ValueError, match="non-negative exact integer"):
+        position_module._bind_components(
+            flat.position,
+            flat.integrity,
+            flat.root_heads,
+            flat.seen_facts,
+            reconciliation_transition_count=True,
+            reconciliation_transition_head=genesis_head,
+        )
+    with pytest.raises(ValueError, match="must contain exactly 32 bytes"):
+        position_module._bind_components(
+            flat.position,
+            flat.integrity,
+            flat.root_heads,
+            flat.seen_facts,
+            reconciliation_transition_count=0,
+            reconciliation_transition_head=b"short",
+        )
+
+    advanced = position_module._bind_execution_reconciliation_cursor(
+        flat,
+        transition_count=1,
+        transition_head=b"\x01" * 32,
+        account_reconciliation_required=True,
+    )
+    with pytest.raises(ValueError, match="divergent reconciliation cursors"):
+        position_module._bind_components(
+            advanced.position,
+            flat.integrity,
+            flat.root_heads,
+            flat.seen_facts,
+        )
+    for count, head in ((0, genesis_head), (1, b"\x02" * 32)):
+        with pytest.raises(ValueError, match="cursor cannot roll back or fork"):
+            position_module._bind_components(
+                advanced.position,
+                advanced.integrity,
+                advanced.root_heads,
+                advanced.seen_facts,
+                reconciliation_transition_count=count,
+                reconciliation_transition_head=head,
+            )
+
+    latched = position_module._latch_execution_integrity(
+        flat,
+        PositionIntegrity.OVERFILL_QUARANTINE,
+    )
+    with pytest.raises(ValueError, match="integrity cannot clear"):
+        position_module._bind_components(
+            latched.position,
+            PositionIntegrity.CONSISTENT,
+            latched.root_heads,
+            latched.seen_facts,
+        )
+
+    with pytest.raises(ValueError, match="outside position scope"):
+        position_module._bind_components(
+            flat.position,
+            flat.integrity,
+            RootHeadIndex.empty(OTHER_POSITION_SCOPE),
+            flat.seen_facts,
+        )
+
+    applied, _ = _Kernel.flat().apply(
+        _fill(
+            "bind-structure",
+            "bind-structure-root",
+            side=ExecutionSide.BUY,
+            quantity=1,
+            units=100,
+        )
+    )
+    with pytest.raises(ValueError, match="divergent position/root sequences"):
+        position_module._bind_components(
+            applied.position,
+            applied.integrity,
+            RootHeadIndex.empty(POSITION_SCOPE),
+            applied.seen_facts,
+        )
+    with pytest.raises(ValueError, match="structurally divergent"):
+        position_module._bind_components(
+            replace(applied.position, raw_quantity=2, _binding=None),
+            applied.integrity,
+            applied.root_heads,
+            applied.seen_facts,
+        )
+
+
+def test_projection_and_latch_guards_fail_closed() -> None:
+    flat = ExecutionSnapshot.flat(POSITION_SCOPE)
+
+    for target, source, message in (
+        (object(), flat, "target must be the exact ExecutionSnapshot"),
+        (flat, object(), "source must be the exact ExecutionSnapshot"),
+    ):
+        with pytest.raises(TypeError, match=message):
+            position_module._project_execution_registry(
+                target,  # type: ignore[arg-type]
+                source,  # type: ignore[arg-type]
+                reconciliation_transition_count=0,
+                reconciliation_transition_head=flat.reconciliation_transition_head,
+            )
+
+    other_account_scope = PositionScope(
+        broker=BROKER,
+        environment=ENVIRONMENT,
+        account=AccountId("account-002"),
+        symbol_id=SYMBOL,
+    )
+    with pytest.raises(ValueError, match="different accounts"):
+        position_module._project_execution_registry(
+            flat,
+            ExecutionSnapshot.flat(other_account_scope),
+            reconciliation_transition_count=0,
+            reconciliation_transition_head=flat.reconciliation_transition_head,
+        )
+
+    advanced, _ = _Kernel.flat().apply(
+        _fill(
+            "projection-prefix",
+            "projection-prefix-root",
+            side=ExecutionSide.BUY,
+            quantity=1,
+            units=100,
+        )
+    )
+    advanced_snapshot = ExecutionSnapshot(
+        position=advanced.position,
+        integrity=advanced.integrity,
+        root_heads=advanced.root_heads,
+        seen_facts=advanced.seen_facts,
+    )
+    with pytest.raises(ValueError, match="not a monotonic target extension"):
+        position_module._project_execution_registry(
+            advanced_snapshot,
+            flat,
+            reconciliation_transition_count=0,
+            reconciliation_transition_head=flat.reconciliation_transition_head,
+        )
+
+    with pytest.raises(TypeError, match="execution must be the exact"):
+        position_module._latch_execution_integrity(
+            object(),  # type: ignore[arg-type]
+            PositionIntegrity.CONSISTENT,
+        )
+    with pytest.raises(TypeError, match="evidence must be the exact"):
+        position_module._latch_execution_integrity(
+            flat,
+            object(),  # type: ignore[arg-type]
+        )
+    with pytest.raises(TypeError, match="execution must be the exact"):
+        position_module._latch_account_execution_reconciliation(object())
+    restricted = position_module._latch_account_execution_reconciliation(flat)
+    assert restricted.account_reconciliation_required is True
+    assert position_module._latch_account_execution_reconciliation(restricted) is restricted
+    with pytest.raises(TypeError, match="execution must be the exact"):
+        position_module._bind_execution_reconciliation_cursor(
+            object(),  # type: ignore[arg-type]
+            transition_count=0,
+            transition_head=flat.reconciliation_transition_head,
+            account_reconciliation_required=False,
+        )
+
+    assert flat.position.symbol_id == SYMBOL
+    with pytest.raises(TypeError, match="binding must be _SnapshotBinding"):
+        flat.position._with_binding(object())  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("raw_quantity", "quantity", "message"),
+    (
+        (0, 1, "positive BUY economics require a price"),
+        (-2, 3, "a covering BUY requires a price"),
+    ),
+)
+def test_fold_rejects_unpriced_positive_buy_economics(
+    raw_quantity: int,
+    quantity: int,
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        position_module._fold_one(
+            raw_quantity,
+            Fraction(0),
+            ExecutionSide.BUY,
+            quantity,
+            None,
+        )
+
+
+def test_fold_quantity_mismatch_fails_closed_to_pending(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root_fact = _fill(
+        "fold-mismatch-root",
+        "fold-mismatch-root-id",
+        side=ExecutionSide.BUY,
+        quantity=1,
+        units=100,
+    )
+    revision_root = _fill(
+        "fold-mismatch-revision-root",
+        "fold-mismatch-revision-root-id",
+        side=ExecutionSide.BUY,
+        quantity=1,
+        units=100,
+    )
+    revision_kernel, _ = _Kernel.flat().apply(revision_root)
+    revision = _correct(
+        "fold-mismatch-revision",
+        "fold-mismatch-revision-root-id",
+        "fold-mismatch-revision-root",
+        side=ExecutionSide.BUY,
+        quantity=2,
+        units=101,
+    )
+
+    def inconsistent_fold(*_args: object) -> tuple[int, Fraction]:
+        return 999, Fraction(0)
+
+    monkeypatch.setattr(position_module, "_fold_one", inconsistent_fold)
+
+    root_after, root_transition = _Kernel.flat().apply(root_fact)
+    revision_after, revision_transition = revision_kernel.apply(revision)
+
+    assert root_transition.disposition is TransitionDisposition.APPLIED
+    assert revision_transition.disposition is TransitionDisposition.APPLIED
+    assert root_after.position.basis_authority is BasisAuthority.BASIS_RECONCILIATION_PENDING
+    assert revision_after.position.basis_authority is BasisAuthority.BASIS_RECONCILIATION_PENDING
+
+
+def test_basis_candidate_rejects_three_independent_corruptions() -> None:
+    fill = _fill(
+        "candidate-corruption",
+        "candidate-corruption-root",
+        side=ExecutionSide.BUY,
+        quantity=1,
+        units=100,
+    )
+    missing_price_snapshot, _ = _Kernel.flat().apply(fill)
+    missing_price_head = missing_price_snapshot.root_heads.get(fill.root_key)
+    assert missing_price_head is not None
+    object.__setattr__(missing_price_head, "price", None)
+    assert (
+        derive_ordered_basis_candidate(
+            missing_price_snapshot.position,
+            missing_price_snapshot.root_heads,
+        ).status
+        is BasisCandidateStatus.SNAPSHOT_INCONSISTENT
+    )
+
+    quantity_snapshot, _ = _Kernel.flat().apply(fill)
+    quantity_head = quantity_snapshot.root_heads.get(fill.root_key)
+    assert quantity_head is not None
+    object.__setattr__(quantity_head, "quantity", Quantity(2))
+    assert (
+        derive_ordered_basis_candidate(
+            quantity_snapshot.position,
+            quantity_snapshot.root_heads,
+        ).status
+        is BasisCandidateStatus.SNAPSHOT_INCONSISTENT
+    )
+
+    basis_snapshot, _ = _Kernel.flat().apply(
+        _fill(
+            "candidate-basis",
+            "candidate-basis-root",
+            side=ExecutionSide.BUY,
+            quantity=1,
+            units=100,
+        )
+    )
+    binding = basis_snapshot.position.binding
+    assert binding is not None
+    bad_position = replace(
+        basis_snapshot.position,
+        cost_basis=_basis(101),
+        _binding=None,
+    )
+    bad_binding = replace(
+        binding,
+        position_commitment=bad_position.commitment,
+    )
+    bad_position = bad_position._with_binding(bad_binding)
+    bad_roots = basis_snapshot.root_heads._with_binding(bad_binding)
+    assert (
+        derive_ordered_basis_candidate(bad_position, bad_roots).status
+        is BasisCandidateStatus.SNAPSHOT_INCONSISTENT
+    )
+
+
+def test_canonical_encoding_guards_reject_noncanonical_runtime_values() -> None:
+    with pytest.raises(TypeError, match="canonical integer"):
+        fills_module._encode_int(True)
+    with pytest.raises(TypeError, match="canonical rational"):
+        fills_module._encode_fraction(1)
+    with pytest.raises(TypeError, match="canonical reported price"):
+        fills_module._encode_reported_price(object())
+    with pytest.raises(TypeError, match="canonical broker execution fact"):
+        fills_module._encode_execution_fact(object())
+
+
+def test_persistent_radix_map_rejects_duplicate_missing_and_empty_keys() -> None:
+    empty = fills_module._PersistentKeyMap.empty()
+    for key in (b"", "not-bytes"):
+        with pytest.raises(ValueError, match="nonempty bytes"):
+            empty.get(key)
+
+    with pytest.raises(KeyError):
+        empty.replace_existing(b"key", "replacement", b"\x01" * 32)
+
+    retained = empty.insert_new(b"key", "value", b"\x02" * 32)
+    assert retained.get(b"key") == "value"
+    assert retained.get(b"ke") is None
+    assert retained.get(b"missing") is None
+    with pytest.raises(ValueError, match="already exists"):
+        retained.insert_new(b"key", "duplicate", b"\x03" * 32)
+
+    child = fills_module._make_radix_node(
+        value="leaf",
+        has_value=True,
+        value_commitment=b"\x04" * 32,
+    )
+    parent = fills_module._make_radix_node(children=((7, child),))
+    assert parent.children == ((7, child),)
+    assert parent.children_commitment != bytes(32)
+
+
+def test_persistent_sequence_rejects_invalid_sparse_and_exhausted_states() -> None:
+    sequence = fills_module._PersistentSequence.empty()
+    with pytest.raises(TypeError, match="exact integer"):
+        sequence._key(True)
+    for index in (-1, 2**64):
+        with pytest.raises(IndexError, match="unsigned 64-bit"):
+            sequence._key(index)
+    with pytest.raises(IndexError):
+        sequence.get(0)
+    with pytest.raises(IndexError):
+        sequence.set(0, "value", b"\x05" * 32)
+
+    sparse = fills_module._PersistentSequence(
+        _values=fills_module._PersistentKeyMap.empty(),
+        length=1,
+    )
+    with pytest.raises(RuntimeError, match="internally sparse"):
+        sparse.get(0)
+
+    exhausted = fills_module._PersistentSequence(
+        _values=fills_module._PersistentKeyMap.empty(),
+        length=2**64,
+    )
+    with pytest.raises(OverflowError, match="exhausted"):
+        exhausted.append("value", b"\x06" * 32)
+
+    retained = sequence.append("value", b"\x07" * 32)
+    for index in (-1, 1):
+        with pytest.raises(IndexError):
+            retained.set(index, "replacement", b"\x08" * 32)
+
+
+def test_seen_registry_cursor_guards_and_index_bounds_fail_closed() -> None:
+    seen = SeenFactIndex.empty(POSITION_SCOPE)
+    for count in (True, -1):
+        with pytest.raises(ValueError, match="non-negative exact integer"):
+            seen.has_prefix(count, seen.commitment)
+        with pytest.raises(ValueError, match="non-negative exact integer"):
+            seen.suffix_belongs_to(count, POSITION_SCOPE)
+    for commitment in (object(), b"short"):
+        with pytest.raises(ValueError, match="exactly 32 bytes"):
+            seen.has_prefix(0, commitment)
+
+    assert not seen.has_prefix(1, seen.commitment)
+    assert seen.has_prefix(0, seen.commitment)
+    assert not seen.suffix_belongs_to(1, POSITION_SCOPE)
+    assert seen.suffix_belongs_to(0, POSITION_SCOPE)
+
+    with pytest.raises(TypeError, match="exact integer"):
+        seen.observation_at(True)
+    for index in (-1, 0):
+        with pytest.raises(IndexError):
+            seen.observation_at(index)
+
+    roots = RootHeadIndex.empty(POSITION_SCOPE)
+    assert roots.__eq__(object()) is NotImplemented
+    assert seen.__eq__(object()) is NotImplemented
+
+
+@pytest.mark.parametrize(
+    ("field_name", "value", "message"),
+    (
+        ("broker", object(), "broker must be BrokerId"),
+        ("environment", object(), "environment must be EnvironmentId"),
+        ("account", object(), "account must be AccountId"),
+    ),
+)
+def test_venue_leg_key_rejects_noncanonical_account_scope_parts(
+    field_name: str,
+    value: object,
+    message: str,
+) -> None:
+    values = {
+        "broker": BROKER,
+        "environment": ENVIRONMENT,
+        "account": ACCOUNT,
+        "order_id": BUY_ORDER,
+    }
+    values[field_name] = value
+    with pytest.raises(TypeError, match=message):
+        fills_module.VenueLegKey(**values)

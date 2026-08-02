@@ -58,6 +58,11 @@ class PositionIntegrity(Flag):
     OVERFILL_QUARANTINE = auto()
 
 
+_RECONCILIATION_GENESIS_HEAD = _commit_parts(
+    b"execution-core/account-reconciliation-genesis/v1"
+)
+
+
 class TransitionDisposition(Enum):
     """Immediate classification of one fact-application attempt."""
 
@@ -342,6 +347,26 @@ class PositionState:
 
 
 @dataclass(frozen=True, slots=True)
+class ExecutionReconciliationCursor:
+    """Independently retained account-reconciliation restart high-water."""
+
+    transition_count: int
+    transition_head: bytes
+    account_reconciliation_required: bool
+    snapshot_commitment: bytes
+
+    def __post_init__(self) -> None:
+        if type(self.transition_count) is not int or self.transition_count < 0:
+            raise ValueError("transition_count must be a non-negative exact integer")
+        for name in ("transition_head", "snapshot_commitment"):
+            value = getattr(self, name)
+            if type(value) is not bytes or len(value) != 32:
+                raise ValueError(f"{name} must contain exactly 32 bytes")
+        if type(self.account_reconciliation_required) is not bool:
+            raise TypeError("account_reconciliation_required must be bool")
+
+
+@dataclass(frozen=True, slots=True)
 class ExecutionSnapshot:
     """One coherently bound immutable execution-kernel high-water."""
 
@@ -351,6 +376,12 @@ class ExecutionSnapshot:
     seen_facts: SeenFactIndex
 
     def __post_init__(self) -> None:
+        _require_execution_components(
+            self.position,
+            self.integrity,
+            self.root_heads,
+            self.seen_facts,
+        )
         if not _snapshot_is_coherent(
             self.position,
             self.integrity,
@@ -368,10 +399,52 @@ class ExecutionSnapshot:
             raise RuntimeError("coherent execution snapshot has no binding")
         return binding.snapshot_commitment
 
+    @property
+    def account_reconciliation_required(self) -> bool:
+        """Return the sticky account-wide venue-attribution restriction."""
+
+        binding = self.position.binding
+        if binding is None:
+            raise RuntimeError("coherent execution snapshot has no binding")
+        return binding.account_reconciliation_required
+
+    @property
+    def reconciliation_transition_count(self) -> int:
+        """Return the externally bound ordered reconciliation cursor count."""
+
+        binding = self.position.binding
+        if binding is None:
+            raise RuntimeError("coherent execution snapshot has no binding")
+        return binding.reconciliation_transition_count
+
+    @property
+    def reconciliation_transition_head(self) -> bytes:
+        """Return the externally bound ordered reconciliation cursor head."""
+
+        binding = self.position.binding
+        if binding is None:
+            raise RuntimeError("coherent execution snapshot has no binding")
+        return binding.reconciliation_transition_head
+
+    @property
+    def reconciliation_cursor(self) -> ExecutionReconciliationCursor:
+        """Return the exact restart cursor to retain independently of the book."""
+
+        return ExecutionReconciliationCursor(
+            transition_count=self.reconciliation_transition_count,
+            transition_head=self.reconciliation_transition_head,
+            account_reconciliation_required=(
+                self.account_reconciliation_required
+            ),
+            snapshot_commitment=self.commitment,
+        )
+
     @classmethod
     def flat(cls, scope: PositionScope) -> ExecutionSnapshot:
         """Create the only admitted empty snapshot for exact position scope."""
 
+        if type(scope) is not PositionScope:
+            raise TypeError("scope must be the exact PositionScope type")
         return _bind_components(
             PositionState.flat(scope),
             PositionIntegrity.CONSISTENT,
@@ -389,14 +462,7 @@ class ExecutionSnapshot:
     ) -> ExecutionSnapshot:
         """Fully validate and bind a materialized hydration/audit snapshot."""
 
-        if not isinstance(position, PositionState):
-            raise TypeError("position must be PositionState")
-        if not isinstance(integrity, PositionIntegrity):
-            raise TypeError("integrity must be PositionIntegrity")
-        if not isinstance(root_heads, RootHeadIndex):
-            raise TypeError("root_heads must be RootHeadIndex")
-        if not isinstance(seen_facts, SeenFactIndex):
-            raise TypeError("seen_facts must be SeenFactIndex")
+        _require_execution_components(position, integrity, root_heads, seen_facts)
         seen_facts = seen_facts._for_position_scope(position.scope)
         if root_heads.position_scope != position.scope:
             raise ValueError("root index and position must share exact scope")
@@ -523,24 +589,54 @@ def _snapshot_parts_share_binding(
     *,
     require_integrity: bool,
 ) -> bool:
+    if (
+        type(position) is not PositionState
+        or type(integrity) is not PositionIntegrity
+        or type(root_heads) is not RootHeadIndex
+        or type(seen_facts) is not SeenFactIndex
+        or type(position.scope) is not PositionScope
+        or (
+            root_heads.position_scope is not None
+            and type(root_heads.position_scope) is not PositionScope
+        )
+    ):
+        return False
     binding = position.binding
     if (
-        binding is None
+        type(binding) is not _SnapshotBinding
         or root_heads.binding is not binding
         or seen_facts.binding is not binding
     ):
         return False
     if (
-        binding.position_scope != position.scope
+        type(binding.position_scope) is not PositionScope
+        or binding.position_scope != position.scope
         or binding.position_commitment != position.commitment
         or binding.root_heads_commitment != root_heads.commitment
         or binding.seen_facts_commitment != seen_facts.commitment
         or root_heads.position_scope != position.scope
         or not seen_facts.belongs_to(position.scope)
+        or type(binding.account_reconciliation_required) is not bool
+        or type(binding.reconciliation_transition_count) is not int
+        or binding.reconciliation_transition_count < 0
+        or type(binding.reconciliation_transition_head) is not bytes
+        or len(binding.reconciliation_transition_head) != 32
         or position.raw_quantity != root_heads.signed_quantity
         or position.root_count != root_heads.count
         or position._root_fill_sequence is not root_heads._root_sequence
         or position._effective_head_ids is not root_heads._head_sequence
+        or binding.snapshot_commitment
+        != _commit_parts(
+            b"execution-core/kernel-snapshot/v2",
+            _encode_position_scope(position.scope),
+            position.commitment,
+            root_heads.commitment,
+            seen_facts.commitment,
+            _encode_int(binding.integrity_bits),
+            _encode_int(int(binding.account_reconciliation_required)),
+            _encode_int(binding.reconciliation_transition_count),
+            binding.reconciliation_transition_head,
+        )
     ):
         return False
     return not require_integrity or binding.integrity_bits == integrity.value
@@ -561,14 +657,110 @@ def _snapshot_is_coherent(
     )
 
 
+def _inherited_account_reconciliation_required(
+    position: PositionState,
+    root_heads: RootHeadIndex,
+    seen_facts: SeenFactIndex,
+) -> bool:
+    """Preserve a sticky account restriction from any trusted bound component."""
+
+    return any(
+        binding.account_reconciliation_required
+        for binding in (
+            position.binding,
+            root_heads.binding,
+            seen_facts.binding,
+        )
+        if binding is not None
+    )
+
+
+def _inherited_reconciliation_cursors(
+    position: PositionState,
+    root_heads: RootHeadIndex,
+    seen_facts: SeenFactIndex,
+) -> set[tuple[int, bytes]]:
+    return {
+        (
+            binding.reconciliation_transition_count,
+            binding.reconciliation_transition_head,
+        )
+        for binding in (
+            position.binding,
+            root_heads.binding,
+            seen_facts.binding,
+        )
+        if binding is not None
+    }
+
+
 def _bind_components(
     position: PositionState,
     integrity: PositionIntegrity,
     root_heads: RootHeadIndex,
     seen_facts: SeenFactIndex,
+    *,
+    account_reconciliation_required: bool | None = None,
+    reconciliation_transition_count: int | None = None,
+    reconciliation_transition_head: bytes | None = None,
 ) -> ExecutionSnapshot:
-    if not isinstance(integrity, PositionIntegrity):
-        raise TypeError("integrity must be PositionIntegrity")
+    _require_execution_components(position, integrity, root_heads, seen_facts)
+    if (
+        account_reconciliation_required is not None
+        and type(account_reconciliation_required) is not bool
+    ):
+        raise TypeError("account_reconciliation_required must be bool or None")
+    inherited_account_reconciliation = (
+        _inherited_account_reconciliation_required(
+            position,
+            root_heads,
+            seen_facts,
+        )
+    )
+    account_reconciliation_required = bool(
+        inherited_account_reconciliation
+        or account_reconciliation_required
+    )
+    if (reconciliation_transition_count is None) != (
+        reconciliation_transition_head is None
+    ):
+        raise ValueError("reconciliation cursor fields must be supplied together")
+    inherited_cursors = _inherited_reconciliation_cursors(
+        position,
+        root_heads,
+        seen_facts,
+    )
+    if reconciliation_transition_count is None:
+        if len(inherited_cursors) > 1:
+            raise ValueError("execution components carry divergent reconciliation cursors")
+        if inherited_cursors:
+            (
+                reconciliation_transition_count,
+                reconciliation_transition_head,
+            ) = next(iter(inherited_cursors))
+        else:
+            reconciliation_transition_count = 0
+            reconciliation_transition_head = _RECONCILIATION_GENESIS_HEAD
+    if (
+        type(reconciliation_transition_count) is not int
+        or reconciliation_transition_count < 0
+    ):
+        raise ValueError(
+            "reconciliation_transition_count must be a non-negative exact integer"
+        )
+    if (
+        type(reconciliation_transition_head) is not bytes
+        or len(reconciliation_transition_head) != 32
+    ):
+        raise ValueError(
+            "reconciliation_transition_head must contain exactly 32 bytes"
+        )
+    for inherited_count, inherited_head in inherited_cursors:
+        if reconciliation_transition_count < inherited_count or (
+            reconciliation_transition_count == inherited_count
+            and reconciliation_transition_head != inherited_head
+        ):
+            raise ValueError("reconciliation cursor cannot roll back or fork")
     seen_facts = seen_facts._for_position_scope(position.scope)
     if position.integrity_floor & integrity != position.integrity_floor:
         raise ValueError("integrity cannot clear the committed position floor")
@@ -600,12 +792,15 @@ def _bind_components(
         _binding=None,
     )
     snapshot_commitment = _commit_parts(
-        b"execution-core/kernel-snapshot/v1",
+        b"execution-core/kernel-snapshot/v2",
         _encode_position_scope(position.scope),
         position.commitment,
         root_heads.commitment,
         seen_facts.commitment,
         _encode_int(integrity.value),
+        _encode_int(int(account_reconciliation_required)),
+        _encode_int(reconciliation_transition_count),
+        reconciliation_transition_head,
     )
     binding = _SnapshotBinding(
         position_scope=position.scope,
@@ -613,6 +808,9 @@ def _bind_components(
         root_heads_commitment=root_heads.commitment,
         seen_facts_commitment=seen_facts.commitment,
         integrity_bits=integrity.value,
+        account_reconciliation_required=account_reconciliation_required,
+        reconciliation_transition_count=reconciliation_transition_count,
+        reconciliation_transition_head=reconciliation_transition_head,
         snapshot_commitment=snapshot_commitment,
     )
     bound_position = position._with_binding(binding)
@@ -629,13 +827,28 @@ def _bind_components(
 def _project_execution_registry(
     target: ExecutionSnapshot,
     source: ExecutionSnapshot,
+    *,
+    reconciliation_transition_count: int,
+    reconciliation_transition_head: bytes,
 ) -> ExecutionSnapshot:
     """Project a proven account-registry extension onto unchanged symbol state."""
 
-    if not isinstance(target, ExecutionSnapshot):
-        raise TypeError("target must be ExecutionSnapshot")
-    if not isinstance(source, ExecutionSnapshot):
-        raise TypeError("source must be ExecutionSnapshot")
+    if type(target) is not ExecutionSnapshot:
+        raise TypeError("target must be the exact ExecutionSnapshot type")
+    if type(source) is not ExecutionSnapshot:
+        raise TypeError("source must be the exact ExecutionSnapshot type")
+    _require_execution_components(
+        target.position,
+        target.integrity,
+        target.root_heads,
+        target.seen_facts,
+    )
+    _require_execution_components(
+        source.position,
+        source.integrity,
+        source.root_heads,
+        source.seen_facts,
+    )
     target_scope = target.position.scope
     source_scope = source.position.scope
     if (
@@ -654,6 +867,12 @@ def _project_execution_registry(
         target.integrity,
         target.root_heads,
         source.seen_facts,
+        account_reconciliation_required=(
+            target.account_reconciliation_required
+            or source.account_reconciliation_required
+        ),
+        reconciliation_transition_count=reconciliation_transition_count,
+        reconciliation_transition_head=reconciliation_transition_head,
     )
 
 
@@ -663,15 +882,55 @@ def _latch_execution_integrity(
 ) -> ExecutionSnapshot:
     """Return the same exact economics with additional sticky integrity evidence."""
 
-    if not isinstance(execution, ExecutionSnapshot):
-        raise TypeError("execution must be ExecutionSnapshot")
-    if not isinstance(evidence, PositionIntegrity):
-        raise TypeError("evidence must be PositionIntegrity")
+    if type(execution) is not ExecutionSnapshot:
+        raise TypeError("execution must be the exact ExecutionSnapshot type")
+    if type(evidence) is not PositionIntegrity:
+        raise TypeError("evidence must be the exact PositionIntegrity type")
     return _bind_components(
         execution.position,
         execution.integrity | evidence,
         execution.root_heads,
         execution.seen_facts,
+    )
+
+
+def _latch_account_execution_reconciliation(
+    execution: ExecutionSnapshot,
+) -> ExecutionSnapshot:
+    """Latch account-wide unattributed canonical truth into an exact snapshot."""
+
+    if type(execution) is not ExecutionSnapshot:
+        raise TypeError("execution must be the exact ExecutionSnapshot type")
+    if execution.account_reconciliation_required:
+        return execution
+    return _bind_components(
+        execution.position,
+        execution.integrity,
+        execution.root_heads,
+        execution.seen_facts,
+        account_reconciliation_required=True,
+    )
+
+
+def _bind_execution_reconciliation_cursor(
+    execution: ExecutionSnapshot,
+    *,
+    transition_count: int,
+    transition_head: bytes,
+    account_reconciliation_required: bool,
+) -> ExecutionSnapshot:
+    """Advance one exact snapshot to a venue-verified account cursor."""
+
+    if type(execution) is not ExecutionSnapshot:
+        raise TypeError("execution must be the exact ExecutionSnapshot type")
+    return _bind_components(
+        execution.position,
+        execution.integrity,
+        execution.root_heads,
+        execution.seen_facts,
+        account_reconciliation_required=account_reconciliation_required,
+        reconciliation_transition_count=transition_count,
+        reconciliation_transition_head=transition_head,
     )
 
 
@@ -887,6 +1146,9 @@ def _apply_root_fill(
     seen_facts: SeenFactIndex,
     fact: CanonicalRootFillFact,
 ) -> ExecutionTransition:
+    prior_binding = position.binding
+    if prior_binding is None:
+        raise RuntimeError("coherent root-fill transition requires a bound snapshot")
     if (
         fact.scope.position_scope != position.scope
         or root_heads.get(fact.root_key) is not None
@@ -992,6 +1254,15 @@ def _apply_root_fill(
         next_integrity,
         next_roots,
         next_seen,
+        account_reconciliation_required=(
+            prior_binding.account_reconciliation_required
+        ),
+        reconciliation_transition_count=(
+            prior_binding.reconciliation_transition_count
+        ),
+        reconciliation_transition_head=(
+            prior_binding.reconciliation_transition_head
+        ),
     )
     return ExecutionTransition(
         position=snapshot.position,
@@ -1059,6 +1330,9 @@ def _apply_revision(
     seen_facts: SeenFactIndex,
     fact: BrokerTradeCorrectFact | BrokerTradeBustFact,
 ) -> ExecutionTransition:
+    prior_binding = position.binding
+    if prior_binding is None:
+        raise RuntimeError("coherent revision transition requires a bound snapshot")
     head = root_heads.get(fact.root_key)
     if (
         fact.scope.position_scope != position.scope
@@ -1173,6 +1447,15 @@ def _apply_revision(
         next_integrity,
         next_roots,
         next_seen,
+        account_reconciliation_required=(
+            prior_binding.account_reconciliation_required
+        ),
+        reconciliation_transition_count=(
+            prior_binding.reconciliation_transition_count
+        ),
+        reconciliation_transition_head=(
+            prior_binding.reconciliation_transition_head
+        ),
     )
     return ExecutionTransition(
         position=snapshot.position,
@@ -1192,14 +1475,21 @@ def _require_execution_components(
     root_heads: RootHeadIndex,
     seen_facts: SeenFactIndex,
 ) -> None:
-    if not isinstance(position, PositionState):
-        raise TypeError("position must be PositionState")
-    if not isinstance(integrity, PositionIntegrity):
-        raise TypeError("integrity must be PositionIntegrity")
-    if not isinstance(root_heads, RootHeadIndex):
-        raise TypeError("root_heads must be RootHeadIndex")
-    if not isinstance(seen_facts, SeenFactIndex):
-        raise TypeError("seen_facts must be SeenFactIndex")
+    if type(position) is not PositionState:
+        raise TypeError("position must be PositionState (exact type required)")
+    if type(integrity) is not PositionIntegrity:
+        raise TypeError("integrity must be PositionIntegrity (exact type required)")
+    if type(root_heads) is not RootHeadIndex:
+        raise TypeError("root_heads must be RootHeadIndex (exact type required)")
+    if type(seen_facts) is not SeenFactIndex:
+        raise TypeError("seen_facts must be SeenFactIndex (exact type required)")
+    if type(position.scope) is not PositionScope:
+        raise TypeError("position scope must be the exact PositionScope type")
+    if (
+        root_heads.position_scope is not None
+        and type(root_heads.position_scope) is not PositionScope
+    ):
+        raise TypeError("root-head scope must be the exact PositionScope type")
 
 
 def _apply_canonical_execution_fact(

@@ -588,6 +588,9 @@ class _SnapshotBinding:
     root_heads_commitment: bytes
     seen_facts_commitment: bytes
     integrity_bits: int
+    account_reconciliation_required: bool
+    reconciliation_transition_count: int
+    reconciliation_transition_head: bytes
     snapshot_commitment: bytes
 
 
@@ -1233,6 +1236,8 @@ class SeenFactIndex:
     _observed_roots: _PersistentKeyMap[RootFillKey]
     _overfill_scopes: _PersistentKeyMap[PositionScope]
     _prefix_commitments: _PersistentKeyMap[bytes]
+    _tail_position_scope: PositionScope | None
+    _tail_position_scope_start: int
     _account_scope: _AccountScope | None
     _binding: _SnapshotBinding | None
 
@@ -1256,6 +1261,16 @@ class SeenFactIndex:
             "_prefix_commitments",
             current._prefix_commitments,
         )
+        object.__setattr__(
+            self,
+            "_tail_position_scope",
+            current._tail_position_scope,
+        )
+        object.__setattr__(
+            self,
+            "_tail_position_scope_start",
+            current._tail_position_scope_start,
+        )
         object.__setattr__(self, "_account_scope", current._account_scope)
         object.__setattr__(self, "_binding", None)
 
@@ -1269,6 +1284,8 @@ class SeenFactIndex:
         overfill_scopes: _PersistentKeyMap[PositionScope],
         prefix_commitments: _PersistentKeyMap[bytes] | None = None,
         account_scope: _AccountScope | None,
+        tail_position_scope: PositionScope | None = None,
+        tail_position_scope_start: int = 0,
         binding: _SnapshotBinding | None = None,
     ) -> SeenFactIndex:
         result = object.__new__(cls)
@@ -1286,6 +1303,12 @@ class SeenFactIndex:
             ),
         )
         object.__setattr__(result, "_account_scope", account_scope)
+        object.__setattr__(result, "_tail_position_scope", tail_position_scope)
+        object.__setattr__(
+            result,
+            "_tail_position_scope_start",
+            tail_position_scope_start,
+        )
         object.__setattr__(result, "_binding", binding)
         return result
 
@@ -1313,13 +1336,19 @@ class SeenFactIndex:
     @property
     def commitment(self) -> bytes:
         return _commit_parts(
-            b"execution-core/seen-fact-index/v4",
+            b"execution-core/seen-fact-index/v5",
             _encode_account_scope(self._account_scope),
             self._by_key.commitment,
             self._order.commitment,
             self._observed_roots.commitment,
             self._overfill_scopes.commitment,
             self._prefix_commitments.commitment,
+            (
+                _encode_position_scope(self._tail_position_scope)
+                if self._tail_position_scope is not None
+                else _commit_parts(b"execution-core/tail-position-scope/none/v1")
+            ),
+            _encode_int(self._tail_position_scope_start),
         )
 
     @property
@@ -1351,6 +1380,25 @@ class SeenFactIndex:
         retained = self._prefix_commitments.get(count.to_bytes(8, "big"))
         return retained == commitment
 
+    def suffix_belongs_to(
+        self,
+        count: int,
+        position_scope: PositionScope,
+    ) -> bool:
+        """Prove a registry suffix has one evaluation scope in constant work."""
+
+        if type(count) is not int or count < 0:
+            raise ValueError("count must be a non-negative exact integer")
+        _require_type("position_scope", position_scope, PositionScope)
+        if count > self.count:
+            return False
+        if count == self.count:
+            return True
+        return (
+            self._tail_position_scope == position_scope
+            and self._tail_position_scope_start <= count
+        )
+
     def _for_position_scope(self, position_scope: PositionScope) -> SeenFactIndex:
         _require_type("position_scope", position_scope, PositionScope)
         account_scope = _account_scope_from_position(position_scope)
@@ -1365,6 +1413,8 @@ class SeenFactIndex:
             overfill_scopes=self._overfill_scopes,
             prefix_commitments=self._prefix_commitments,
             account_scope=account_scope,
+            tail_position_scope=self._tail_position_scope,
+            tail_position_scope_start=self._tail_position_scope_start,
         )
 
     @property
@@ -1476,6 +1526,12 @@ class SeenFactIndex:
             overfill_scopes=overfill_scopes,
             prefix_commitments=prefix_commitments,
             account_scope=current._account_scope or observation_account_scope,
+            tail_position_scope=cast(PositionScope, observation.position_scope),
+            tail_position_scope_start=(
+                current._tail_position_scope_start
+                if current._tail_position_scope == observation.position_scope
+                else current.count
+            ),
         )
 
     def _with_binding(self, binding: _SnapshotBinding) -> SeenFactIndex:
@@ -1487,6 +1543,8 @@ class SeenFactIndex:
             overfill_scopes=self._overfill_scopes,
             prefix_commitments=self._prefix_commitments,
             account_scope=self._account_scope,
+            tail_position_scope=self._tail_position_scope,
+            tail_position_scope_start=self._tail_position_scope_start,
             binding=binding,
         )
 
@@ -1497,5 +1555,7 @@ class SeenFactIndex:
             self.entries == other.entries
             and self._observed_roots == other._observed_roots
             and self._overfill_scopes == other._overfill_scopes
+            and self._tail_position_scope == other._tail_position_scope
+            and self._tail_position_scope_start == other._tail_position_scope_start
             and self._account_scope == other._account_scope
         )

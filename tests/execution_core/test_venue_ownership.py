@@ -52,7 +52,7 @@ from app.execution_core.venue import (
     VenueRecoveryBook,
     VenueRecoveryDisposition,
     VenueScope,
-    _rebuild_book,
+    _audit_hydrate_book,
     apply_venue_recovery_input,
 )
 
@@ -422,7 +422,7 @@ def test_checkpoint_construction_rejects_closed_effect_without_proof() -> None:
     forged = replace(effect, acceptance_set_state=AcceptanceSetState.CLOSED)
 
     with pytest.raises(ValueError, match="proof"):
-        _rebuild_book(requested, effects=(forged,))
+        _audit_hydrate_book(requested, EXECUTION, effects=(forged,))
 
 
 def test_restart_converts_stranded_claim_to_unknown_without_resend() -> None:

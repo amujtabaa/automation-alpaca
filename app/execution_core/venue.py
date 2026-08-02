@@ -8,18 +8,26 @@ economic and non-economic paths share one public transition seam.
 
 from __future__ import annotations
 
-from dataclasses import InitVar, dataclass, replace
+from dataclasses import dataclass, field, fields, is_dataclass, replace
+from decimal import Decimal
 from enum import Enum, IntFlag
-from typing import TYPE_CHECKING, Any, Iterable, cast
+from fractions import Fraction
+from typing import TYPE_CHECKING, Any, Callable, Iterable, cast
 
 from .fills import (
     BrokerFillFact,
     BrokerTradeBustFact,
     BrokerTradeCorrectFact,
     ExecutionAuthority,
+    ExecutionScope,
     ExecutionSide,
+    FirstObservationClassification,
     HumanAttestedFillFact,
     PositionScope,
+    _PersistentKeyMap,
+    _PersistentSequence,
+    _commit_parts,
+    _encode_text,
 )
 from .identity import (
     AccountId,
@@ -32,8 +40,10 @@ from .identity import (
     EffectId,
     EnvironmentId,
     EvidenceReference,
+    ExecutionFactKey,
     MandateId,
     RequestOccurrenceId,
+    RootFillKey,
     SourceEventId,
     SymbolId,
     VenueInputId,
@@ -43,7 +53,10 @@ from .identity import (
 from .position import (
     ExecutionSnapshot,
     PositionIntegrity,
+    _RECONCILIATION_GENESIS_HEAD,
+    _bind_execution_reconciliation_cursor,
     _project_execution_registry,
+    _require_execution_components,
 )
 from .values import Quantity
 
@@ -56,7 +69,8 @@ if TYPE_CHECKING:
     )
 
 
-_BOOK_CONSTRUCTION_TOKEN = object()
+_BookEvolver = Callable[..., "VenueRecoveryBook"]
+_TransitionFactory = Callable[..., "VenueRecoveryTransition"]
 
 
 def _require(name: str, value: object, expected: type[object]) -> None:
@@ -117,6 +131,274 @@ def _execution_head_matches_fact(head: object, fact: object) -> bool:
             head.quantity == fact.revised_quantity and head.price == fact.revised_price
         )
     return head.quantity.value == 0 and head.price == fact.reported_price
+
+
+def _canonical_value_commitment(value: object) -> bytes:
+    """Commit one bounded immutable value without recursive audit history."""
+
+    value_type = type(value)
+    type_name = _encode_text(f"{value_type.__module__}.{value_type.__qualname__}")
+    if value is None:
+        return _commit_parts(b"execution-core/canonical-none/v1")
+    if value_type is bool:
+        return _commit_parts(
+            b"execution-core/canonical-bool/v1",
+            b"1" if value else b"0",
+        )
+    if value_type is int:
+        return _commit_parts(
+            b"execution-core/canonical-int/v1",
+            _encode_text(str(value)),
+        )
+    if value_type is str:
+        return _commit_parts(
+            b"execution-core/canonical-text/v1",
+            _encode_text(cast(str, value)),
+        )
+    if value_type is bytes:
+        return _commit_parts(
+            b"execution-core/canonical-bytes/v1",
+            cast(bytes, value),
+        )
+    if value_type is Decimal:
+        decimal_value = cast(Decimal, value)
+        numerator, denominator = decimal_value.as_integer_ratio()
+        return _commit_parts(
+            b"execution-core/canonical-decimal/v1",
+            _encode_text(str(numerator)),
+            _encode_text(str(denominator)),
+        )
+    if value_type is Fraction:
+        fraction_value = cast(Fraction, value)
+        return _commit_parts(
+            b"execution-core/canonical-fraction/v1",
+            _encode_text(str(fraction_value.numerator)),
+            _encode_text(str(fraction_value.denominator)),
+        )
+    if isinstance(value, Enum):
+        return _commit_parts(
+            b"execution-core/canonical-enum/v1",
+            type_name,
+            _canonical_value_commitment(value.value),
+        )
+    if value_type is ExecutionSnapshot:
+        snapshot = cast(ExecutionSnapshot, value)
+        return _commit_parts(
+            b"execution-core/canonical-execution-snapshot/v1",
+            _canonical_value_commitment(snapshot.position.scope),
+            snapshot.commitment,
+            snapshot.position.commitment,
+            snapshot.root_heads.commitment,
+            _encode_text(str(snapshot.integrity.value)),
+            _encode_text(str(snapshot.seen_facts.count)),
+            snapshot.seen_facts.commitment,
+        )
+    if is_dataclass(value) and not isinstance(value, type):
+        parts: list[bytes] = [type_name]
+        for item_field in fields(value):
+            parts.extend(
+                (
+                    _encode_text(item_field.name),
+                    _canonical_value_commitment(getattr(value, item_field.name)),
+                )
+            )
+        return _commit_parts(b"execution-core/canonical-dataclass/v1", *parts)
+    raise TypeError(f"unsupported canonical audit value: {value_type.__qualname__}")
+
+
+def _input_command_identity(
+    item: object,
+    *,
+    include_input_id: bool,
+) -> tuple[bytes, ...]:
+    """Return one bounded, type-exact command identity."""
+
+    from .recovery import (
+        IngestHumanAttestedFill,
+        RecordBrokerFillEvidence,
+        RecordBrokerRevisionEvidence,
+        ReleaseVenueLeg,
+    )
+
+    admitted_types = {
+        RequestedEffect,
+        RecordDispatchClaim,
+        CancelBeforeDispatch,
+        RecordTransportOutcome,
+        RecoverClaimedEffect,
+        DiscoverVenueLeg,
+        RecordPendingVenueOperation,
+        ObserveVenueStatus,
+        CloseAcceptanceSet,
+        CatchUpExecutionRegistry,
+        IngestHumanAttestedFill,
+        ReleaseVenueLeg,
+        RecordBrokerFillEvidence,
+        RecordBrokerRevisionEvidence,
+    }
+    if type(item) not in admitted_types:
+        raise TypeError("item must be an exact venue-recovery command type")
+    identity: list[bytes] = [
+        _encode_text(f"{type(item).__module__}.{type(item).__qualname__}")
+    ]
+    for item_field in fields(cast(Any, item)):
+        if item_field.name == "input_id" and not include_input_id:
+            continue
+        identity.extend(
+            (
+                _encode_text(item_field.name),
+                _canonical_value_commitment(getattr(item, item_field.name)),
+            )
+        )
+    return tuple(identity)
+
+
+def _input_commands_equal(
+    left: object,
+    right: object,
+    *,
+    include_input_id: bool,
+) -> bool:
+    """Compare exact command payloads through bounded canonical identities."""
+
+    return type(left) is type(right) and _input_command_identity(
+        left,
+        include_input_id=include_input_id,
+    ) == _input_command_identity(right, include_input_id=include_input_id)
+
+
+def _input_record_commitment(record: VenueInputRecord) -> bytes:
+    return _commit_parts(
+        b"execution-core/venue-input-record/v2",
+        _canonical_value_commitment(record.input_id),
+        _canonical_value_commitment(record.semantic_alias_of),
+        *_input_command_identity(record.item, include_input_id=True),
+    )
+
+
+def _closure_commitment(closure: VenueTerminalClosure) -> bytes:
+    return _commit_parts(
+        b"execution-core/venue-terminal-closure/v2",
+        _canonical_value_commitment(closure),
+    )
+
+
+def _input_index_key(input_id: VenueInputId) -> bytes:
+    return _commit_parts(
+        b"execution-core/venue-input-index-key/v1",
+        _encode_text(input_id.value),
+    )
+
+
+def _closure_index_key(closure_id: ClosureId) -> bytes:
+    return _commit_parts(
+        b"execution-core/venue-closure-index-key/v1",
+        _encode_text(closure_id.value),
+    )
+
+
+def _fact_index_key(fact_key: ExecutionFactKey) -> bytes:
+    return _commit_parts(
+        b"execution-core/venue-fact-input-index-key/v1",
+        _encode_text(fact_key.broker.value),
+        _encode_text(fact_key.environment.value),
+        _encode_text(fact_key.account.value),
+        _encode_text(fact_key.source_event_id.value),
+    )
+
+
+def _leg_index_key(leg_key: VenueLegKey) -> bytes:
+    return _commit_parts(
+        b"execution-core/venue-leg-index-key/v1",
+        _encode_text(leg_key.broker.value),
+        _encode_text(leg_key.environment.value),
+        _encode_text(leg_key.account.value),
+        _encode_text(leg_key.order_id.value),
+    )
+
+
+def _position_scope_index_key(position_scope: PositionScope) -> bytes:
+    return _commit_parts(
+        b"execution-core/venue-position-scope-index-key/v1",
+        _encode_text(position_scope.broker.value),
+        _encode_text(position_scope.environment.value),
+        _encode_text(position_scope.account.value),
+        _encode_text(position_scope.symbol_id.value),
+    )
+
+
+def _coverage_root_index_key(root_key: RootFillKey) -> bytes:
+    return _commit_parts(
+        b"execution-core/venue-coverage-root-index-key/v1",
+        _encode_text(root_key.broker.value),
+        _encode_text(root_key.environment.value),
+        _encode_text(root_key.account.value),
+        _encode_text(root_key.root_fill_id.value),
+    )
+
+
+def _coverage_interval_index_key(
+    leg_key: VenueLegKey,
+    prior: int,
+    resulting: int,
+) -> bytes:
+    return _commit_parts(
+        b"execution-core/venue-coverage-interval-index-key/v1",
+        _leg_index_key(leg_key),
+        _encode_text(str(prior)),
+        _encode_text(str(resulting)),
+    )
+
+
+def _effect_index_key(effect_id: EffectId) -> bytes:
+    return _commit_parts(
+        b"execution-core/venue-effect-index-key/v1",
+        _encode_text(effect_id.value),
+    )
+
+
+def _request_occurrence_index_key(
+    request_occurrence_id: RequestOccurrenceId,
+) -> bytes:
+    return _commit_parts(
+        b"execution-core/venue-request-occurrence-index-key/v1",
+        _encode_text(request_occurrence_id.value),
+    )
+
+
+def _client_order_index_key(client_order_id: ClientOrderId) -> bytes:
+    return _commit_parts(
+        b"execution-core/venue-client-order-index-key/v1",
+        _encode_text(client_order_id.value),
+    )
+
+
+def _claim_occurrence_index_key(
+    claim_occurrence_id: ClaimOccurrenceId,
+) -> bytes:
+    return _commit_parts(
+        b"execution-core/venue-claim-occurrence-index-key/v1",
+        _encode_text(claim_occurrence_id.value),
+    )
+
+
+def _execution_scope_index_key(execution_scope: ExecutionScope) -> bytes:
+    return _commit_parts(
+        b"execution-core/venue-execution-scope-index-key/v1",
+        _position_scope_index_key(execution_scope.position_scope),
+        _encode_text(execution_scope.order_id.value),
+        _encode_text(execution_scope.side.value),
+    )
+
+
+def _semantic_input_key(item: object) -> bytes:
+    """Return the stable semantic key for one command, excluding its input id."""
+
+    _require_input_id("input_id", getattr(item, "input_id", None))
+    return _commit_parts(
+        b"execution-core/venue-semantic-input-key/v2",
+        *_input_command_identity(item, include_input_id=False),
+    )
 
 
 class EffectKind(str, Enum):
@@ -518,7 +800,8 @@ class VenueExecutionBinding:
     integrity_bits: int
 
     def __post_init__(self) -> None:
-        _require("position_scope", self.position_scope, PositionScope)
+        if type(self.position_scope) is not PositionScope:
+            raise TypeError("position_scope must be the exact PositionScope type")
         _require_digest("position_commitment", self.position_commitment)
         _require_digest("root_heads_commitment", self.root_heads_commitment)
         if type(self.integrity_bits) is not int or self.integrity_bits < 0:
@@ -526,116 +809,895 @@ class VenueExecutionBinding:
 
 
 @dataclass(frozen=True, slots=True)
+class VenueExecutionCheckpoint:
+    """Compact exact symbol checkpoint at one account-registry point."""
+
+    position_scope: PositionScope
+    registry_count: int
+    registry_commitment: bytes
+    position_commitment: bytes
+    root_heads_commitment: bytes
+    integrity_bits: int
+    account_reconciliation_required: bool
+    reconciliation_transition_count: int
+    reconciliation_transition_head: bytes
+
+    def __post_init__(self) -> None:
+        if type(self.position_scope) is not PositionScope:
+            raise TypeError("position_scope must be the exact PositionScope type")
+        if type(self.registry_count) is not int or self.registry_count < 0:
+            raise ValueError("registry_count must be a non-negative exact integer")
+        for name in (
+            "registry_commitment",
+            "position_commitment",
+            "root_heads_commitment",
+        ):
+            _require_digest(name, getattr(self, name))
+        if type(self.integrity_bits) is not int or self.integrity_bits < 0:
+            raise ValueError("integrity_bits must be a non-negative exact integer")
+        if type(self.account_reconciliation_required) is not bool:
+            raise TypeError("account_reconciliation_required must be bool")
+        if (
+            type(self.reconciliation_transition_count) is not int
+            or self.reconciliation_transition_count < 0
+        ):
+            raise ValueError(
+                "reconciliation_transition_count must be a non-negative exact integer"
+            )
+        _require_digest(
+            "reconciliation_transition_head",
+            self.reconciliation_transition_head,
+        )
+
+    @classmethod
+    def from_execution(cls, execution: ExecutionSnapshot) -> VenueExecutionCheckpoint:
+        if type(execution) is not ExecutionSnapshot:
+            raise TypeError("execution must be the exact ExecutionSnapshot type")
+        _require_execution_components(
+            execution.position,
+            execution.integrity,
+            execution.root_heads,
+            execution.seen_facts,
+        )
+        return cls(
+            position_scope=execution.position.scope,
+            registry_count=execution.seen_facts.count,
+            registry_commitment=execution.seen_facts.commitment,
+            position_commitment=execution.position.commitment,
+            root_heads_commitment=execution.root_heads.commitment,
+            integrity_bits=execution.integrity.value,
+            account_reconciliation_required=(
+                execution.account_reconciliation_required
+            ),
+            reconciliation_transition_count=(
+                execution.reconciliation_transition_count
+            ),
+            reconciliation_transition_head=(
+                execution.reconciliation_transition_head
+            ),
+        )
+
+    @property
+    def binding(self) -> VenueExecutionBinding:
+        return VenueExecutionBinding(
+            position_scope=self.position_scope,
+            position_commitment=self.position_commitment,
+            root_heads_commitment=self.root_heads_commitment,
+            integrity_bits=self.integrity_bits,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class CatchUpExecutionRegistry:
     """Project one proven monotonic account registry into a venue checkpoint."""
 
     input_id: VenueInputId
+    target_checkpoint: VenueExecutionCheckpoint
+    prior_account_registry_count: int
+    prior_account_registry_commitment: bytes
+    prior_source_binding: VenueExecutionBinding | None
     source_execution: ExecutionSnapshot
 
     def __post_init__(self) -> None:
         _require("input_id", self.input_id, VenueInputId)
-        _require("source_execution", self.source_execution, ExecutionSnapshot)
+        if type(self.target_checkpoint) is not VenueExecutionCheckpoint:
+            raise TypeError(
+                "target_checkpoint must be the exact VenueExecutionCheckpoint type"
+            )
+        if (
+            type(self.prior_account_registry_count) is not int
+            or self.prior_account_registry_count < 0
+        ):
+            raise ValueError(
+                "prior_account_registry_count must be a non-negative exact integer"
+            )
+        _require_digest(
+            "prior_account_registry_commitment",
+            self.prior_account_registry_commitment,
+        )
+        if (
+            self.prior_source_binding is not None
+            and type(self.prior_source_binding) is not VenueExecutionBinding
+        ):
+            raise TypeError(
+                "prior_source_binding must be the exact VenueExecutionBinding type"
+            )
+        if type(self.source_execution) is not ExecutionSnapshot:
+            raise TypeError("source_execution must be the exact ExecutionSnapshot type")
+
+    @property
+    def target_scope(self) -> PositionScope:
+        return self.target_checkpoint.position_scope
+
+
+def _catch_up_input_commitment(item: CatchUpExecutionRegistry) -> bytes:
+    if type(item) is not CatchUpExecutionRegistry:
+        raise TypeError("item must be the exact CatchUpExecutionRegistry type")
+    return _commit_parts(
+        b"execution-core/catch-up-input/v1",
+        *_input_command_identity(item, include_input_id=True),
+    )
+
+
+def _validate_registry_outcome_common(
+    *,
+    input_id: VenueInputId,
+    command_commitment: bytes,
+    target_checkpoint: VenueExecutionCheckpoint,
+    resulting_registry_count: int,
+    resulting_registry_commitment: bytes,
+    reason: str,
+) -> None:
+    _require("input_id", input_id, VenueInputId)
+    _require_digest("command_commitment", command_commitment)
+    if type(target_checkpoint) is not VenueExecutionCheckpoint:
+        raise TypeError(
+            "target_checkpoint must be the exact VenueExecutionCheckpoint type"
+        )
+    if (
+        type(resulting_registry_count) is not int
+        or resulting_registry_count <= target_checkpoint.registry_count
+    ):
+        raise ValueError(
+            "resulting_registry_count must strictly exceed the target checkpoint"
+        )
+    _require_digest("resulting_registry_commitment", resulting_registry_commitment)
+    if type(reason) is not str or not reason.strip():
+        raise ValueError("reason must be a nonblank string")
 
 
 @dataclass(frozen=True, slots=True)
-class ExecutionRegistryReconciliationRecord:
-    """Blocking attribution evidence for canonical same-symbol catch-up."""
+class _ResolvedRegistryProjectionOutcome:
+    """Registry-only target projection whose account truth was already canonical."""
 
     input_id: VenueInputId
-    position_scope: PositionScope
-    prior_registry_count: int
+    command_commitment: bytes
+    target_checkpoint: VenueExecutionCheckpoint
+    source_binding: VenueExecutionBinding
     resulting_registry_count: int
-    prior_registry_commitment: bytes
     resulting_registry_commitment: bytes
-    prior_position_commitment: bytes
-    resulting_position_commitment: bytes
-    prior_root_heads_commitment: bytes
-    resulting_root_heads_commitment: bytes
-    prior_integrity_bits: int
-    resulting_integrity_bits: int
-    canonical_applied: bool
-    attribution_resolved: bool
     reason: str
 
     def __post_init__(self) -> None:
-        _require("input_id", self.input_id, VenueInputId)
-        _require("position_scope", self.position_scope, PositionScope)
-        if type(self.prior_registry_count) is not int or self.prior_registry_count < 0:
-            raise ValueError(
-                "prior_registry_count must be a non-negative exact integer"
-            )
-        if (
-            type(self.resulting_registry_count) is not int
-            or self.resulting_registry_count <= self.prior_registry_count
-        ):
-            raise ValueError(
-                "resulting_registry_count must strictly exceed the prior count"
-            )
-        for name in (
-            "prior_registry_commitment",
-            "resulting_registry_commitment",
-            "prior_position_commitment",
-            "resulting_position_commitment",
-            "prior_root_heads_commitment",
-            "resulting_root_heads_commitment",
-        ):
-            _require_digest(name, getattr(self, name))
-        if type(self.prior_integrity_bits) is not int or self.prior_integrity_bits < 0:
-            raise ValueError(
-                "prior_integrity_bits must be a non-negative exact integer"
-            )
-        if (
-            type(self.resulting_integrity_bits) is not int
-            or self.resulting_integrity_bits < 0
-        ):
-            raise ValueError(
-                "resulting_integrity_bits must be a non-negative exact integer"
-            )
-        if type(self.canonical_applied) is not bool:
-            raise TypeError("canonical_applied must be bool")
-        if not self.canonical_applied:
-            raise ValueError("registry reconciliation records canonical applied truth")
-        if type(self.attribution_resolved) is not bool:
-            raise TypeError("attribution_resolved must be bool")
-        if type(self.reason) is not str or not self.reason.strip():
-            raise ValueError("reason must be a nonblank string")
+        _validate_registry_outcome_common(
+            input_id=self.input_id,
+            command_commitment=self.command_commitment,
+            target_checkpoint=self.target_checkpoint,
+            resulting_registry_count=self.resulting_registry_count,
+            resulting_registry_commitment=self.resulting_registry_commitment,
+            reason=self.reason,
+        )
+        if type(self.source_binding) is not VenueExecutionBinding:
+            raise TypeError("source_binding must be the exact VenueExecutionBinding type")
+
+    @property
+    def canonical_applied(self) -> bool:
+        return True
+
+    @property
+    def attribution_resolved(self) -> bool:
+        return True
+
+    @property
+    def position_scope(self) -> PositionScope:
+        return self.target_checkpoint.position_scope
+
+    @property
+    def prior_registry_count(self) -> int:
+        return self.target_checkpoint.registry_count
+
+    @property
+    def prior_registry_commitment(self) -> bytes:
+        return self.target_checkpoint.registry_commitment
+
+    @property
+    def prior_position_commitment(self) -> bytes:
+        return self.target_checkpoint.position_commitment
+
+    @property
+    def resulting_position_commitment(self) -> bytes:
+        return self.target_checkpoint.position_commitment
+
+    @property
+    def prior_root_heads_commitment(self) -> bytes:
+        return self.target_checkpoint.root_heads_commitment
+
+    @property
+    def resulting_root_heads_commitment(self) -> bytes:
+        return self.target_checkpoint.root_heads_commitment
+
+    @property
+    def prior_integrity_bits(self) -> int:
+        return self.target_checkpoint.integrity_bits
+
+    @property
+    def resulting_integrity_bits(self) -> int:
+        return self.target_checkpoint.integrity_bits
 
 
 @dataclass(frozen=True, slots=True)
+class _UnresolvedRegistryAdvanceOutcome:
+    """New source-symbol truth admitted without venue attribution."""
+
+    input_id: VenueInputId
+    command_commitment: bytes
+    target_checkpoint: VenueExecutionCheckpoint
+    prior_account_registry_count: int
+    prior_account_registry_commitment: bytes
+    prior_source_binding: VenueExecutionBinding
+    resulting_source_binding: VenueExecutionBinding
+    resulting_registry_count: int
+    resulting_registry_commitment: bytes
+    reason: str
+
+    def __post_init__(self) -> None:
+        _validate_registry_outcome_common(
+            input_id=self.input_id,
+            command_commitment=self.command_commitment,
+            target_checkpoint=self.target_checkpoint,
+            resulting_registry_count=self.resulting_registry_count,
+            resulting_registry_commitment=self.resulting_registry_commitment,
+            reason=self.reason,
+        )
+        if (
+            type(self.prior_account_registry_count) is not int
+            or self.prior_account_registry_count < 0
+            or self.prior_account_registry_count >= self.resulting_registry_count
+        ):
+            raise ValueError(
+                "prior account registry must be a strict prefix of the result"
+            )
+        _require_digest(
+            "prior_account_registry_commitment",
+            self.prior_account_registry_commitment,
+        )
+        if type(self.prior_source_binding) is not VenueExecutionBinding:
+            raise TypeError(
+                "prior_source_binding must be the exact VenueExecutionBinding type"
+            )
+        if type(self.resulting_source_binding) is not VenueExecutionBinding:
+            raise TypeError(
+                "resulting_source_binding must be the exact VenueExecutionBinding type"
+            )
+        if (
+            self.prior_source_binding.position_scope
+            != self.resulting_source_binding.position_scope
+        ):
+            raise ValueError("source advance must retain one exact position scope")
+
+    @property
+    def canonical_applied(self) -> bool:
+        return True
+
+    @property
+    def attribution_resolved(self) -> bool:
+        return False
+
+    @property
+    def position_scope(self) -> PositionScope:
+        return self.resulting_source_binding.position_scope
+
+    @property
+    def prior_registry_count(self) -> int:
+        return self.prior_account_registry_count
+
+    @property
+    def prior_registry_commitment(self) -> bytes:
+        return self.prior_account_registry_commitment
+
+    @property
+    def prior_position_commitment(self) -> bytes:
+        return self.prior_source_binding.position_commitment
+
+    @property
+    def resulting_position_commitment(self) -> bytes:
+        return self.resulting_source_binding.position_commitment
+
+    @property
+    def prior_root_heads_commitment(self) -> bytes:
+        return self.prior_source_binding.root_heads_commitment
+
+    @property
+    def resulting_root_heads_commitment(self) -> bytes:
+        return self.resulting_source_binding.root_heads_commitment
+
+    @property
+    def prior_integrity_bits(self) -> int:
+        return self.prior_source_binding.integrity_bits
+
+    @property
+    def resulting_integrity_bits(self) -> int:
+        return self.resulting_source_binding.integrity_bits
+
+
+ExecutionRegistryReconciliationRecord = (
+    _ResolvedRegistryProjectionOutcome | _UnresolvedRegistryAdvanceOutcome
+)
+
+
+class _RegistryTransitionKind(Enum):
+    RESOLVED_TARGET_PROJECTION = "RESOLVED_TARGET_PROJECTION"
+    UNRESOLVED_SOURCE_ADVANCE = "UNRESOLVED_SOURCE_ADVANCE"
+
+
+@dataclass(frozen=True, slots=True)
+class _RegistryTransitionProof:
+    """Opaque predecessor-linked proof of one admitted CatchUp transition."""
+
+    ordinal: int
+    predecessor_commitment: bytes | None
+    venue_scope: VenueScope
+    input_id: VenueInputId
+    command_commitment: bytes
+    outcome_commitment: bytes
+    kind: _RegistryTransitionKind
+    prior_account_registry_count: int
+    prior_account_registry_commitment: bytes
+    resulting_registry_count: int
+    resulting_registry_commitment: bytes
+    prior_target_checkpoint: VenueExecutionCheckpoint
+    resulting_target_binding: VenueExecutionBinding
+    prior_source_binding: VenueExecutionBinding
+    resulting_source_binding: VenueExecutionBinding
+
+    @property
+    def commitment(self) -> bytes:
+        return _commit_parts(
+            b"execution-core/registry-transition-proof/v1",
+            _canonical_value_commitment(self),
+        )
+
+
+def _registry_transition_proof_for(
+    *,
+    ordinal: int,
+    predecessor_commitment: bytes | None,
+    venue_scope: VenueScope,
+    item: CatchUpExecutionRegistry,
+    outcome: ExecutionRegistryReconciliationRecord,
+) -> _RegistryTransitionProof:
+    if type(venue_scope) is not VenueScope:
+        raise TypeError("venue_scope must be the exact VenueScope type")
+    if type(item) is not CatchUpExecutionRegistry:
+        raise TypeError("registry transition requires an exact CatchUp command")
+    if item.prior_source_binding is None:
+        raise ValueError("admitted CatchUp transition requires a prior source binding")
+    if type(outcome) is _ResolvedRegistryProjectionOutcome:
+        kind = _RegistryTransitionKind.RESOLVED_TARGET_PROJECTION
+        resulting_source_binding = outcome.source_binding
+        if (
+            item.prior_account_registry_count != outcome.resulting_registry_count
+            or item.prior_account_registry_commitment
+            != outcome.resulting_registry_commitment
+            or item.prior_source_binding != resulting_source_binding
+        ):
+            raise ValueError("resolved projection contradicts its exact prior heads")
+        resulting_target_binding = item.target_checkpoint.binding
+    elif type(outcome) is _UnresolvedRegistryAdvanceOutcome:
+        kind = _RegistryTransitionKind.UNRESOLVED_SOURCE_ADVANCE
+        resulting_source_binding = outcome.resulting_source_binding
+        if (
+            item.prior_account_registry_count
+            != outcome.prior_account_registry_count
+            or item.prior_account_registry_commitment
+            != outcome.prior_account_registry_commitment
+            or item.prior_source_binding != outcome.prior_source_binding
+        ):
+            raise ValueError("source advance contradicts its exact prior heads")
+        resulting_target_binding = (
+            resulting_source_binding
+            if item.target_scope == resulting_source_binding.position_scope
+            else item.target_checkpoint.binding
+        )
+    else:
+        raise TypeError("registry transition outcome type is not admitted")
+    return _RegistryTransitionProof(
+        ordinal=ordinal,
+        predecessor_commitment=predecessor_commitment,
+        venue_scope=venue_scope,
+        input_id=item.input_id,
+        command_commitment=_catch_up_input_commitment(item),
+        outcome_commitment=_execution_reconciliation_value_commitment(outcome),
+        kind=kind,
+        prior_account_registry_count=item.prior_account_registry_count,
+        prior_account_registry_commitment=item.prior_account_registry_commitment,
+        resulting_registry_count=outcome.resulting_registry_count,
+        resulting_registry_commitment=outcome.resulting_registry_commitment,
+        prior_target_checkpoint=item.target_checkpoint,
+        resulting_target_binding=resulting_target_binding,
+        prior_source_binding=item.prior_source_binding,
+        resulting_source_binding=resulting_source_binding,
+    )
+
+
+def _validate_registry_transition_chain(
+    proofs: tuple[_RegistryTransitionProof, ...],
+    inputs: tuple[VenueInputRecord, ...],
+    outcomes: tuple[ExecutionRegistryReconciliationRecord, ...],
+    head_commitment: bytes | None,
+    venue_scope: VenueScope,
+) -> None:
+    input_by_id = {record.input_id: record.item for record in inputs}
+    catch_up_input_ids = tuple(
+        record.input_id
+        for record in inputs
+        if type(record.item) is CatchUpExecutionRegistry
+    )
+    if catch_up_input_ids != tuple(outcome.input_id for outcome in outcomes):
+        raise ValueError("CatchUp input order contradicts registry outcomes")
+    if len(proofs) != len(outcomes):
+        raise ValueError("registry transition chain length contradicts outcomes")
+    predecessor: bytes | None = None
+    prior_result_count = -1
+    prior_result_commitment: bytes | None = None
+    for ordinal, (proof, outcome) in enumerate(zip(proofs, outcomes), start=1):
+        if type(proof) is not _RegistryTransitionProof:
+            raise TypeError("registry transition proof type is not admitted")
+        item = input_by_id.get(outcome.input_id)
+        if type(item) is not CatchUpExecutionRegistry:
+            raise ValueError("registry transition lacks its exact CatchUp input")
+        expected = _registry_transition_proof_for(
+            ordinal=ordinal,
+            predecessor_commitment=predecessor,
+            venue_scope=venue_scope,
+            item=cast(CatchUpExecutionRegistry, item),
+            outcome=outcome,
+        )
+        if proof != expected:
+            raise ValueError(
+                "registry transition chain contradicts its predecessor or outcome"
+            )
+        if outcome.resulting_registry_count < prior_result_count or (
+            outcome.resulting_registry_count == prior_result_count
+            and prior_result_commitment is not None
+            and outcome.resulting_registry_commitment != prior_result_commitment
+        ):
+            raise ValueError("registry transition order regresses its account head")
+        prior_result_count = outcome.resulting_registry_count
+        prior_result_commitment = outcome.resulting_registry_commitment
+        predecessor = proof.commitment
+    if predecessor != head_commitment:
+        raise ValueError("registry transition chain head does not close exactly")
+
+
+@dataclass(frozen=True, slots=True, init=False)
 class VenueRecoveryTransition:
     book: VenueRecoveryBook
     execution: ExecutionSnapshot
     disposition: VenueRecoveryDisposition
     quantity_delta: int
 
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise TypeError(
+            "VenueRecoveryTransition is opaque and reducer-constructed only"
+        )
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        del cls, kwargs
+        raise TypeError("VenueRecoveryTransition cannot be subclassed")
+
 
 @dataclass(frozen=True, slots=True)
+class _CoverageProvenance:
+    """Persistent covered-root proof paired to one exact symbol root state."""
+
+    roots: _PersistentKeyMap[bytes]
+    root_heads_commitment: bytes | None
+
+    @property
+    def commitment(self) -> bytes:
+        return _commit_parts(
+            b"execution-core/venue-coverage-provenance/v1",
+            self.roots.commitment,
+            (
+                self.root_heads_commitment
+                if self.root_heads_commitment is not None
+                else _commit_parts(
+                    b"execution-core/venue-coverage-provenance/unbound/v1"
+                )
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class _CoverageLegCurrent:
+    frontier: int = 0
+    canonical_total: int = 0
+    tail_root_key: RootFillKey | None = None
+    inexact_broker_count: int = 0
+
+    @property
+    def commitment(self) -> bytes:
+        return _commit_parts(
+            b"execution-core/venue-coverage-leg-current/v1",
+            _encode_text(str(self.frontier)),
+            _encode_text(str(self.canonical_total)),
+            (
+                _coverage_root_index_key(self.tail_root_key)
+                if self.tail_root_key is not None
+                else _commit_parts(b"execution-core/coverage-tail-root/none/v1")
+            ),
+            _encode_text(str(self.inexact_broker_count)),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class _EffectCurrent:
+    effect: BrokerEffect
+    operator_epoch: int | None = None
+    account_epoch: int | None = None
+
+    @property
+    def commitment(self) -> bytes:
+        return _commit_parts(
+            b"execution-core/venue-effect-current/v2",
+            _commit_parts(
+                b"execution-core/venue-effect-value/v1",
+                _canonical_value_commitment(self.effect.scope),
+                _canonical_value_commitment(self.effect.state),
+                _canonical_value_commitment(self.effect.acceptance_set_state),
+                _canonical_value_commitment(self.effect.claim_occurrence_id),
+                _canonical_value_commitment(self.effect.acceptance_proof),
+            ),
+            _canonical_value_commitment(self.operator_epoch),
+            _canonical_value_commitment(self.account_epoch),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class _LegCurrent:
+    attempt: VenueAttempt | None
+
+    @property
+    def commitment(self) -> bytes:
+        return _commit_parts(
+            b"execution-core/venue-leg-current/v1",
+            _canonical_value_commitment(self.attempt),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class _EffectLegSummary:
+    owner_count: int = 0
+    active_count: int = 0
+    finalization_ready_count: int = 0
+
+    @property
+    def commitment(self) -> bytes:
+        return _commit_parts(
+            b"execution-core/venue-effect-leg-summary/v1",
+            _encode_text(str(self.owner_count)),
+            _encode_text(str(self.active_count)),
+            _encode_text(str(self.finalization_ready_count)),
+        )
+
+
+@dataclass(frozen=True, slots=True, init=False)
 class VenueRecoveryBook:
     """Immutable compact venue checkpoint plus append-only proof material."""
 
     scope: VenueScope
-    effects: tuple[BrokerEffect, ...] = ()
-    claims: tuple[DispatchClaim, ...] = ()
-    owners: tuple[VenueIdentityOwner, ...] = ()
-    active_attempts: tuple[VenueAttempt, ...] = ()
-    closure_heads: tuple[VenueTerminalClosure, ...] = ()
-    closure_history: tuple[VenueTerminalClosure, ...] = ()
-    input_records: tuple[VenueInputRecord, ...] = ()
+    _effect_order: _PersistentSequence[EffectId] = field(
+        default_factory=_PersistentSequence.empty
+    )
+    _effect_by_id: _PersistentKeyMap[_EffectCurrent] = field(
+        default_factory=_PersistentKeyMap.empty
+    )
+    _effect_by_request_occurrence: _PersistentKeyMap[EffectId] = field(
+        default_factory=_PersistentKeyMap.empty
+    )
+    _effect_by_client_order: _PersistentKeyMap[EffectId] = field(
+        default_factory=_PersistentKeyMap.empty
+    )
+    _authority_epoch_by_scope: _PersistentKeyMap[int] = field(
+        default_factory=_PersistentKeyMap.empty
+    )
+    _account_authority_epoch: int = 0
+    _contradiction_order_by_effect: _PersistentKeyMap[
+        _PersistentSequence[AcceptanceContradiction]
+    ] = field(default_factory=_PersistentKeyMap.empty)
+    _claim_order: _PersistentSequence[EffectId] = field(
+        default_factory=_PersistentSequence.empty
+    )
+    _claim_by_effect: _PersistentKeyMap[DispatchClaim] = field(
+        default_factory=_PersistentKeyMap.empty
+    )
+    _claim_by_occurrence: _PersistentKeyMap[EffectId] = field(
+        default_factory=_PersistentKeyMap.empty
+    )
+    _owner_order: _PersistentSequence[VenueLegKey] = field(
+        default_factory=_PersistentSequence.empty
+    )
+    _owner_by_leg: _PersistentKeyMap[VenueIdentityOwner] = field(
+        default_factory=_PersistentKeyMap.empty
+    )
+    _leg_current_by_leg: _PersistentKeyMap[_LegCurrent] = field(
+        default_factory=_PersistentKeyMap.empty
+    )
+    _leg_summary_by_effect: _PersistentKeyMap[_EffectLegSummary] = field(
+        default_factory=_PersistentKeyMap.empty
+    )
+    _reconciliation_count_by_effect: _PersistentKeyMap[int] = field(
+        default_factory=_PersistentKeyMap.empty
+    )
+    _closure_ledger: _PersistentSequence[VenueTerminalClosure] = field(
+        default_factory=_PersistentSequence.empty
+    )
+    _closure_by_id: _PersistentKeyMap[VenueTerminalClosure] = field(
+        default_factory=_PersistentKeyMap.empty
+    )
+    _closure_head_by_leg: _PersistentKeyMap[VenueTerminalClosure] = field(
+        default_factory=_PersistentKeyMap.empty
+    )
+    _input_ledger: _PersistentSequence[VenueInputRecord] = field(
+        default_factory=_PersistentSequence.empty
+    )
+    _input_by_id: _PersistentKeyMap[VenueInputRecord] = field(
+        default_factory=_PersistentKeyMap.empty
+    )
+    _direct_input_by_semantic: _PersistentKeyMap[VenueInputRecord] = field(
+        default_factory=_PersistentKeyMap.empty
+    )
+    _first_input_by_fact: _PersistentKeyMap[VenueInputRecord] = field(
+        default_factory=_PersistentKeyMap.empty
+    )
+    _economic_high_water_by_leg: _PersistentKeyMap[int] = field(
+        default_factory=_PersistentKeyMap.empty
+    )
+    _human_coverage_ledger: _PersistentSequence[HumanCoverage] = field(
+        default_factory=_PersistentSequence.empty
+    )
+    _human_coverage_by_root: _PersistentKeyMap[int] = field(
+        default_factory=_PersistentKeyMap.empty
+    )
+    _broker_coverage_ledger: _PersistentSequence[_BrokerCoverage] = field(
+        default_factory=_PersistentSequence.empty
+    )
+    _broker_coverage_by_root: _PersistentKeyMap[int] = field(
+        default_factory=_PersistentKeyMap.empty
+    )
+    _coverage_provenance_by_scope: _PersistentKeyMap[_CoverageProvenance] = field(
+        default_factory=_PersistentKeyMap.empty
+    )
+    _coverage_current_by_leg: _PersistentKeyMap[_CoverageLegCurrent] = field(
+        default_factory=_PersistentKeyMap.empty
+    )
+    _coverage_total_by_effect: _PersistentKeyMap[int] = field(
+        default_factory=_PersistentKeyMap.empty
+    )
+    _attributed_broker_root_count_by_scope: _PersistentKeyMap[int] = field(
+        default_factory=_PersistentKeyMap.empty
+    )
+    _human_interval_index: _PersistentKeyMap[int] = field(
+        default_factory=_PersistentKeyMap.empty
+    )
+    _human_broker_fact_index: _PersistentKeyMap[int] = field(
+        default_factory=_PersistentKeyMap.empty
+    )
+    _reconciliation_ledger: _PersistentSequence[
+        ReconciliationRecord | RevisionReconciliationRecord
+    ] = field(default_factory=_PersistentSequence.empty)
+    _reconciliation_by_input: _PersistentKeyMap[
+        ReconciliationRecord | RevisionReconciliationRecord
+    ] = field(default_factory=_PersistentKeyMap.empty)
+    _unresolved_reconciliation_count_by_leg: _PersistentKeyMap[int] = field(
+        default_factory=_PersistentKeyMap.empty
+    )
+    _canonical_revision_count_by_leg: _PersistentKeyMap[int] = field(
+        default_factory=_PersistentKeyMap.empty
+    )
+    _execution_reconciliation_ledger: _PersistentSequence[
+        ExecutionRegistryReconciliationRecord
+    ] = field(default_factory=_PersistentSequence.empty)
+    _execution_reconciliation_by_input: _PersistentKeyMap[
+        ExecutionRegistryReconciliationRecord
+    ] = field(default_factory=_PersistentKeyMap.empty)
+    _registry_transition_ledger: _PersistentSequence[
+        _RegistryTransitionProof
+    ] = field(default_factory=_PersistentSequence.empty)
+    _registry_transition_head_commitment: bytes | None = None
+    _unresolved_execution_reconciliation_count_by_scope: _PersistentKeyMap[int] = field(
+        default_factory=_PersistentKeyMap.empty
+    )
+    _unresolved_account_execution_reconciliation_count: int = 0
+    execution_registry_count: int | None = None
     execution_registry_commitment: bytes | None = None
-    execution_bindings: tuple[VenueExecutionBinding, ...] = ()
-    execution_reconciliations: tuple[ExecutionRegistryReconciliationRecord, ...] = ()
-    human_coverages: tuple[HumanCoverage, ...] = ()
-    broker_coverages: tuple[_BrokerCoverage, ...] = ()
-    reconciliations: tuple[
-        ReconciliationRecord | RevisionReconciliationRecord, ...
-    ] = ()
-    _construction_token: InitVar[object] = None
+    _binding_order: _PersistentSequence[PositionScope] = field(
+        default_factory=_PersistentSequence.empty
+    )
+    _binding_by_scope: _PersistentKeyMap[VenueExecutionBinding] = field(
+        default_factory=_PersistentKeyMap.empty
+    )
 
-    def __post_init__(self, _construction_token: object) -> None:
-        if _construction_token is not _BOOK_CONSTRUCTION_TOKEN:
-            raise ValueError(
-                "venue checkpoint claim/provenance requires verified construction"
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise TypeError(
+            "VenueRecoveryBook is opaque; use empty() and the verified reducer"
+        )
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        del cls, kwargs
+        raise TypeError("VenueRecoveryBook is opaque and cannot be subclassed")
+
+    def _authority_epoch(self, position_scope: PositionScope) -> int:
+        retained = self._authority_epoch_by_scope.get(
+            _position_scope_index_key(position_scope)
+        )
+        return 0 if retained is None else retained
+
+    def _effective_effect(self, current: _EffectCurrent) -> BrokerEffect:
+        effect = current.effect
+        if (
+            effect.state is BrokerEffectState.OPERATOR_RECONCILED
+            and (
+                current.operator_epoch
+                != self._authority_epoch(effect.scope.position_scope)
+                or current.account_epoch != self._account_authority_epoch
             )
+        ):
+            return replace(effect, state=BrokerEffectState.NEEDS_REVIEW)
+        return effect
+
+    def _current_effect(self, effect_id: EffectId) -> BrokerEffect | None:
+        current = self._effect_by_id.get(_effect_index_key(effect_id))
+        return None if current is None else self._effective_effect(current)
+
+    def _contradictions_for(
+        self,
+        effect_id: EffectId,
+    ) -> tuple[AcceptanceContradiction, ...]:
+        retained = self._contradiction_order_by_effect.get(_effect_index_key(effect_id))
+        return () if retained is None else retained.to_tuple()
+
+    @property
+    def effects(self) -> tuple[BrokerEffect, ...]:
+        """Materialize current effects only for explicit slow audit consumers."""
+
+        materialized: list[BrokerEffect] = []
+        for index in range(self._effect_order.length):
+            effect_id = self._effect_order.get(index)
+            current = self._effect_by_id.get(_effect_index_key(effect_id))
+            if current is None:
+                raise RuntimeError("effect order is missing its current value")
+            materialized.append(
+                replace(
+                    self._effective_effect(current),
+                    contradiction_evidence=self._contradictions_for(effect_id),
+                )
+            )
+        return tuple(materialized)
+
+    @property
+    def claims(self) -> tuple[DispatchClaim, ...]:
+        """Materialize immutable claims only for explicit slow audit consumers."""
+
+        materialized: list[DispatchClaim] = []
+        for index in range(self._claim_order.length):
+            effect_id = self._claim_order.get(index)
+            claim = self._claim_by_effect.get(_effect_index_key(effect_id))
+            if claim is None:
+                raise RuntimeError("claim order is missing its retained value")
+            materialized.append(claim)
+        return tuple(materialized)
+
+    @property
+    def owners(self) -> tuple[VenueIdentityOwner, ...]:
+        """Materialize immutable owners only for explicit slow audit consumers."""
+
+        materialized: list[VenueIdentityOwner] = []
+        for index in range(self._owner_order.length):
+            leg_key = self._owner_order.get(index)
+            owner = self._owner_by_leg.get(_leg_index_key(leg_key))
+            if owner is None:
+                raise RuntimeError("owner order is missing its retained value")
+            materialized.append(owner)
+        return tuple(materialized)
+
+    @property
+    def active_attempts(self) -> tuple[VenueAttempt, ...]:
+        """Materialize active leg state only for explicit slow audit consumers."""
+
+        materialized: list[VenueAttempt] = []
+        for index in range(self._owner_order.length):
+            leg_key = self._owner_order.get(index)
+            current = self._leg_current_by_leg.get(_leg_index_key(leg_key))
+            if current is None:
+                raise RuntimeError("owner is missing its current leg state")
+            if current.attempt is not None:
+                materialized.append(current.attempt)
+        return tuple(materialized)
+
+    @property
+    def closure_heads(self) -> tuple[VenueTerminalClosure, ...]:
+        """Materialize current closure heads only for explicit slow audit consumers."""
+
+        materialized: list[VenueTerminalClosure] = []
+        for index in range(self._owner_order.length):
+            leg_key = self._owner_order.get(index)
+            head = self._closure_head_by_leg.get(_leg_index_key(leg_key))
+            if head is not None:
+                materialized.append(head)
+        return tuple(materialized)
+
+    @property
+    def execution_bindings(self) -> tuple[VenueExecutionBinding, ...]:
+        """Materialize symbol bindings only for explicit slow audit consumers."""
+
+        materialized: list[VenueExecutionBinding] = []
+        for index in range(self._binding_order.length):
+            position_scope = self._binding_order.get(index)
+            binding = self._binding_by_scope.get(
+                _position_scope_index_key(position_scope)
+            )
+            if binding is None:
+                raise RuntimeError("binding order is missing its retained value")
+            materialized.append(binding)
+        return tuple(materialized)
+
+    @property
+    def closure_history(self) -> tuple[VenueTerminalClosure, ...]:
+        """Materialize terminal history only for explicit slow audit consumers."""
+
+        return self._closure_ledger.to_tuple()
+
+    @property
+    def input_records(self) -> tuple[VenueInputRecord, ...]:
+        """Materialize input history only for explicit slow audit consumers."""
+
+        return self._input_ledger.to_tuple()
+
+    @property
+    def human_coverages(self) -> tuple[HumanCoverage, ...]:
+        """Materialize human coverage only for explicit slow audit consumers."""
+
+        return self._human_coverage_ledger.to_tuple()
+
+    @property
+    def broker_coverages(self) -> tuple[_BrokerCoverage, ...]:
+        """Materialize broker coverage only for explicit slow audit consumers."""
+
+        return self._broker_coverage_ledger.to_tuple()
+
+    @property
+    def reconciliations(
+        self,
+    ) -> tuple[ReconciliationRecord | RevisionReconciliationRecord, ...]:
+        """Materialize reconciliation history only for explicit slow audit."""
+
+        return self._reconciliation_ledger.to_tuple()
+
+    @property
+    def execution_reconciliations(
+        self,
+    ) -> tuple[ExecutionRegistryReconciliationRecord, ...]:
+        """Materialize registry outcomes only for explicit slow audit."""
+
+        return self._execution_reconciliation_ledger.to_tuple()
+
+    def _validate_full(self) -> None:
+        """Perform the explicit slow fold used only by verified hydration/audit."""
+
         _require("scope", self.scope, VenueScope)
         for name in (
             "effects",
@@ -643,8 +1705,6 @@ class VenueRecoveryBook:
             "owners",
             "active_attempts",
             "closure_heads",
-            "closure_history",
-            "input_records",
             "execution_bindings",
             "execution_reconciliations",
             "human_coverages",
@@ -654,10 +1714,24 @@ class VenueRecoveryBook:
             _require_tuple(name, getattr(self, name))
 
         self._require_recovery_entry_types()
+        if self.execution_registry_count is not None:
+            if (
+                type(self.execution_registry_count) is not int
+                or self.execution_registry_count < 0
+            ):
+                raise ValueError(
+                    "execution_registry_count must be a non-negative exact integer"
+                )
         if self.execution_registry_commitment is not None:
             _require_digest(
                 "execution_registry_commitment",
                 self.execution_registry_commitment,
+            )
+        if (self.execution_registry_count is None) != (
+            self.execution_registry_commitment is None
+        ):
+            raise ValueError(
+                "execution registry count and commitment must be retained together"
             )
         effects = self._validated_effects()
         self._validated_execution_bindings(effects)
@@ -694,11 +1768,17 @@ class VenueRecoveryBook:
         self._require_entries(
             "execution binding", self.execution_bindings, VenueExecutionBinding
         )
-        self._require_entries(
-            "execution reconciliation",
-            self.execution_reconciliations,
-            ExecutionRegistryReconciliationRecord,
-        )
+        if any(
+            type(entry)
+            not in {
+                _ResolvedRegistryProjectionOutcome,
+                _UnresolvedRegistryAdvanceOutcome,
+            }
+            for entry in self.execution_reconciliations
+        ):
+            raise TypeError(
+                "execution reconciliation entries must be exact outcome types"
+            )
         self._require_entries("human coverage", self.human_coverages, HumanCoverage)
         self._require_entries("broker coverage", self.broker_coverages, _BrokerCoverage)
         if any(
@@ -1513,6 +2593,7 @@ class VenueRecoveryBook:
             ReconciliationRecord,
             ReleaseVenueLeg,
             RevisionReconciliationRecord,
+            _replay_venue_hydration_snapshot,
         )
 
         self._require_unique(
@@ -1522,59 +2603,189 @@ class VenueRecoveryBook:
             "execution reconciliation input",
             (item.input_id for item in self.execution_reconciliations),
         )
+        _validate_registry_transition_chain(
+            self._registry_transition_ledger.to_tuple(),
+            self.input_records,
+            self.execution_reconciliations,
+            self._registry_transition_head_commitment,
+            self.scope,
+        )
+        expected_unresolved_account_count = sum(
+            1
+            for item in self.execution_reconciliations
+            if not item.attribution_resolved
+        )
+        if (
+            type(self._unresolved_account_execution_reconciliation_count) is not int
+            or self._unresolved_account_execution_reconciliation_count
+            != expected_unresolved_account_count
+        ):
+            raise ValueError(
+                "account execution reconciliation count contradicts retained outcomes"
+            )
+        if (
+            type(self._account_authority_epoch) is not int
+            or self._account_authority_epoch != expected_unresolved_account_count
+        ):
+            raise ValueError(
+                "account authority epoch contradicts unresolved registry outcomes"
+            )
+        revision_reconciliations = {
+            record.input_id: record
+            for record in self.reconciliations
+            if isinstance(record, RevisionReconciliationRecord)
+        }
+        broker_coverage_by_root = {
+            coverage.fact.root_key: coverage for coverage in self.broker_coverages
+        }
+        applied_revision_inputs: dict[
+            RootFillKey, list[RecordBrokerRevisionEvidence]
+        ] = {root_key: [] for root_key in broker_coverage_by_root}
+        predecessor_by_root = {
+            root_key: coverage.fact.key.source_event_id
+            for root_key, coverage in broker_coverage_by_root.items()
+        }
+        for input_record in self.input_records:
+            source = input_record.item
+            if not isinstance(source, RecordBrokerRevisionEvidence):
+                continue
+            root_key = source.fact.root_key
+            if root_key not in broker_coverage_by_root:
+                continue
+            reconciliation = revision_reconciliations.get(source.input_id)
+            if reconciliation is not None and not reconciliation.canonical_applied:
+                continue
+            if source.fact.predecessor_source_event_id != predecessor_by_root[root_key]:
+                continue
+            applied_revision_inputs[root_key].append(source)
+            predecessor_by_root[root_key] = source.fact.key.source_event_id
+        authorized_human_facts = tuple(
+            coverage.fact for coverage in self.human_coverages
+        )
+        authorized_corroborations = tuple(
+            cast(BrokerFillFact, coverage.broker_fact)
+            for coverage in self.human_coverages
+            if coverage.broker_corroborated and coverage.broker_fact is not None
+        )
         for registry_record in self.execution_reconciliations:
             source = input_by_id.get(registry_record.input_id)
-            if not isinstance(source, CatchUpExecutionRegistry):
+            if type(source) is not CatchUpExecutionRegistry:
                 raise ValueError(
                     "execution reconciliation requires exact catch-up provenance"
                 )
+            source = cast(CatchUpExecutionRegistry, source)
             execution = source.source_execution
             scope = execution.position.scope
             if (
-                scope != registry_record.position_scope
-                or scope.broker != self.scope.broker
+                scope.broker != self.scope.broker
                 or scope.environment != self.scope.environment
                 or scope.account != self.scope.account
+                or registry_record.command_commitment
+                != _catch_up_input_commitment(source)
+                or registry_record.target_checkpoint != source.target_checkpoint
                 or execution.seen_facts.count
                 != registry_record.resulting_registry_count
                 or execution.seen_facts.commitment
                 != registry_record.resulting_registry_commitment
-                or execution.position.commitment
-                != registry_record.resulting_position_commitment
-                or execution.root_heads.commitment
-                != registry_record.resulting_root_heads_commitment
-                or execution.integrity.value != registry_record.resulting_integrity_bits
                 or not execution.seen_facts.has_prefix(
-                    registry_record.prior_registry_count,
-                    registry_record.prior_registry_commitment,
+                    source.prior_account_registry_count,
+                    source.prior_account_registry_commitment,
+                )
+                or not execution.seen_facts.has_prefix(
+                    source.target_checkpoint.registry_count,
+                    source.target_checkpoint.registry_commitment,
                 )
             ):
                 raise ValueError(
                     "execution reconciliation does not close its canonical catch-up"
                 )
-            source_state_changed = any(
-                (
-                    registry_record.prior_position_commitment
-                    != registry_record.resulting_position_commitment,
-                    registry_record.prior_root_heads_commitment
-                    != registry_record.resulting_root_heads_commitment,
-                    registry_record.prior_integrity_bits
-                    != registry_record.resulting_integrity_bits,
-                )
+            target_prior = _replay_venue_hydration_snapshot(
+                source.target_scope,
+                execution.seen_facts,
+                authorized_human_facts=authorized_human_facts,
+                authorized_corroborations=authorized_corroborations,
+                limit=source.target_checkpoint.registry_count,
             )
-            if source_state_changed == registry_record.attribution_resolved:
+            target_prior = _bind_execution_reconciliation_cursor(
+                target_prior,
+                transition_count=(
+                    source.target_checkpoint.reconciliation_transition_count
+                ),
+                transition_head=(
+                    source.target_checkpoint.reconciliation_transition_head
+                ),
+                account_reconciliation_required=(
+                    source.target_checkpoint.account_reconciliation_required
+                ),
+            )
+            if (
+                not self._execution_reconciliation_cursor_is_prefix(target_prior)
+                or
+                VenueExecutionCheckpoint.from_execution(target_prior)
+                != source.target_checkpoint
+            ):
                 raise ValueError(
-                    "catch-up attribution result contradicts its symbol commitments"
+                    "catch-up target checkpoint is not derivable from its registry prefix"
                 )
-            if any(
-                execution.seen_facts.observation_at(index).position_scope != scope
-                for index in range(
-                    registry_record.prior_registry_count,
-                    registry_record.resulting_registry_count,
+            target_result = _replay_venue_hydration_snapshot(
+                source.target_scope,
+                execution.seen_facts,
+                authorized_human_facts=authorized_human_facts,
+                authorized_corroborations=authorized_corroborations,
+            )
+            resulting_source_binding = _execution_binding_for_snapshot(execution)
+            if type(registry_record) is _ResolvedRegistryProjectionOutcome:
+                if (
+                    source.prior_account_registry_count
+                    != execution.seen_facts.count
+                    or source.prior_account_registry_commitment
+                    != execution.seen_facts.commitment
+                    or source.prior_source_binding is None
+                    or source.prior_source_binding != registry_record.source_binding
+                    or registry_record.source_binding != resulting_source_binding
+                    or _execution_binding_for_snapshot(target_result)
+                    != source.target_checkpoint.binding
+                ):
+                    raise ValueError(
+                        "resolved catch-up outcome lacks exact target/source proof"
+                    )
+                continue
+            if type(registry_record) is not _UnresolvedRegistryAdvanceOutcome:
+                raise TypeError("execution reconciliation outcome type is not admitted")
+            source_prior = _replay_venue_hydration_snapshot(
+                scope,
+                execution.seen_facts,
+                authorized_human_facts=authorized_human_facts,
+                authorized_corroborations=authorized_corroborations,
+                limit=source.prior_account_registry_count,
+            )
+            prior_source_binding = _execution_binding_for_snapshot(source_prior)
+            expected_target_result_binding = (
+                resulting_source_binding
+                if source.target_scope == scope
+                else source.target_checkpoint.binding
+            )
+            if (
+                source.prior_account_registry_count
+                != registry_record.prior_account_registry_count
+                or source.prior_account_registry_commitment
+                != registry_record.prior_account_registry_commitment
+                or source.prior_source_binding is None
+                or source.prior_source_binding
+                != registry_record.prior_source_binding
+                or registry_record.prior_source_binding != prior_source_binding
+                or registry_record.resulting_source_binding
+                != resulting_source_binding
+                or prior_source_binding == resulting_source_binding
+                or _execution_binding_for_snapshot(target_result)
+                != expected_target_result_binding
+                or not execution.seen_facts.suffix_belongs_to(
+                    source.prior_account_registry_count,
+                    scope,
                 )
             ):
                 raise ValueError(
-                    "execution reconciliation suffix must belong to its source symbol"
+                    "unresolved catch-up outcome lacks exact source-advance proof"
                 )
         self._require_unique(
             "mapped broker fact",
@@ -1713,12 +2924,11 @@ class VenueRecoveryBook:
                 raise ValueError(
                     "exact broker coverage interval must match its current root head"
                 )
+            revision_sources = applied_revision_inputs[broker_coverage.fact.root_key]
             predecessor_source_event_id = broker_coverage.fact.key.source_event_id
-            for revision_input_id in broker_coverage.revision_source_input_ids:
-                revision_source = input_by_id.get(revision_input_id)
+            for revision_source in revision_sources:
                 if not (
-                    isinstance(revision_source, RecordBrokerRevisionEvidence)
-                    and revision_source.effect_id == broker_coverage.effect_id
+                    revision_source.effect_id == broker_coverage.effect_id
                     and revision_source.leg_key == broker_coverage.leg_key
                     and revision_source.fact.root_key == broker_coverage.fact.root_key
                     and revision_source.fact.predecessor_source_event_id
@@ -1734,7 +2944,7 @@ class VenueRecoveryBook:
                     != broker_coverage.evidence_digest
                     or broker_coverage.head_source_input_id
                     != broker_coverage.root_source_input_id
-                    or broker_coverage.revision_source_input_ids
+                    or revision_sources
                     or not broker_coverage.mapping_exact
                 ):
                     raise ValueError(
@@ -1749,8 +2959,8 @@ class VenueRecoveryBook:
                     and head_source.fact == broker_coverage.head_fact
                     and head_source.evidence_digest
                     == broker_coverage.head_evidence_digest
-                    and broker_coverage.revision_source_input_ids
-                    and broker_coverage.revision_source_input_ids[-1]
+                    and revision_sources
+                    and revision_sources[-1].input_id
                     == broker_coverage.head_source_input_id
                 ):
                     raise ValueError(
@@ -1863,9 +3073,9 @@ class VenueRecoveryBook:
             *(coverage.root_source_input_id for coverage in self.broker_coverages),
             *(coverage.head_source_input_id for coverage in self.broker_coverages),
             *(
-                input_id
-                for coverage in self.broker_coverages
-                for input_id in coverage.revision_source_input_ids
+                source.input_id
+                for sources in applied_revision_inputs.values()
+                for source in sources
             ),
             *(record.input_id for record in self.reconciliations),
             *(record.input_id for record in self.execution_reconciliations),
@@ -1992,8 +3202,7 @@ class VenueRecoveryBook:
                 if any(
                     record.effect_id == effect_id for record in self.reconciliations
                 ) or any(
-                    record.position_scope == effect.scope.position_scope
-                    and not record.attribution_resolved
+                    not record.attribution_resolved
                     for record in self.execution_reconciliations
                 ):
                     raise ValueError(
@@ -2034,24 +3243,111 @@ class VenueRecoveryBook:
     @classmethod
     def empty(cls, scope: VenueScope) -> VenueRecoveryBook:
         _require("scope", scope, VenueScope)
-        return cls(scope=scope, _construction_token=_BOOK_CONSTRUCTION_TOKEN)
+        result = object.__new__(cls)
+        for name, value in (
+            ("scope", scope),
+            ("_effect_order", _PersistentSequence.empty()),
+            ("_effect_by_id", _PersistentKeyMap.empty()),
+            ("_effect_by_request_occurrence", _PersistentKeyMap.empty()),
+            ("_effect_by_client_order", _PersistentKeyMap.empty()),
+            ("_authority_epoch_by_scope", _PersistentKeyMap.empty()),
+            ("_account_authority_epoch", 0),
+            ("_contradiction_order_by_effect", _PersistentKeyMap.empty()),
+            ("_claim_order", _PersistentSequence.empty()),
+            ("_claim_by_effect", _PersistentKeyMap.empty()),
+            ("_claim_by_occurrence", _PersistentKeyMap.empty()),
+            ("_owner_order", _PersistentSequence.empty()),
+            ("_owner_by_leg", _PersistentKeyMap.empty()),
+            ("_leg_current_by_leg", _PersistentKeyMap.empty()),
+            ("_leg_summary_by_effect", _PersistentKeyMap.empty()),
+            ("_reconciliation_count_by_effect", _PersistentKeyMap.empty()),
+            ("_closure_ledger", _PersistentSequence.empty()),
+            ("_closure_by_id", _PersistentKeyMap.empty()),
+            ("_closure_head_by_leg", _PersistentKeyMap.empty()),
+            ("_input_ledger", _PersistentSequence.empty()),
+            ("_input_by_id", _PersistentKeyMap.empty()),
+            ("_direct_input_by_semantic", _PersistentKeyMap.empty()),
+            ("_first_input_by_fact", _PersistentKeyMap.empty()),
+            ("_economic_high_water_by_leg", _PersistentKeyMap.empty()),
+            ("_human_coverage_ledger", _PersistentSequence.empty()),
+            ("_human_coverage_by_root", _PersistentKeyMap.empty()),
+            ("_broker_coverage_ledger", _PersistentSequence.empty()),
+            ("_broker_coverage_by_root", _PersistentKeyMap.empty()),
+            ("_coverage_provenance_by_scope", _PersistentKeyMap.empty()),
+            ("_coverage_current_by_leg", _PersistentKeyMap.empty()),
+            ("_coverage_total_by_effect", _PersistentKeyMap.empty()),
+            ("_attributed_broker_root_count_by_scope", _PersistentKeyMap.empty()),
+            ("_human_interval_index", _PersistentKeyMap.empty()),
+            ("_human_broker_fact_index", _PersistentKeyMap.empty()),
+            ("_reconciliation_ledger", _PersistentSequence.empty()),
+            ("_reconciliation_by_input", _PersistentKeyMap.empty()),
+            ("_unresolved_reconciliation_count_by_leg", _PersistentKeyMap.empty()),
+            ("_canonical_revision_count_by_leg", _PersistentKeyMap.empty()),
+            ("_execution_reconciliation_ledger", _PersistentSequence.empty()),
+            ("_execution_reconciliation_by_input", _PersistentKeyMap.empty()),
+            ("_registry_transition_ledger", _PersistentSequence.empty()),
+            ("_registry_transition_head_commitment", None),
+            (
+                "_unresolved_execution_reconciliation_count_by_scope",
+                _PersistentKeyMap.empty(),
+            ),
+            ("_unresolved_account_execution_reconciliation_count", 0),
+            ("execution_registry_count", None),
+            ("execution_registry_commitment", None),
+            ("_binding_order", _PersistentSequence.empty()),
+            ("_binding_by_scope", _PersistentKeyMap.empty()),
+        ):
+            object.__setattr__(result, name, value)
+        return result
 
     def effect(self, effect_id: EffectId) -> BrokerEffect | None:
-        return next(
-            (item for item in self.effects if item.effect_id == effect_id), None
+        """Materialize one effect's contradiction history for inspection/audit."""
+
+        effect = self._current_effect(effect_id)
+        if effect is None:
+            return None
+        return replace(
+            effect,
+            contradiction_evidence=self._contradictions_for(effect_id),
         )
 
     def execution_binding(
         self, position_scope: PositionScope
     ) -> VenueExecutionBinding | None:
-        return next(
-            (
-                item
-                for item in self.execution_bindings
-                if item.position_scope == position_scope
-            ),
-            None,
+        return self._binding_by_scope.get(_position_scope_index_key(position_scope))
+
+    def _reconciliation_cursor(self) -> tuple[int, bytes]:
+        return (
+            self._registry_transition_ledger.length,
+            self._registry_transition_head_commitment
+            or _RECONCILIATION_GENESIS_HEAD,
         )
+
+    def _execution_reconciliation_cursor_matches(
+        self,
+        execution: ExecutionSnapshot,
+    ) -> bool:
+        count, head = self._reconciliation_cursor()
+        return (
+            execution.reconciliation_transition_count == count
+            and execution.reconciliation_transition_head == head
+            and execution.account_reconciliation_required
+            == (self._unresolved_account_execution_reconciliation_count > 0)
+        )
+
+    def _execution_reconciliation_cursor_is_prefix(
+        self,
+        execution: ExecutionSnapshot,
+    ) -> bool:
+        count = execution.reconciliation_transition_count
+        if count < 0 or count > self._registry_transition_ledger.length:
+            return False
+        expected_head = (
+            _RECONCILIATION_GENESIS_HEAD
+            if count == 0
+            else self._registry_transition_ledger.get(count - 1).commitment
+        )
+        return execution.reconciliation_transition_head == expected_head
 
     def _execution_matches(
         self,
@@ -2061,12 +3357,40 @@ class VenueRecoveryBook:
         """Return whether execution is the exact bound account/symbol high-water."""
 
         if (
-            self.execution_registry_commitment != execution.seen_facts.commitment
+            self.execution_registry_count != execution.seen_facts.count
+            or self.execution_registry_commitment != execution.seen_facts.commitment
             or not self._execution_symbol_matches(execution, position_scope)
+            or not self._execution_reconciliation_cursor_matches(execution)
         ):
             return False
 
         return True
+
+    def _execution_pair_matches_fast(self, execution: ExecutionSnapshot) -> bool:
+        """Authenticate one usable transition without touching either audit ledger."""
+
+        if not self._effect_order.length:
+            return (
+                self.execution_registry_count is None
+                and self.execution_registry_commitment is None
+                and not self._binding_order.length
+                and self._execution_reconciliation_cursor_matches(execution)
+            )
+        return (
+            self.execution_registry_count == execution.seen_facts.count
+            and self.execution_registry_commitment == execution.seen_facts.commitment
+            and self._execution_binding_matches(execution)
+            and self._execution_reconciliation_cursor_matches(execution)
+        )
+
+    def _execution_binding_matches(self, execution: ExecutionSnapshot) -> bool:
+        binding = self.execution_binding(execution.position.scope)
+        return bool(
+            binding is not None
+            and binding.position_commitment == execution.position.commitment
+            and binding.root_heads_commitment == execution.root_heads.commitment
+            and binding.integrity_bits == execution.integrity.value
+        )
 
     def _execution_symbol_matches(
         self,
@@ -2084,36 +3408,22 @@ class VenueRecoveryBook:
             or binding.integrity_bits != execution.integrity.value
         ):
             return False
-        human_roots_match = all(
-            _execution_head_matches_fact(
-                execution.root_heads.get(coverage.fact.root_key),
-                coverage.fact,
-            )
-            for coverage in self.human_coverages
-            if coverage.fact.scope.position_scope == position_scope
+        provenance = self._coverage_provenance_by_scope.get(
+            _position_scope_index_key(position_scope)
         )
-        broker_roots_match = all(
-            _execution_head_matches_fact(
-                execution.root_heads.get(coverage.head_fact.root_key),
-                coverage.head_fact,
-            )
-            for coverage in self.broker_coverages
-            if coverage.fact.scope.position_scope == position_scope
+        return provenance is None or (
+            provenance.root_heads_commitment == execution.root_heads.commitment
         )
-        return human_roots_match and broker_roots_match
 
     def owner(self, leg_key: VenueLegKey) -> VenueIdentityOwner | None:
-        return next((item for item in self.owners if item.leg_key == leg_key), None)
+        return self._owner_by_leg.get(_leg_index_key(leg_key))
 
     def active_attempt(self, leg_key: VenueLegKey) -> VenueAttempt | None:
-        return next(
-            (item for item in self.active_attempts if item.leg_key == leg_key), None
-        )
+        current = self._leg_current_by_leg.get(_leg_index_key(leg_key))
+        return None if current is None else current.attempt
 
     def closure_head(self, leg_key: VenueLegKey) -> VenueTerminalClosure | None:
-        return next(
-            (item for item in self.closure_heads if item.leg_key == leg_key), None
-        )
+        return self._closure_head_by_leg.get(_leg_index_key(leg_key))
 
     def coverage_for_leg(self, leg_key: VenueLegKey) -> tuple[object, ...]:
         return tuple(
@@ -2129,151 +3439,2125 @@ class VenueRecoveryBook:
             if getattr(item, "leg_key", None) == leg_key
         )
 
-    def _input_record(self, input_id: VenueInputId) -> VenueInputRecord | None:
-        return next(
-            (item for item in self.input_records if item.input_id == input_id), None
+    def _human_coverage_for_root(self, root_key: RootFillKey) -> HumanCoverage | None:
+        index = self._human_coverage_by_root.get(_coverage_root_index_key(root_key))
+        return None if index is None else self._human_coverage_ledger.get(index)
+
+    def _broker_coverage_for_root(
+        self,
+        root_key: RootFillKey,
+    ) -> _BrokerCoverage | None:
+        index = self._broker_coverage_by_root.get(_coverage_root_index_key(root_key))
+        return None if index is None else self._broker_coverage_ledger.get(index)
+
+    def _human_coverage_for_interval(
+        self,
+        leg_key: VenueLegKey,
+        prior: int,
+        resulting: int,
+    ) -> HumanCoverage | None:
+        index = self._human_interval_index.get(
+            _coverage_interval_index_key(leg_key, prior, resulting)
+        )
+        return None if index is None else self._human_coverage_ledger.get(index)
+
+    def _human_coverage_for_broker_fact(
+        self,
+        fact_key: ExecutionFactKey,
+    ) -> HumanCoverage | None:
+        index = self._human_broker_fact_index.get(_fact_index_key(fact_key))
+        return None if index is None else self._human_coverage_ledger.get(index)
+
+    def _coverage_current(self, leg_key: VenueLegKey) -> _CoverageLegCurrent:
+        current = self._coverage_current_by_leg.get(_leg_index_key(leg_key))
+        return _CoverageLegCurrent() if current is None else current
+
+    def _effect_canonical_total(self, effect_id: EffectId) -> int:
+        total = self._coverage_total_by_effect.get(_effect_index_key(effect_id))
+        return 0 if total is None else total
+
+    def _attributed_broker_root_count(self, execution_scope: ExecutionScope) -> int:
+        count = self._attributed_broker_root_count_by_scope.get(
+            _execution_scope_index_key(execution_scope)
+        )
+        return 0 if count is None else count
+
+    def _has_request_occurrence(
+        self,
+        request_occurrence_id: RequestOccurrenceId,
+    ) -> bool:
+        return (
+            self._effect_by_request_occurrence.get(
+                _request_occurrence_index_key(request_occurrence_id)
+            )
+            is not None
         )
 
+    def _has_client_order(self, client_order_id: ClientOrderId) -> bool:
+        return (
+            self._effect_by_client_order.get(_client_order_index_key(client_order_id))
+            is not None
+        )
 
-def _rebuild_book(book: VenueRecoveryBook, **changes: Any) -> VenueRecoveryBook:
-    """Rebuild one verified checkpoint; never exposed on the public book object."""
+    def _claim_for_effect(self, effect_id: EffectId) -> DispatchClaim | None:
+        return self._claim_by_effect.get(_effect_index_key(effect_id))
 
-    return replace(
-        book,
-        _construction_token=_BOOK_CONSTRUCTION_TOKEN,
-        **changes,
+    def _has_claim_occurrence(
+        self,
+        claim_occurrence_id: ClaimOccurrenceId,
+    ) -> bool:
+        return (
+            self._claim_by_occurrence.get(
+                _claim_occurrence_index_key(claim_occurrence_id)
+            )
+            is not None
+        )
+
+    def _leg_summary(self, effect_id: EffectId) -> _EffectLegSummary:
+        retained = self._leg_summary_by_effect.get(_effect_index_key(effect_id))
+        return _EffectLegSummary() if retained is None else retained
+
+    def _has_effect_reconciliation(self, effect_id: EffectId) -> bool:
+        retained = self._reconciliation_count_by_effect.get(
+            _effect_index_key(effect_id)
+        )
+        return retained is not None and retained > 0
+
+    def _reconciliation_for_input(
+        self,
+        input_id: VenueInputId,
+    ) -> ReconciliationRecord | RevisionReconciliationRecord | None:
+        return self._reconciliation_by_input.get(_input_index_key(input_id))
+
+    def _execution_reconciliation_for_input(
+        self,
+        input_id: VenueInputId,
+    ) -> ExecutionRegistryReconciliationRecord | None:
+        return self._execution_reconciliation_by_input.get(_input_index_key(input_id))
+
+    def _has_unresolved_reconciliation(self, leg_key: VenueLegKey) -> bool:
+        count = self._unresolved_reconciliation_count_by_leg.get(
+            _leg_index_key(leg_key)
+        )
+        return count is not None and count > 0
+
+    def _has_canonical_revision(self, leg_key: VenueLegKey) -> bool:
+        count = self._canonical_revision_count_by_leg.get(_leg_index_key(leg_key))
+        return count is not None and count > 0
+
+    def _has_unresolved_execution_reconciliation(
+        self,
+        position_scope: PositionScope,
+    ) -> bool:
+        if self._unresolved_account_execution_reconciliation_count > 0:
+            return True
+        count = self._unresolved_execution_reconciliation_count_by_scope.get(
+            _position_scope_index_key(position_scope)
+        )
+        return count is not None and count > 0
+
+    def _input_record(self, input_id: VenueInputId) -> VenueInputRecord | None:
+        return self._input_by_id.get(_input_index_key(input_id))
+
+    def _direct_semantic_input(self, item: object) -> VenueInputRecord | None:
+        record = self._direct_input_by_semantic.get(_semantic_input_key(item))
+        if record is None:
+            return None
+        if record.semantic_alias_of is None and _input_commands_equal(
+            record.item,
+            item,
+            include_input_id=False,
+        ):
+            return record
+        raise ValueError("semantic input index commitment collision")
+
+    def _fact_input_record(
+        self,
+        fact_key: ExecutionFactKey,
+    ) -> VenueInputRecord | None:
+        _require("fact_key", fact_key, ExecutionFactKey)
+        return self._first_input_by_fact.get(_fact_index_key(fact_key))
+
+    def _economic_high_water(self, leg_key: VenueLegKey) -> int:
+        retained = self._economic_high_water_by_leg.get(_leg_index_key(leg_key))
+        return 0 if retained is None else retained
+
+
+_EVOLVABLE_BOOK_FIELDS = frozenset(
+    {
+        "scope",
+        "execution_registry_count",
+        "execution_registry_commitment",
+    }
+)
+
+
+def _coverage_value_commitment(coverage: object) -> bytes:
+    return _commit_parts(
+        b"execution-core/venue-coverage-value/v1",
+        _canonical_value_commitment(coverage),
     )
 
 
-def _next_execution_bindings(
+def _reconciliation_value_commitment(record: object) -> bytes:
+    return _commit_parts(
+        b"execution-core/venue-reconciliation-value/v1",
+        _canonical_value_commitment(record),
+    )
+
+
+def _execution_reconciliation_value_commitment(record: object) -> bytes:
+    return _commit_parts(
+        b"execution-core/execution-registry-reconciliation-value/v1",
+        _canonical_value_commitment(record),
+    )
+
+
+def _effect_value_commitment(effect_id: EffectId) -> bytes:
+    return _commit_parts(
+        b"execution-core/venue-effect-order-value/v1",
+        _canonical_value_commitment(effect_id),
+    )
+
+
+def _leg_value_commitment(leg_key: VenueLegKey) -> bytes:
+    return _commit_parts(
+        b"execution-core/venue-owner-order-value/v1",
+        _canonical_value_commitment(leg_key),
+    )
+
+
+def _binding_scope_value_commitment(position_scope: PositionScope) -> bytes:
+    return _commit_parts(
+        b"execution-core/venue-binding-order-value/v1",
+        _canonical_value_commitment(position_scope),
+    )
+
+
+def _claim_value_commitment(claim: DispatchClaim) -> bytes:
+    return _commit_parts(
+        b"execution-core/venue-claim-value/v1",
+        _canonical_value_commitment(claim),
+    )
+
+
+def _owner_value_commitment(owner: VenueIdentityOwner) -> bytes:
+    return _commit_parts(
+        b"execution-core/venue-owner-value/v1",
+        _canonical_value_commitment(owner),
+    )
+
+
+def _binding_value_commitment(binding: VenueExecutionBinding) -> bytes:
+    return _commit_parts(
+        b"execution-core/venue-execution-binding-value/v1",
+        _canonical_value_commitment(binding),
+    )
+
+
+def _append_coverage_value(
+    ledger: _PersistentSequence[Any],
+    by_root: _PersistentKeyMap[int],
+    coverage: object,
+) -> tuple[_PersistentSequence[Any], _PersistentKeyMap[int]]:
+    root_key = getattr(getattr(coverage, "fact", None), "root_key", None)
+    if not isinstance(root_key, RootFillKey):
+        raise TypeError("coverage must retain an exact root-fill key")
+    encoded_root = _coverage_root_index_key(root_key)
+    if by_root.get(encoded_root) is not None:
+        raise ValueError("coverage root already exists")
+    index = ledger.length
+    value_commitment = _coverage_value_commitment(coverage)
+    return (
+        ledger.append(coverage, value_commitment),
+        by_root.insert_new(
+            encoded_root,
+            index,
+            _commit_parts(
+                b"execution-core/venue-coverage-index/v1",
+                encoded_root,
+                _encode_text(str(index)),
+                value_commitment,
+            ),
+        ),
+    )
+
+
+def _replace_coverage_value(
+    ledger: _PersistentSequence[Any],
+    by_root: _PersistentKeyMap[int],
+    prior: object,
+    replacement: object,
+) -> _PersistentSequence[Any]:
+    prior_root = getattr(getattr(prior, "fact", None), "root_key", None)
+    replacement_root = getattr(
+        getattr(replacement, "fact", None),
+        "root_key",
+        None,
+    )
+    if not isinstance(prior_root, RootFillKey) or replacement_root != prior_root:
+        raise ValueError("coverage replacement must preserve its exact root key")
+    index = by_root.get(_coverage_root_index_key(prior_root))
+    if index is None or ledger.get(index) != prior:
+        raise ValueError("coverage replacement does not match retained current truth")
+    return ledger.set(index, replacement, _coverage_value_commitment(replacement))
+
+
+def _set_coverage_provenance(
+    retained: _PersistentKeyMap[_CoverageProvenance],
+    position_scope: PositionScope,
+    provenance: _CoverageProvenance,
+) -> _PersistentKeyMap[_CoverageProvenance]:
+    key = _position_scope_index_key(position_scope)
+    if retained.get(key) is None:
+        return retained.insert_new(key, provenance, provenance.commitment)
+    return retained.replace_existing(key, provenance, provenance.commitment)
+
+
+def _evolve_coverage_provenance(
+    retained: _PersistentKeyMap[_CoverageProvenance],
+    prior_execution: ExecutionSnapshot,
+    resulting_execution: ExecutionSnapshot,
+    item: object | None,
+    *,
+    canonical_economic_input: bool,
+) -> _PersistentKeyMap[_CoverageProvenance]:
+    """Advance one covered-root proof without scanning retained coverage."""
+
+    position_scope = resulting_execution.position.scope
+    key = _position_scope_index_key(position_scope)
+    current = retained.get(key)
+    roots_changed = (
+        prior_execution.root_heads.commitment
+        != resulting_execution.root_heads.commitment
+    )
+    if not canonical_economic_input:
+        if not roots_changed or current is None:
+            return retained
+        return _set_coverage_provenance(
+            retained,
+            position_scope,
+            _CoverageProvenance(
+                roots=current.roots,
+                root_heads_commitment=None,
+            ),
+        )
+
+    fact = getattr(item, "fact", None)
+    root_key = getattr(fact, "root_key", None)
+    if not isinstance(root_key, RootFillKey) or not _execution_head_matches_fact(
+        resulting_execution.root_heads.get(root_key),
+        fact,
+    ):
+        raise ValueError("canonical coverage input lacks its exact resulting root")
+    roots = current.roots if current is not None else _PersistentKeyMap.empty()
+    encoded_root = _coverage_root_index_key(root_key)
+    fact_commitment = _canonical_value_commitment(fact)
+    if roots.get(encoded_root) is None:
+        roots = roots.insert_new(encoded_root, fact_commitment, fact_commitment)
+    else:
+        roots = roots.replace_existing(encoded_root, fact_commitment, fact_commitment)
+    prior_provenance_valid = current is None or (
+        current.root_heads_commitment == prior_execution.root_heads.commitment
+    )
+    return _set_coverage_provenance(
+        retained,
+        position_scope,
+        _CoverageProvenance(
+            roots=roots,
+            root_heads_commitment=(
+                resulting_execution.root_heads.commitment
+                if prior_provenance_valid
+                else None
+            ),
+        ),
+    )
+
+
+def _set_int_index(
+    retained: _PersistentKeyMap[int],
+    key: bytes,
+    value: int,
+    *,
+    domain: bytes,
+) -> _PersistentKeyMap[int]:
+    if value < 0:
+        raise ValueError("indexed aggregate cannot become negative")
+    commitment = _commit_parts(domain, key, _encode_text(str(value)))
+    if retained.get(key) is None:
+        return retained.insert_new(key, value, commitment)
+    return retained.replace_existing(key, value, commitment)
+
+
+def _set_leg_current(
+    retained: _PersistentKeyMap[_CoverageLegCurrent],
+    leg_key: VenueLegKey,
+    current: _CoverageLegCurrent,
+) -> _PersistentKeyMap[_CoverageLegCurrent]:
+    key = _leg_index_key(leg_key)
+    if retained.get(key) is None:
+        return retained.insert_new(key, current, current.commitment)
+    return retained.replace_existing(key, current, current.commitment)
+
+
+def _set_effect_leg_summary(
+    retained: _PersistentKeyMap[_EffectLegSummary],
+    effect_id: EffectId,
+    summary: _EffectLegSummary,
+) -> _PersistentKeyMap[_EffectLegSummary]:
+    key = _effect_index_key(effect_id)
+    if retained.get(key) is None:
+        return retained.insert_new(key, summary, summary.commitment)
+    return retained.replace_existing(key, summary, summary.commitment)
+
+
+def _stored_effect_current(
+    effect: BrokerEffect,
+    authority_epochs: _PersistentKeyMap[int],
+    account_authority_epoch: int,
+) -> _EffectCurrent:
+    effect = replace(effect, contradiction_evidence=())
+    operator_epoch: int | None = None
+    account_epoch: int | None = None
+    if effect.state is BrokerEffectState.OPERATOR_RECONCILED:
+        operator_epoch = (
+            authority_epochs.get(_position_scope_index_key(effect.scope.position_scope))
+            or 0
+        )
+        account_epoch = account_authority_epoch
+    return _EffectCurrent(
+        effect=effect,
+        operator_epoch=operator_epoch,
+        account_epoch=account_epoch,
+    )
+
+
+def _append_effect_value(
+    order: _PersistentSequence[EffectId],
+    by_id: _PersistentKeyMap[_EffectCurrent],
+    by_request: _PersistentKeyMap[EffectId],
+    by_client_order: _PersistentKeyMap[EffectId],
+    authority_epochs: _PersistentKeyMap[int],
+    account_authority_epoch: int,
+    effect: object,
+) -> tuple[
+    _PersistentSequence[EffectId],
+    _PersistentKeyMap[_EffectCurrent],
+    _PersistentKeyMap[EffectId],
+    _PersistentKeyMap[EffectId],
+]:
+    if not isinstance(effect, BrokerEffect):
+        raise TypeError("effect append must be BrokerEffect")
+    effect_key = _effect_index_key(effect.effect_id)
+    request_key = _request_occurrence_index_key(effect.scope.request_occurrence_id)
+    client_key = _client_order_index_key(effect.scope.client_order_id)
+    if (
+        by_id.get(effect_key) is not None
+        or by_request.get(request_key) is not None
+        or by_client_order.get(client_key) is not None
+    ):
+        raise ValueError(
+            "effect identity, request occurrence, and client ID are unique"
+        )
+    current = _stored_effect_current(
+        effect,
+        authority_epochs,
+        account_authority_epoch,
+    )
+    id_commitment = _effect_value_commitment(effect.effect_id)
+    return (
+        order.append(effect.effect_id, id_commitment),
+        by_id.insert_new(effect_key, current, current.commitment),
+        by_request.insert_new(request_key, effect.effect_id, id_commitment),
+        by_client_order.insert_new(client_key, effect.effect_id, id_commitment),
+    )
+
+
+def _replace_effect_value(
+    by_id: _PersistentKeyMap[_EffectCurrent],
+    authority_epochs: _PersistentKeyMap[int],
+    account_authority_epoch: int,
+    effect: object,
+) -> _PersistentKeyMap[_EffectCurrent]:
+    if not isinstance(effect, BrokerEffect):
+        raise TypeError("effect replacement must be BrokerEffect")
+    key = _effect_index_key(effect.effect_id)
+    if by_id.get(key) is None:
+        raise KeyError("effect is not registered")
+    current = _stored_effect_current(
+        effect,
+        authority_epochs,
+        account_authority_epoch,
+    )
+    return by_id.replace_existing(key, current, current.commitment)
+
+
+def _append_claim_value(
+    order: _PersistentSequence[EffectId],
+    by_effect: _PersistentKeyMap[DispatchClaim],
+    by_occurrence: _PersistentKeyMap[EffectId],
+    claim: object,
+) -> tuple[
+    _PersistentSequence[EffectId],
+    _PersistentKeyMap[DispatchClaim],
+    _PersistentKeyMap[EffectId],
+]:
+    if not isinstance(claim, DispatchClaim):
+        raise TypeError("claim append must be DispatchClaim")
+    effect_key = _effect_index_key(claim.effect_id)
+    occurrence_key = _claim_occurrence_index_key(claim.claim_occurrence_id)
+    if (
+        by_effect.get(effect_key) is not None
+        or by_occurrence.get(occurrence_key) is not None
+    ):
+        raise ValueError("claim effect and occurrence identities are unique")
+    claim_commitment = _claim_value_commitment(claim)
+    return (
+        order.append(claim.effect_id, _effect_value_commitment(claim.effect_id)),
+        by_effect.insert_new(effect_key, claim, claim_commitment),
+        by_occurrence.insert_new(
+            occurrence_key,
+            claim.effect_id,
+            _effect_value_commitment(claim.effect_id),
+        ),
+    )
+
+
+def _append_contradiction_value(
+    retained: _PersistentKeyMap[_PersistentSequence[AcceptanceContradiction]],
+    effect_id: EffectId,
+    contradiction: object,
+) -> _PersistentKeyMap[_PersistentSequence[AcceptanceContradiction]]:
+    if not isinstance(contradiction, AcceptanceContradiction):
+        raise TypeError("contradiction append must be AcceptanceContradiction")
+    key = _effect_index_key(effect_id)
+    sequence = retained.get(key) or _PersistentSequence.empty()
+    commitment = _commit_parts(
+        b"execution-core/venue-acceptance-contradiction/v1",
+        _canonical_value_commitment(contradiction),
+    )
+    sequence = sequence.append(contradiction, commitment)
+    if retained.get(key) is None:
+        return retained.insert_new(key, sequence, sequence.commitment)
+    return retained.replace_existing(key, sequence, sequence.commitment)
+
+
+def _append_owner_value(
+    order: _PersistentSequence[VenueLegKey],
+    by_leg: _PersistentKeyMap[VenueIdentityOwner],
+    leg_current: _PersistentKeyMap[_LegCurrent],
+    summaries: _PersistentKeyMap[_EffectLegSummary],
+    owner_and_attempt: object,
+) -> tuple[
+    _PersistentSequence[VenueLegKey],
+    _PersistentKeyMap[VenueIdentityOwner],
+    _PersistentKeyMap[_LegCurrent],
+    _PersistentKeyMap[_EffectLegSummary],
+]:
+    if (
+        type(owner_and_attempt) is not tuple
+        or len(owner_and_attempt) != 2
+        or not isinstance(owner_and_attempt[0], VenueIdentityOwner)
+        or not isinstance(owner_and_attempt[1], VenueAttempt)
+    ):
+        raise TypeError("owner append must pair VenueIdentityOwner and VenueAttempt")
+    owner, attempt = cast(tuple[VenueIdentityOwner, VenueAttempt], owner_and_attempt)
+    if owner.leg_key != attempt.leg_key:
+        raise ValueError("owner and initial attempt must name the same leg")
+    leg_key = _leg_index_key(owner.leg_key)
+    if by_leg.get(leg_key) is not None or leg_current.get(leg_key) is not None:
+        raise ValueError("venue leg already has an owner")
+    current = _LegCurrent(attempt)
+    summary = summaries.get(_effect_index_key(owner.effect_id)) or _EffectLegSummary()
+    summary = replace(
+        summary,
+        owner_count=summary.owner_count + 1,
+        active_count=summary.active_count + 1,
+    )
+    return (
+        order.append(owner.leg_key, _leg_value_commitment(owner.leg_key)),
+        by_leg.insert_new(leg_key, owner, _owner_value_commitment(owner)),
+        leg_current.insert_new(leg_key, current, current.commitment),
+        _set_effect_leg_summary(summaries, owner.effect_id, summary),
+    )
+
+
+def _replace_attempt_value(
+    retained: _PersistentKeyMap[_LegCurrent],
+    attempt: object,
+) -> _PersistentKeyMap[_LegCurrent]:
+    if not isinstance(attempt, VenueAttempt):
+        raise TypeError("attempt replacement must be VenueAttempt")
+    key = _leg_index_key(attempt.leg_key)
+    prior = retained.get(key)
+    if prior is None or prior.attempt is None:
+        raise ValueError("attempt replacement requires one active leg")
+    current = _LegCurrent(attempt)
+    return retained.replace_existing(key, current, current.commitment)
+
+
+def _upsert_binding_value(
+    order: _PersistentSequence[PositionScope],
+    by_scope: _PersistentKeyMap[VenueExecutionBinding],
+    binding: object,
+) -> tuple[
+    _PersistentSequence[PositionScope],
+    _PersistentKeyMap[VenueExecutionBinding],
+]:
+    if not isinstance(binding, VenueExecutionBinding):
+        raise TypeError("binding upsert must be VenueExecutionBinding")
+    key = _position_scope_index_key(binding.position_scope)
+    commitment = _binding_value_commitment(binding)
+    if by_scope.get(key) is None:
+        return (
+            order.append(
+                binding.position_scope,
+                _binding_scope_value_commitment(binding.position_scope),
+            ),
+            by_scope.insert_new(key, binding, commitment),
+        )
+    return order, by_scope.replace_existing(key, binding, commitment)
+
+
+def _closure_is_finalization_ready(
+    effect: BrokerEffect,
+    closure: VenueTerminalClosure | None,
+    covered_cumulative: int,
+) -> bool:
+    if closure is None or closure.cumulative_quantity.value != covered_cumulative:
+        return False
+    is_filled = (
+        closure.status is VenueAttemptState.FILLED
+        or closure.broker_terminal_state is VenueAttemptState.FILLED
+    )
+    return not is_filled or covered_cumulative == effect.scope.quantity.value
+
+
+def _append_reconciliation_value(
+    ledger: _PersistentSequence[Any],
+    by_input: _PersistentKeyMap[Any],
+    unresolved_by_leg: _PersistentKeyMap[int],
+    reconciliation_by_effect: _PersistentKeyMap[int],
+    canonical_revision_by_leg: _PersistentKeyMap[int],
+    coverage_by_leg: _PersistentKeyMap[_CoverageLegCurrent],
+    coverage_by_effect: _PersistentKeyMap[int],
+    record: object,
+) -> tuple[
+    _PersistentSequence[Any],
+    _PersistentKeyMap[Any],
+    _PersistentKeyMap[int],
+    _PersistentKeyMap[int],
+    _PersistentKeyMap[int],
+    _PersistentKeyMap[_CoverageLegCurrent],
+    _PersistentKeyMap[int],
+]:
+    """Append one reconciliation and advance its bounded current indexes."""
+
+    from .recovery import ReconciliationRecord, RevisionReconciliationRecord
+
+    if not isinstance(record, (ReconciliationRecord, RevisionReconciliationRecord)):
+        raise TypeError("reconciliation append must be a typed reconciliation record")
+    input_key = _input_index_key(record.input_id)
+    if by_input.get(input_key) is not None:
+        raise ValueError("reconciliation input identity already exists")
+    commitment = _reconciliation_value_commitment(record)
+    ledger = ledger.append(record, commitment)
+    by_input = by_input.insert_new(input_key, record, commitment)
+
+    leg_key = _leg_index_key(record.leg_key)
+    unresolved_by_leg = _set_int_index(
+        unresolved_by_leg,
+        leg_key,
+        (unresolved_by_leg.get(leg_key) or 0) + 1,
+        domain=b"execution-core/unresolved-reconciliation-count/v1",
+    )
+    effect_key = _effect_index_key(record.effect_id)
+    reconciliation_by_effect = _set_int_index(
+        reconciliation_by_effect,
+        effect_key,
+        (reconciliation_by_effect.get(effect_key) or 0) + 1,
+        domain=b"execution-core/reconciliation-count-by-effect/v1",
+    )
+    if isinstance(record, RevisionReconciliationRecord) and record.canonical_applied:
+        canonical_revision_by_leg = _set_int_index(
+            canonical_revision_by_leg,
+            leg_key,
+            (canonical_revision_by_leg.get(leg_key) or 0) + 1,
+            domain=b"execution-core/canonical-revision-count/v1",
+        )
+        current = coverage_by_leg.get(leg_key) or _CoverageLegCurrent()
+        resulting_total = record.resulting_venue_cumulative_quantity.value
+        delta = resulting_total - current.canonical_total
+        coverage_by_leg = _set_leg_current(
+            coverage_by_leg,
+            record.leg_key,
+            replace(current, canonical_total=resulting_total),
+        )
+        coverage_by_effect = _set_int_index(
+            coverage_by_effect,
+            effect_key,
+            (coverage_by_effect.get(effect_key) or 0) + delta,
+            domain=b"execution-core/coverage-effect-total/v1",
+        )
+    return (
+        ledger,
+        by_input,
+        unresolved_by_leg,
+        reconciliation_by_effect,
+        canonical_revision_by_leg,
+        coverage_by_leg,
+        coverage_by_effect,
+    )
+
+
+def _append_execution_reconciliation_value(
+    ledger: _PersistentSequence[ExecutionRegistryReconciliationRecord],
+    by_input: _PersistentKeyMap[ExecutionRegistryReconciliationRecord],
+    unresolved_by_scope: _PersistentKeyMap[int],
+    record: object,
+) -> tuple[
+    _PersistentSequence[ExecutionRegistryReconciliationRecord],
+    _PersistentKeyMap[ExecutionRegistryReconciliationRecord],
+    _PersistentKeyMap[int],
+]:
+    """Append one registry outcome and advance its unresolved-scope index."""
+
+    if type(record) not in {
+        _ResolvedRegistryProjectionOutcome,
+        _UnresolvedRegistryAdvanceOutcome,
+    }:
+        raise TypeError(
+            "execution reconciliation append must be an exact registry outcome"
+        )
+    record = cast(ExecutionRegistryReconciliationRecord, record)
+    input_key = _input_index_key(record.input_id)
+    if by_input.get(input_key) is not None:
+        raise ValueError("execution reconciliation input identity already exists")
+    commitment = _execution_reconciliation_value_commitment(record)
+    ledger = ledger.append(record, commitment)
+    by_input = by_input.insert_new(input_key, record, commitment)
+    if not record.attribution_resolved:
+        scope_key = _position_scope_index_key(record.position_scope)
+        unresolved_by_scope = _set_int_index(
+            unresolved_by_scope,
+            scope_key,
+            (unresolved_by_scope.get(scope_key) or 0) + 1,
+            domain=b"execution-core/unresolved-execution-reconciliation-count/v1",
+        )
+    return ledger, by_input, unresolved_by_scope
+
+
+def _evolve_coverage_current_indexes(
+    current: VenueRecoveryBook,
+    human_coverage_ledger: _PersistentSequence[Any],
+    broker_coverage_ledger: _PersistentSequence[Any],
+    *,
+    human_append: object | None,
+    human_replace: object | None,
+    broker_append: object | None,
+    broker_replace: object | None,
+) -> tuple[
+    _PersistentKeyMap[_CoverageLegCurrent],
+    _PersistentKeyMap[int],
+    _PersistentKeyMap[int],
+    _PersistentKeyMap[int],
+    _PersistentKeyMap[int],
+]:
+    """Advance bounded coverage lookup and aggregate indexes."""
+
+    from .recovery import HumanCoverage, _BrokerCoverage
+
+    legs = current._coverage_current_by_leg
+    effect_totals = current._coverage_total_by_effect
+    broker_scope_counts = current._attributed_broker_root_count_by_scope
+    human_intervals = current._human_interval_index
+    human_broker_facts = current._human_broker_fact_index
+
+    if human_append is not None:
+        if not isinstance(human_append, HumanCoverage):
+            raise TypeError("human coverage append must be HumanCoverage")
+        coverage = human_append
+        index = human_coverage_ledger.length - 1
+        interval_key = _coverage_interval_index_key(
+            coverage.leg_key,
+            coverage.fact.prior_cumulative_quantity.value,
+            coverage.fact.resulting_cumulative_quantity.value,
+        )
+        if human_intervals.get(interval_key) is not None:
+            raise ValueError("human coverage interval already exists")
+        human_intervals = human_intervals.insert_new(
+            interval_key,
+            index,
+            _commit_parts(
+                b"execution-core/human-coverage-interval-index/v1",
+                interval_key,
+                _encode_text(str(index)),
+            ),
+        )
+        width = coverage.fact.quantity.value
+        leg = current._coverage_current(coverage.leg_key)
+        legs = _set_leg_current(
+            legs,
+            coverage.leg_key,
+            replace(
+                leg,
+                frontier=max(
+                    leg.frontier,
+                    coverage.fact.resulting_cumulative_quantity.value,
+                ),
+                canonical_total=leg.canonical_total + width,
+                tail_root_key=coverage.fact.root_key,
+            ),
+        )
+        effect_key = _effect_index_key(coverage.effect_id)
+        effect_totals = _set_int_index(
+            effect_totals,
+            effect_key,
+            (effect_totals.get(effect_key) or 0) + width,
+            domain=b"execution-core/coverage-effect-total/v1",
+        )
+
+    if human_replace is not None:
+        prior, replacement = cast(tuple[object, object], human_replace)
+        if not isinstance(prior, HumanCoverage) or not isinstance(
+            replacement,
+            HumanCoverage,
+        ):
+            raise TypeError("human coverage replacement must retain HumanCoverage")
+        if prior.broker_fact is None and replacement.broker_fact is not None:
+            human_index = current._human_coverage_by_root.get(
+                _coverage_root_index_key(prior.fact.root_key)
+            )
+            assert human_index is not None
+            fact_key = _fact_index_key(replacement.broker_fact.key)
+            if human_broker_facts.get(fact_key) is not None:
+                raise ValueError("broker fact already corroborates another interval")
+            human_broker_facts = human_broker_facts.insert_new(
+                fact_key,
+                human_index,
+                _commit_parts(
+                    b"execution-core/human-broker-fact-index/v1",
+                    fact_key,
+                    _encode_text(str(human_index)),
+                ),
+            )
+
+    if broker_append is not None:
+        if not isinstance(broker_append, _BrokerCoverage):
+            raise TypeError("broker coverage append must be _BrokerCoverage")
+        broker_coverage = broker_append
+        width = (
+            broker_coverage.resulting_cumulative_quantity.value
+            - broker_coverage.prior_cumulative_quantity.value
+        )
+        leg = current._coverage_current(broker_coverage.leg_key)
+        legs = _set_leg_current(
+            legs,
+            broker_coverage.leg_key,
+            replace(
+                leg,
+                frontier=max(
+                    leg.frontier,
+                    broker_coverage.resulting_cumulative_quantity.value,
+                ),
+                canonical_total=leg.canonical_total + width,
+                tail_root_key=broker_coverage.fact.root_key,
+                inexact_broker_count=(
+                    leg.inexact_broker_count
+                    + (0 if broker_coverage.mapping_exact else 1)
+                ),
+            ),
+        )
+        effect_key = _effect_index_key(broker_coverage.effect_id)
+        effect_totals = _set_int_index(
+            effect_totals,
+            effect_key,
+            (effect_totals.get(effect_key) or 0) + width,
+            domain=b"execution-core/coverage-effect-total/v1",
+        )
+        scope_key = _execution_scope_index_key(broker_coverage.fact.scope)
+        broker_scope_counts = _set_int_index(
+            broker_scope_counts,
+            scope_key,
+            (broker_scope_counts.get(scope_key) or 0) + 1,
+            domain=b"execution-core/attributed-broker-root-count/v1",
+        )
+
+    if broker_replace is not None:
+        prior, replacement = cast(tuple[object, object], broker_replace)
+        if not isinstance(prior, _BrokerCoverage) or not isinstance(
+            replacement,
+            _BrokerCoverage,
+        ):
+            raise TypeError("broker coverage replacement must retain _BrokerCoverage")
+        leg = current._coverage_current(prior.leg_key)
+        delta = (
+            replacement.resulting_cumulative_quantity.value
+            - prior.resulting_cumulative_quantity.value
+        )
+        legs = _set_leg_current(
+            legs,
+            prior.leg_key,
+            replace(
+                leg,
+                frontier=(
+                    replacement.resulting_cumulative_quantity.value
+                    if leg.tail_root_key == prior.fact.root_key and delta
+                    else leg.frontier
+                ),
+                canonical_total=leg.canonical_total + delta,
+                inexact_broker_count=(
+                    leg.inexact_broker_count
+                    - (0 if prior.mapping_exact else 1)
+                    + (0 if replacement.mapping_exact else 1)
+                ),
+            ),
+        )
+        effect_key = _effect_index_key(prior.effect_id)
+        effect_totals = _set_int_index(
+            effect_totals,
+            effect_key,
+            (effect_totals.get(effect_key) or 0) + delta,
+            domain=b"execution-core/coverage-effect-total/v1",
+        )
+
+    return (
+        legs,
+        effect_totals,
+        broker_scope_counts,
+        human_intervals,
+        human_broker_facts,
+    )
+
+
+def _audit_build_coverage_current_indexes(
+    human_coverages: tuple[object, ...],
+    broker_coverages: tuple[object, ...],
+) -> tuple[
+    _PersistentKeyMap[_CoverageLegCurrent],
+    _PersistentKeyMap[int],
+    _PersistentKeyMap[int],
+    _PersistentKeyMap[int],
+    _PersistentKeyMap[int],
+]:
+    """Rebuild bounded current indexes during the explicit slow audit fold."""
+
+    from .recovery import HumanCoverage, _BrokerCoverage
+
+    leg_values: dict[VenueLegKey, _CoverageLegCurrent] = {}
+    effect_values: dict[EffectId, int] = {}
+    broker_scope_values: dict[ExecutionScope, int] = {}
+    interval_values: list[tuple[bytes, int]] = []
+    broker_fact_values: list[tuple[bytes, int]] = []
+
+    for index, value in enumerate(human_coverages):
+        if not isinstance(value, HumanCoverage):
+            raise TypeError("human coverage audit value has the wrong type")
+        width = value.fact.quantity.value
+        prior = value.fact.prior_cumulative_quantity.value
+        resulting = value.fact.resulting_cumulative_quantity.value
+        current = leg_values.get(value.leg_key, _CoverageLegCurrent())
+        if prior >= current.frontier or current.tail_root_key is None:
+            tail_root_key = value.fact.root_key
+        else:
+            tail_root_key = current.tail_root_key
+        leg_values[value.leg_key] = replace(
+            current,
+            frontier=max(current.frontier, resulting),
+            canonical_total=current.canonical_total + width,
+            tail_root_key=tail_root_key,
+        )
+        effect_values[value.effect_id] = effect_values.get(value.effect_id, 0) + width
+        interval_values.append(
+            (
+                _coverage_interval_index_key(value.leg_key, prior, resulting),
+                index,
+            )
+        )
+        if value.broker_fact is not None:
+            broker_fact_values.append((_fact_index_key(value.broker_fact.key), index))
+
+    for value in broker_coverages:
+        if not isinstance(value, _BrokerCoverage):
+            raise TypeError("broker coverage audit value has the wrong type")
+        prior = value.prior_cumulative_quantity.value
+        resulting = value.resulting_cumulative_quantity.value
+        width = resulting - prior
+        current = leg_values.get(value.leg_key, _CoverageLegCurrent())
+        if prior >= current.frontier or current.tail_root_key is None:
+            tail_root_key = value.fact.root_key
+        else:
+            tail_root_key = current.tail_root_key
+        leg_values[value.leg_key] = replace(
+            current,
+            frontier=max(current.frontier, resulting),
+            canonical_total=current.canonical_total + width,
+            tail_root_key=tail_root_key,
+            inexact_broker_count=(
+                current.inexact_broker_count + (0 if value.mapping_exact else 1)
+            ),
+        )
+        effect_values[value.effect_id] = effect_values.get(value.effect_id, 0) + width
+        broker_scope_values[value.fact.scope] = (
+            broker_scope_values.get(value.fact.scope, 0) + 1
+        )
+
+    leg_index: _PersistentKeyMap[_CoverageLegCurrent] = _PersistentKeyMap.empty()
+    for leg_key, current in leg_values.items():
+        leg_index = _set_leg_current(leg_index, leg_key, current)
+    effect_index: _PersistentKeyMap[int] = _PersistentKeyMap.empty()
+    for effect_id, total in effect_values.items():
+        effect_index = _set_int_index(
+            effect_index,
+            _effect_index_key(effect_id),
+            total,
+            domain=b"execution-core/coverage-effect-total/v1",
+        )
+    broker_scope_index: _PersistentKeyMap[int] = _PersistentKeyMap.empty()
+    for execution_scope, count in broker_scope_values.items():
+        broker_scope_index = _set_int_index(
+            broker_scope_index,
+            _execution_scope_index_key(execution_scope),
+            count,
+            domain=b"execution-core/attributed-broker-root-count/v1",
+        )
+    interval_index: _PersistentKeyMap[int] = _PersistentKeyMap.empty()
+    for key, index in interval_values:
+        if interval_index.get(key) is not None:
+            raise ValueError("human coverage intervals must be unique")
+        interval_index = interval_index.insert_new(
+            key,
+            index,
+            _commit_parts(
+                b"execution-core/human-coverage-interval-index/v1",
+                key,
+                _encode_text(str(index)),
+            ),
+        )
+    broker_fact_index: _PersistentKeyMap[int] = _PersistentKeyMap.empty()
+    for key, index in broker_fact_values:
+        if broker_fact_index.get(key) is not None:
+            raise ValueError("broker fact cannot corroborate multiple intervals")
+        broker_fact_index = broker_fact_index.insert_new(
+            key,
+            index,
+            _commit_parts(
+                b"execution-core/human-broker-fact-index/v1",
+                key,
+                _encode_text(str(index)),
+            ),
+        )
+    return (
+        leg_index,
+        effect_index,
+        broker_scope_index,
+        interval_index,
+        broker_fact_index,
+    )
+
+
+def _append_input_proof(
+    book: VenueRecoveryBook,
+    item: object,
+) -> tuple[
+    _PersistentSequence[VenueInputRecord],
+    _PersistentKeyMap[VenueInputRecord],
+    _PersistentKeyMap[VenueInputRecord],
+    _PersistentKeyMap[VenueInputRecord],
+]:
+    input_id = _require_input_id("input_id", getattr(item, "input_id", None))
+    input_key = _input_index_key(input_id)
+    if book._input_by_id.get(input_key) is not None:
+        raise ValueError("input identity already exists")
+    semantic_source = book._direct_semantic_input(item)
+    record = VenueInputRecord(
+        input_id=input_id,
+        item=item,
+        semantic_alias_of=(
+            None if semantic_source is None else semantic_source.input_id
+        ),
+    )
+    record_commitment = _input_record_commitment(record)
+    next_ledger = book._input_ledger.append(record, record_commitment)
+    next_by_id = book._input_by_id.insert_new(
+        input_key,
+        record,
+        record_commitment,
+    )
+    next_semantics = book._direct_input_by_semantic
+    if semantic_source is None:
+        next_semantics = next_semantics.insert_new(
+            _semantic_input_key(item),
+            record,
+            record_commitment,
+        )
+    next_facts = book._first_input_by_fact
+    fact_key = getattr(getattr(item, "fact", None), "key", None)
+    if isinstance(fact_key, ExecutionFactKey):
+        encoded_fact_key = _fact_index_key(fact_key)
+        if next_facts.get(encoded_fact_key) is None:
+            next_facts = next_facts.insert_new(
+                encoded_fact_key,
+                record,
+                record_commitment,
+            )
+    return (
+        next_ledger,
+        next_by_id,
+        next_semantics,
+        next_facts,
+    )
+
+
+def _advance_economic_high_water(
+    retained: _PersistentKeyMap[int],
+    item: object,
+    execution: ExecutionSnapshot,
+) -> _PersistentKeyMap[int]:
+    """Index only economics proven canonical in the resulting execution pair."""
+
+    from .recovery import (
+        IngestHumanAttestedFill,
+        RecordBrokerFillEvidence,
+        RecordBrokerRevisionEvidence,
+    )
+
+    fact = getattr(item, "fact", None)
+    if not isinstance(
+        item,
+        (
+            IngestHumanAttestedFill,
+            RecordBrokerFillEvidence,
+            RecordBrokerRevisionEvidence,
+        ),
+    ) or not isinstance(
+        fact,
+        (
+            BrokerFillFact,
+            BrokerTradeCorrectFact,
+            BrokerTradeBustFact,
+            HumanAttestedFillFact,
+        ),
+    ):
+        return retained
+    if not _execution_head_matches_fact(
+        execution.root_heads.get(fact.root_key),
+        fact,
+    ):
+        return retained
+
+    if isinstance(item, IngestHumanAttestedFill):
+        leg_key = item.fact.leg_key
+        candidate = item.fact.resulting_cumulative_quantity.value
+    elif isinstance(item, RecordBrokerFillEvidence):
+        leg_key = item.leg_key
+        candidate = max(
+            item.prior_cumulative_quantity.value,
+            item.resulting_cumulative_quantity.value,
+        )
+    else:
+        leg_key = item.leg_key
+        candidate = max(
+            item.prior_venue_cumulative_quantity.value,
+            item.resulting_venue_cumulative_quantity.value,
+        )
+    encoded_leg_key = _leg_index_key(leg_key)
+    prior_high_water = retained.get(encoded_leg_key)
+    next_high_water = max(prior_high_water or 0, candidate)
+    if prior_high_water == next_high_water:
+        return retained
+    commitment = _commit_parts(
+        b"execution-core/venue-economic-high-water/v1",
+        _encode_text(str(next_high_water)),
+    )
+    if prior_high_water is None:
+        return retained.insert_new(
+            encoded_leg_key,
+            next_high_water,
+            commitment,
+        )
+    return retained.replace_existing(
+        encoded_leg_key,
+        next_high_water,
+        commitment,
+    )
+
+
+def _append_closure_proof(
+    book: VenueRecoveryBook,
+    closure: VenueTerminalClosure,
+) -> tuple[
+    _PersistentSequence[VenueTerminalClosure],
+    _PersistentKeyMap[VenueTerminalClosure],
+    _PersistentKeyMap[VenueTerminalClosure],
+]:
+    closure_key = _closure_index_key(closure.closure_id)
+    if book._closure_by_id.get(closure_key) is not None:
+        raise ValueError("closure identity already exists")
+    leg_key = _leg_index_key(closure.leg_key)
+    prior = book._closure_head_by_leg.get(leg_key)
+    expected_ordinal = 1 if prior is None else prior.ordinal + 1
+    expected_predecessor = None if prior is None else prior.closure_id
+    if (
+        closure.ordinal != expected_ordinal
+        or closure.predecessor_closure_id != expected_predecessor
+    ):
+        raise ValueError("closure must name the indexed current predecessor")
+    if closure.kind is VenueClosureKind.BROKER_ECONOMIC:
+        if prior is None or (
+            closure.status is not prior.status
+            or closure.broker_terminal_state is not prior.broker_terminal_state
+            or closure.observed_cumulative_quantity
+            != prior.observed_cumulative_quantity
+        ):
+            raise ValueError(
+                "broker-economic closure must preserve indexed terminal identity"
+            )
+    closure_commitment = _closure_commitment(closure)
+    next_ledger = book._closure_ledger.append(closure, closure_commitment)
+    next_by_id = book._closure_by_id.insert_new(
+        closure_key,
+        closure,
+        closure_commitment,
+    )
+    if prior is None:
+        next_heads = book._closure_head_by_leg.insert_new(
+            leg_key,
+            closure,
+            closure_commitment,
+        )
+    else:
+        next_heads = book._closure_head_by_leg.replace_existing(
+            leg_key,
+            closure,
+            closure_commitment,
+        )
+    return next_ledger, next_by_id, next_heads
+
+
+def _audit_hydrate_book(
     book: VenueRecoveryBook,
     execution: ExecutionSnapshot,
-) -> tuple[VenueExecutionBinding, ...]:
-    next_binding = VenueExecutionBinding(
+    **changes: Any,
+) -> VenueRecoveryBook:
+    """Explicit slow reconstruction with a complete fold and exact pair proof."""
+
+    if type(book) is not VenueRecoveryBook:
+        raise TypeError("book must be the exact opaque VenueRecoveryBook type")
+    if type(execution) is not ExecutionSnapshot:
+        raise TypeError("execution must be the exact ExecutionSnapshot type")
+    _require_execution_components(
+        execution.position,
+        execution.integrity,
+        execution.root_heads,
+        execution.seen_facts,
+    )
+
+    allowed = _EVOLVABLE_BOOK_FIELDS | {
+        "effects",
+        "claims",
+        "owners",
+        "active_attempts",
+        "closure_heads",
+        "execution_bindings",
+        "closure_history",
+        "input_records",
+        "human_coverages",
+        "broker_coverages",
+        "reconciliations",
+        "execution_reconciliations",
+    }
+    unknown = set(changes) - allowed
+    if unknown:
+        raise TypeError(f"unsupported audit hydration fields: {sorted(unknown)!r}")
+    if (
+        "execution_registry_commitment" in changes
+        and "execution_registry_count" not in changes
+        and changes["execution_registry_commitment"] == execution.seen_facts.commitment
+    ):
+        changes["execution_registry_count"] = execution.seen_facts.count
+    closure_history = changes.pop("closure_history", book.closure_history)
+    effects = changes.pop("effects", book.effects)
+    claims = changes.pop("claims", book.claims)
+    owners = changes.pop("owners", book.owners)
+    active_attempts = changes.pop("active_attempts", book.active_attempts)
+    closure_heads = changes.pop("closure_heads", book.closure_heads)
+    execution_bindings = changes.pop(
+        "execution_bindings",
+        book.execution_bindings,
+    )
+    input_records = changes.pop("input_records", book.input_records)
+    human_coverages = changes.pop("human_coverages", book.human_coverages)
+    broker_coverages = changes.pop("broker_coverages", book.broker_coverages)
+    reconciliations = changes.pop("reconciliations", book.reconciliations)
+    execution_reconciliations = changes.pop(
+        "execution_reconciliations",
+        book.execution_reconciliations,
+    )
+    _require_tuple("closure_history", closure_history)
+    _require_tuple("effects", effects)
+    _require_tuple("claims", claims)
+    _require_tuple("owners", owners)
+    _require_tuple("active_attempts", active_attempts)
+    _require_tuple("closure_heads", closure_heads)
+    _require_tuple("execution_bindings", execution_bindings)
+    _require_tuple("input_records", input_records)
+    _require_tuple("human_coverages", human_coverages)
+    _require_tuple("broker_coverages", broker_coverages)
+    _require_tuple("reconciliations", reconciliations)
+    _require_tuple("execution_reconciliations", execution_reconciliations)
+    if any(
+        type(entry)
+        not in {
+            _ResolvedRegistryProjectionOutcome,
+            _UnresolvedRegistryAdvanceOutcome,
+        }
+        for entry in execution_reconciliations
+    ):
+        raise TypeError(
+            "execution reconciliation entries must be exact outcome types"
+        )
+
+    closure_ledger: _PersistentSequence[VenueTerminalClosure] = (
+        _PersistentSequence.empty()
+    )
+    closure_by_id: _PersistentKeyMap[VenueTerminalClosure] = _PersistentKeyMap.empty()
+    closure_heads_by_leg: _PersistentKeyMap[VenueTerminalClosure] = (
+        _PersistentKeyMap.empty()
+    )
+    for closure in closure_history:
+        _require("closure", closure, VenueTerminalClosure)
+        closure_key = _closure_index_key(closure.closure_id)
+        if closure_by_id.get(closure_key) is not None:
+            raise ValueError("closure identities must be unique")
+        commitment = _closure_commitment(closure)
+        closure_ledger = closure_ledger.append(closure, commitment)
+        closure_by_id = closure_by_id.insert_new(
+            closure_key,
+            closure,
+            commitment,
+        )
+        leg_key = _leg_index_key(closure.leg_key)
+        if closure_heads_by_leg.get(leg_key) is None:
+            closure_heads_by_leg = closure_heads_by_leg.insert_new(
+                leg_key,
+                closure,
+                commitment,
+            )
+        else:
+            closure_heads_by_leg = closure_heads_by_leg.replace_existing(
+                leg_key,
+                closure,
+                commitment,
+            )
+
+    authority_epoch_by_scope: _PersistentKeyMap[int] = _PersistentKeyMap.empty()
+    account_authority_epoch = sum(
+        1
+        for reconciliation in execution_reconciliations
+        if not reconciliation.attribution_resolved
+    )
+    effect_order: _PersistentSequence[EffectId] = _PersistentSequence.empty()
+    effect_by_id: _PersistentKeyMap[_EffectCurrent] = _PersistentKeyMap.empty()
+    effect_by_request_occurrence: _PersistentKeyMap[EffectId] = (
+        _PersistentKeyMap.empty()
+    )
+    effect_by_client_order: _PersistentKeyMap[EffectId] = _PersistentKeyMap.empty()
+    contradiction_order_by_effect: _PersistentKeyMap[
+        _PersistentSequence[AcceptanceContradiction]
+    ] = _PersistentKeyMap.empty()
+    for effect in effects:
+        (
+            effect_order,
+            effect_by_id,
+            effect_by_request_occurrence,
+            effect_by_client_order,
+        ) = _append_effect_value(
+            effect_order,
+            effect_by_id,
+            effect_by_request_occurrence,
+            effect_by_client_order,
+            authority_epoch_by_scope,
+            account_authority_epoch,
+            effect,
+        )
+        for contradiction in effect.contradiction_evidence:
+            contradiction_order_by_effect = _append_contradiction_value(
+                contradiction_order_by_effect,
+                effect.effect_id,
+                contradiction,
+            )
+
+    claim_order: _PersistentSequence[EffectId] = _PersistentSequence.empty()
+    claim_by_effect: _PersistentKeyMap[DispatchClaim] = _PersistentKeyMap.empty()
+    claim_by_occurrence: _PersistentKeyMap[EffectId] = _PersistentKeyMap.empty()
+    for claim in claims:
+        claim_order, claim_by_effect, claim_by_occurrence = _append_claim_value(
+            claim_order,
+            claim_by_effect,
+            claim_by_occurrence,
+            claim,
+        )
+
+    active_by_leg: dict[VenueLegKey, VenueAttempt] = {}
+    for attempt in active_attempts:
+        _require("active attempt", attempt, VenueAttempt)
+        if attempt.leg_key in active_by_leg:
+            raise ValueError("active attempt legs must be unique")
+        active_by_leg[attempt.leg_key] = attempt
+    owner_order: _PersistentSequence[VenueLegKey] = _PersistentSequence.empty()
+    owner_by_leg: _PersistentKeyMap[VenueIdentityOwner] = _PersistentKeyMap.empty()
+    leg_current_by_leg: _PersistentKeyMap[_LegCurrent] = _PersistentKeyMap.empty()
+    leg_summary_by_effect: _PersistentKeyMap[_EffectLegSummary] = (
+        _PersistentKeyMap.empty()
+    )
+    owner_keys: set[VenueLegKey] = set()
+    for owner in owners:
+        _require("owner", owner, VenueIdentityOwner)
+        if owner.leg_key in owner_keys:
+            raise ValueError("owner legs must be unique")
+        owner_keys.add(owner.leg_key)
+        encoded_leg = _leg_index_key(owner.leg_key)
+        owner_order = owner_order.append(
+            owner.leg_key,
+            _leg_value_commitment(owner.leg_key),
+        )
+        owner_by_leg = owner_by_leg.insert_new(
+            encoded_leg,
+            owner,
+            _owner_value_commitment(owner),
+        )
+        leg_current = _LegCurrent(active_by_leg.get(owner.leg_key))
+        leg_current_by_leg = leg_current_by_leg.insert_new(
+            encoded_leg,
+            leg_current,
+            leg_current.commitment,
+        )
+        summary = (
+            leg_summary_by_effect.get(_effect_index_key(owner.effect_id))
+            or _EffectLegSummary()
+        )
+        leg_summary_by_effect = _set_effect_leg_summary(
+            leg_summary_by_effect,
+            owner.effect_id,
+            replace(
+                summary,
+                owner_count=summary.owner_count + 1,
+                active_count=(
+                    summary.active_count + (1 if owner.leg_key in active_by_leg else 0)
+                ),
+            ),
+        )
+    if set(active_by_leg) - owner_keys:
+        raise ValueError("active attempts require retained owners")
+    if any(closure.leg_key not in owner_keys for closure in closure_history):
+        raise ValueError("closure history requires retained owners")
+    derived_closure_heads = tuple(
+        closure_heads_by_leg.get(_leg_index_key(owner.leg_key))
+        for owner in owners
+        if closure_heads_by_leg.get(_leg_index_key(owner.leg_key)) is not None
+    )
+    if derived_closure_heads != closure_heads:
+        raise ValueError("closure heads must equal the current closure history heads")
+
+    binding_order: _PersistentSequence[PositionScope] = _PersistentSequence.empty()
+    binding_by_scope: _PersistentKeyMap[VenueExecutionBinding] = (
+        _PersistentKeyMap.empty()
+    )
+    for binding in execution_bindings:
+        if not isinstance(binding, VenueExecutionBinding):
+            raise TypeError("execution binding must be VenueExecutionBinding")
+        if (
+            binding_by_scope.get(_position_scope_index_key(binding.position_scope))
+            is not None
+        ):
+            raise ValueError("execution binding scopes must be unique")
+        binding_order, binding_by_scope = _upsert_binding_value(
+            binding_order,
+            binding_by_scope,
+            binding,
+        )
+
+    input_ledger: _PersistentSequence[VenueInputRecord] = _PersistentSequence.empty()
+    input_by_id: _PersistentKeyMap[VenueInputRecord] = _PersistentKeyMap.empty()
+    direct_semantics: _PersistentKeyMap[VenueInputRecord] = _PersistentKeyMap.empty()
+    first_inputs_by_fact: _PersistentKeyMap[VenueInputRecord] = (
+        _PersistentKeyMap.empty()
+    )
+    economic_high_water_by_leg: _PersistentKeyMap[int] = _PersistentKeyMap.empty()
+    from .recovery import (
+        HumanCoverage,
+        IngestHumanAttestedFill,
+        RecordBrokerFillEvidence,
+        RecordBrokerRevisionEvidence,
+        _BrokerCoverage,
+    )
+
+    for record in input_records:
+        _require("input record", record, VenueInputRecord)
+        key = _input_index_key(record.input_id)
+        if input_by_id.get(key) is not None:
+            raise ValueError("input identities must be unique")
+        commitment = _input_record_commitment(record)
+        if record.semantic_alias_of is None:
+            semantic_key = _semantic_input_key(record.item)
+            if direct_semantics.get(semantic_key) is not None:
+                raise ValueError("duplicate direct semantic input")
+            direct_semantics = direct_semantics.insert_new(
+                semantic_key,
+                record,
+                commitment,
+            )
+        input_ledger = input_ledger.append(record, commitment)
+        input_by_id = input_by_id.insert_new(key, record, commitment)
+        fact_key = getattr(getattr(record.item, "fact", None), "key", None)
+        if isinstance(fact_key, ExecutionFactKey):
+            encoded_fact_key = _fact_index_key(fact_key)
+            if first_inputs_by_fact.get(encoded_fact_key) is None:
+                first_inputs_by_fact = first_inputs_by_fact.insert_new(
+                    encoded_fact_key,
+                    record,
+                    commitment,
+                )
+
+    human_coverage_ledger: _PersistentSequence[Any] = _PersistentSequence.empty()
+    human_coverage_by_root: _PersistentKeyMap[int] = _PersistentKeyMap.empty()
+    for coverage in human_coverages:
+        _require("human coverage", coverage, HumanCoverage)
+        (
+            human_coverage_ledger,
+            human_coverage_by_root,
+        ) = _append_coverage_value(
+            human_coverage_ledger,
+            human_coverage_by_root,
+            coverage,
+        )
+    broker_coverage_ledger: _PersistentSequence[Any] = _PersistentSequence.empty()
+    broker_coverage_by_root: _PersistentKeyMap[int] = _PersistentKeyMap.empty()
+    for coverage in broker_coverages:
+        _require("broker coverage", coverage, _BrokerCoverage)
+        (
+            broker_coverage_ledger,
+            broker_coverage_by_root,
+        ) = _append_coverage_value(
+            broker_coverage_ledger,
+            broker_coverage_by_root,
+            coverage,
+        )
+    (
+        coverage_current_by_leg,
+        coverage_total_by_effect,
+        attributed_broker_root_count_by_scope,
+        human_interval_index,
+        human_broker_fact_index,
+    ) = _audit_build_coverage_current_indexes(
+        human_coverages,
+        broker_coverages,
+    )
+
+    reconciliation_ledger: _PersistentSequence[Any] = _PersistentSequence.empty()
+    reconciliation_by_input: _PersistentKeyMap[Any] = _PersistentKeyMap.empty()
+    unresolved_reconciliation_count_by_leg: _PersistentKeyMap[int] = (
+        _PersistentKeyMap.empty()
+    )
+    reconciliation_count_by_effect: _PersistentKeyMap[int] = _PersistentKeyMap.empty()
+    canonical_revision_count_by_leg: _PersistentKeyMap[int] = _PersistentKeyMap.empty()
+    for reconciliation in reconciliations:
+        (
+            reconciliation_ledger,
+            reconciliation_by_input,
+            unresolved_reconciliation_count_by_leg,
+            reconciliation_count_by_effect,
+            canonical_revision_count_by_leg,
+            coverage_current_by_leg,
+            coverage_total_by_effect,
+        ) = _append_reconciliation_value(
+            reconciliation_ledger,
+            reconciliation_by_input,
+            unresolved_reconciliation_count_by_leg,
+            reconciliation_count_by_effect,
+            canonical_revision_count_by_leg,
+            coverage_current_by_leg,
+            coverage_total_by_effect,
+            reconciliation,
+        )
+
+    execution_reconciliation_ledger: _PersistentSequence[
+        ExecutionRegistryReconciliationRecord
+    ] = _PersistentSequence.empty()
+    execution_reconciliation_by_input: _PersistentKeyMap[
+        ExecutionRegistryReconciliationRecord
+    ] = _PersistentKeyMap.empty()
+    unresolved_execution_reconciliation_count_by_scope: _PersistentKeyMap[int] = (
+        _PersistentKeyMap.empty()
+    )
+    unresolved_account_execution_reconciliation_count = 0
+    for reconciliation in execution_reconciliations:
+        (
+            execution_reconciliation_ledger,
+            execution_reconciliation_by_input,
+            unresolved_execution_reconciliation_count_by_scope,
+        ) = _append_execution_reconciliation_value(
+            execution_reconciliation_ledger,
+            execution_reconciliation_by_input,
+            unresolved_execution_reconciliation_count_by_scope,
+            reconciliation,
+        )
+        if not reconciliation.attribution_resolved:
+            unresolved_account_execution_reconciliation_count += 1
+
+    for owner in owners:
+        head = closure_heads_by_leg.get(_leg_index_key(owner.leg_key))
+        current_effect = effect_by_id.get(_effect_index_key(owner.effect_id))
+        if current_effect is None:
+            continue
+        current_coverage = (
+            coverage_current_by_leg.get(_leg_index_key(owner.leg_key))
+            or _CoverageLegCurrent()
+        )
+        if not _closure_is_finalization_ready(
+            current_effect.effect,
+            head,
+            current_coverage.canonical_total,
+        ):
+            continue
+        summary = (
+            leg_summary_by_effect.get(_effect_index_key(owner.effect_id))
+            or _EffectLegSummary()
+        )
+        leg_summary_by_effect = _set_effect_leg_summary(
+            leg_summary_by_effect,
+            owner.effect_id,
+            replace(
+                summary,
+                finalization_ready_count=summary.finalization_ready_count + 1,
+            ),
+        )
+
+    result = object.__new__(VenueRecoveryBook)
+    for name in _EVOLVABLE_BOOK_FIELDS:
+        object.__setattr__(result, name, changes.get(name, getattr(book, name)))
+    object.__setattr__(result, "_effect_order", effect_order)
+    object.__setattr__(result, "_effect_by_id", effect_by_id)
+    object.__setattr__(
+        result,
+        "_effect_by_request_occurrence",
+        effect_by_request_occurrence,
+    )
+    object.__setattr__(
+        result,
+        "_effect_by_client_order",
+        effect_by_client_order,
+    )
+    object.__setattr__(
+        result,
+        "_authority_epoch_by_scope",
+        authority_epoch_by_scope,
+    )
+    object.__setattr__(result, "_account_authority_epoch", account_authority_epoch)
+    object.__setattr__(
+        result,
+        "_contradiction_order_by_effect",
+        contradiction_order_by_effect,
+    )
+    object.__setattr__(result, "_claim_order", claim_order)
+    object.__setattr__(result, "_claim_by_effect", claim_by_effect)
+    object.__setattr__(result, "_claim_by_occurrence", claim_by_occurrence)
+    object.__setattr__(result, "_owner_order", owner_order)
+    object.__setattr__(result, "_owner_by_leg", owner_by_leg)
+    object.__setattr__(result, "_leg_current_by_leg", leg_current_by_leg)
+    object.__setattr__(result, "_leg_summary_by_effect", leg_summary_by_effect)
+    object.__setattr__(result, "_binding_order", binding_order)
+    object.__setattr__(result, "_binding_by_scope", binding_by_scope)
+    object.__setattr__(result, "_closure_ledger", closure_ledger)
+    object.__setattr__(result, "_closure_by_id", closure_by_id)
+    object.__setattr__(result, "_closure_head_by_leg", closure_heads_by_leg)
+    object.__setattr__(result, "_input_ledger", input_ledger)
+    object.__setattr__(result, "_input_by_id", input_by_id)
+    object.__setattr__(result, "_direct_input_by_semantic", direct_semantics)
+    object.__setattr__(result, "_first_input_by_fact", first_inputs_by_fact)
+    object.__setattr__(
+        result,
+        "_economic_high_water_by_leg",
+        economic_high_water_by_leg,
+    )
+    object.__setattr__(result, "_human_coverage_ledger", human_coverage_ledger)
+    object.__setattr__(
+        result,
+        "_human_coverage_by_root",
+        human_coverage_by_root,
+    )
+    object.__setattr__(result, "_broker_coverage_ledger", broker_coverage_ledger)
+    object.__setattr__(
+        result,
+        "_broker_coverage_by_root",
+        broker_coverage_by_root,
+    )
+    object.__setattr__(
+        result,
+        "_coverage_provenance_by_scope",
+        _PersistentKeyMap.empty(),
+    )
+    object.__setattr__(
+        result,
+        "_coverage_current_by_leg",
+        coverage_current_by_leg,
+    )
+    object.__setattr__(
+        result,
+        "_coverage_total_by_effect",
+        coverage_total_by_effect,
+    )
+    object.__setattr__(
+        result,
+        "_attributed_broker_root_count_by_scope",
+        attributed_broker_root_count_by_scope,
+    )
+    object.__setattr__(result, "_human_interval_index", human_interval_index)
+    object.__setattr__(
+        result,
+        "_human_broker_fact_index",
+        human_broker_fact_index,
+    )
+    object.__setattr__(result, "_reconciliation_ledger", reconciliation_ledger)
+    object.__setattr__(
+        result,
+        "_reconciliation_by_input",
+        reconciliation_by_input,
+    )
+    object.__setattr__(
+        result,
+        "_unresolved_reconciliation_count_by_leg",
+        unresolved_reconciliation_count_by_leg,
+    )
+    object.__setattr__(
+        result,
+        "_reconciliation_count_by_effect",
+        reconciliation_count_by_effect,
+    )
+    object.__setattr__(
+        result,
+        "_canonical_revision_count_by_leg",
+        canonical_revision_count_by_leg,
+    )
+    object.__setattr__(
+        result,
+        "_execution_reconciliation_ledger",
+        execution_reconciliation_ledger,
+    )
+    object.__setattr__(
+        result,
+        "_execution_reconciliation_by_input",
+        execution_reconciliation_by_input,
+    )
+    object.__setattr__(
+        result,
+        "_registry_transition_ledger",
+        book._registry_transition_ledger,
+    )
+    object.__setattr__(
+        result,
+        "_registry_transition_head_commitment",
+        book._registry_transition_head_commitment,
+    )
+    object.__setattr__(
+        result,
+        "_unresolved_execution_reconciliation_count_by_scope",
+        unresolved_execution_reconciliation_count_by_scope,
+    )
+    object.__setattr__(
+        result,
+        "_unresolved_account_execution_reconciliation_count",
+        unresolved_account_execution_reconciliation_count,
+    )
+    result._validate_full()
+    if not result._execution_reconciliation_cursor_matches(execution):
+        raise ValueError(
+            "external execution reconciliation cursor does not close the audit book"
+        )
+
+    from .recovery import RevisionReconciliationRecord
+
+    canonical_economic_inputs = {
+        *(coverage.source_input_id for coverage in result.human_coverages),
+        *(
+            coverage.broker_source_input_id
+            for coverage in result.human_coverages
+            if coverage.broker_source_input_id is not None
+        ),
+        *(coverage.root_source_input_id for coverage in result.broker_coverages),
+        *(
+            record.input_id
+            for record in input_records
+            if isinstance(record.item, RecordBrokerRevisionEvidence)
+            and result._broker_coverage_for_root(record.item.fact.root_key) is not None
+            and (first := result._fact_input_record(record.item.fact.key)) is not None
+            and first.input_id == record.input_id
+            and (observation := execution.seen_facts.get(record.item.fact.key))
+            is not None
+            and observation.classification
+            is not FirstObservationClassification.RECONCILIATION_REQUIRED
+        ),
+        *(
+            record.input_id
+            for record in result.reconciliations
+            if isinstance(record, RevisionReconciliationRecord)
+            and record.canonical_applied
+        ),
+    }
+    for record in input_records:
+        if record.input_id not in canonical_economic_inputs:
+            continue
+        item = record.item
+        if isinstance(item, IngestHumanAttestedFill):
+            economic_leg_key = item.fact.leg_key
+            candidate = item.fact.resulting_cumulative_quantity.value
+        elif isinstance(item, RecordBrokerFillEvidence):
+            economic_leg_key = item.leg_key
+            candidate = max(
+                item.prior_cumulative_quantity.value,
+                item.resulting_cumulative_quantity.value,
+            )
+        elif isinstance(item, RecordBrokerRevisionEvidence):
+            economic_leg_key = item.leg_key
+            candidate = max(
+                item.prior_venue_cumulative_quantity.value,
+                item.resulting_venue_cumulative_quantity.value,
+            )
+        else:
+            continue
+        economic_key = _leg_index_key(economic_leg_key)
+        prior_high_water = economic_high_water_by_leg.get(economic_key)
+        retained_high_water = max(prior_high_water or 0, candidate)
+        if retained_high_water == prior_high_water:
+            continue
+        high_water_commitment = _commit_parts(
+            b"execution-core/venue-economic-high-water/v1",
+            _encode_text(str(retained_high_water)),
+        )
+        if prior_high_water is None:
+            economic_high_water_by_leg = economic_high_water_by_leg.insert_new(
+                economic_key,
+                retained_high_water,
+                high_water_commitment,
+            )
+        else:
+            economic_high_water_by_leg = economic_high_water_by_leg.replace_existing(
+                economic_key,
+                retained_high_water,
+                high_water_commitment,
+            )
+    object.__setattr__(
+        result,
+        "_economic_high_water_by_leg",
+        economic_high_water_by_leg,
+    )
+    if result.effects:
+        if (
+            result.execution_registry_count != execution.seen_facts.count
+            or result.execution_registry_commitment != execution.seen_facts.commitment
+        ):
+            raise ValueError(
+                "verified audit hydration requires the exact account registry"
+            )
+        from .recovery import _replay_venue_hydration_snapshot
+
+        authorized_human_facts = tuple(
+            coverage.fact for coverage in result.human_coverages
+        )
+        authorized_corroborations = tuple(
+            cast(BrokerFillFact, coverage.broker_fact)
+            for coverage in result.human_coverages
+            if coverage.broker_corroborated and coverage.broker_fact is not None
+        )
+        replayed_by_scope: dict[PositionScope, ExecutionSnapshot] = {}
+        for binding in result.execution_bindings:
+            binding_replay = _replay_venue_hydration_snapshot(
+                binding.position_scope,
+                execution.seen_facts,
+                authorized_human_facts=authorized_human_facts,
+                authorized_corroborations=authorized_corroborations,
+            )
+            replayed_by_scope[binding.position_scope] = binding_replay
+            if not _binding_matches_execution(binding, binding_replay):
+                raise ValueError(
+                    "verified audit hydration found a stale symbol binding"
+                )
+        supplied = replayed_by_scope.get(execution.position.scope)
+        if supplied is None or not result._execution_matches(
+            execution,
+            execution.position.scope,
+        ):
+            raise ValueError(
+                "verified audit hydration requires exact execution/root provenance pair"
+            )
+        for human_coverage in result.human_coverages:
+            human_replay = replayed_by_scope.get(
+                human_coverage.fact.scope.position_scope
+            )
+            if human_replay is None or not _execution_head_matches_fact(
+                human_replay.root_heads.get(human_coverage.fact.root_key),
+                human_coverage.fact,
+            ):
+                raise ValueError(
+                    "human coverage is absent from its paired account registry"
+                )
+        for broker_coverage in result.broker_coverages:
+            broker_replay = replayed_by_scope.get(
+                broker_coverage.fact.scope.position_scope
+            )
+            if broker_replay is None or not _execution_head_matches_fact(
+                broker_replay.root_heads.get(broker_coverage.head_fact.root_key),
+                broker_coverage.head_fact,
+            ):
+                raise ValueError(
+                    "broker coverage is absent from its paired account registry"
+                )
+
+        coverage_provenance: _PersistentKeyMap[_CoverageProvenance] = (
+            _PersistentKeyMap.empty()
+        )
+        coverage_facts = (
+            *(coverage.fact for coverage in result.human_coverages),
+            *(coverage.head_fact for coverage in result.broker_coverages),
+        )
+        for coverage_fact in coverage_facts:
+            position_scope = coverage_fact.scope.position_scope
+            replayed_execution = replayed_by_scope[position_scope]
+            existing = coverage_provenance.get(
+                _position_scope_index_key(position_scope)
+            )
+            roots = (
+                existing.roots if existing is not None else _PersistentKeyMap.empty()
+            )
+            encoded_root = _coverage_root_index_key(coverage_fact.root_key)
+            fact_commitment = _canonical_value_commitment(coverage_fact)
+            if roots.get(encoded_root) is not None:
+                raise ValueError("coverage provenance roots must be unique")
+            roots = roots.insert_new(
+                encoded_root,
+                fact_commitment,
+                fact_commitment,
+            )
+            coverage_provenance = _set_coverage_provenance(
+                coverage_provenance,
+                position_scope,
+                _CoverageProvenance(
+                    roots=roots,
+                    root_heads_commitment=(replayed_execution.root_heads.commitment),
+                ),
+            )
+        object.__setattr__(
+            result,
+            "_coverage_provenance_by_scope",
+            coverage_provenance,
+        )
+
+        attributed_broker_facts = {
+            *(
+                coverage.broker_fact.key
+                for coverage in result.human_coverages
+                if coverage.broker_fact is not None
+            ),
+            *(coverage.fact.key for coverage in result.broker_coverages),
+            *(record.fact.key for record in result.reconciliations),
+        }
+        for record in input_records:
+            source_fact = getattr(record.item, "fact", None)
+            if not isinstance(
+                source_fact,
+                (BrokerTradeCorrectFact, BrokerTradeBustFact),
+            ):
+                continue
+            first = result._fact_input_record(source_fact.key)
+            observation = execution.seen_facts.get(source_fact.key)
+            if (
+                first is not None
+                and first.input_id == record.input_id
+                and observation is not None
+                and observation.classification
+                is not FirstObservationClassification.RECONCILIATION_REQUIRED
+            ):
+                attributed_broker_facts.add(source_fact.key)
+
+        first_catch_up = next(
+            (
+                record.item
+                for record in input_records
+                if type(record.item) is CatchUpExecutionRegistry
+            ),
+            None,
+        )
+        externally_attributable_start = (
+            execution.seen_facts.count
+            if first_catch_up is None
+            else cast(
+                CatchUpExecutionRegistry,
+                first_catch_up,
+            ).prior_account_registry_count
+        )
+
+        for index in range(execution.seen_facts.count):
+            observation = execution.seen_facts.observation_at(index)
+            fact = observation.fact
+            if not isinstance(
+                fact,
+                (BrokerFillFact, BrokerTradeCorrectFact, BrokerTradeBustFact),
+            ):
+                continue
+            observed_leg_key = VenueLegKey(
+                broker=fact.scope.broker,
+                environment=fact.scope.environment,
+                account=fact.scope.account,
+                order_id=fact.scope.order_id,
+            )
+            owner = result.owner(observed_leg_key)
+            covering_registry_outcomes = tuple(
+                record
+                for record in result.execution_reconciliations
+                if record.position_scope == fact.scope.position_scope
+                and record.prior_registry_count <= index
+                and index < record.resulting_registry_count
+            )
+            unresolved_origins = tuple(
+                record
+                for record in covering_registry_outcomes
+                if not record.attribution_resolved
+            )
+            if owner is None:
+                if (
+                    index >= externally_attributable_start
+                    and fact.key not in attributed_broker_facts
+                    and len(unresolved_origins) != 1
+                ):
+                    raise ValueError(
+                        "unowned broker observation lacks one exact external source origin"
+                    )
+                continue
+            effect = result.effect(owner.effect_id)
+            if effect is None or (
+                fact.scope.symbol_id != effect.scope.symbol_id
+                or fact.scope.side is not effect.scope.side
+            ):
+                if len(unresolved_origins) != 1:
+                    raise ValueError(
+                        "owned broker observation contradicts its venue effect scope"
+                    )
+                continue
+            if fact.key in attributed_broker_facts:
+                continue
+            if len(unresolved_origins) != 1:
+                raise ValueError(
+                    "owned broker observation lacks one exact external source origin"
+                )
+    return result
+
+
+def _execution_binding_for_snapshot(
+    execution: ExecutionSnapshot,
+) -> VenueExecutionBinding:
+    return VenueExecutionBinding(
         position_scope=execution.position.scope,
         position_commitment=execution.position.commitment,
         root_heads_commitment=execution.root_heads.commitment,
         integrity_bits=execution.integrity.value,
     )
-    current = book.execution_binding(next_binding.position_scope)
-    if current is None:
-        return book.execution_bindings + (next_binding,)
-    return tuple(
-        next_binding if item.position_scope == next_binding.position_scope else item
-        for item in book.execution_bindings
-    )
 
 
 def _book_with_input(
+    evolve: _BookEvolver,
     book: VenueRecoveryBook,
+    execution: ExecutionSnapshot,
     item: object,
     **changes: Any,
 ) -> VenueRecoveryBook:
-    input_id = _require_input_id("input_id", getattr(item, "input_id", None))
-    if book._input_record(input_id) is not None:
-        raise ValueError("input identity already exists")
-    semantic_source = next(
-        (
-            record
-            for record in book.input_records
-            if record.semantic_alias_of is None
-            and type(record.item) is type(item)
-            and replace(cast(Any, record.item), input_id=input_id) == item
-        ),
-        None,
-    )
-    return _rebuild_book(
+    return evolve(
         book,
-        input_records=book.input_records
-        + (
-            VenueInputRecord(
-                input_id,
-                item,
-                semantic_alias_of=(
-                    None if semantic_source is None else semantic_source.input_id
-                ),
-            ),
-        ),
+        execution,
+        execution,
+        item=item,
         **changes,
     )
 
 
 def _book_with_input_and_execution(
+    evolve: _BookEvolver,
     book: VenueRecoveryBook,
     item: object,
-    execution: ExecutionSnapshot,
+    prior_execution: ExecutionSnapshot,
+    resulting_execution: ExecutionSnapshot,
+    *,
+    canonical_economic_input: bool = False,
     **changes: Any,
 ) -> VenueRecoveryBook:
     unresolved_execution = (
         PositionIntegrity.EXECUTION_FACT_CONFLICT
         | PositionIntegrity.EXECUTION_RECONCILIATION_REQUIRED
     )
-    if execution.integrity & unresolved_execution and "effects" not in changes:
-        changes["effects"] = _demote_operator_effects_for_scope(
-            book,
-            execution.position.scope,
-        )
-    return _book_with_input(
+    if (
+        resulting_execution.integrity & unresolved_execution
+        and changes.get("_demote_scope") is None
+    ):
+        changes["_demote_scope"] = resulting_execution.position.scope
+    return evolve(
         book,
-        item,
-        execution_registry_commitment=execution.seen_facts.commitment,
-        execution_bindings=_next_execution_bindings(book, execution),
+        prior_execution,
+        resulting_execution,
+        item=item,
+        canonical_economic_input=canonical_economic_input,
+        execution_registry_count=resulting_execution.seen_facts.count,
+        execution_registry_commitment=resulting_execution.seen_facts.commitment,
+        _binding_upserts=(_execution_binding_for_snapshot(resulting_execution),),
         **changes,
     )
 
 
 def _book_to_execution(
+    evolve: _BookEvolver,
     book: VenueRecoveryBook,
-    execution: ExecutionSnapshot,
+    prior_execution: ExecutionSnapshot,
+    resulting_execution: ExecutionSnapshot,
 ) -> VenueRecoveryBook:
     unresolved_execution = (
         PositionIntegrity.EXECUTION_FACT_CONFLICT
         | PositionIntegrity.EXECUTION_RECONCILIATION_REQUIRED
     )
-    effects = (
-        _demote_operator_effects_for_scope(book, execution.position.scope)
-        if execution.integrity & unresolved_execution
-        else book.effects
-    )
-    return _rebuild_book(
+    return evolve(
         book,
-        effects=effects,
-        execution_registry_commitment=execution.seen_facts.commitment,
-        execution_bindings=_next_execution_bindings(book, execution),
-    )
-
-
-def _demote_operator_effects_for_scope(
-    book: VenueRecoveryBook,
-    position_scope: PositionScope,
-) -> tuple[BrokerEffect, ...]:
-    return tuple(
-        replace(effect, state=BrokerEffectState.NEEDS_REVIEW)
-        if effect.scope.position_scope == position_scope
-        and effect.state is BrokerEffectState.OPERATOR_RECONCILED
-        else effect
-        for effect in book.effects
+        prior_execution,
+        resulting_execution,
+        _demote_scope=(
+            resulting_execution.position.scope
+            if resulting_execution.integrity & unresolved_execution
+            else None
+        ),
+        execution_registry_count=resulting_execution.seen_facts.count,
+        execution_registry_commitment=resulting_execution.seen_facts.commitment,
+        _binding_upserts=(_execution_binding_for_snapshot(resulting_execution),),
     )
 
 
 def _book_replace_effect(
+    evolve: _BookEvolver,
     book: VenueRecoveryBook,
+    execution: ExecutionSnapshot,
     effect: BrokerEffect,
 ) -> VenueRecoveryBook:
-    if book.effect(effect.effect_id) is None:
+    if book._current_effect(effect.effect_id) is None:
         raise KeyError("effect is not registered")
-    return _rebuild_book(
+    return evolve(
         book,
-        effects=tuple(
-            effect if item.effect_id == effect.effect_id else item
-            for item in book.effects
-        ),
+        execution,
+        execution,
+        _effect_replace=effect,
     )
 
 
 def _book_close_attempt(
+    evolve: _BookEvolver,
     book: VenueRecoveryBook,
     *,
+    prior_execution: ExecutionSnapshot,
     leg_key: VenueLegKey,
     closure_id: ClosureId,
     status: VenueAttemptState,
@@ -2285,18 +5569,19 @@ def _book_close_attempt(
     source_event_id: SourceEventId | None = None,
     broker_terminal_state: VenueAttemptState | None = None,
     source_input: object | None = None,
-    execution: ExecutionSnapshot | None = None,
+    resulting_execution: ExecutionSnapshot | None = None,
     evolution_changes: dict[str, Any] | None = None,
     actor: ActorId | None = None,
     reason: str | None = None,
     evidence_digest: bytes | None = None,
+    canonical_economic_input: bool = False,
 ) -> VenueRecoveryBook:
     owner = book.owner(leg_key)
     active = book.active_attempt(leg_key)
     head = book.closure_head(leg_key)
     if owner is None or (active is None) == (head is None):
         raise ValueError("owner must have exactly one current leg representation")
-    if any(entry.closure_id == closure_id for entry in book.closure_history):
+    if book._closure_by_id.get(_closure_index_key(closure_id)) is not None:
         raise ValueError("closure identity already exists")
     if source_input is None:
         raise ValueError("closure requires one immutable source input")
@@ -2322,23 +5607,52 @@ def _book_close_attempt(
         reason=reason,
         evidence_digest=evidence_digest,
     )
-    attempts = tuple(item for item in book.active_attempts if item.leg_key != leg_key)
-    heads = tuple(item for item in book.closure_heads if item.leg_key != leg_key)
-    changes: dict[str, Any] = {
-        "active_attempts": attempts,
-        "closure_heads": heads + (closure,),
-        "closure_history": book.closure_history + (closure,),
-    }
+    changes: dict[str, Any] = {}
     if evolution_changes is not None:
         changes.update(evolution_changes)
-    if execution is not None:
-        return _book_with_input_and_execution(
+    if resulting_execution is not None:
+        unresolved_execution = (
+            PositionIntegrity.EXECUTION_FACT_CONFLICT
+            | PositionIntegrity.EXECUTION_RECONCILIATION_REQUIRED
+        )
+        if (
+            resulting_execution.integrity & unresolved_execution
+            and changes.get("_demote_scope") is None
+        ):
+            changes["_demote_scope"] = resulting_execution.position.scope
+        next_book = evolve(
             book,
-            source_input,
-            execution,
+            prior_execution,
+            resulting_execution,
+            item=source_input,
+            closure=closure,
+            canonical_economic_input=canonical_economic_input,
+            execution_registry_count=resulting_execution.seen_facts.count,
+            execution_registry_commitment=resulting_execution.seen_facts.commitment,
+            _binding_upserts=(_execution_binding_for_snapshot(resulting_execution),),
             **changes,
         )
-    return _book_with_input(book, source_input, **changes)
+        return _maybe_finalize_effect(
+            evolve,
+            next_book,
+            owner.effect_id,
+            resulting_execution,
+        )
+    next_book = evolve(
+        book,
+        prior_execution,
+        prior_execution,
+        item=source_input,
+        closure=closure,
+        canonical_economic_input=canonical_economic_input,
+        **changes,
+    )
+    return _maybe_finalize_effect(
+        evolve,
+        next_book,
+        owner.effect_id,
+        prior_execution,
+    )
 
 
 _TERMINAL_ATTEMPT_STATES = {
@@ -2362,29 +5676,7 @@ _NONTERMINAL_PRECEDENCE = {
 def _covered_cumulative(book: VenueRecoveryBook, leg_key: VenueLegKey) -> int:
     """Return current canonical covered economics, never status high-water."""
 
-    return max(
-        (
-            *(
-                coverage.fact.resulting_cumulative_quantity.value
-                for coverage in book.human_coverages
-                if coverage.leg_key == leg_key
-            ),
-            *(
-                coverage.resulting_cumulative_quantity.value
-                for coverage in book.broker_coverages
-                if coverage.leg_key == leg_key
-            ),
-        ),
-        default=0,
-    )
-
-
-def _transition(
-    book: VenueRecoveryBook,
-    execution: ExecutionSnapshot,
-    disposition: VenueRecoveryDisposition,
-) -> VenueRecoveryTransition:
-    return VenueRecoveryTransition(book, execution, disposition, 0)
+    return book._coverage_current(leg_key).canonical_total
 
 
 def _effect_scope(book: VenueRecoveryBook, item: RequestedEffect) -> VenueEffectScope:
@@ -2406,24 +5698,25 @@ def _effect_scope(book: VenueRecoveryBook, item: RequestedEffect) -> VenueEffect
 
 
 def _register_effect(
+    evolve: _BookEvolver,
     book: VenueRecoveryBook,
     execution: ExecutionSnapshot,
     item: RequestedEffect,
 ) -> VenueRecoveryBook | None:
-    if book.effect(item.effect_id) is not None:
+    if book._current_effect(item.effect_id) is not None:
         return None
-    if any(
-        effect.scope.client_order_id == item.client_order_id
-        or effect.scope.request_occurrence_id == item.request_occurrence_id
-        for effect in book.effects
+    if book._has_client_order(item.client_order_id) or book._has_request_occurrence(
+        item.request_occurrence_id
     ):
         return None
     effect = BrokerEffect(scope=_effect_scope(book, item))
     return _book_with_input_and_execution(
+        evolve,
         book,
         item,
         execution,
-        effects=book.effects + (effect,),
+        execution,
+        _effect_append=effect,
     )
 
 
@@ -2436,17 +5729,17 @@ def _same_leg_scope(scope: VenueScope, leg_key: VenueLegKey) -> bool:
 
 
 def _record_claim(
-    book: VenueRecoveryBook, item: RecordDispatchClaim
+    evolve: _BookEvolver,
+    book: VenueRecoveryBook,
+    execution: ExecutionSnapshot,
+    item: RecordDispatchClaim,
 ) -> VenueRecoveryBook | None:
-    effect = book.effect(item.effect_id)
+    effect = book._current_effect(item.effect_id)
     if (
         effect is None
         or effect.state is not BrokerEffectState.REQUESTED
         or effect.claim_occurrence_id is not None
-        or any(
-            claim.claim_occurrence_id == item.claim_occurrence_id
-            for claim in book.claims
-        )
+        or book._has_claim_occurrence(item.claim_occurrence_id)
     ):
         return None
     claimed = replace(
@@ -2456,37 +5749,40 @@ def _record_claim(
     )
     claim = DispatchClaim(effect.scope, item.claim_occurrence_id)
     return _book_with_input(
+        evolve,
         book,
+        execution,
         item,
-        effects=tuple(
-            claimed if entry.effect_id == item.effect_id else entry
-            for entry in book.effects
-        ),
-        claims=book.claims + (claim,),
+        _effect_replace=claimed,
+        _claim_append=claim,
     )
 
 
 def _replace_effect_state(
+    evolve: _BookEvolver,
     book: VenueRecoveryBook,
+    execution: ExecutionSnapshot,
     effect: BrokerEffect,
     state: BrokerEffectState,
     item: object,
 ) -> VenueRecoveryBook:
     updated = replace(effect, state=state)
     return _book_with_input(
+        evolve,
         book,
+        execution,
         item,
-        effects=tuple(
-            updated if entry.effect_id == effect.effect_id else entry
-            for entry in book.effects
-        ),
+        _effect_replace=updated,
     )
 
 
 def _discover_leg(
-    book: VenueRecoveryBook, item: DiscoverVenueLeg
+    evolve: _BookEvolver,
+    book: VenueRecoveryBook,
+    execution: ExecutionSnapshot,
+    item: DiscoverVenueLeg,
 ) -> tuple[VenueRecoveryBook | None, VenueRecoveryDisposition]:
-    effect = book.effect(item.effect_id)
+    effect = book._current_effect(item.effect_id)
     if effect is None or not _same_leg_scope(book.scope, item.leg_key):
         return None, VenueRecoveryDisposition.REFUSED
     current_owner = book.owner(item.leg_key)
@@ -2494,7 +5790,10 @@ def _discover_leg(
         if current_owner.effect_id != item.effect_id:
             return None, VenueRecoveryDisposition.CONFLICT
         if current_owner.observation_id == item.observation_id:
-            return _book_with_input(book, item), VenueRecoveryDisposition.APPLIED
+            return (
+                _book_with_input(evolve, book, execution, item),
+                VenueRecoveryDisposition.APPLIED,
+            )
         return None, VenueRecoveryDisposition.CONFLICT
     if effect.state not in {
         BrokerEffectState.DISPATCH_CLAIMED,
@@ -2516,8 +5815,13 @@ def _discover_leg(
         last_observation_id=item.observation_id,
     )
     next_effect = effect
+    contradiction: AcceptanceContradiction | None = None
     disposition = VenueRecoveryDisposition.APPLIED
     if effect.acceptance_set_state is AcceptanceSetState.CLOSED:
+        contradiction = AcceptanceContradiction(
+            item.leg_key,
+            item.observation_id,
+        )
         next_effect = replace(
             effect,
             state=(
@@ -2526,31 +5830,32 @@ def _discover_leg(
                 else effect.state
             ),
             acceptance_set_state=AcceptanceSetState.INVALIDATED,
-            contradiction_evidence=effect.contradiction_evidence
-            + (AcceptanceContradiction(item.leg_key, item.observation_id),),
         )
         disposition = VenueRecoveryDisposition.RECONCILIATION_REQUIRED
     elif effect.acceptance_set_state is AcceptanceSetState.INVALIDATED:
-        next_effect = replace(
-            effect,
-            contradiction_evidence=effect.contradiction_evidence
-            + (AcceptanceContradiction(item.leg_key, item.observation_id),),
+        contradiction = AcceptanceContradiction(
+            item.leg_key,
+            item.observation_id,
         )
     next_book = _book_with_input(
+        evolve,
         book,
+        execution,
         item,
-        effects=tuple(
-            next_effect if entry.effect_id == item.effect_id else entry
-            for entry in book.effects
+        _effect_replace=next_effect,
+        _contradiction_append=(
+            (item.effect_id, contradiction) if contradiction is not None else None
         ),
-        owners=book.owners + (owner,),
-        active_attempts=book.active_attempts + (attempt,),
+        _owner_and_attempt_append=(owner, attempt),
     )
     return next_book, disposition
 
 
 def _observe_status(
-    book: VenueRecoveryBook, item: ObserveVenueStatus
+    evolve: _BookEvolver,
+    book: VenueRecoveryBook,
+    execution: ExecutionSnapshot,
+    item: ObserveVenueStatus,
 ) -> VenueRecoveryBook | None:
     if not _same_leg_scope(book.scope, item.leg_key):
         return None
@@ -2571,7 +5876,9 @@ def _observe_status(
             assert item.closure_id is not None
             assert item.evidence_reference is not None
             return _book_close_attempt(
+                evolve,
                 book,
+                prior_execution=execution,
                 leg_key=item.leg_key,
                 closure_id=item.closure_id,
                 status=item.status,
@@ -2594,12 +5901,11 @@ def _observe_status(
             last_observation_id=item.observation_id,
         )
         return _book_with_input(
+            evolve,
             book,
+            execution,
             item,
-            active_attempts=tuple(
-                updated if entry.leg_key == updated.leg_key else entry
-                for entry in book.active_attempts
-            ),
+            _attempt_replace=updated,
         )
 
     if head is None or not is_terminal:
@@ -2609,7 +5915,9 @@ def _observe_status(
     assert item.closure_id is not None
     assert item.evidence_reference is not None
     return _book_close_attempt(
+        evolve,
         book,
+        prior_execution=execution,
         leg_key=item.leg_key,
         closure_id=item.closure_id,
         status=item.status,
@@ -2624,13 +5932,14 @@ def _observe_status(
 
 
 def _maybe_finalize_effect(
+    evolve: _BookEvolver,
     book: VenueRecoveryBook,
     effect_id: EffectId,
     execution: ExecutionSnapshot,
 ) -> VenueRecoveryBook:
     """Close the recovery lifecycle only after its independent closure gates."""
 
-    effect = book.effect(effect_id)
+    effect = book._current_effect(effect_id)
     if (
         effect is None
         or effect.state is not BrokerEffectState.NEEDS_REVIEW
@@ -2645,42 +5954,32 @@ def _maybe_finalize_effect(
     )
     if (
         execution.integrity & unresolved_execution
-        or any(record.effect_id == effect_id for record in book.reconciliations)
-        or any(
-            record.position_scope == effect.scope.position_scope
-            and not record.attribution_resolved
-            for record in book.execution_reconciliations
-        )
+        or book._has_effect_reconciliation(effect_id)
+        or book._has_unresolved_execution_reconciliation(effect.scope.position_scope)
     ):
         return book
-    owned_legs = [
-        owner.leg_key for owner in book.owners if owner.effect_id == effect_id
-    ]
-    if not owned_legs:
+    summary = book._leg_summary(effect_id)
+    if (
+        summary.owner_count == 0
+        or summary.active_count != 0
+        or summary.finalization_ready_count != summary.owner_count
+    ):
         return book
-    for leg_key in owned_legs:
-        head = book.closure_head(leg_key)
-        if head is None:
-            return book
-        covered_cumulative = _covered_cumulative(book, leg_key)
-        if head.cumulative_quantity.value != covered_cumulative:
-            return book
-        if (
-            head.status is VenueAttemptState.FILLED
-            or head.broker_terminal_state is VenueAttemptState.FILLED
-        ) and covered_cumulative != effect.scope.quantity.value:
-            return book
     return _book_replace_effect(
-        book, replace(effect, state=BrokerEffectState.OPERATOR_RECONCILED)
+        evolve,
+        book,
+        execution,
+        replace(effect, state=BrokerEffectState.OPERATOR_RECONCILED),
     )
 
 
 def _close_acceptance_set(
+    evolve: _BookEvolver,
     book: VenueRecoveryBook,
     execution: ExecutionSnapshot,
     item: CloseAcceptanceSet,
 ) -> VenueRecoveryBook | None:
-    effect = book.effect(item.effect_id)
+    effect = book._current_effect(item.effect_id)
     if effect is None or effect.acceptance_set_state is not AcceptanceSetState.OPEN:
         return None
     proof = item.proof
@@ -2689,17 +5988,13 @@ def _close_acceptance_set(
         or proof.claim_occurrence_id != effect.claim_occurrence_id
     ):
         return None
-    if any(
-        owner.effect_id == item.effect_id
-        and book.active_attempt(owner.leg_key) is not None
-        for owner in book.owners
-    ):
+    if book._leg_summary(item.effect_id).active_count:
         return None
     if proof.kind is AcceptanceProofKind.NEVER_DISPATCHED:
         if (
             effect.state is not BrokerEffectState.CANCELED_BEFORE_DISPATCH
             or effect.claim_occurrence_id is not None
-            or any(claim.effect_id == item.effect_id for claim in book.claims)
+            or book._claim_for_effect(item.effect_id) is not None
         ):
             return None
     elif effect.claim_occurrence_id is None:
@@ -2710,14 +6005,18 @@ def _close_acceptance_set(
         acceptance_proof=proof,
     )
     closed_book = _book_with_input(
+        evolve,
         book,
+        execution,
         item,
-        effects=tuple(
-            closed if entry.effect_id == item.effect_id else entry
-            for entry in book.effects
-        ),
+        _effect_replace=closed,
     )
-    return _maybe_finalize_effect(closed_book, item.effect_id, execution)
+    return _maybe_finalize_effect(
+        evolve,
+        closed_book,
+        item.effect_id,
+        execution,
+    )
 
 
 _VENUE_INPUTS = (
@@ -2746,33 +6045,80 @@ def _binding_matches_execution(
     )
 
 
-def _replace_execution_binding(
-    bindings: tuple[VenueExecutionBinding, ...],
-    execution: ExecutionSnapshot,
-) -> tuple[VenueExecutionBinding, ...]:
-    replacement = VenueExecutionBinding(
-        position_scope=execution.position.scope,
-        position_commitment=execution.position.commitment,
-        root_heads_commitment=execution.root_heads.commitment,
-        integrity_bits=execution.integrity.value,
-    )
-    return tuple(
-        replacement if item.position_scope == replacement.position_scope else item
-        for item in bindings
-    )
+def _execution_is_exact_genesis(execution: ExecutionSnapshot) -> bool:
+    """Authenticate the only snapshot admitted to a brand-new venue book."""
+
+    genesis = ExecutionSnapshot.flat(execution.position.scope)
+    return execution.commitment == genesis.commitment
 
 
 def _apply_execution_registry_catch_up(
     book: VenueRecoveryBook,
     target: ExecutionSnapshot,
     item: CatchUpExecutionRegistry,
+    evolve: _BookEvolver,
+    transition: _TransitionFactory,
 ) -> VenueRecoveryTransition:
     """Apply one monotonic account-registry projection without replaying economics."""
 
+    if type(item.source_execution) is not ExecutionSnapshot:
+        raise TypeError("source_execution must be the exact ExecutionSnapshot type")
     source = item.source_execution
+    _require_execution_components(
+        source.position,
+        source.integrity,
+        source.root_heads,
+        source.seen_facts,
+    )
     target_scope = target.position.scope
     source_scope = source.position.scope
     target_binding = book.execution_binding(target_scope)
+    book_transition_count, book_transition_head = book._reconciliation_cursor()
+    account_reconciliation_required = (
+        book._unresolved_account_execution_reconciliation_count > 0
+    )
+    replay = book._input_record(item.input_id)
+    if replay is not None:
+        if not _input_commands_equal(
+            replay.item,
+            item,
+            include_input_id=True,
+        ):
+            return transition(
+                book,
+                target,
+                target,
+                VenueRecoveryDisposition.CONFLICT,
+                item=item,
+                quantity_delta=0,
+            )
+    if item.target_scope != target_scope:
+        return transition(
+            book,
+            target,
+            target,
+            VenueRecoveryDisposition.REFUSED,
+            item=item,
+            quantity_delta=0,
+        )
+    if replay is not None:
+        if book._execution_pair_matches_fast(target):
+            reconciliation = book._execution_reconciliation_for_input(item.input_id)
+            disposition = (
+                VenueRecoveryDisposition.RECONCILIATION_REQUIRED
+                if reconciliation is not None
+                and not reconciliation.attribution_resolved
+                else VenueRecoveryDisposition.EXACT_REPLAY
+            )
+            return transition(
+                book,
+                target,
+                target,
+                disposition,
+                item=item,
+                quantity_delta=0,
+            )
+
     same_account = (
         target_scope.broker == source_scope.broker == book.scope.broker
         and target_scope.environment
@@ -2781,7 +6127,60 @@ def _apply_execution_registry_catch_up(
         and target_scope.account == source_scope.account == book.scope.account
     )
     if not same_account:
-        return _transition(book, target, VenueRecoveryDisposition.REFUSED)
+        return transition(
+            book,
+            target,
+            target,
+            VenueRecoveryDisposition.REFUSED,
+            item=item,
+            quantity_delta=0,
+        )
+    if (
+        not book._execution_reconciliation_cursor_is_prefix(target)
+        or not book._execution_reconciliation_cursor_is_prefix(source)
+    ):
+        return transition(
+            book,
+            target,
+            target,
+            VenueRecoveryDisposition.RECONCILIATION_REQUIRED,
+            item=item,
+            quantity_delta=0,
+        )
+    if (
+        item.target_checkpoint != VenueExecutionCheckpoint.from_execution(target)
+        or item.prior_account_registry_count != book.execution_registry_count
+        or item.prior_account_registry_commitment
+        != book.execution_registry_commitment
+    ):
+        return transition(
+            book,
+            target,
+            target,
+            VenueRecoveryDisposition.REFUSED,
+            item=item,
+            quantity_delta=0,
+        )
+    source_binding = book.execution_binding(source_scope)
+    if item.prior_source_binding != source_binding:
+        return transition(
+            book,
+            target,
+            target,
+            VenueRecoveryDisposition.REFUSED,
+            item=item,
+            quantity_delta=0,
+        )
+    if source_binding is None:
+        return transition(
+            book,
+            target,
+            target,
+            VenueRecoveryDisposition.REFUSED,
+            item=item,
+            quantity_delta=0,
+        )
+
     if (
         target_binding is None
         or not book._execution_symbol_matches(target, target_scope)
@@ -2789,123 +6188,212 @@ def _apply_execution_registry_catch_up(
             target.seen_facts.count,
             target.seen_facts.commitment,
         )
-        or book.execution_registry_commitment
-        not in {
-            target.seen_facts.commitment,
-            source.seen_facts.commitment,
-        }
-        or any(
-            source.seen_facts.observation_at(index).position_scope != source_scope
-            for index in range(target.seen_facts.count, source.seen_facts.count)
+        or book.execution_registry_count is None
+        or book.execution_registry_commitment is None
+        or not source.seen_facts.has_prefix(
+            book.execution_registry_count,
+            book.execution_registry_commitment,
+        )
+        or not source.seen_facts.suffix_belongs_to(
+            book.execution_registry_count,
+            source_scope,
         )
     ):
-        return _transition(
+        return transition(
             book,
             target,
+            target,
             VenueRecoveryDisposition.RECONCILIATION_REQUIRED,
+            item=item,
+            quantity_delta=0,
         )
 
-    replay = book._input_record(item.input_id)
-    if replay is not None and replay.item != item:
-        return _transition(book, target, VenueRecoveryDisposition.CONFLICT)
-
-    source_binding = book.execution_binding(source_scope)
-    source_binding_changed = (
-        source_binding is not None
-        and not _binding_matches_execution(source_binding, source)
-    )
+    source_binding_changed = not _binding_matches_execution(source_binding, source)
     if (
-        book.execution_registry_commitment == source.seen_facts.commitment
+        source.seen_facts.count > book.execution_registry_count
+        and not source_binding_changed
+    ):
+        return transition(
+            book,
+            target,
+            target,
+            VenueRecoveryDisposition.RECONCILIATION_REQUIRED,
+            item=item,
+            quantity_delta=0,
+        )
+    if (
+        book.execution_registry_count == source.seen_facts.count
+        and book.execution_registry_commitment == source.seen_facts.commitment
         and source_binding_changed
     ):
-        return _transition(
+        return transition(
             book,
             target,
+            target,
             VenueRecoveryDisposition.RECONCILIATION_REQUIRED,
+            item=item,
+            quantity_delta=0,
         )
 
     if source_scope == target_scope:
         next_execution = source
     else:
         try:
-            next_execution = _project_execution_registry(target, source)
+            next_execution = _project_execution_registry(
+                target,
+                source,
+                reconciliation_transition_count=book_transition_count,
+                reconciliation_transition_head=book_transition_head,
+            )
         except ValueError:
-            return _transition(
+            return transition(
                 book,
                 target,
+                target,
                 VenueRecoveryDisposition.RECONCILIATION_REQUIRED,
+                item=item,
+                quantity_delta=0,
             )
+
+    next_execution = _bind_execution_reconciliation_cursor(
+        next_execution,
+        transition_count=book_transition_count,
+        transition_head=book_transition_head,
+        account_reconciliation_required=account_reconciliation_required,
+    )
 
     if replay is not None:
         if not book._execution_matches(next_execution, target_scope):
-            return _transition(
+            return transition(
                 book,
                 target,
+                target,
                 VenueRecoveryDisposition.RECONCILIATION_REQUIRED,
+                item=item,
+                quantity_delta=0,
             )
-        return _transition(
+        reconciliation = book._execution_reconciliation_for_input(item.input_id)
+        disposition = (
+            VenueRecoveryDisposition.RECONCILIATION_REQUIRED
+            if reconciliation is not None and not reconciliation.attribution_resolved
+            else VenueRecoveryDisposition.EXACT_REPLAY
+        )
+        return transition(
             book,
+            target,
             next_execution,
-            VenueRecoveryDisposition.EXACT_REPLAY,
+            disposition,
+            item=item,
+            quantity_delta=0,
         )
 
-    if source.seen_facts.count == target.seen_facts.count:
-        return _transition(book, target, VenueRecoveryDisposition.REFUSED)
+    if source.seen_facts.count == book.execution_registry_count:
+        if target.seen_facts.count == source.seen_facts.count:
+            return transition(
+                book,
+                target,
+                target,
+                VenueRecoveryDisposition.REFUSED,
+                item=item,
+                quantity_delta=0,
+            )
+        projection_outcome = _ResolvedRegistryProjectionOutcome(
+            input_id=item.input_id,
+            command_commitment=_catch_up_input_commitment(item),
+            target_checkpoint=item.target_checkpoint,
+            source_binding=source_binding,
+            resulting_registry_count=source.seen_facts.count,
+            resulting_registry_commitment=source.seen_facts.commitment,
+            reason="target registry projection retained exact source and binding proof",
+        )
+        projection_proof = _registry_transition_proof_for(
+            ordinal=book_transition_count + 1,
+            predecessor_commitment=book._registry_transition_head_commitment,
+            venue_scope=book.scope,
+            item=item,
+            outcome=projection_outcome,
+        )
+        next_execution = _bind_execution_reconciliation_cursor(
+            next_execution,
+            transition_count=book_transition_count + 1,
+            transition_head=projection_proof.commitment,
+            account_reconciliation_required=account_reconciliation_required,
+        )
+        next_book = evolve(
+            book,
+            target,
+            next_execution,
+            item=item,
+            execution_registry_count=source.seen_facts.count,
+            execution_registry_commitment=source.seen_facts.commitment,
+            _binding_upserts=(_execution_binding_for_snapshot(next_execution),),
+            _execution_reconciliation_append=projection_outcome,
+        )
+        return transition(
+            next_book,
+            target,
+            next_execution,
+            VenueRecoveryDisposition.APPLIED,
+            item=item,
+            quantity_delta=0,
+        )
 
-    next_bindings = _replace_execution_binding(
-        book.execution_bindings,
+    prior_source_binding = source_binding
+    registry_record = _UnresolvedRegistryAdvanceOutcome(
+        input_id=item.input_id,
+        command_commitment=_catch_up_input_commitment(item),
+        target_checkpoint=item.target_checkpoint,
+        prior_account_registry_count=book.execution_registry_count,
+        prior_account_registry_commitment=book.execution_registry_commitment,
+        prior_source_binding=prior_source_binding,
+        resulting_source_binding=_execution_binding_for_snapshot(source),
+        resulting_registry_count=source.seen_facts.count,
+        resulting_registry_commitment=source.seen_facts.commitment,
+        reason="canonical source advanced before venue ownership attribution",
+    )
+    registry_proof = _registry_transition_proof_for(
+        ordinal=book_transition_count + 1,
+        predecessor_commitment=book._registry_transition_head_commitment,
+        venue_scope=book.scope,
+        item=item,
+        outcome=registry_record,
+    )
+    next_execution = _bind_execution_reconciliation_cursor(
         next_execution,
+        transition_count=book_transition_count + 1,
+        transition_head=registry_proof.commitment,
+        account_reconciliation_required=True,
     )
-    prior_source_binding = source_binding or VenueExecutionBinding(
-        position_scope=source_scope,
-        position_commitment=source.position.commitment,
-        root_heads_commitment=source.root_heads.commitment,
-        integrity_bits=source.integrity.value,
-    )
+    next_bindings = [_execution_binding_for_snapshot(next_execution)]
     if source_binding_changed:
         assert source_binding is not None
-        next_bindings = _replace_execution_binding(next_bindings, source)
-    registry_record = ExecutionRegistryReconciliationRecord(
-        input_id=item.input_id,
-        position_scope=source_scope,
-        prior_registry_count=target.seen_facts.count,
-        resulting_registry_count=source.seen_facts.count,
-        prior_registry_commitment=target.seen_facts.commitment,
-        resulting_registry_commitment=source.seen_facts.commitment,
-        prior_position_commitment=prior_source_binding.position_commitment,
-        resulting_position_commitment=source.position.commitment,
-        prior_root_heads_commitment=prior_source_binding.root_heads_commitment,
-        resulting_root_heads_commitment=source.root_heads.commitment,
-        prior_integrity_bits=prior_source_binding.integrity_bits,
-        resulting_integrity_bits=source.integrity.value,
-        canonical_applied=True,
-        attribution_resolved=not source_binding_changed,
-        reason=(
-            "account registry projection retained exact source attribution"
-            if not source_binding_changed
-            else "canonical source advanced before venue ownership attribution"
-        ),
-    )
-    next_reconciliations = book.execution_reconciliations + (registry_record,)
+        if source_scope != next_execution.position.scope:
+            next_bindings.append(_execution_binding_for_snapshot(source))
     disposition = (
         VenueRecoveryDisposition.RECONCILIATION_REQUIRED
         if source_binding_changed
         else VenueRecoveryDisposition.APPLIED
     )
 
-    next_book = _book_with_input(
+    next_book = evolve(
         book,
-        item,
-        effects=(
-            _demote_operator_effects_for_scope(book, source_scope)
-            if source_binding_changed
-            else book.effects
-        ),
+        target,
+        next_execution,
+        item=item,
+        _demote_scope=source_scope if source_binding_changed else None,
+        execution_registry_count=source.seen_facts.count,
         execution_registry_commitment=source.seen_facts.commitment,
-        execution_bindings=next_bindings,
-        execution_reconciliations=next_reconciliations,
+        _binding_upserts=tuple(next_bindings),
+        _execution_reconciliation_append=registry_record,
     )
-    return _transition(next_book, next_execution, disposition)
+    return transition(
+        next_book,
+        target,
+        next_execution,
+        disposition,
+        item=item,
+        quantity_delta=0,
+    )
 
 
 def apply_venue_recovery_input(
@@ -2915,11 +6403,686 @@ def apply_venue_recovery_input(
 ) -> VenueRecoveryTransition:
     """Apply one exact immutable venue or recovery input without I/O."""
 
-    _require("book", book, VenueRecoveryBook)
-    _require("execution", execution, ExecutionSnapshot)
+    if type(book) is not VenueRecoveryBook:
+        raise TypeError("book must be the exact opaque VenueRecoveryBook type")
+    if type(execution) is not ExecutionSnapshot:
+        raise TypeError("execution must be the exact ExecutionSnapshot type")
+    _require_execution_components(
+        execution.position,
+        execution.integrity,
+        execution.root_heads,
+        execution.seen_facts,
+    )
+
+    def evolve(
+        current: VenueRecoveryBook,
+        prior_execution: ExecutionSnapshot,
+        resulting_execution: ExecutionSnapshot,
+        *,
+        item: object | None = None,
+        closure: VenueTerminalClosure | None = None,
+        canonical_economic_input: bool = False,
+        **changes: Any,
+    ) -> VenueRecoveryBook:
+        """Turn one reducer-owned delta into the next authenticated checkpoint."""
+
+        human_coverage_append = changes.pop("_human_coverage_append", None)
+        human_coverage_replace = changes.pop("_human_coverage_replace", None)
+        broker_coverage_append = changes.pop("_broker_coverage_append", None)
+        broker_coverage_replace = changes.pop("_broker_coverage_replace", None)
+        reconciliation_append = changes.pop("_reconciliation_append", None)
+        execution_reconciliation_append = changes.pop(
+            "_execution_reconciliation_append",
+            None,
+        )
+        effect_append = changes.pop("_effect_append", None)
+        effect_replace = changes.pop("_effect_replace", None)
+        contradiction_append = changes.pop("_contradiction_append", None)
+        claim_append = changes.pop("_claim_append", None)
+        owner_and_attempt_append = changes.pop("_owner_and_attempt_append", None)
+        attempt_replace = changes.pop("_attempt_replace", None)
+        binding_upserts = changes.pop("_binding_upserts", ())
+        demote_scope = changes.pop("_demote_scope", None)
+        unknown = set(changes) - _EVOLVABLE_BOOK_FIELDS
+        if unknown:
+            raise TypeError(
+                f"unsupported venue checkpoint evolution: {sorted(unknown)!r}"
+            )
+        prior_pair_matches = current._execution_pair_matches_fast(prior_execution)
+        registering_new_symbol = bool(
+            isinstance(item, RequestedEffect)
+            and current.execution_registry_count == prior_execution.seen_facts.count
+            and current.execution_registry_commitment
+            == prior_execution.seen_facts.commitment
+            and current.execution_binding(prior_execution.position.scope) is None
+        )
+        catching_up_registry = bool(
+            isinstance(item, CatchUpExecutionRegistry)
+            and current._execution_binding_matches(prior_execution)
+            and resulting_execution.seen_facts.commitment
+            == item.source_execution.seen_facts.commitment
+            and changes.get("execution_registry_commitment")
+            == resulting_execution.seen_facts.commitment
+            and changes.get("execution_registry_count")
+            == resulting_execution.seen_facts.count
+        )
+        if current._effect_order.length and not (
+            prior_pair_matches or registering_new_symbol or catching_up_registry
+        ):
+            raise ValueError(
+                "venue checkpoint evolution requires its exact prior execution pair"
+            )
+
+        input_ledger = current._input_ledger
+        input_by_id = current._input_by_id
+        direct_semantics = current._direct_input_by_semantic
+        first_inputs_by_fact = current._first_input_by_fact
+        economic_high_water_by_leg = current._economic_high_water_by_leg
+        if item is not None:
+            (
+                input_ledger,
+                input_by_id,
+                direct_semantics,
+                first_inputs_by_fact,
+            ) = _append_input_proof(current, item)
+            if canonical_economic_input:
+                economic_high_water_by_leg = _advance_economic_high_water(
+                    economic_high_water_by_leg,
+                    item,
+                    resulting_execution,
+                )
+
+        closure_ledger = current._closure_ledger
+        closure_by_id = current._closure_by_id
+        closure_heads_by_leg = current._closure_head_by_leg
+        if closure is not None:
+            (
+                closure_ledger,
+                closure_by_id,
+                closure_heads_by_leg,
+            ) = _append_closure_proof(current, closure)
+
+        human_coverage_ledger = current._human_coverage_ledger
+        human_coverage_by_root = current._human_coverage_by_root
+        if human_coverage_append is not None:
+            if human_coverage_replace is not None:
+                raise ValueError("human coverage cannot append and replace together")
+            (
+                human_coverage_ledger,
+                human_coverage_by_root,
+            ) = _append_coverage_value(
+                human_coverage_ledger,
+                human_coverage_by_root,
+                human_coverage_append,
+            )
+        elif human_coverage_replace is not None:
+            if (
+                type(human_coverage_replace) is not tuple
+                or len(human_coverage_replace) != 2
+            ):
+                raise TypeError("human coverage replacement must be a pair")
+            human_coverage_ledger = _replace_coverage_value(
+                human_coverage_ledger,
+                human_coverage_by_root,
+                human_coverage_replace[0],
+                human_coverage_replace[1],
+            )
+
+        broker_coverage_ledger = current._broker_coverage_ledger
+        broker_coverage_by_root = current._broker_coverage_by_root
+        if broker_coverage_append is not None:
+            if broker_coverage_replace is not None:
+                raise ValueError("broker coverage cannot append and replace together")
+            (
+                broker_coverage_ledger,
+                broker_coverage_by_root,
+            ) = _append_coverage_value(
+                broker_coverage_ledger,
+                broker_coverage_by_root,
+                broker_coverage_append,
+            )
+        elif broker_coverage_replace is not None:
+            if (
+                type(broker_coverage_replace) is not tuple
+                or len(broker_coverage_replace) != 2
+            ):
+                raise TypeError("broker coverage replacement must be a pair")
+            broker_coverage_ledger = _replace_coverage_value(
+                broker_coverage_ledger,
+                broker_coverage_by_root,
+                broker_coverage_replace[0],
+                broker_coverage_replace[1],
+            )
+
+        (
+            coverage_current_by_leg,
+            coverage_total_by_effect,
+            attributed_broker_root_count_by_scope,
+            human_interval_index,
+            human_broker_fact_index,
+        ) = _evolve_coverage_current_indexes(
+            current,
+            human_coverage_ledger,
+            broker_coverage_ledger,
+            human_append=human_coverage_append,
+            human_replace=human_coverage_replace,
+            broker_append=broker_coverage_append,
+            broker_replace=broker_coverage_replace,
+        )
+
+        reconciliation_ledger = current._reconciliation_ledger
+        reconciliation_by_input = current._reconciliation_by_input
+        unresolved_reconciliation_count_by_leg = (
+            current._unresolved_reconciliation_count_by_leg
+        )
+        reconciliation_count_by_effect = current._reconciliation_count_by_effect
+        canonical_revision_count_by_leg = current._canonical_revision_count_by_leg
+        if reconciliation_append is not None:
+            (
+                reconciliation_ledger,
+                reconciliation_by_input,
+                unresolved_reconciliation_count_by_leg,
+                reconciliation_count_by_effect,
+                canonical_revision_count_by_leg,
+                coverage_current_by_leg,
+                coverage_total_by_effect,
+            ) = _append_reconciliation_value(
+                reconciliation_ledger,
+                reconciliation_by_input,
+                unresolved_reconciliation_count_by_leg,
+                reconciliation_count_by_effect,
+                canonical_revision_count_by_leg,
+                coverage_current_by_leg,
+                coverage_total_by_effect,
+                reconciliation_append,
+            )
+
+        execution_reconciliation_ledger = current._execution_reconciliation_ledger
+        execution_reconciliation_by_input = current._execution_reconciliation_by_input
+        unresolved_execution_reconciliation_count_by_scope = (
+            current._unresolved_execution_reconciliation_count_by_scope
+        )
+        unresolved_account_execution_reconciliation_count = (
+            current._unresolved_account_execution_reconciliation_count
+        )
+        account_authority_epoch = current._account_authority_epoch
+        registry_transition_ledger = current._registry_transition_ledger
+        registry_transition_head_commitment = (
+            current._registry_transition_head_commitment
+        )
+        if execution_reconciliation_append is not None:
+            (
+                execution_reconciliation_ledger,
+                execution_reconciliation_by_input,
+                unresolved_execution_reconciliation_count_by_scope,
+            ) = _append_execution_reconciliation_value(
+                execution_reconciliation_ledger,
+                execution_reconciliation_by_input,
+                unresolved_execution_reconciliation_count_by_scope,
+                execution_reconciliation_append,
+            )
+            if type(item) is not CatchUpExecutionRegistry:
+                raise TypeError(
+                    "registry reconciliation requires its exact CatchUp command"
+                )
+            registry_transition = _registry_transition_proof_for(
+                ordinal=registry_transition_ledger.length + 1,
+                predecessor_commitment=registry_transition_head_commitment,
+                venue_scope=current.scope,
+                item=cast(CatchUpExecutionRegistry, item),
+                outcome=execution_reconciliation_append,
+            )
+            registry_transition_ledger = registry_transition_ledger.append(
+                registry_transition,
+                registry_transition.commitment,
+            )
+            registry_transition_head_commitment = registry_transition.commitment
+            if not execution_reconciliation_append.attribution_resolved:
+                unresolved_account_execution_reconciliation_count += 1
+                account_authority_epoch += 1
+
+        authority_epoch_by_scope = current._authority_epoch_by_scope
+        if demote_scope is not None:
+            if not isinstance(demote_scope, PositionScope):
+                raise TypeError("demotion scope must be PositionScope")
+            scope_key = _position_scope_index_key(demote_scope)
+            authority_epoch_by_scope = _set_int_index(
+                authority_epoch_by_scope,
+                scope_key,
+                (authority_epoch_by_scope.get(scope_key) or 0) + 1,
+                domain=b"execution-core/venue-authority-epoch/v1",
+            )
+
+        effect_order = current._effect_order
+        effect_by_id = current._effect_by_id
+        effect_by_request_occurrence = current._effect_by_request_occurrence
+        effect_by_client_order = current._effect_by_client_order
+        if effect_append is not None and effect_replace is not None:
+            raise ValueError("effect cannot append and replace in one transition")
+        if effect_append is not None:
+            (
+                effect_order,
+                effect_by_id,
+                effect_by_request_occurrence,
+                effect_by_client_order,
+            ) = _append_effect_value(
+                effect_order,
+                effect_by_id,
+                effect_by_request_occurrence,
+                effect_by_client_order,
+                authority_epoch_by_scope,
+                account_authority_epoch,
+                effect_append,
+            )
+        elif effect_replace is not None:
+            effect_by_id = _replace_effect_value(
+                effect_by_id,
+                authority_epoch_by_scope,
+                account_authority_epoch,
+                effect_replace,
+            )
+        contradiction_order_by_effect = current._contradiction_order_by_effect
+        if contradiction_append is not None:
+            if (
+                type(contradiction_append) is not tuple
+                or len(contradiction_append) != 2
+            ):
+                raise TypeError("contradiction append must pair effect and evidence")
+            contradiction_effect_id, contradiction = contradiction_append
+            if not isinstance(contradiction_effect_id, EffectId):
+                raise TypeError("contradiction effect identity must be EffectId")
+            contradiction_order_by_effect = _append_contradiction_value(
+                contradiction_order_by_effect,
+                contradiction_effect_id,
+                contradiction,
+            )
+
+        claim_order = current._claim_order
+        claim_by_effect = current._claim_by_effect
+        claim_by_occurrence = current._claim_by_occurrence
+        if claim_append is not None:
+            claim_order, claim_by_effect, claim_by_occurrence = _append_claim_value(
+                claim_order,
+                claim_by_effect,
+                claim_by_occurrence,
+                claim_append,
+            )
+
+        owner_order = current._owner_order
+        owner_by_leg = current._owner_by_leg
+        leg_current_by_leg = current._leg_current_by_leg
+        leg_summary_by_effect = current._leg_summary_by_effect
+        if owner_and_attempt_append is not None:
+            (
+                owner_order,
+                owner_by_leg,
+                leg_current_by_leg,
+                leg_summary_by_effect,
+            ) = _append_owner_value(
+                owner_order,
+                owner_by_leg,
+                leg_current_by_leg,
+                leg_summary_by_effect,
+                owner_and_attempt_append,
+            )
+        if attempt_replace is not None:
+            leg_current_by_leg = _replace_attempt_value(
+                leg_current_by_leg,
+                attempt_replace,
+            )
+        if closure is not None:
+            encoded_leg = _leg_index_key(closure.leg_key)
+            owner = owner_by_leg.get(encoded_leg)
+            current_leg = leg_current_by_leg.get(encoded_leg)
+            if owner is None or current_leg is None:
+                raise ValueError("closure requires a current owned leg")
+            effect_current = effect_by_id.get(_effect_index_key(owner.effect_id))
+            if effect_current is None:
+                raise ValueError("closure owner requires a current effect")
+            prior_head = current._closure_head_by_leg.get(encoded_leg)
+            prior_coverage = (
+                current._coverage_current_by_leg.get(encoded_leg)
+                or _CoverageLegCurrent()
+            )
+            next_coverage = (
+                coverage_current_by_leg.get(encoded_leg) or _CoverageLegCurrent()
+            )
+            prior_ready = _closure_is_finalization_ready(
+                effect_current.effect,
+                prior_head,
+                prior_coverage.canonical_total,
+            )
+            next_ready = _closure_is_finalization_ready(
+                effect_current.effect,
+                closure,
+                next_coverage.canonical_total,
+            )
+            if (
+                prior_ready
+                and not next_ready
+                and effect_current.effect.state
+                is BrokerEffectState.OPERATOR_RECONCILED
+            ):
+                scope_key = _position_scope_index_key(
+                    effect_current.effect.scope.position_scope
+                )
+                authority_epoch = authority_epoch_by_scope.get(scope_key) or 0
+                if effect_current.operator_epoch == authority_epoch:
+                    effect_by_id = _replace_effect_value(
+                        effect_by_id,
+                        authority_epoch_by_scope,
+                        account_authority_epoch,
+                        replace(
+                            effect_current.effect,
+                            state=BrokerEffectState.NEEDS_REVIEW,
+                        ),
+                    )
+            summary = (
+                leg_summary_by_effect.get(_effect_index_key(owner.effect_id))
+                or _EffectLegSummary()
+            )
+            summary = replace(
+                summary,
+                active_count=(
+                    summary.active_count - (1 if current_leg.attempt is not None else 0)
+                ),
+                finalization_ready_count=(
+                    summary.finalization_ready_count
+                    - (1 if prior_ready else 0)
+                    + (1 if next_ready else 0)
+                ),
+            )
+            if summary.active_count < 0 or summary.finalization_ready_count < 0:
+                raise ValueError("effect leg summary cannot become negative")
+            leg_summary_by_effect = _set_effect_leg_summary(
+                leg_summary_by_effect,
+                owner.effect_id,
+                summary,
+            )
+            closed_current = _LegCurrent(None)
+            leg_current_by_leg = leg_current_by_leg.replace_existing(
+                encoded_leg,
+                closed_current,
+                closed_current.commitment,
+            )
+
+        if type(binding_upserts) is not tuple or len(binding_upserts) > 2:
+            raise TypeError("binding upserts must be a bounded tuple")
+        binding_order = current._binding_order
+        binding_by_scope = current._binding_by_scope
+        seen_binding_scopes: set[PositionScope] = set()
+        for binding in binding_upserts:
+            if not isinstance(binding, VenueExecutionBinding):
+                raise TypeError("binding upsert must be VenueExecutionBinding")
+            if binding.position_scope in seen_binding_scopes:
+                raise ValueError("binding scope cannot be updated twice")
+            seen_binding_scopes.add(binding.position_scope)
+            binding_order, binding_by_scope = _upsert_binding_value(
+                binding_order,
+                binding_by_scope,
+                binding,
+            )
+
+        coverage_provenance_by_scope = _evolve_coverage_provenance(
+            current._coverage_provenance_by_scope,
+            prior_execution,
+            resulting_execution,
+            item,
+            canonical_economic_input=canonical_economic_input,
+        )
+
+        result = object.__new__(VenueRecoveryBook)
+        for name in _EVOLVABLE_BOOK_FIELDS:
+            object.__setattr__(
+                result,
+                name,
+                changes.get(name, getattr(current, name)),
+            )
+        object.__setattr__(result, "_effect_order", effect_order)
+        object.__setattr__(result, "_effect_by_id", effect_by_id)
+        object.__setattr__(
+            result,
+            "_effect_by_request_occurrence",
+            effect_by_request_occurrence,
+        )
+        object.__setattr__(
+            result,
+            "_effect_by_client_order",
+            effect_by_client_order,
+        )
+        object.__setattr__(
+            result,
+            "_authority_epoch_by_scope",
+            authority_epoch_by_scope,
+        )
+        object.__setattr__(result, "_account_authority_epoch", account_authority_epoch)
+        object.__setattr__(
+            result,
+            "_contradiction_order_by_effect",
+            contradiction_order_by_effect,
+        )
+        object.__setattr__(result, "_claim_order", claim_order)
+        object.__setattr__(result, "_claim_by_effect", claim_by_effect)
+        object.__setattr__(result, "_claim_by_occurrence", claim_by_occurrence)
+        object.__setattr__(result, "_owner_order", owner_order)
+        object.__setattr__(result, "_owner_by_leg", owner_by_leg)
+        object.__setattr__(result, "_leg_current_by_leg", leg_current_by_leg)
+        object.__setattr__(
+            result,
+            "_leg_summary_by_effect",
+            leg_summary_by_effect,
+        )
+        object.__setattr__(result, "_binding_order", binding_order)
+        object.__setattr__(result, "_binding_by_scope", binding_by_scope)
+        object.__setattr__(result, "_closure_ledger", closure_ledger)
+        object.__setattr__(result, "_closure_by_id", closure_by_id)
+        object.__setattr__(result, "_closure_head_by_leg", closure_heads_by_leg)
+        object.__setattr__(result, "_input_ledger", input_ledger)
+        object.__setattr__(result, "_input_by_id", input_by_id)
+        object.__setattr__(result, "_direct_input_by_semantic", direct_semantics)
+        object.__setattr__(result, "_first_input_by_fact", first_inputs_by_fact)
+        object.__setattr__(
+            result,
+            "_economic_high_water_by_leg",
+            economic_high_water_by_leg,
+        )
+        object.__setattr__(result, "_human_coverage_ledger", human_coverage_ledger)
+        object.__setattr__(
+            result,
+            "_human_coverage_by_root",
+            human_coverage_by_root,
+        )
+        object.__setattr__(result, "_broker_coverage_ledger", broker_coverage_ledger)
+        object.__setattr__(
+            result,
+            "_broker_coverage_by_root",
+            broker_coverage_by_root,
+        )
+        object.__setattr__(
+            result,
+            "_coverage_provenance_by_scope",
+            coverage_provenance_by_scope,
+        )
+        object.__setattr__(
+            result,
+            "_coverage_current_by_leg",
+            coverage_current_by_leg,
+        )
+        object.__setattr__(
+            result,
+            "_coverage_total_by_effect",
+            coverage_total_by_effect,
+        )
+        object.__setattr__(
+            result,
+            "_attributed_broker_root_count_by_scope",
+            attributed_broker_root_count_by_scope,
+        )
+        object.__setattr__(result, "_human_interval_index", human_interval_index)
+        object.__setattr__(
+            result,
+            "_human_broker_fact_index",
+            human_broker_fact_index,
+        )
+        object.__setattr__(
+            result,
+            "_reconciliation_ledger",
+            reconciliation_ledger,
+        )
+        object.__setattr__(
+            result,
+            "_reconciliation_by_input",
+            reconciliation_by_input,
+        )
+        object.__setattr__(
+            result,
+            "_unresolved_reconciliation_count_by_leg",
+            unresolved_reconciliation_count_by_leg,
+        )
+        object.__setattr__(
+            result,
+            "_reconciliation_count_by_effect",
+            reconciliation_count_by_effect,
+        )
+        object.__setattr__(
+            result,
+            "_canonical_revision_count_by_leg",
+            canonical_revision_count_by_leg,
+        )
+        object.__setattr__(
+            result,
+            "_execution_reconciliation_ledger",
+            execution_reconciliation_ledger,
+        )
+        object.__setattr__(
+            result,
+            "_execution_reconciliation_by_input",
+            execution_reconciliation_by_input,
+        )
+        object.__setattr__(
+            result,
+            "_registry_transition_ledger",
+            registry_transition_ledger,
+        )
+        object.__setattr__(
+            result,
+            "_registry_transition_head_commitment",
+            registry_transition_head_commitment,
+        )
+        object.__setattr__(
+            result,
+            "_unresolved_execution_reconciliation_count_by_scope",
+            unresolved_execution_reconciliation_count_by_scope,
+        )
+        object.__setattr__(
+            result,
+            "_unresolved_account_execution_reconciliation_count",
+            unresolved_account_execution_reconciliation_count,
+        )
+
+        if result._effect_order.length and not result._execution_pair_matches_fast(
+            resulting_execution
+        ):
+            raise ValueError(
+                "venue checkpoint evolution produced a stale execution pair"
+            )
+        return result
+
+    def transition(
+        resulting_book: VenueRecoveryBook,
+        prior_execution: ExecutionSnapshot,
+        resulting_execution: ExecutionSnapshot,
+        disposition: VenueRecoveryDisposition,
+        *,
+        item: object,
+        quantity_delta: int,
+    ) -> VenueRecoveryTransition:
+        """Allocate one authenticated result with reducer-derived economics."""
+
+        from .recovery import (
+            IngestHumanAttestedFill,
+            RecordBrokerFillEvidence,
+            RecordBrokerRevisionEvidence,
+        )
+
+        if type(resulting_book) is not VenueRecoveryBook:
+            raise TypeError("transition book must be the exact VenueRecoveryBook type")
+        if type(prior_execution) is not ExecutionSnapshot:
+            raise TypeError("prior execution must be the exact ExecutionSnapshot type")
+        if type(resulting_execution) is not ExecutionSnapshot:
+            raise TypeError(
+                "resulting execution must be the exact ExecutionSnapshot type"
+            )
+        if type(disposition) is not VenueRecoveryDisposition:
+            raise TypeError("transition disposition must be VenueRecoveryDisposition")
+        if type(quantity_delta) is not int:
+            raise TypeError("transition quantity_delta must be an exact integer")
+
+        economic_command = type(item) in {
+            IngestHumanAttestedFill,
+            RecordBrokerFillEvidence,
+            RecordBrokerRevisionEvidence,
+        }
+        derived_delta = 0
+        if economic_command and disposition in {
+            VenueRecoveryDisposition.APPLIED,
+            VenueRecoveryDisposition.RECONCILIATION_REQUIRED,
+        }:
+            derived_delta = (
+                resulting_execution.position.raw_quantity
+                - prior_execution.position.raw_quantity
+            )
+        if quantity_delta != derived_delta:
+            raise ValueError(
+                "transition quantity_delta disagrees with reducer-derived economics"
+            )
+        if disposition in {
+            VenueRecoveryDisposition.APPLIED,
+            VenueRecoveryDisposition.EXACT_REPLAY,
+        } and not resulting_book._execution_pair_matches_fast(resulting_execution):
+            raise ValueError(
+                "usable venue transition requires its exact book/execution pair"
+            )
+
+        result = object.__new__(VenueRecoveryTransition)
+        object.__setattr__(result, "book", resulting_book)
+        object.__setattr__(result, "execution", resulting_execution)
+        object.__setattr__(result, "disposition", disposition)
+        object.__setattr__(result, "quantity_delta", derived_delta)
+        return result
+
     input_id = _require_input_id("item.input_id", getattr(item, "input_id", None))
     if isinstance(item, CatchUpExecutionRegistry):
-        return _apply_execution_registry_catch_up(book, execution, item)
+        return _apply_execution_registry_catch_up(
+            book,
+            execution,
+            item,
+            evolve,
+            transition,
+        )
+    if (
+        isinstance(item, RequestedEffect)
+        and not book._effect_order.length
+        and not _execution_is_exact_genesis(execution)
+    ):
+        return transition(
+            book,
+            execution,
+            execution,
+            VenueRecoveryDisposition.REFUSED,
+            item=item,
+            quantity_delta=0,
+        )
+    if book._execution_reconciliation_cursor_is_prefix(execution):
+        transition_count, transition_head = book._reconciliation_cursor()
+        execution = _bind_execution_reconciliation_cursor(
+            execution,
+            transition_count=transition_count,
+            transition_head=transition_head,
+            account_reconciliation_required=(
+                book._unresolved_account_execution_reconciliation_count > 0
+            ),
+        )
     target_effect_id = getattr(item, "effect_id", None)
     if not isinstance(target_effect_id, EffectId):
         target_leg_key = getattr(item, "leg_key", None)
@@ -2929,19 +7092,33 @@ def apply_venue_recovery_input(
             else None
         )
         target_effect_id = owner.effect_id if owner is not None else None
-    if isinstance(target_effect_id, EffectId) and book.effect(target_effect_id):
-        target_effect = book.effect(target_effect_id)
+    if isinstance(target_effect_id, EffectId) and book._current_effect(
+        target_effect_id
+    ):
+        target_effect = book._current_effect(target_effect_id)
         assert target_effect is not None
-        if not book._execution_matches(
-            execution,
-            target_effect.scope.position_scope,
+        if (
+            execution.position.scope != target_effect.scope.position_scope
+            or not book._execution_pair_matches_fast(execution)
         ):
-            return _transition(
+            return transition(
                 book,
                 execution,
+                execution,
                 VenueRecoveryDisposition.RECONCILIATION_REQUIRED,
+                item=item,
+                quantity_delta=0,
             )
     if isinstance(item, RequestedEffect):
+        if not book._execution_reconciliation_cursor_is_prefix(execution):
+            return transition(
+                book,
+                execution,
+                execution,
+                VenueRecoveryDisposition.REFUSED,
+                item=item,
+                quantity_delta=0,
+            )
         position_scope = execution.position.scope
         if (
             position_scope.broker != book.scope.broker
@@ -2949,49 +7126,72 @@ def apply_venue_recovery_input(
             or position_scope.account != book.scope.account
             or position_scope.symbol_id != item.symbol_id
         ):
-            return _transition(book, execution, VenueRecoveryDisposition.REFUSED)
+            return transition(
+                book,
+                execution,
+                execution,
+                VenueRecoveryDisposition.REFUSED,
+                item=item,
+                quantity_delta=0,
+            )
         item_effect_scope = _effect_scope(book, item).position_scope
         existing_binding = book.execution_binding(item_effect_scope)
         if (
             execution.position.scope != item_effect_scope
             or (
                 book.execution_registry_commitment is not None
-                and book.execution_registry_commitment
-                != execution.seen_facts.commitment
+                and (
+                    book.execution_registry_count != execution.seen_facts.count
+                    or book.execution_registry_commitment
+                    != execution.seen_facts.commitment
+                )
             )
             or (
                 existing_binding is not None
-                and not book._execution_matches(execution, item_effect_scope)
+                and not book._execution_pair_matches_fast(execution)
             )
         ):
-            return _transition(
+            return transition(
                 book,
                 execution,
+                execution,
                 VenueRecoveryDisposition.RECONCILIATION_REQUIRED,
+                item=item,
+                quantity_delta=0,
             )
     replay = book._input_record(input_id)
     if replay is not None:
         disposition = (
             VenueRecoveryDisposition.EXACT_REPLAY
-            if replay.item == item
+            if _input_commands_equal(
+                replay.item,
+                item,
+                include_input_id=True,
+            )
             else VenueRecoveryDisposition.CONFLICT
         )
-        return _transition(book, execution, disposition)
+        return transition(
+            book,
+            execution,
+            execution,
+            disposition,
+            item=item,
+            quantity_delta=0,
+        )
 
     if isinstance(item, RequestedEffect):
-        next_book = _register_effect(book, execution, item)
+        next_book = _register_effect(evolve, book, execution, item)
         disposition = (
             VenueRecoveryDisposition.APPLIED
             if next_book is not None
             else VenueRecoveryDisposition.CONFLICT
         )
     elif isinstance(item, RecordDispatchClaim):
-        effect = book.effect(item.effect_id)
-        duplicate_claim_occurrence = any(
-            claim.claim_occurrence_id == item.claim_occurrence_id
-            for claim in book.claims
+        effect = book._current_effect(item.effect_id)
+        duplicate_claim_occurrence = book._has_claim_occurrence(
+            item.claim_occurrence_id
         )
-        next_book = _record_claim(book, item)
+        next_book = _record_claim(evolve, book, execution, item)
         disposition = (
             VenueRecoveryDisposition.APPLIED
             if next_book is not None
@@ -3007,21 +7207,26 @@ def apply_venue_recovery_input(
             )
         )
     elif isinstance(item, CancelBeforeDispatch):
-        effect = book.effect(item.effect_id)
+        effect = book._current_effect(item.effect_id)
         if (
             effect is not None
             and effect.state is BrokerEffectState.REQUESTED
             and effect.claim_occurrence_id is None
         ):
             next_book = _replace_effect_state(
-                book, effect, BrokerEffectState.CANCELED_BEFORE_DISPATCH, item
+                evolve,
+                book,
+                execution,
+                effect,
+                BrokerEffectState.CANCELED_BEFORE_DISPATCH,
+                item,
             )
             disposition = VenueRecoveryDisposition.APPLIED
         else:
             next_book = None
             disposition = VenueRecoveryDisposition.REFUSED
     elif isinstance(item, RecordTransportOutcome):
-        effect = book.effect(item.effect_id)
+        effect = book._current_effect(item.effect_id)
         allowed = {
             BrokerEffectState.DISPATCH_CLAIMED: {
                 BrokerEffectState.ACKNOWLEDGED,
@@ -3036,7 +7241,15 @@ def apply_venue_recovery_input(
         }
         if effect is not None and item.state in allowed.get(effect.state, set()):
             next_book = _maybe_finalize_effect(
-                _replace_effect_state(book, effect, item.state, item),
+                evolve,
+                _replace_effect_state(
+                    evolve,
+                    book,
+                    execution,
+                    effect,
+                    item.state,
+                    item,
+                ),
                 item.effect_id,
                 execution,
             )
@@ -3045,17 +7258,22 @@ def apply_venue_recovery_input(
             next_book = None
             disposition = VenueRecoveryDisposition.REFUSED
     elif isinstance(item, RecoverClaimedEffect):
-        effect = book.effect(item.effect_id)
+        effect = book._current_effect(item.effect_id)
         if effect is not None and effect.state is BrokerEffectState.DISPATCH_CLAIMED:
             next_book = _replace_effect_state(
-                book, effect, BrokerEffectState.OUTCOME_UNKNOWN, item
+                evolve,
+                book,
+                execution,
+                effect,
+                BrokerEffectState.OUTCOME_UNKNOWN,
+                item,
             )
             disposition = VenueRecoveryDisposition.APPLIED
         else:
             next_book = None
             disposition = VenueRecoveryDisposition.REFUSED
     elif isinstance(item, DiscoverVenueLeg):
-        next_book, disposition = _discover_leg(book, item)
+        next_book, disposition = _discover_leg(evolve, book, execution, item)
     elif isinstance(item, RecordPendingVenueOperation):
         attempt = book.active_attempt(item.leg_key)
         if (
@@ -3068,23 +7286,22 @@ def apply_venue_recovery_input(
         else:
             updated = replace(attempt, pending_operation=item.operation)
             next_book = _book_with_input(
+                evolve,
                 book,
+                execution,
                 item,
-                active_attempts=tuple(
-                    updated if entry.leg_key == updated.leg_key else entry
-                    for entry in book.active_attempts
-                ),
+                _attempt_replace=updated,
             )
             disposition = VenueRecoveryDisposition.APPLIED
     elif isinstance(item, ObserveVenueStatus):
-        next_book = _observe_status(book, item)
+        next_book = _observe_status(evolve, book, execution, item)
         disposition = (
             VenueRecoveryDisposition.APPLIED
             if next_book is not None
             else VenueRecoveryDisposition.REFUSED
         )
     elif isinstance(item, CloseAcceptanceSet):
-        next_book = _close_acceptance_set(book, execution, item)
+        next_book = _close_acceptance_set(evolve, book, execution, item)
         disposition = (
             VenueRecoveryDisposition.APPLIED
             if next_book is not None
@@ -3093,9 +7310,22 @@ def apply_venue_recovery_input(
     else:
         from .recovery import _apply_recovery_input
 
-        return _apply_recovery_input(book, execution, item)
+        return _apply_recovery_input(
+            book,
+            execution,
+            item,
+            evolve,
+            transition,
+        )
 
-    return _transition(next_book or book, execution, disposition)
+    return transition(
+        next_book or book,
+        execution,
+        execution,
+        disposition,
+        item=item,
+        quantity_delta=0,
+    )
 
 
 __all__ = [
@@ -3120,6 +7350,7 @@ __all__ = [
     "VenueAttemptState",
     "VenueClosureKind",
     "VenueEffectScope",
+    "VenueExecutionCheckpoint",
     "VenueRecoveryBook",
     "VenueRecoveryDisposition",
     "VenueRecoveryTransition",

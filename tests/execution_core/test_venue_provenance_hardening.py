@@ -20,7 +20,7 @@ from app.execution_core.identity import (
     SourceEventId,
     VenueInputId,
 )
-from app.execution_core.position import PositionIntegrity
+from app.execution_core.position import ExecutionSnapshot, PositionIntegrity
 from app.execution_core.recovery import (
     RecordBrokerFillEvidence,
     RecordBrokerRevisionEvidence,
@@ -33,10 +33,11 @@ from app.execution_core.venue import (
     CatchUpExecutionRegistry,
     CloseAcceptanceSet,
     VenueAttemptState,
+    VenueExecutionCheckpoint,
     VenueRecoveryBook,
     VenueRecoveryDisposition,
     VenueRecoveryTransition,
-    _rebuild_book,
+    _audit_hydrate_book,
     apply_venue_recovery_input,
 )
 from tests.execution_core import test_venue_recovery as recovery_fixtures
@@ -139,6 +140,18 @@ def _post_final_registry_reconciliation():
         finalized.execution,
         CatchUpExecutionRegistry(
             input_id=VenueInputId("provenance-catch-up-input"),
+            target_checkpoint=VenueExecutionCheckpoint.from_execution(
+                finalized.execution
+            ),
+            prior_account_registry_count=(
+                finalized.book.execution_registry_count
+            ),
+            prior_account_registry_commitment=(
+                finalized.book.execution_registry_commitment
+            ),
+            prior_source_binding=finalized.book.execution_binding(
+                ahead.position.scope
+            ),
             source_execution=ahead,
         ),
     )
@@ -274,9 +287,68 @@ def _force_operator_reconciled(book):
 def test_public_checkpoint_has_no_importable_construction_capability() -> None:
     """Ordinary imports and the generated initializer must not mint checkpoints."""
 
-    assert "_BOOK_CONSTRUCTION_TOKEN" not in vars(venue_module)
+    for name in (
+        "_BOOK_CONSTRUCTION_TOKEN",
+        "_rebuild_book",
+        "_evolve_book",
+    ):
+        assert name not in vars(venue_module)
     with pytest.raises(TypeError, match="opaque|empty|reducer"):
         VenueRecoveryBook(scope=recovery_fixtures.VENUE_SCOPE)
+
+    with pytest.raises(TypeError, match="opaque|subclass"):
+
+        class ForgedBook(VenueRecoveryBook):
+            pass
+
+    with pytest.raises(TypeError, match="transition|subclass"):
+
+        class ForgedTransition(VenueRecoveryTransition):
+            pass
+
+
+def test_public_transition_rejects_execution_snapshot_subclasses() -> None:
+    """Subclass overrides cannot impersonate one exact paired high-water."""
+
+    book, execution = recovery_fixtures._seed_needs_review(capacity=4)
+
+    class ForgedExecution(ExecutionSnapshot):
+        pass
+
+    forged = ForgedExecution(
+        position=execution.position,
+        integrity=execution.integrity,
+        root_heads=execution.root_heads,
+        seen_facts=execution.seen_facts,
+    )
+    with pytest.raises(TypeError, match="exact ExecutionSnapshot"):
+        apply_venue_recovery_input(
+            book,
+            forged,
+            book.input_records[0].item,
+        )
+
+
+def test_public_transition_cannot_mint_or_replace_quantity_delta() -> None:
+    """Only the reducer may construct an exact transition and its economic delta."""
+
+    book, execution = recovery_fixtures._seed_needs_review(capacity=4)
+    replayed = apply_venue_recovery_input(
+        book,
+        execution,
+        book.input_records[0].item,
+    )
+    assert replayed.disposition is VenueRecoveryDisposition.EXACT_REPLAY
+
+    with pytest.raises(TypeError, match="opaque|reducer"):
+        VenueRecoveryTransition(
+            book=book,
+            execution=execution,
+            disposition=VenueRecoveryDisposition.APPLIED,
+            quantity_delta=999,
+        )
+    with pytest.raises(TypeError, match="opaque|reducer"):
+        replace(replayed, quantity_delta=-777)
 
 
 def test_dataclasses_replace_cannot_mint_checkpoint_authority() -> None:
@@ -294,24 +366,16 @@ def test_dataclasses_replace_cannot_mint_checkpoint_authority() -> None:
     replace_kwargs = {
         "active_attempts": attested.book.active_attempts,
         "input_records": attested.book.input_records,
-        "execution_registry_commitment": (
-            attested.book.execution_registry_commitment
-        ),
+        "execution_registry_commitment": (attested.book.execution_registry_commitment),
         "execution_bindings": attested.book.execution_bindings,
         "human_coverages": attested.book.human_coverages,
     }
-    legacy_capability = vars(venue_module).get("_BOOK_CONSTRUCTION_TOKEN")
-    if legacy_capability is not None:
-        replace_kwargs["_construction_token"] = legacy_capability
-
     with pytest.raises(TypeError, match="opaque|replace|reducer"):
         replace(book, **replace_kwargs)
 
 
-def test_public_transition_rejects_human_book_paired_with_pre_fill_execution() -> (
-    None
-):
-    """A human-authority book is usable only with its exact resulting snapshot."""
+def test_public_transition_constructor_cannot_pair_stale_human_authority() -> None:
+    """Opaque construction cannot pair human authority with a stale snapshot."""
 
     book, execution = recovery_fixtures._seed_needs_review(capacity=4)
     attested = recovery_fixtures._ingest(
@@ -322,7 +386,7 @@ def test_public_transition_rejects_human_book_paired_with_pre_fill_execution() -
     )
     assert attested.disposition is VenueRecoveryDisposition.APPLIED
 
-    with pytest.raises(ValueError, match="execution|root|human|pair"):
+    with pytest.raises(TypeError, match="opaque|reducer"):
         VenueRecoveryTransition(
             book=attested.book,
             execution=execution,
@@ -331,10 +395,8 @@ def test_public_transition_rejects_human_book_paired_with_pre_fill_execution() -
         )
 
 
-def test_public_transition_rejects_corroborated_book_paired_with_prior_registry() -> (
-    None
-):
-    """Zero-economic corroboration must bind the resulting registry high-water."""
+def test_public_transition_constructor_cannot_pair_stale_corroboration() -> None:
+    """Opaque construction cannot pair corroboration with a prior registry."""
 
     book, execution = recovery_fixtures._seed_needs_review(capacity=4)
     attested = recovery_fixtures._ingest(
@@ -364,7 +426,7 @@ def test_public_transition_rejects_corroborated_book_paired_with_prior_registry(
     assert corroborated.disposition is VenueRecoveryDisposition.APPLIED
     assert corroborated.quantity_delta == 0
 
-    with pytest.raises(ValueError, match="registry|corroboration|execution|pair"):
+    with pytest.raises(TypeError, match="opaque|reducer"):
         VenueRecoveryTransition(
             book=corroborated.book,
             execution=attested.execution,
@@ -385,8 +447,9 @@ def test_checkpoint_rejects_human_input_after_coverage_is_stripped() -> None:
     assert attempt is not None
 
     with pytest.raises(ValueError, match="outcome|provenance|recovery input"):
-        _rebuild_book(
+        _audit_hydrate_book(
             attested.book,
+            attested.execution,
             human_coverages=(),
             active_attempts=(replace(attempt, cumulative_quantity=Quantity(0)),),
         )
@@ -407,8 +470,9 @@ def test_checkpoint_rejects_semantic_alias_retargeted_as_direct_provenance() -> 
     )
 
     with pytest.raises(ValueError, match="alias|direct|provenance"):
-        _rebuild_book(
+        _audit_hydrate_book(
             aliased.book,
+            aliased.execution,
             input_records=retained_inputs,
             broker_coverages=(retargeted,),
         )
@@ -417,10 +481,55 @@ def test_checkpoint_rejects_semantic_alias_retargeted_as_direct_provenance() -> 
 def test_direct_source_plus_semantic_alias_remains_a_valid_checkpoint() -> None:
     aliased, direct_command, _ = _broker_coverage_with_alias()
 
-    rebuilt = _rebuild_book(aliased.book)
+    rebuilt = _audit_hydrate_book(aliased.book, aliased.execution)
 
     assert rebuilt == aliased.book
     assert rebuilt.broker_coverages[0].root_source_input_id == direct_command.input_id
+
+
+def test_checkpoint_rejects_stripped_owned_broker_attribution() -> None:
+    """Execution economics cannot survive without their retained venue outcome."""
+
+    aliased, _, _ = _broker_coverage_with_alias()
+    attempt = aliased.book.active_attempt(recovery_fixtures.LEG_A)
+    assert attempt is not None
+    retained_inputs = tuple(
+        record
+        for record in aliased.book.input_records
+        if not isinstance(record.item, RecordBrokerFillEvidence)
+    )
+
+    with pytest.raises(ValueError, match="broker observation|venue outcome"):
+        _audit_hydrate_book(
+            aliased.book,
+            aliased.execution,
+            input_records=retained_inputs,
+            broker_coverages=(),
+            active_attempts=(replace(attempt, cumulative_quantity=Quantity(0)),),
+        )
+
+
+def test_changed_broker_attribution_cannot_advance_serving_high_water() -> None:
+    """A rejected command cannot poison the indexed release high-water."""
+
+    aliased, direct_command, _ = _broker_coverage_with_alias()
+    prior_high_water = aliased.book._economic_high_water(recovery_fixtures.LEG_A)
+    changed = replace(
+        direct_command,
+        input_id=VenueInputId("provenance-changed-attribution-replay"),
+        resulting_cumulative_quantity=Quantity(4),
+    )
+
+    rejected = apply_venue_recovery_input(
+        aliased.book,
+        aliased.execution,
+        changed,
+    )
+
+    assert rejected.disposition is VenueRecoveryDisposition.RECONCILIATION_REQUIRED
+    assert rejected.book._economic_high_water(recovery_fixtures.LEG_A) == (
+        prior_high_water
+    )
 
 
 def test_checkpoint_rejects_changed_fill_input_after_reconciliation_is_stripped() -> (
@@ -454,14 +563,22 @@ def test_checkpoint_rejects_changed_fill_input_after_reconciliation_is_stripped(
     assert changed.book.reconciliations
 
     with pytest.raises(ValueError, match="outcome|provenance|recovery input"):
-        _rebuild_book(changed.book, reconciliations=())
+        _audit_hydrate_book(
+            changed.book,
+            changed.execution,
+            reconciliations=(),
+        )
 
 
 def test_checkpoint_rejects_catch_up_input_after_registry_outcome_is_stripped() -> None:
     caught_up = _post_final_registry_reconciliation()
 
     with pytest.raises(ValueError, match="outcome|provenance|recovery input"):
-        _rebuild_book(caught_up.book, execution_reconciliations=())
+        _audit_hydrate_book(
+            caught_up.book,
+            caught_up.execution,
+            execution_reconciliations=(),
+        )
 
 
 def test_later_conflicting_evidence_cannot_remain_currently_operator_reconciled() -> (
@@ -479,8 +596,9 @@ def test_constructor_rejects_operator_state_with_unresolved_recovery_record() ->
     reconciled = _post_final_fill_conflict()
 
     with pytest.raises(ValueError, match="operator|reconcil|unresolved"):
-        _rebuild_book(
+        _audit_hydrate_book(
             reconciled.book,
+            reconciled.execution,
             effects=_force_operator_reconciled(reconciled.book),
         )
 
@@ -489,8 +607,9 @@ def test_constructor_rejects_operator_state_with_unresolved_registry_record() ->
     caught_up = _post_final_registry_reconciliation()
 
     with pytest.raises(ValueError, match="operator|reconcil|unresolved"):
-        _rebuild_book(
+        _audit_hydrate_book(
             caught_up.book,
+            caught_up.execution,
             effects=_force_operator_reconciled(caught_up.book),
         )
 
@@ -515,8 +634,9 @@ def test_constructor_rejects_operator_state_with_unresolved_binding_bits(
     )
 
     with pytest.raises(ValueError, match="operator|integrity|conflict|reconcil"):
-        _rebuild_book(
+        _audit_hydrate_book(
             finalized.book,
+            finalized.execution,
             execution_bindings=(forged_binding,),
         )
 
@@ -525,7 +645,8 @@ def test_constructor_rejects_operator_state_with_unresolved_mapping() -> None:
     unresolved = _post_final_unresolved_mapping()
 
     with pytest.raises(ValueError, match="operator|mapping|reconcil|unresolved"):
-        _rebuild_book(
+        _audit_hydrate_book(
             unresolved.book,
+            unresolved.execution,
             effects=_force_operator_reconciled(unresolved.book),
         )
