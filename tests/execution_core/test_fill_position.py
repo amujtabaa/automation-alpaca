@@ -1968,7 +1968,7 @@ def test_execution_snapshot_rejects_a_position_scope_subclass() -> None:
 
     with pytest.raises(TypeError, match="scope must be the exact PositionScope"):
         ExecutionSnapshot.flat(scope)
-    with pytest.raises(TypeError, match="position scope must be"):
+    with pytest.raises(TypeError, match=r"position[_ ]scope must be"):
         ExecutionSnapshot.bind_verified(
             PositionState.flat(scope),
             PositionIntegrity.CONSISTENT,
@@ -2102,6 +2102,96 @@ def test_fact_reducer_and_seen_fact_reject_fact_subclasses(
         SeenFact(
             fact=subclass_fact,
             classification=(FirstObservationClassification.RECONCILIATION_REQUIRED),
+        )
+
+
+def test_broker_fill_fact_rejects_a_delayed_quantity_subclass() -> None:
+    class DelayedQuantity(Quantity):
+        reported_value = 1
+
+        def __getattribute__(self, name: str) -> object:
+            if name == "value":
+                return type(self).reported_value
+            return super().__getattribute__(name)
+
+    with pytest.raises(TypeError, match="quantity"):
+        BrokerFillFact(
+            key=_key("delayed-quantity-source"),
+            scope=_scope(order_id=BUY_ORDER, side=ExecutionSide.BUY),
+            root_fill_id=RootFillId("delayed-quantity-root"),
+            quantity=DelayedQuantity(1),
+            price=_price(100),
+        )
+
+
+def test_broker_fill_fact_rejects_a_delayed_execution_scope_subclass() -> None:
+    class DelayedExecutionScope(ExecutionScope):
+        reported_side = ExecutionSide.BUY
+
+        def __getattribute__(self, name: str) -> object:
+            if name == "side":
+                return type(self).reported_side
+            return super().__getattribute__(name)
+
+    exact_scope = _scope(order_id=BUY_ORDER, side=ExecutionSide.BUY)
+    delayed_scope = DelayedExecutionScope(
+        broker=exact_scope.broker,
+        environment=exact_scope.environment,
+        account=exact_scope.account,
+        order_id=exact_scope.order_id,
+        symbol_id=exact_scope.symbol_id,
+        side=exact_scope.side,
+    )
+    with pytest.raises(TypeError, match="scope"):
+        BrokerFillFact(
+            key=_key("delayed-scope-source"),
+            scope=delayed_scope,
+            root_fill_id=RootFillId("delayed-scope-root"),
+            quantity=Quantity(1),
+            price=_price(100),
+        )
+
+
+def test_execution_fact_key_rejects_a_delayed_identity_subclass() -> None:
+    class DelayedAccountId(AccountId):
+        reported_value = ACCOUNT.value
+
+        def __getattribute__(self, name: str) -> object:
+            if name == "value":
+                return type(self).reported_value
+            return super().__getattribute__(name)
+
+    with pytest.raises(TypeError, match="account"):
+        ExecutionFactKey(
+            broker=BROKER,
+            environment=ENVIRONMENT,
+            account=DelayedAccountId(ACCOUNT.value),
+            source_event_id=SourceEventId("delayed-identity-source"),
+        )
+
+
+def test_reported_price_rejects_a_delayed_price_component_subclass() -> None:
+    class DelayedPriceUnits(PriceUnits):
+        reported_value = 100
+
+        def __getattribute__(self, name: str) -> object:
+            if name == "value":
+                return type(self).reported_value
+            return super().__getattribute__(name)
+
+    exact_price = _price(100)
+    delayed_price = ReportedPrice(
+        units=DelayedPriceUnits(100),
+        scale=exact_price.scale,
+        tick=exact_price.tick,
+    )
+    with pytest.raises(TypeError, match="price.units"):
+        BrokerFillFact(
+            key=_key("delayed-price-source"),
+            scope=_scope(order_id=BUY_ORDER, side=ExecutionSide.BUY),
+            root_fill_id=RootFillId("delayed-price-root"),
+            quantity=Quantity(1),
+            price=delayed_price,
         )
 
 
@@ -4202,6 +4292,94 @@ def test_fold_input_rejects_malformed_state_and_partial_tail_proof() -> None:
     for changes, expected_error, message in invalid_changes:
         with pytest.raises(expected_error, match=message):
             replace(valid, **changes)
+
+
+def test_position_caches_reject_delayed_and_nested_basis_subclasses() -> None:
+    class DelayedExactBasis(ExactBasis):
+        reported_value = Fraction(100)
+
+        def __getattribute__(self, name: str) -> object:
+            if name == "value":
+                return type(self).reported_value
+            return super().__getattribute__(name)
+
+    class FractionSubclass(Fraction):
+        pass
+
+    for basis in (
+        DelayedExactBasis(Fraction(100)),
+        ExactBasis(FractionSubclass(100)),
+    ):
+        with pytest.raises(TypeError, match="cost_basis"):
+            FoldInput(
+                raw_quantity=1,
+                cost_basis=basis,
+                price_metadata=_price(100),
+            )
+
+
+def test_position_caches_reject_reported_price_and_fold_input_subclasses() -> None:
+    class ReportedPriceSubclass(ReportedPrice):
+        pass
+
+    class FoldInputSubclass(FoldInput):
+        pass
+
+    exact_price = _price(100)
+    delayed_price = ReportedPriceSubclass(
+        units=exact_price.units,
+        scale=exact_price.scale,
+        tick=exact_price.tick,
+    )
+    exact_fold = FoldInput(
+        raw_quantity=1,
+        cost_basis=_basis(100),
+        price_metadata=exact_price,
+    )
+    delayed_fold = FoldInputSubclass(
+        raw_quantity=exact_fold.raw_quantity,
+        cost_basis=exact_fold.cost_basis,
+        price_metadata=exact_fold.price_metadata,
+    )
+
+    with pytest.raises(TypeError, match="price_metadata"):
+        FoldInput(
+            raw_quantity=1,
+            cost_basis=_basis(100),
+            price_metadata=delayed_price,
+        )
+    with pytest.raises(TypeError, match="tail_fold_input"):
+        PositionState.from_materialized(
+            scope=POSITION_SCOPE,
+            raw_quantity=1,
+            basis_authority=BasisAuthority.AVAILABLE,
+            cost_basis=_basis(100),
+            root_fill_sequence=(),
+            effective_head_ids=(),
+            basis_price_metadata=exact_price,
+            tail_fold_input=delayed_fold,
+        )
+
+
+def test_snapshot_binding_rejects_digest_subclasses() -> None:
+    class DigestSubclass(bytes):
+        pass
+
+    binding = ExecutionSnapshot.flat(POSITION_SCOPE).position.binding
+    assert binding is not None
+
+    with pytest.raises(TypeError, match="position_commitment"):
+        fills_module._SnapshotBinding(
+            position_scope=binding.position_scope,
+            position_commitment=DigestSubclass(binding.position_commitment),
+            root_heads_commitment=binding.root_heads_commitment,
+            seen_facts_commitment=binding.seen_facts_commitment,
+            integrity_bits=binding.integrity_bits,
+            account_reconciliation_required=binding.account_reconciliation_required,
+            reconciliation_transition_count=binding.reconciliation_transition_count,
+            reconciliation_transition_head=binding.reconciliation_transition_head,
+            snapshot_commitment=binding.snapshot_commitment,
+        )
 
 
 def test_materialized_position_rejects_malformed_hydration_state() -> None:

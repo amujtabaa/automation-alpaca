@@ -58,9 +58,11 @@ from app.execution_core.venue import (
     AcceptanceProof,
     AcceptanceProofKind,
     AcceptanceSetState,
+    BrokerEffect,
     BrokerEffectState,
     CancelBeforeDispatch,
     DiscoverVenueLeg,
+    DispatchClaim,
     EffectKind,
     ObserveVenueStatus,
     PendingVenueOperation,
@@ -68,7 +70,12 @@ from app.execution_core.venue import (
     RecordTransportOutcome,
     RecoverClaimedEffect,
     RequestedEffect,
+    VenueAttempt,
     VenueAttemptState,
+    VenueEffectScope,
+    VenueExecutionBinding,
+    VenueIdentityOwner,
+    VenueInputRecord,
     VenueRecoveryBook,
     VenueRecoveryDisposition,
     VenueScope,
@@ -366,6 +373,175 @@ def test_checkpoint_exposes_no_bound_mutation_helpers(helper_name: str) -> None:
     book = VenueRecoveryBook.empty(VENUE_SCOPE)
 
     assert not hasattr(book, helper_name)
+
+
+def test_audit_hydration_rejects_a_delayed_broker_effect_subclass() -> None:
+    book, execution = _seed_needs_review(effect_gate_first=False)
+    [effect] = book.effects
+
+    class DelayedBrokerEffect(BrokerEffect):
+        reported_scope = effect.scope
+
+        def __getattribute__(self, name: str) -> object:
+            if name == "scope":
+                return type(self).reported_scope
+            return super().__getattribute__(name)
+
+    delayed = DelayedBrokerEffect(
+        scope=effect.scope,
+        state=effect.state,
+        acceptance_set_state=effect.acceptance_set_state,
+        claim_occurrence_id=effect.claim_occurrence_id,
+        acceptance_proof=effect.acceptance_proof,
+        contradiction_evidence=effect.contradiction_evidence,
+    )
+
+    with pytest.raises(TypeError, match=r"effect (?:append|entries)"):
+        _audit_hydrate_book(book, execution, effects=(delayed,))
+
+
+def test_retained_edges_reject_delayed_effect_scope_subclasses() -> None:
+    book, _ = _seed_needs_review(effect_gate_first=False)
+    [effect] = book.effects
+    [owner] = book.owners
+
+    class DelayedVenueEffectScope(VenueEffectScope):
+        pass
+
+    scope = effect.scope
+    delayed_scope = DelayedVenueEffectScope(
+        generation=scope.generation,
+        broker=scope.broker,
+        environment=scope.environment,
+        account=scope.account,
+        effect_id=scope.effect_id,
+        request_occurrence_id=scope.request_occurrence_id,
+        mandate_id=scope.mandate_id,
+        kind=scope.kind,
+        client_order_id=scope.client_order_id,
+        symbol_id=scope.symbol_id,
+        side=scope.side,
+        quantity=scope.quantity,
+        economic_scope=scope.economic_scope,
+    )
+
+    with pytest.raises(TypeError, match="effect_scope"):
+        DispatchClaim(
+            effect_scope=delayed_scope,
+            claim_occurrence_id=CLAIM,
+        )
+    with pytest.raises(TypeError, match="effect_scope"):
+        VenueIdentityOwner(
+            leg_key=owner.leg_key,
+            effect_scope=delayed_scope,
+            observation_id=owner.observation_id,
+        )
+
+
+def test_hydration_rejects_binding_subclasses_before_property_access() -> None:
+    book, execution = _seed_needs_review(effect_gate_first=False)
+    [binding] = book.execution_bindings
+
+    class DelayedVenueExecutionBinding(VenueExecutionBinding):
+        trap_reads = False
+
+        def __getattribute__(self, name: str) -> object:
+            if name == "position_scope" and type(self).trap_reads:
+                raise AssertionError("binding scope read before exact type check")
+            return super().__getattribute__(name)
+
+    delayed = DelayedVenueExecutionBinding(
+        position_scope=binding.position_scope,
+        position_commitment=binding.position_commitment,
+        root_heads_commitment=binding.root_heads_commitment,
+        integrity_bits=binding.integrity_bits,
+    )
+    DelayedVenueExecutionBinding.trap_reads = True
+
+    with pytest.raises(TypeError, match="execution binding"):
+        _audit_hydrate_book(book, execution, execution_bindings=(delayed,))
+
+
+def test_hydration_validates_input_identity_before_hashing_or_value_access() -> None:
+    book, execution = _seed_needs_review(effect_gate_first=False)
+    [first, *remaining] = book.input_records
+
+    class DelayedVenueInputId(VenueInputId):
+        trap_reads = False
+
+        def __getattribute__(self, name: str) -> object:
+            if name == "value" and type(self).trap_reads:
+                raise AssertionError("input identity read before exact type check")
+            return super().__getattribute__(name)
+
+    delayed_input_id = DelayedVenueInputId(first.input_id.value)
+    DelayedVenueInputId.trap_reads = True
+    delayed_record = VenueInputRecord(
+        input_id=delayed_input_id,
+        item=first.item,
+        semantic_alias_of=first.semantic_alias_of,
+    )
+
+    with pytest.raises(TypeError, match="input record.input_id"):
+        _audit_hydrate_book(
+            book,
+            execution,
+            input_records=(delayed_record, *remaining),
+        )
+
+
+def test_hydration_validates_attempt_quantity_before_commitment_access() -> None:
+    book, execution = _seed_needs_review(effect_gate_first=False)
+    [attempt] = book.active_attempts
+
+    class DelayedQuantity(Quantity):
+        trap_reads = False
+
+        def __getattribute__(self, name: str) -> object:
+            if name == "value" and type(self).trap_reads:
+                raise AssertionError("attempt quantity read before exact type check")
+            return super().__getattribute__(name)
+
+    delayed_quantity = DelayedQuantity(attempt.cumulative_quantity.value)
+    DelayedQuantity.trap_reads = True
+    delayed_attempt = VenueAttempt(
+        leg_key=attempt.leg_key,
+        status=attempt.status,
+        pending_operation=attempt.pending_operation,
+        cumulative_quantity=delayed_quantity,
+        last_observation_id=attempt.last_observation_id,
+    )
+
+    with pytest.raises(TypeError, match="attempt.cumulative_quantity"):
+        _audit_hydrate_book(book, execution, active_attempts=(delayed_attempt,))
+
+
+def test_hydration_validates_closure_identity_before_indexing() -> None:
+    book, execution, _, _ = _released_state()
+    [closure] = book.closure_history
+
+    class DelayedClosureId(ClosureId):
+        trap_reads = False
+
+        def __getattribute__(self, name: str) -> object:
+            if name == "value" and type(self).trap_reads:
+                raise AssertionError("closure identity read before exact type check")
+            return super().__getattribute__(name)
+
+    delayed_closure_id = DelayedClosureId(closure.closure_id.value)
+    DelayedClosureId.trap_reads = True
+    delayed_closure = replace(
+        closure,
+        closure_id=delayed_closure_id,
+    )
+
+    with pytest.raises(TypeError, match="closure.closure_id"):
+        _audit_hydrate_book(
+            book,
+            execution,
+            closure_heads=(delayed_closure,),
+            closure_history=(delayed_closure,),
+        )
 
 
 @pytest.mark.parametrize("effect_gate_first", [False, True])
@@ -700,11 +876,7 @@ def test_audit_rejects_owner_detached_from_canonical_effect_scope() -> None:
             "pending operation absence must be None",
         ),
         (
-            {
-                "last_observation_id": VenueObservationId(
-                    "unproven-current-observation"
-                )
-            },
+            {"last_observation_id": VenueObservationId("unproven-current-observation")},
             "active attempt requires exact observation and pending provenance",
         ),
     ],
@@ -811,7 +983,9 @@ def test_audit_rejects_missing_lifecycle_input_provenance(
 def test_audit_rejects_claim_ordered_before_its_requested_predecessor() -> None:
     book, execution = _seed_needs_review(effect_gate_first=False)
     request = next(
-        record for record in book.input_records if isinstance(record.item, RequestedEffect)
+        record
+        for record in book.input_records
+        if isinstance(record.item, RequestedEffect)
     )
     claim = next(
         record
@@ -953,9 +1127,7 @@ def test_audit_rejects_orphan_and_negative_active_attempts() -> None:
         )
 
 
-def test_audit_rejects_terminal_history_gaps_branches_and_active_coexistence() -> (
-    None
-):
+def test_audit_rejects_terminal_history_gaps_branches_and_active_coexistence() -> None:
     released, execution, _, _ = _released_state()
     [closure] = released.closure_history
 
@@ -1027,7 +1199,9 @@ def test_audit_rejects_terminal_history_gaps_branches_and_active_coexistence() -
 def test_audit_rejects_duplicate_and_reordered_lifecycle_inputs() -> None:
     book, execution = _seed_needs_review(effect_gate_first=False)
     request_record = next(
-        record for record in book.input_records if isinstance(record.item, RequestedEffect)
+        record
+        for record in book.input_records
+        if isinstance(record.item, RequestedEffect)
     )
     claim_record = next(
         record
@@ -1035,7 +1209,9 @@ def test_audit_rejects_duplicate_and_reordered_lifecycle_inputs() -> None:
         if isinstance(record.item, RecordDispatchClaim)
     )
     discovery_record = next(
-        record for record in book.input_records if isinstance(record.item, DiscoverVenueLeg)
+        record
+        for record in book.input_records
+        if isinstance(record.item, DiscoverVenueLeg)
     )
     review_record = next(
         record
@@ -1176,9 +1352,7 @@ def _corroborated_human_state():
     return released.book, released.execution
 
 
-def test_audit_rejects_corrupted_human_coverage_authority_and_provenance() -> (
-    None
-):
+def test_audit_rejects_corrupted_human_coverage_authority_and_provenance() -> None:
     book, execution = _corroborated_human_state()
     [coverage] = book.human_coverages
 
@@ -1286,9 +1460,7 @@ def test_acceptance_proof_constructor_rejects_claim_kind_mismatch() -> None:
         )
 
 
-def test_effect_edge_validator_rejects_claim_and_acceptance_contradictions() -> (
-    None
-):
+def test_effect_edge_validator_rejects_claim_and_acceptance_contradictions() -> None:
     book, _ = _seed_needs_review(effect_gate_first=False)
     effect = book.effects[0]
     claim = book.claims[0]
@@ -1529,9 +1701,7 @@ def test_operator_reconciled_edge_requires_closed_complete_clean_legs() -> None:
         )
 
 
-def test_venue_canonical_helpers_cover_every_admitted_shape_and_reject_others() -> (
-    None
-):
+def test_venue_canonical_helpers_cover_every_admitted_shape_and_reject_others() -> None:
     book, execution = _seed_needs_review(effect_gate_first=False)
     request = next(
         record.item
@@ -1581,7 +1751,10 @@ def test_venue_canonical_helpers_cover_every_admitted_shape_and_reject_others() 
     commitments = tuple(
         venue_module._canonical_value_commitment(value) for value in admitted_values
     )
-    assert all(type(commitment) is bytes and len(commitment) == 32 for commitment in commitments)
+    assert all(
+        type(commitment) is bytes and len(commitment) == 32
+        for commitment in commitments
+    )
     assert len(set(commitments)) == len(commitments)
 
     with pytest.raises(TypeError, match="unsupported canonical audit value"):
@@ -1660,7 +1833,9 @@ def test_ordered_input_fold_rejects_missing_lifecycle_predecessors() -> None:
 def test_ordered_input_fold_rejects_owner_and_closed_leg_history_rewrites() -> None:
     book, _ = _seed_needs_review(effect_gate_first=False)
     discovery = next(
-        record for record in book.input_records if isinstance(record.item, DiscoverVenueLeg)
+        record
+        for record in book.input_records
+        if isinstance(record.item, DiscoverVenueLeg)
     )
     changed_discovery = replace(
         discovery.item,

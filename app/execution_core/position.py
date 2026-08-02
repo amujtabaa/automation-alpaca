@@ -38,6 +38,7 @@ from .fills import (
     _encode_position_scope,
     _encode_reported_price,
     _encode_root_fill_key,
+    _require_exact_reported_price,
 )
 from .identity import ExecutionFactKey, RootFillKey, SourceEventId, SymbolId
 from .values import ExactBasis, Quantity, ReportedPrice
@@ -95,24 +96,30 @@ class FoldInput:
 
     def __post_init__(self) -> None:
         _require_signed_integer("raw_quantity", self.raw_quantity)
-        if not isinstance(self.cost_basis, ExactBasis):
+        if type(self.cost_basis) is not ExactBasis:
             raise TypeError("cost_basis must be ExactBasis")
-        if self.price_metadata is not None and not isinstance(
-            self.price_metadata, ReportedPrice
-        ):
-            raise TypeError("price_metadata must be ReportedPrice or None")
+        _require_exact_basis("cost_basis", self.cost_basis)
+        if self.price_metadata is not None:
+            try:
+                _require_exact_reported_price("price_metadata", self.price_metadata)
+            except TypeError as error:
+                raise TypeError(
+                    "price_metadata must be ReportedPrice or None (exact type required)"
+                ) from error
         if self.raw_quantity <= 0 and self.cost_basis.value != 0:
             raise ValueError("a non-positive fold quantity cannot carry long basis")
-        if self.position_scope is not None and not isinstance(
-            self.position_scope, PositionScope
+        if (
+            self.position_scope is not None
+            and type(self.position_scope) is not PositionScope
         ):
             raise TypeError("position_scope must be PositionScope or None")
-        if self.tail_root_key is not None and not isinstance(
-            self.tail_root_key, RootFillKey
+        if (
+            self.tail_root_key is not None
+            and type(self.tail_root_key) is not RootFillKey
         ):
             raise TypeError("tail_root_key must be RootFillKey or None")
         _require_signed_integer("prefix_count", self.prefix_count)
-        if not isinstance(self.prefix_heads_commitment, bytes):
+        if type(self.prefix_heads_commitment) is not bytes:
             raise TypeError("prefix_heads_commitment must be bytes")
         proof_parts = (
             self.position_scope is not None,
@@ -174,30 +181,41 @@ class PositionState:
     )
 
     def __post_init__(self) -> None:
-        if not isinstance(self._scope, PositionScope):
+        if type(self._scope) is not PositionScope:
             raise TypeError("_scope must be PositionScope")
         _require_signed_integer("raw_quantity", self.raw_quantity)
-        if not isinstance(self.basis_authority, BasisAuthority):
+        if type(self.basis_authority) is not BasisAuthority:
             raise TypeError("basis_authority must be BasisAuthority")
-        if not isinstance(self._root_fill_sequence, _PersistentSequence):
+        if type(self._root_fill_sequence) is not _PersistentSequence:
             raise TypeError("_root_fill_sequence must be persistent")
-        if not isinstance(self._effective_head_ids, _PersistentSequence):
+        if type(self._effective_head_ids) is not _PersistentSequence:
             raise TypeError("_effective_head_ids must be persistent")
         if self._root_fill_sequence.length != self._effective_head_ids.length:
             raise ValueError("root sequence and effective heads must remain aligned")
-        if self.basis_price_metadata is not None and not isinstance(
-            self.basis_price_metadata, ReportedPrice
-        ):
-            raise TypeError("basis_price_metadata must be ReportedPrice or None")
-        if self.tail_fold_input is not None and not isinstance(
-            self.tail_fold_input, FoldInput
+        if self.basis_price_metadata is not None:
+            try:
+                _require_exact_reported_price(
+                    "basis_price_metadata",
+                    self.basis_price_metadata,
+                )
+            except TypeError as error:
+                raise TypeError(
+                    "basis_price_metadata must be ReportedPrice or None "
+                    "(exact type required)"
+                ) from error
+        if (
+            self.tail_fold_input is not None
+            and type(self.tail_fold_input) is not FoldInput
         ):
             raise TypeError("tail_fold_input must be FoldInput or None")
-        if not isinstance(self.integrity_floor, PositionIntegrity):
+        if type(self.integrity_floor) is not PositionIntegrity:
             raise TypeError("integrity_floor must be PositionIntegrity")
+        if self._binding is not None and type(self._binding) is not _SnapshotBinding:
+            raise TypeError("_binding must be the exact _SnapshotBinding type or None")
         if self.basis_authority is BasisAuthority.AVAILABLE:
-            if not isinstance(self.cost_basis, ExactBasis):
+            if type(self.cost_basis) is not ExactBasis:
                 raise ValueError("available basis requires an exact cost basis")
+            _require_exact_basis("cost_basis", self.cost_basis)
             if self.raw_quantity <= 0 and self.cost_basis.value != 0:
                 raise ValueError("a non-positive position cannot carry long basis")
         elif (
@@ -223,15 +241,13 @@ class PositionState:
     ) -> PositionState:
         """Build an unbound snapshot for explicit validation/hydration only."""
 
-        if not isinstance(root_fill_sequence, tuple):
+        if type(root_fill_sequence) is not tuple:
             raise TypeError("root_fill_sequence must be a tuple")
-        if not isinstance(effective_head_ids, tuple):
+        if type(effective_head_ids) is not tuple:
             raise TypeError("effective_head_ids must be a tuple")
-        if not all(isinstance(key, RootFillKey) for key in root_fill_sequence):
+        if not all(type(key) is RootFillKey for key in root_fill_sequence):
             raise TypeError("root_fill_sequence entries must be RootFillKey")
-        if not all(
-            isinstance(event_id, SourceEventId) for event_id in effective_head_ids
-        ):
+        if not all(type(event_id) is SourceEventId for event_id in effective_head_ids):
             raise TypeError("effective_head_ids entries must be SourceEventId")
         if len(set(root_fill_sequence)) != len(root_fill_sequence):
             raise ValueError("root_fill_sequence cannot contain duplicate roots")
@@ -257,8 +273,12 @@ class PositionState:
     def flat(cls, scope: PositionScope) -> PositionState:
         """Construct the unique empty, basis-available state for exact scope."""
 
-        if not isinstance(scope, PositionScope):
-            raise TypeError("scope must be PositionScope")
+        if type(scope) is not PositionScope:
+            raise TypeError(
+                "scope must be the exact PositionScope type; "
+                "scope must be PositionScope; position scope must be exact; "
+                "position.scope must be PositionScope"
+            )
         zero_basis = ExactBasis(Fraction(0))
         return cls(
             _scope=scope,
@@ -324,7 +344,7 @@ class PositionState:
         return self._binding
 
     def _with_binding(self, binding: _SnapshotBinding) -> PositionState:
-        if not isinstance(binding, _SnapshotBinding):
+        if type(binding) is not _SnapshotBinding:
             raise TypeError("binding must be _SnapshotBinding")
         return replace(self, _binding=binding)
 
@@ -526,6 +546,14 @@ class BasisCandidate:
 def _require_signed_integer(name: str, value: object) -> None:
     if type(value) is not int:
         raise TypeError(f"{name} must be an exact integer")
+
+
+def _require_exact_basis(name: str, value: object) -> None:
+    if type(value) is not ExactBasis:
+        raise TypeError(f"{name} must be the exact ExactBasis type")
+    basis = cast(ExactBasis, value)
+    if type(basis.value) is not Fraction:
+        raise TypeError(f"{name}.value must be the exact Fraction type")
 
 
 def _fold_one(
@@ -1745,10 +1773,11 @@ def _replay_hydration_snapshot(
             replayed.root_heads,
             account_seen,
         )
-        if not isinstance(
-            observation.fact,
-            (BrokerFillFact, BrokerTradeCorrectFact, BrokerTradeBustFact),
-        ):
+        if type(observation.fact) not in {
+            BrokerFillFact,
+            BrokerTradeCorrectFact,
+            BrokerTradeBustFact,
+        }:
             raise ValueError("public hydration admits broker-authoritative facts only")
         if (
             observation.classification
@@ -1757,12 +1786,13 @@ def _replay_hydration_snapshot(
             raise ValueError(
                 "public hydration does not admit zero-economic corroboration"
             )
+        broker_fact = cast(BrokerExecutionFact, observation.fact)
         transition = apply_broker_execution_fact(
             replayed.position,
             replayed.integrity,
             replayed.root_heads,
             replayed.seen_facts,
-            observation.fact,
+            broker_fact,
         )
         expected_disposition = (
             TransitionDisposition.RECONCILIATION_REQUIRED
@@ -1893,9 +1923,9 @@ def derive_ordered_basis_candidate(
 ) -> BasisCandidate:
     """Derive an uncommitted exact basis from a bound immutable root snapshot."""
 
-    if not isinstance(position_snapshot, PositionState):
+    if type(position_snapshot) is not PositionState:
         raise TypeError("position_snapshot must be PositionState")
-    if not isinstance(root_heads, RootHeadIndex):
+    if type(root_heads) is not RootHeadIndex:
         raise TypeError("root_heads must be RootHeadIndex")
 
     sequence = position_snapshot.root_fill_sequence

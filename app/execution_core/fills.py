@@ -8,6 +8,7 @@ these values as explicit inputs.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from decimal import Decimal
 from enum import Enum
 from fractions import Fraction
 from hashlib import sha256
@@ -29,7 +30,7 @@ from .identity import (
     RequestOccurrenceId,
     VenueLegKey,
 )
-from .values import Quantity, ReportedPrice
+from .values import PriceScale, PriceUnits, Quantity, ReportedPrice, TickMetadata
 
 
 _ValueT = TypeVar("_ValueT")
@@ -67,8 +68,8 @@ def _encode_text(value: str) -> bytes:
 
 
 def _encode_fraction(value: Fraction) -> bytes:
-    if not isinstance(value, Fraction):
-        raise TypeError("canonical rational must be Fraction")
+    if type(value) is not Fraction:
+        raise TypeError("canonical rational must be the exact Fraction type")
     return _commit_parts(
         b"execution-core/fraction/v1",
         _encode_int(value.numerator),
@@ -79,8 +80,7 @@ def _encode_fraction(value: Fraction) -> bytes:
 def _encode_reported_price(value: ReportedPrice | None) -> bytes:
     if value is None:
         return _commit_parts(b"execution-core/reported-price/none/v1")
-    if not isinstance(value, ReportedPrice):
-        raise TypeError("canonical reported price must be ReportedPrice or None")
+    _require_exact_reported_price("canonical reported price", value)
     return _commit_parts(
         b"execution-core/reported-price/v1",
         _encode_int(value.units.value),
@@ -169,8 +169,26 @@ class ExecutionScope:
 
 
 def _require_type(name: str, value: object, expected: type[object]) -> None:
-    if not isinstance(value, expected):
+    if type(value) is not expected:
         raise TypeError(f"{name} must be {expected.__name__}")
+
+
+def _require_exact_reported_price(name: str, value: object) -> None:
+    _require_type(name, value, ReportedPrice)
+    price = cast(ReportedPrice, value)
+    _require_type(f"{name}.units", price.units, PriceUnits)
+    _require_type(f"{name}.scale", price.scale, PriceScale)
+    _require_type(f"{name}.tick", price.tick, TickMetadata)
+    _require_type(f"{name}.tick.tick_units", price.tick.tick_units, PriceUnits)
+    _require_type(f"{name}.tick.scale", price.tick.scale, PriceScale)
+    if type(price.units.value) is not int:
+        raise TypeError(f"{name}.units.value must be an exact integer")
+    if type(price.scale.value) is not Decimal:
+        raise TypeError(f"{name}.scale.value must be an exact Decimal")
+    if type(price.tick.tick_units.value) is not int:
+        raise TypeError(f"{name}.tick.tick_units.value must be an exact integer")
+    if type(price.tick.scale.value) is not Decimal:
+        raise TypeError(f"{name}.tick.scale.value must be an exact Decimal")
 
 
 def _encode_position_scope(scope: PositionScope) -> bytes:
@@ -281,7 +299,7 @@ def _validate_positive_economics(
     price_name: str,
 ) -> None:
     _require_type(quantity_name, quantity, Quantity)
-    _require_type(price_name, price, ReportedPrice)
+    _require_exact_reported_price(price_name, price)
     if quantity.value <= 0:
         raise ValueError(f"{quantity_name} must be positive")
     if price.exact_value <= 0:
@@ -593,6 +611,32 @@ class _SnapshotBinding:
     reconciliation_transition_head: bytes
     snapshot_commitment: bytes
 
+    def __post_init__(self) -> None:
+        _require_type("position_scope", self.position_scope, PositionScope)
+        for name in (
+            "position_commitment",
+            "root_heads_commitment",
+            "seen_facts_commitment",
+            "reconciliation_transition_head",
+            "snapshot_commitment",
+        ):
+            value = getattr(self, name)
+            if type(value) is not bytes:
+                raise TypeError(f"{name} must be exact bytes")
+            if len(value) != 32:
+                raise ValueError(f"{name} must contain exactly 32 bytes")
+        if type(self.integrity_bits) is not int or self.integrity_bits < 0:
+            raise ValueError("integrity_bits must be a non-negative exact integer")
+        if type(self.account_reconciliation_required) is not bool:
+            raise TypeError("account_reconciliation_required must be bool")
+        if (
+            type(self.reconciliation_transition_count) is not int
+            or self.reconciliation_transition_count < 0
+        ):
+            raise ValueError(
+                "reconciliation_transition_count must be a non-negative exact integer"
+            )
+
 
 @dataclass(frozen=True, slots=True)
 class BrokerFillFact:
@@ -762,7 +806,7 @@ class BrokerTradeBustFact:
         _validate_fact_identity(self.key, self.scope, self.root_fill_id)
         _validate_predecessor(self.key, self.predecessor_source_event_id)
         if self.reported_price is not None:
-            _require_type("reported_price", self.reported_price, ReportedPrice)
+            _require_exact_reported_price("reported_price", self.reported_price)
             if self.reported_price.exact_value <= 0:
                 raise ValueError("reported_price must be positive when present")
 
@@ -862,10 +906,10 @@ class RootHead:
 
     def __post_init__(self) -> None:
         _require_type("root_key", self.root_key, RootFillKey)
-        if isinstance(self.original_sequence, bool) or not isinstance(
-            self.original_sequence, int
-        ):
-            raise TypeError("original_sequence must be an integer")
+        if type(self.original_sequence) is not int:
+            raise TypeError(
+                "original_sequence must be an integer (exact type required)"
+            )
         if self.original_sequence < 0:
             raise ValueError("original_sequence must be non-negative")
         _require_type("scope", self.scope, ExecutionScope)
@@ -884,7 +928,7 @@ class RootHead:
         ):
             raise ValueError("root head key and scope must have identical venue scope")
         if self.price is not None:
-            _require_type("price", self.price, ReportedPrice)
+            _require_exact_reported_price("price", self.price)
             if self.price.exact_value <= 0:
                 raise ValueError("root-head price must be positive when present")
         if self.kind is FactKind.TRADE_BUST:
@@ -892,9 +936,9 @@ class RootHead:
                 raise ValueError("a bust root head must have structural zero quantity")
         elif self.quantity.value <= 0 or self.price is None:
             raise ValueError("fill/correction root heads require positive economics")
-        if not isinstance(self.prefix_heads_commitment, bytes):
+        if type(self.prefix_heads_commitment) is not bytes:
             raise TypeError("prefix_heads_commitment must be bytes")
-        if not isinstance(self.prefix_proof_commitment, bytes):
+        if type(self.prefix_proof_commitment) is not bytes:
             raise TypeError("prefix_proof_commitment must be bytes")
 
     @property

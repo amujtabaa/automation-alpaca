@@ -332,8 +332,7 @@ def test_mixed_account_history_projects_to_a_third_symbol_and_hydrates() -> None
         ),
     )
     assert (
-        source_advance.disposition
-        is VenueRecoveryDisposition.RECONCILIATION_REQUIRED
+        source_advance.disposition is VenueRecoveryDisposition.RECONCILIATION_REQUIRED
     )
 
     projected_goog = apply_venue_recovery_input(
@@ -1146,7 +1145,9 @@ def test_same_symbol_independent_truth_catches_up_and_blocks_release() -> None:
     assert blocked.disposition is VenueRecoveryDisposition.RECONCILIATION_REQUIRED
     assert blocked.book.closure_head(recovery_fixtures.LEG_A) is None
 
-    replay_trap = AssertionError("unresolved exact replay revalidated stale source truth")
+    replay_trap = AssertionError(
+        "unresolved exact replay revalidated stale source truth"
+    )
     with (
         patch.object(SeenFactIndex, "has_prefix", side_effect=replay_trap),
         patch.object(SeenFactIndex, "suffix_belongs_to", side_effect=replay_trap),
@@ -1192,9 +1193,7 @@ def test_unresolved_execution_cursor_cannot_bootstrap_a_fresh_book() -> None:
         RequestedEffect(
             input_id=VenueInputId("fresh-book-rollback-request"),
             effect_id=EffectId("fresh-book-rollback-effect"),
-            request_occurrence_id=RequestOccurrenceId(
-                "fresh-book-rollback-occurrence"
-            ),
+            request_occurrence_id=RequestOccurrenceId("fresh-book-rollback-occurrence"),
             mandate_id=MandateId("fresh-book-rollback-mandate"),
             kind=EffectKind.SUBMIT,
             client_order_id=ClientOrderId("fresh-book-rollback-client"),
@@ -1232,9 +1231,7 @@ def test_nonempty_genesis_cursor_snapshot_cannot_bootstrap_a_fresh_book() -> Non
         RequestedEffect(
             input_id=VenueInputId("fresh-book-genesis-request"),
             effect_id=EffectId("fresh-book-genesis-effect"),
-            request_occurrence_id=RequestOccurrenceId(
-                "fresh-book-genesis-occurrence"
-            ),
+            request_occurrence_id=RequestOccurrenceId("fresh-book-genesis-occurrence"),
             mandate_id=MandateId("fresh-book-genesis-mandate"),
             kind=EffectKind.SUBMIT,
             client_order_id=ClientOrderId("fresh-book-genesis-client"),
@@ -1251,9 +1248,7 @@ def test_nonempty_genesis_cursor_snapshot_cannot_bootstrap_a_fresh_book() -> Non
     assert fresh_book.effect(EffectId("fresh-book-genesis-effect")) is None
 
 
-def test_catch_up_rejects_an_inner_registry_subclass_before_using_its_proofs() -> (
-    None
-):
+def test_catch_up_rejects_an_inner_registry_subclass_before_using_its_proofs() -> None:
     class DelayedSeenFactIndex(SeenFactIndex):
         @property
         def count(self) -> int:
@@ -1311,10 +1306,7 @@ def test_hydration_rejects_relabelled_unresolved_registry_advance() -> None:
         source_execution=ahead,
     )
     caught_up = apply_venue_recovery_input(book, execution, item)
-    assert (
-        caught_up.disposition
-        is VenueRecoveryDisposition.RECONCILIATION_REQUIRED
-    )
+    assert caught_up.disposition is VenueRecoveryDisposition.RECONCILIATION_REQUIRED
     [unresolved] = caught_up.book.execution_reconciliations
     forged = venue_module._ResolvedRegistryProjectionOutcome(
         input_id=unresolved.input_id,
@@ -1647,15 +1639,9 @@ def test_catch_up_requires_an_exact_target_scope_type() -> None:
             position_commitment=execution.position.commitment,
             root_heads_commitment=execution.root_heads.commitment,
             integrity_bits=execution.integrity.value,
-            account_reconciliation_required=(
-                execution.account_reconciliation_required
-            ),
-            reconciliation_transition_count=(
-                execution.reconciliation_transition_count
-            ),
-            reconciliation_transition_head=(
-                execution.reconciliation_transition_head
-            ),
+            account_reconciliation_required=(execution.account_reconciliation_required),
+            reconciliation_transition_count=(execution.reconciliation_transition_count),
+            reconciliation_transition_head=(execution.reconciliation_transition_head),
         )
 
 
@@ -1865,9 +1851,7 @@ def test_recovery_hydration_rejects_scope_subclass_before_equality() -> None:
         )
 
 
-def test_checkpoint_and_audit_factories_reject_inner_subclass_before_registry() -> (
-    None
-):
+def test_checkpoint_and_audit_factories_reject_inner_subclass_before_registry() -> None:
     class DelayedSeenFactIndex(SeenFactIndex):
         @property
         def count(self) -> int:
@@ -1976,9 +1960,7 @@ def test_recovery_hydration_requires_an_independently_retained_cursor() -> None:
         PositionIntegrity.CONSISTENT,
         RootHeadIndex.empty(msft_scope),
         unbound_seen,
-        expected_reconciliation_cursor=(
-            projected.execution.reconciliation_cursor
-        ),
+        expected_reconciliation_cursor=(projected.execution.reconciliation_cursor),
     )
     assert rebound.commitment == projected.execution.commitment
 
@@ -2000,9 +1982,7 @@ def test_recovery_hydration_requires_an_independently_retained_cursor() -> None:
             PositionIntegrity.CONSISTENT,
             RootHeadIndex.empty(msft_scope),
             unbound_seen,
-            expected_reconciliation_cursor=(
-                projected.execution.reconciliation_cursor
-            ),
+            expected_reconciliation_cursor=(projected.execution.reconciliation_cursor),
         )
 
     forged_cursor = replace(
@@ -2245,8 +2225,7 @@ def test_registry_outcome_views_expose_the_exact_committed_heads() -> None:
     assert unresolved.canonical_applied
     assert not unresolved.attribution_resolved
     assert (
-        unresolved.position_scope
-        == unresolved.resulting_source_binding.position_scope
+        unresolved.position_scope == unresolved.resulting_source_binding.position_scope
     )
     assert unresolved.prior_registry_count == unresolved.prior_account_registry_count
     assert (

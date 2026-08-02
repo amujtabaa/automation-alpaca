@@ -116,13 +116,13 @@ class ExecutionFactKey:
     source_event_id: SourceEventId
 
     def __post_init__(self) -> None:
-        if not isinstance(self.broker, BrokerId):
+        if type(self.broker) is not BrokerId:
             raise TypeError("broker must be BrokerId")
-        if not isinstance(self.environment, EnvironmentId):
+        if type(self.environment) is not EnvironmentId:
             raise TypeError("environment must be EnvironmentId")
-        if not isinstance(self.account, AccountId):
+        if type(self.account) is not AccountId:
             raise TypeError("account must be AccountId")
-        if not isinstance(self.source_event_id, SourceEventId):
+        if type(self.source_event_id) is not SourceEventId:
             raise TypeError("source event must be SourceEventId")
 
 
@@ -136,13 +136,13 @@ class RootFillKey:
     root_fill_id: RootFillId
 
     def __post_init__(self) -> None:
-        if not isinstance(self.broker, BrokerId):
+        if type(self.broker) is not BrokerId:
             raise TypeError("broker must be BrokerId")
-        if not isinstance(self.environment, EnvironmentId):
+        if type(self.environment) is not EnvironmentId:
             raise TypeError("environment must be EnvironmentId")
-        if not isinstance(self.account, AccountId):
+        if type(self.account) is not AccountId:
             raise TypeError("account must be AccountId")
-        if not isinstance(self.root_fill_id, RootFillId):
+        if type(self.root_fill_id) is not RootFillId:
             raise TypeError("root fill must be RootFillId")
 
 
@@ -156,11 +156,11 @@ class VenueLegKey:
     order_id: OrderId
 
     def __post_init__(self) -> None:
-        if not isinstance(self.broker, BrokerId):
+        if type(self.broker) is not BrokerId:
             raise TypeError("broker must be BrokerId")
-        if not isinstance(self.environment, EnvironmentId):
+        if type(self.environment) is not EnvironmentId:
             raise TypeError("environment must be EnvironmentId")
-        if not isinstance(self.account, AccountId):
+        if type(self.account) is not AccountId:
             raise TypeError("account must be AccountId")
-        if not isinstance(self.order_id, OrderId):
+        if type(self.order_id) is not OrderId:
             raise TypeError("order_id must be OrderId")

@@ -330,6 +330,25 @@ def test_empty_and_audit_hydration_reject_venue_scope_subclasses() -> None:
         _audit_hydrate_book(book, execution, scope=delayed_scope)
 
 
+def test_venue_scope_rejects_a_delayed_account_identity_subclass() -> None:
+    class DelayedAccountId(AccountId):
+        reported_value = recovery_fixtures.ACCOUNT.value
+
+        def __getattribute__(self, name: str) -> object:
+            if name == "value":
+                return type(self).reported_value
+            return super().__getattribute__(name)
+
+    exact_scope = recovery_fixtures.VENUE_SCOPE
+    with pytest.raises(TypeError, match="account"):
+        VenueScope(
+            generation=exact_scope.generation,
+            broker=exact_scope.broker,
+            environment=exact_scope.environment,
+            account=DelayedAccountId(exact_scope.account.value),
+        )
+
+
 def test_public_transition_rejects_execution_snapshot_subclasses() -> None:
     """Subclass overrides cannot impersonate one exact paired high-water."""
 

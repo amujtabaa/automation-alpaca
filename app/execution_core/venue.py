@@ -74,7 +74,7 @@ _TransitionFactory = Callable[..., "VenueRecoveryTransition"]
 
 
 def _require(name: str, value: object, expected: type[object]) -> None:
-    if not isinstance(value, expected):
+    if type(value) is not expected:
         raise TypeError(f"{name} must be {expected.__name__}")
 
 
@@ -91,9 +91,9 @@ def _require_digest(name: str, value: object) -> None:
 
 
 def _require_input_id(name: str, value: object) -> VenueInputId:
-    if not isinstance(value, VenueInputId):
+    if type(value) is not VenueInputId:
         raise TypeError(f"{name} must be VenueInputId")
-    return value
+    return cast(VenueInputId, value)
 
 
 def _execution_head_matches_fact(head: object, fact: object) -> bool:
@@ -268,6 +268,7 @@ def _input_commands_equal(
 
 
 def _input_record_commitment(record: VenueInputRecord) -> bytes:
+    _require_input_record_shape(record)
     return _commit_parts(
         b"execution-core/venue-input-record/v2",
         _canonical_value_commitment(record.input_id),
@@ -277,6 +278,7 @@ def _input_record_commitment(record: VenueInputRecord) -> bytes:
 
 
 def _closure_commitment(closure: VenueTerminalClosure) -> bytes:
+    _require_closure_shape(closure)
     return _commit_parts(
         b"execution-core/venue-terminal-closure/v2",
         _canonical_value_commitment(closure),
@@ -533,6 +535,23 @@ class VenueEffectScope:
     quantity: Quantity
     economic_scope: bytes
 
+    def __post_init__(self) -> None:
+        for name, value, expected in (
+            ("generation", self.generation, ApplicationGenerationId),
+            ("broker", self.broker, BrokerId),
+            ("environment", self.environment, EnvironmentId),
+            ("account", self.account, AccountId),
+            ("effect_id", self.effect_id, EffectId),
+            ("request_occurrence_id", self.request_occurrence_id, RequestOccurrenceId),
+            ("mandate_id", self.mandate_id, MandateId),
+            ("kind", self.kind, EffectKind),
+            ("client_order_id", self.client_order_id, ClientOrderId),
+            ("symbol_id", self.symbol_id, SymbolId),
+            ("side", self.side, ExecutionSide),
+            ("quantity", self.quantity, Quantity),
+        ):
+            _require(name, value, expected)
+
     @property
     def client_identity(self) -> ClientIdentityBinding:
         return ClientIdentityBinding(
@@ -728,6 +747,22 @@ class BrokerEffect:
     acceptance_proof: AcceptanceProof | None = None
     contradiction_evidence: tuple[AcceptanceContradiction, ...] = ()
 
+    def __post_init__(self) -> None:
+        _require("scope", self.scope, VenueEffectScope)
+        _require("state", self.state, BrokerEffectState)
+        _require("acceptance_set_state", self.acceptance_set_state, AcceptanceSetState)
+        if self.claim_occurrence_id is not None:
+            _require("claim_occurrence_id", self.claim_occurrence_id, ClaimOccurrenceId)
+        if self.acceptance_proof is not None:
+            _require("acceptance_proof", self.acceptance_proof, AcceptanceProof)
+        _require_tuple("contradiction_evidence", self.contradiction_evidence)
+        for contradiction in self.contradiction_evidence:
+            _require(
+                "contradiction_evidence entry",
+                contradiction,
+                AcceptanceContradiction,
+            )
+
     @property
     def effect_id(self) -> EffectId:
         return self.scope.effect_id
@@ -737,6 +772,10 @@ class BrokerEffect:
 class DispatchClaim:
     effect_scope: VenueEffectScope
     claim_occurrence_id: ClaimOccurrenceId
+
+    def __post_init__(self) -> None:
+        _require("effect_scope", self.effect_scope, VenueEffectScope)
+        _require("claim_occurrence_id", self.claim_occurrence_id, ClaimOccurrenceId)
 
     @property
     def effect_id(self) -> EffectId:
@@ -748,6 +787,11 @@ class VenueIdentityOwner:
     leg_key: VenueLegKey
     effect_scope: VenueEffectScope
     observation_id: VenueObservationId
+
+    def __post_init__(self) -> None:
+        _require("leg_key", self.leg_key, VenueLegKey)
+        _require("effect_scope", self.effect_scope, VenueEffectScope)
+        _require("observation_id", self.observation_id, VenueObservationId)
 
     @property
     def effect_id(self) -> EffectId:
@@ -922,6 +966,159 @@ class CatchUpExecutionRegistry:
     @property
     def target_scope(self) -> PositionScope:
         return self.target_checkpoint.position_scope
+
+
+def _require_effect_shape(value: object) -> BrokerEffect:
+    _require("effect", value, BrokerEffect)
+    effect = cast(BrokerEffect, value)
+    BrokerEffect.__post_init__(effect)
+    VenueEffectScope.__post_init__(effect.scope)
+    return effect
+
+
+def _require_claim_shape(value: object) -> DispatchClaim:
+    _require("claim", value, DispatchClaim)
+    claim = cast(DispatchClaim, value)
+    DispatchClaim.__post_init__(claim)
+    VenueEffectScope.__post_init__(claim.effect_scope)
+    return claim
+
+
+def _require_owner_shape(value: object) -> VenueIdentityOwner:
+    _require("owner", value, VenueIdentityOwner)
+    owner = cast(VenueIdentityOwner, value)
+    VenueIdentityOwner.__post_init__(owner)
+    VenueEffectScope.__post_init__(owner.effect_scope)
+    return owner
+
+
+def _require_contradiction_shape(value: object) -> AcceptanceContradiction:
+    _require("contradiction", value, AcceptanceContradiction)
+    contradiction = cast(AcceptanceContradiction, value)
+    _require("contradiction.leg_key", contradiction.leg_key, VenueLegKey)
+    _require(
+        "contradiction.observation_id",
+        contradiction.observation_id,
+        VenueObservationId,
+    )
+    return contradiction
+
+
+def _require_attempt_shape(value: object) -> VenueAttempt:
+    _require("active attempt", value, VenueAttempt)
+    attempt = cast(VenueAttempt, value)
+    _require("attempt.leg_key", attempt.leg_key, VenueLegKey)
+    _require("attempt.status", attempt.status, VenueAttemptState)
+    if attempt.pending_operation is not None:
+        _require(
+            "attempt.pending_operation",
+            attempt.pending_operation,
+            PendingVenueOperation,
+        )
+    _require("attempt.cumulative_quantity", attempt.cumulative_quantity, Quantity)
+    if type(attempt.cumulative_quantity.value) is not int:
+        raise TypeError("attempt.cumulative_quantity.value must be an exact integer")
+    if attempt.cumulative_quantity.value < 0:
+        raise ValueError("attempt cumulative quantity cannot be negative")
+    _require(
+        "attempt.last_observation_id",
+        attempt.last_observation_id,
+        VenueObservationId,
+    )
+    return attempt
+
+
+def _require_closure_shape(value: object) -> VenueTerminalClosure:
+    _require("closure", value, VenueTerminalClosure)
+    closure = cast(VenueTerminalClosure, value)
+    for name, component, expected in (
+        ("closure.leg_key", closure.leg_key, VenueLegKey),
+        ("closure.closure_id", closure.closure_id, ClosureId),
+        ("closure.status", closure.status, VenueAttemptState),
+        ("closure.cumulative_quantity", closure.cumulative_quantity, Quantity),
+        (
+            "closure.observed_cumulative_quantity",
+            closure.observed_cumulative_quantity,
+            Quantity,
+        ),
+        (
+            "closure.evidence_reference",
+            closure.evidence_reference,
+            EvidenceReference,
+        ),
+        ("closure.kind", closure.kind, VenueClosureKind),
+        ("closure.source_input_id", closure.source_input_id, VenueInputId),
+    ):
+        _require(name, component, expected)
+    if type(closure.ordinal) is not int or closure.ordinal <= 0:
+        raise ValueError(
+            "closure ordinal must be a positive integer (exact type required)"
+        )
+    for name, optional_component, optional_expected in (
+        (
+            "closure.predecessor_closure_id",
+            closure.predecessor_closure_id,
+            ClosureId,
+        ),
+        ("closure.observation_id", closure.observation_id, VenueObservationId),
+        ("closure.source_event_id", closure.source_event_id, SourceEventId),
+        (
+            "closure.broker_terminal_state",
+            closure.broker_terminal_state,
+            VenueAttemptState,
+        ),
+        ("closure.actor", closure.actor, ActorId),
+    ):
+        if optional_component is not None:
+            _require(name, optional_component, optional_expected)
+    if closure.reason is not None and type(closure.reason) is not str:
+        raise TypeError("closure.reason must be a string")
+    if closure.evidence_digest is not None:
+        _require_digest("closure.evidence_digest", closure.evidence_digest)
+    return closure
+
+
+def _require_input_record_shape(value: object) -> VenueInputRecord:
+    from .recovery import (
+        IngestHumanAttestedFill,
+        RecordBrokerFillEvidence,
+        RecordBrokerRevisionEvidence,
+        ReleaseVenueLeg,
+    )
+
+    _require("input record", value, VenueInputRecord)
+    record = cast(VenueInputRecord, value)
+    _require("input record.input_id", record.input_id, VenueInputId)
+    if record.semantic_alias_of is not None:
+        _require(
+            "input record.semantic_alias_of",
+            record.semantic_alias_of,
+            VenueInputId,
+        )
+    admitted_types = {
+        RequestedEffect,
+        RecordDispatchClaim,
+        CancelBeforeDispatch,
+        RecordTransportOutcome,
+        RecoverClaimedEffect,
+        DiscoverVenueLeg,
+        RecordPendingVenueOperation,
+        ObserveVenueStatus,
+        CloseAcceptanceSet,
+        CatchUpExecutionRegistry,
+        IngestHumanAttestedFill,
+        ReleaseVenueLeg,
+        RecordBrokerFillEvidence,
+        RecordBrokerRevisionEvidence,
+    }
+    if type(record.item) not in admitted_types:
+        raise TypeError("input record item must be an exact venue-recovery command")
+    post_init = getattr(type(record.item), "__post_init__", None)
+    if post_init is None:
+        raise TypeError("input record item must define exact shape validation")
+    post_init(record.item)
+    _input_command_identity(record.item, include_input_id=True)
+    return record
 
 
 def _catch_up_input_commitment(item: CatchUpExecutionRegistry) -> bytes:
@@ -1774,24 +1971,28 @@ class VenueRecoveryBook:
         self._require_entries("human coverage", self.human_coverages, HumanCoverage)
         self._require_entries("broker coverage", self.broker_coverages, _BrokerCoverage)
         if any(
-            not isinstance(
-                entry,
-                (ReconciliationRecord, RevisionReconciliationRecord),
-            )
+            type(entry)
+            not in {
+                ReconciliationRecord,
+                RevisionReconciliationRecord,
+            }
             for entry in self.reconciliations
         ):
             raise TypeError(
-                "reconciliation entries must be typed reconciliation records"
+                "reconciliation entries must be exact reconciliation record types"
             )
 
     @staticmethod
     def _require_entries(
         name: str, entries: tuple[object, ...], expected: type[object]
     ) -> None:
-        if any(not isinstance(entry, expected) for entry in entries):
-            raise TypeError(f"{name} entries must be {expected.__name__}")
+        if any(type(entry) is not expected for entry in entries):
+            raise TypeError(f"{name} entries must be exact {expected.__name__} values")
 
     def _validated_effects(self) -> dict[EffectId, BrokerEffect]:
+        for entry in self.effects:
+            entry = _require_effect_shape(entry)
+            self._validate_effect_scope(entry.scope)
         self._require_unique("effect", (entry.effect_id for entry in self.effects))
         self._require_unique(
             "request occurrence",
@@ -1893,6 +2094,8 @@ class VenueRecoveryBook:
     def _validated_execution_bindings(
         self, effects: dict[EffectId, BrokerEffect]
     ) -> None:
+        for binding in self.execution_bindings:
+            VenueExecutionBinding.__post_init__(binding)
         self._require_unique(
             "execution binding",
             (binding.position_scope for binding in self.execution_bindings),
@@ -1911,6 +2114,14 @@ class VenueRecoveryBook:
     def _validated_claims(
         self, effects: dict[EffectId, BrokerEffect]
     ) -> dict[EffectId, DispatchClaim]:
+        for entry in self.claims:
+            entry = _require_claim_shape(entry)
+            self._validate_effect_scope(entry.effect_scope)
+            _require(
+                "claim.claim_occurrence_id",
+                entry.claim_occurrence_id,
+                ClaimOccurrenceId,
+            )
         self._require_unique("claim effect", (entry.effect_id for entry in self.claims))
         self._require_unique(
             "claim occurrence", (entry.claim_occurrence_id for entry in self.claims)
@@ -1929,6 +2140,9 @@ class VenueRecoveryBook:
     def _validated_owners(
         self, effects: dict[EffectId, BrokerEffect]
     ) -> dict[VenueLegKey, VenueIdentityOwner]:
+        for entry in self.owners:
+            entry = _require_owner_shape(entry)
+            self._validate_effect_scope(entry.effect_scope)
         self._require_unique("owner", (entry.leg_key for entry in self.owners))
         owners: dict[VenueLegKey, VenueIdentityOwner] = {}
         for owner in self.owners:
@@ -1947,6 +2161,8 @@ class VenueRecoveryBook:
     def _validated_active_attempts(
         self, owners: dict[VenueLegKey, VenueIdentityOwner]
     ) -> dict[VenueLegKey, VenueAttempt]:
+        for entry in self.active_attempts:
+            _require_attempt_shape(entry)
         self._require_unique(
             "active attempt", (entry.leg_key for entry in self.active_attempts)
         )
@@ -1984,6 +2200,8 @@ class VenueRecoveryBook:
         owners: dict[VenueLegKey, VenueIdentityOwner],
         active: dict[VenueLegKey, VenueAttempt],
     ) -> dict[VenueLegKey, VenueTerminalClosure]:
+        for entry in (*self.closure_heads, *self.closure_history):
+            _require_closure_shape(entry)
         self._require_unique(
             "closure head", (entry.leg_key for entry in self.closure_heads)
         )
@@ -2043,6 +2261,7 @@ class VenueRecoveryBook:
         closure: VenueTerminalClosure,
         owners: dict[VenueLegKey, VenueIdentityOwner],
     ) -> None:
+        closure = _require_closure_shape(closure)
         _require("closure.leg_key", closure.leg_key, VenueLegKey)
         _require("closure.closure_id", closure.closure_id, ClosureId)
         _require("closure.status", closure.status, VenueAttemptState)
@@ -2141,18 +2360,30 @@ class VenueRecoveryBook:
             ReleaseVenueLeg,
         )
 
-        self._require_unique("input", (entry.input_id for entry in self.input_records))
         input_types = _VENUE_INPUTS + (
             IngestHumanAttestedFill,
             RecordBrokerFillEvidence,
             RecordBrokerRevisionEvidence,
             ReleaseVenueLeg,
         )
+        exact_input_types = set(input_types)
+        for record in self.input_records:
+            _require_input_record_shape(record)
+            if type(record.item) not in exact_input_types:
+                raise TypeError(
+                    "input record item must be an exact venue-recovery input"
+                )
+            if record.semantic_alias_of is not None:
+                _require(
+                    "input record.semantic_alias_of",
+                    record.semantic_alias_of,
+                    VenueInputId,
+                )
+        self._require_unique("input", (entry.input_id for entry in self.input_records))
         prior_input_records: dict[VenueInputId, VenueInputRecord] = {}
         for record in self.input_records:
-            _require("input record.input_id", record.input_id, VenueInputId)
             if not isinstance(record.item, input_types):
-                raise TypeError("input record item must be a venue-recovery input")
+                raise AssertionError("exact input type was not recognized")
             if record.item.input_id != record.input_id:
                 raise ValueError("input record identity must match its immutable item")
             if record.semantic_alias_of is not None:
@@ -2165,7 +2396,14 @@ class VenueRecoveryBook:
                 if (
                     semantic_source is None
                     or semantic_source.semantic_alias_of is not None
-                    or type(semantic_source.item) is not type(record.item)
+                ):
+                    raise ValueError(
+                        "semantic input alias requires an earlier direct source"
+                    )
+                if not isinstance(semantic_source.item, input_types):
+                    raise TypeError("semantic source must retain an exact input type")
+                if (
+                    type(semantic_source.item) is not type(record.item)
                     or replace(
                         semantic_source.item,
                         input_id=record.input_id,
@@ -3834,8 +4072,9 @@ def _append_effect_value(
     _PersistentKeyMap[EffectId],
     _PersistentKeyMap[EffectId],
 ]:
-    if not isinstance(effect, BrokerEffect):
-        raise TypeError("effect append must be BrokerEffect")
+    if type(effect) is not BrokerEffect:
+        raise TypeError("effect append must be BrokerEffect (exact type required)")
+    effect = _require_effect_shape(effect)
     effect_key = _effect_index_key(effect.effect_id)
     request_key = _request_occurrence_index_key(effect.scope.request_occurrence_id)
     client_key = _client_order_index_key(effect.scope.client_order_id)
@@ -3867,8 +4106,9 @@ def _replace_effect_value(
     account_authority_epoch: int,
     effect: object,
 ) -> _PersistentKeyMap[_EffectCurrent]:
-    if not isinstance(effect, BrokerEffect):
-        raise TypeError("effect replacement must be BrokerEffect")
+    if type(effect) is not BrokerEffect:
+        raise TypeError("effect replacement must be the exact BrokerEffect type")
+    effect = _require_effect_shape(effect)
     key = _effect_index_key(effect.effect_id)
     if by_id.get(key) is None:
         raise KeyError("effect is not registered")
@@ -3890,8 +4130,9 @@ def _append_claim_value(
     _PersistentKeyMap[DispatchClaim],
     _PersistentKeyMap[EffectId],
 ]:
-    if not isinstance(claim, DispatchClaim):
-        raise TypeError("claim append must be DispatchClaim")
+    if type(claim) is not DispatchClaim:
+        raise TypeError("claim append must be the exact DispatchClaim type")
+    claim = _require_claim_shape(claim)
     effect_key = _effect_index_key(claim.effect_id)
     occurrence_key = _claim_occurrence_index_key(claim.claim_occurrence_id)
     if (
@@ -3916,8 +4157,11 @@ def _append_contradiction_value(
     effect_id: EffectId,
     contradiction: object,
 ) -> _PersistentKeyMap[_PersistentSequence[AcceptanceContradiction]]:
-    if not isinstance(contradiction, AcceptanceContradiction):
-        raise TypeError("contradiction append must be AcceptanceContradiction")
+    if type(contradiction) is not AcceptanceContradiction:
+        raise TypeError(
+            "contradiction append must be the exact AcceptanceContradiction type"
+        )
+    contradiction = _require_contradiction_shape(contradiction)
     key = _effect_index_key(effect_id)
     sequence = retained.get(key) or _PersistentSequence.empty()
     commitment = _commit_parts(
@@ -3945,11 +4189,13 @@ def _append_owner_value(
     if (
         type(owner_and_attempt) is not tuple
         or len(owner_and_attempt) != 2
-        or not isinstance(owner_and_attempt[0], VenueIdentityOwner)
-        or not isinstance(owner_and_attempt[1], VenueAttempt)
+        or type(owner_and_attempt[0]) is not VenueIdentityOwner
+        or type(owner_and_attempt[1]) is not VenueAttempt
     ):
         raise TypeError("owner append must pair VenueIdentityOwner and VenueAttempt")
     owner, attempt = cast(tuple[VenueIdentityOwner, VenueAttempt], owner_and_attempt)
+    owner = _require_owner_shape(owner)
+    attempt = _require_attempt_shape(attempt)
     if owner.leg_key != attempt.leg_key:
         raise ValueError("owner and initial attempt must name the same leg")
     leg_key = _leg_index_key(owner.leg_key)
@@ -3974,8 +4220,9 @@ def _replace_attempt_value(
     retained: _PersistentKeyMap[_LegCurrent],
     attempt: object,
 ) -> _PersistentKeyMap[_LegCurrent]:
-    if not isinstance(attempt, VenueAttempt):
-        raise TypeError("attempt replacement must be VenueAttempt")
+    if type(attempt) is not VenueAttempt:
+        raise TypeError("attempt replacement must be the exact VenueAttempt type")
+    attempt = _require_attempt_shape(attempt)
     key = _leg_index_key(attempt.leg_key)
     prior = retained.get(key)
     if prior is None or prior.attempt is None:
@@ -3992,8 +4239,9 @@ def _upsert_binding_value(
     _PersistentSequence[PositionScope],
     _PersistentKeyMap[VenueExecutionBinding],
 ]:
-    if not isinstance(binding, VenueExecutionBinding):
-        raise TypeError("binding upsert must be VenueExecutionBinding")
+    if type(binding) is not VenueExecutionBinding:
+        raise TypeError("binding upsert must be the exact VenueExecutionBinding type")
+    VenueExecutionBinding.__post_init__(binding)
     key = _position_scope_index_key(binding.position_scope)
     commitment = _binding_value_commitment(binding)
     if by_scope.get(key) is None:
@@ -4043,8 +4291,12 @@ def _append_reconciliation_value(
 
     from .recovery import ReconciliationRecord, RevisionReconciliationRecord
 
-    if not isinstance(record, (ReconciliationRecord, RevisionReconciliationRecord)):
-        raise TypeError("reconciliation append must be a typed reconciliation record")
+    if type(record) not in {ReconciliationRecord, RevisionReconciliationRecord}:
+        raise TypeError(
+            "reconciliation append must be a typed reconciliation record "
+            "(exact type required)"
+        )
+    record = cast(ReconciliationRecord | RevisionReconciliationRecord, record)
     input_key = _input_index_key(record.input_id)
     if by_input.get(input_key) is not None:
         raise ValueError("reconciliation input identity already exists")
@@ -4066,7 +4318,7 @@ def _append_reconciliation_value(
         (reconciliation_by_effect.get(effect_key) or 0) + 1,
         domain=b"execution-core/reconciliation-count-by-effect/v1",
     )
-    if isinstance(record, RevisionReconciliationRecord) and record.canonical_applied:
+    if type(record) is RevisionReconciliationRecord and record.canonical_applied:
         canonical_revision_by_leg = _set_int_index(
             canonical_revision_by_leg,
             leg_key,
@@ -4162,8 +4414,8 @@ def _evolve_coverage_current_indexes(
     human_broker_facts = current._human_broker_fact_index
 
     if human_append is not None:
-        if not isinstance(human_append, HumanCoverage):
-            raise TypeError("human coverage append must be HumanCoverage")
+        if type(human_append) is not HumanCoverage:
+            raise TypeError("human coverage append must be exact HumanCoverage")
         coverage = human_append
         index = human_coverage_ledger.length - 1
         interval_key = _coverage_interval_index_key(
@@ -4207,10 +4459,7 @@ def _evolve_coverage_current_indexes(
 
     if human_replace is not None:
         prior, replacement = cast(tuple[object, object], human_replace)
-        if not isinstance(prior, HumanCoverage) or not isinstance(
-            replacement,
-            HumanCoverage,
-        ):
+        if type(prior) is not HumanCoverage or type(replacement) is not HumanCoverage:
             raise TypeError("human coverage replacement must retain HumanCoverage")
         if prior.broker_fact is None and replacement.broker_fact is not None:
             human_index = current._human_coverage_by_root.get(
@@ -4231,8 +4480,8 @@ def _evolve_coverage_current_indexes(
             )
 
     if broker_append is not None:
-        if not isinstance(broker_append, _BrokerCoverage):
-            raise TypeError("broker coverage append must be _BrokerCoverage")
+        if type(broker_append) is not _BrokerCoverage:
+            raise TypeError("broker coverage append must be exact _BrokerCoverage")
         broker_coverage = broker_append
         width = (
             broker_coverage.resulting_cumulative_quantity.value
@@ -4273,9 +4522,9 @@ def _evolve_coverage_current_indexes(
 
     if broker_replace is not None:
         prior, replacement = cast(tuple[object, object], broker_replace)
-        if not isinstance(prior, _BrokerCoverage) or not isinstance(
-            replacement,
-            _BrokerCoverage,
+        if (
+            type(prior) is not _BrokerCoverage
+            or type(replacement) is not _BrokerCoverage
         ):
             raise TypeError("broker coverage replacement must retain _BrokerCoverage")
         leg = current._coverage_current(prior.leg_key)
@@ -4339,7 +4588,7 @@ def _audit_build_coverage_current_indexes(
     broker_fact_values: list[tuple[bytes, int]] = []
 
     for index, value in enumerate(human_coverages):
-        if not isinstance(value, HumanCoverage):
+        if type(value) is not HumanCoverage:
             raise TypeError("human coverage audit value has the wrong type")
         width = value.fact.quantity.value
         prior = value.fact.prior_cumulative_quantity.value
@@ -4366,7 +4615,7 @@ def _audit_build_coverage_current_indexes(
             broker_fact_values.append((_fact_index_key(value.broker_fact.key), index))
 
     for value in broker_coverages:
-        if not isinstance(value, _BrokerCoverage):
+        if type(value) is not _BrokerCoverage:
             raise TypeError("broker coverage audit value has the wrong type")
         prior = value.prior_cumulative_quantity.value
         resulting = value.resulting_cumulative_quantity.value
@@ -4579,6 +4828,7 @@ def _append_closure_proof(
     _PersistentKeyMap[VenueTerminalClosure],
     _PersistentKeyMap[VenueTerminalClosure],
 ]:
+    closure = _require_closure_shape(closure)
     closure_key = _closure_index_key(closure.closure_id)
     if book._closure_by_id.get(closure_key) is not None:
         raise ValueError("closure identity already exists")
@@ -4712,7 +4962,7 @@ def _audit_hydrate_book(
         _PersistentKeyMap.empty()
     )
     for closure in closure_history:
-        _require("closure", closure, VenueTerminalClosure)
+        closure = _require_closure_shape(closure)
         closure_key = _closure_index_key(closure.closure_id)
         if closure_by_id.get(closure_key) is not None:
             raise ValueError("closure identities must be unique")
@@ -4787,7 +5037,7 @@ def _audit_hydrate_book(
 
     active_by_leg: dict[VenueLegKey, VenueAttempt] = {}
     for attempt in active_attempts:
-        _require("active attempt", attempt, VenueAttempt)
+        attempt = _require_attempt_shape(attempt)
         if attempt.leg_key in active_by_leg:
             raise ValueError("active attempt legs must be unique")
         active_by_leg[attempt.leg_key] = attempt
@@ -4799,7 +5049,7 @@ def _audit_hydrate_book(
     )
     owner_keys: set[VenueLegKey] = set()
     for owner in owners:
-        _require("owner", owner, VenueIdentityOwner)
+        owner = _require_owner_shape(owner)
         if owner.leg_key in owner_keys:
             raise ValueError("owner legs must be unique")
         owner_keys.add(owner.leg_key)
@@ -4851,8 +5101,11 @@ def _audit_hydrate_book(
         _PersistentKeyMap.empty()
     )
     for binding in execution_bindings:
-        if not isinstance(binding, VenueExecutionBinding):
-            raise TypeError("execution binding must be VenueExecutionBinding")
+        if type(binding) is not VenueExecutionBinding:
+            raise TypeError(
+                "execution binding must be VenueExecutionBinding (exact type required)"
+            )
+        VenueExecutionBinding.__post_init__(binding)
         if (
             binding_by_scope.get(_position_scope_index_key(binding.position_scope))
             is not None
@@ -4880,7 +5133,7 @@ def _audit_hydrate_book(
     )
 
     for record in input_records:
-        _require("input record", record, VenueInputRecord)
+        record = _require_input_record_shape(record)
         key = _input_index_key(record.input_id)
         if input_by_id.get(key) is not None:
             raise ValueError("input identities must be unique")
@@ -6795,8 +7048,11 @@ def apply_venue_recovery_input(
         binding_by_scope = current._binding_by_scope
         seen_binding_scopes: set[PositionScope] = set()
         for binding in binding_upserts:
-            if not isinstance(binding, VenueExecutionBinding):
-                raise TypeError("binding upsert must be VenueExecutionBinding")
+            if type(binding) is not VenueExecutionBinding:
+                raise TypeError(
+                    "binding upsert must be VenueExecutionBinding (exact type required)"
+                )
+            VenueExecutionBinding.__post_init__(binding)
             if binding.position_scope in seen_binding_scopes:
                 raise ValueError("binding scope cannot be updated twice")
             seen_binding_scopes.add(binding.position_scope)

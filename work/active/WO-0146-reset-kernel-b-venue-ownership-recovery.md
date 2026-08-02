@@ -519,10 +519,109 @@ directly necessary correction:
   gate on the new exact freeze.
 
 The six cases failed on `320afbb` with `DID NOT RAISE TypeError` and passed after exact-type
-enforcement. Ruff and mypy pass on the corrected source. No earlier full-suite, coverage, or review
-result satisfies this twelfth gate. It does not activate WO-0147 or authorize persistence,
+enforcement. Ruff and mypy pass on the corrected source. Five live semantic mutants were then
+exercised from exact checkpoint `9ce0f44`: unresolved registry truth no longer blocking release;
+the ordered effect review gate removed; semantic aliases allowed to replace direct provenance;
+effect-wide sibling overfill latching removed; and operator-final validation allowed unresolved
+execution-integrity bits. The alias attack required a coordinated removal of both independent
+guards; removing either one alone survived safely because the other still rejected the forged
+checkpoint. The coordinated property mutant failed its pin, all other mutants failed their focused
+pins, and the restored six-case pin set passed. Restored SHA-256 values were
+`684003e1ca480e1c6cd7bf2e2e8c864732bb2e0f67809acb3a550a814fddd40c` for `recovery.py` and
+`0772dc92f3c6714a6d353a83ac931a016ca22f15cdbaec5e9dfd58814a942141` for `venue.py`; the tracked
+tree was clean after every restore. No earlier full-suite, coverage, or review result satisfies this
+twelfth gate. It does not activate WO-0147 or authorize persistence,
 schema/DDL/SQL, broker or credential use, runtime wiring, PR/merge, branch/worktree retirement,
 deletion, or cleanup.
+
+### Twelfth-gate final implementation evidence (pre-independent-review)
+
+Exact production/test checkpoint `9ce0f44` passed 497/497 execution-core cases, 61/61 R2 cases,
+Ruff check and format, mypy over all seven execution-core source files, all six Import Linter
+contracts, exact scope, and diff checks. The restored five-mutant/six-pin set passed as recorded
+above.
+
+With `BROKER_ADAPTER=mock`, the authoritative repository run collected 5,085 tests and completed in
+1,158 seconds: 5,073 passed, 11 skipped, and one expected failure. The unchanged 93% combined
+line/branch gate passed at exactly `93.01344791915334%`: 17,366 covered lines of 18,322 statements
+and 6,012 covered branches of 6,812. Preserved artifact
+`.coverage_wo0146_full_authorized_13` is 1,757,184 bytes with SHA-256
+`fdf57e561de4d37b6ccb339778791f2402ee333c4e3f17d22e170afbf5bce3f6`; its JSON report is
+1,724,663 bytes with SHA-256
+`ad7045af350a3e698a7785c4563027e5674b5e504e39b196b7342f4ea56e3c26`.
+
+Existing full-suite fixtures used only their authorized disposable test SQLite databases and
+test-only SQL/DDL. No credential, Alpaca Paper activity, broker/network call, persistent application
+database, runtime wiring, PR/merge, deletion, or cleanup occurred. The prohibited R1 DDL incident
+and its result were not cited, reused, or relied upon. These are implementation-seat results; an
+independent exact-head addendum and dual-version CI remain mandatory before closeout.
+
+## Nested-value P0 stop and thirteenth bounded re-gate (2026-08-01)
+
+Reviewer-owned `REV-0048/result-addendum-01.md` returned `BLOCK` at exact checkpoint `9ce0f44` and
+is preserved unchanged with SHA-256
+`f7cff72992ab831b8be2839d3741c6a02cd1ff9a5a32b0ae32f6124a097a012a`. It confirmed the prior
+`VenueScope` and outer broker-fact subclass P1s closed, then reproduced a deeper P0. An exact outer
+`BrokerFillFact` could retain a subclassed `Quantity` that validated as one value and later applied
+another, or a subclassed `ExecutionScope` that validated as `BUY` and later applied as `SELL`.
+Those pure probes produced real altered raw quantity/direction. Exact outer-type checks therefore
+did not yet prove immutable capital or provenance inputs.
+
+Checkpoint `9ce0f44`, `.coverage_wo0146_full_authorized_13`, its 5,073-pass/93.013448% result, and
+the in-progress exact-head CI runs are diagnostic only and inadmissible for acceptance. Ameen's
+standing in-flight-remediation authority re-gates only the directly necessary correction:
+
+- make the common execution-fact component guard exact before reading key, scope, identity,
+  quantity, or price properties;
+- make compound execution/root/venue identities reject subclassed components;
+- recursively require exact price components at canonical fact and position-cache boundaries, and
+  require exact basis objects and rational payloads wherever cached basis may be retained;
+- apply the same exact nested-component rule to venue command/state value validation; and
+- retain delayed quantity, execution-scope, account-identity, price-component, and venue-scope
+  failure-first pins, then repeat every focused, stateful, static, mutation, R2,
+  repository-coverage, independent-review, and dual-version CI gate.
+
+All five new cases failed on `9ce0f44` with `DID NOT RAISE TypeError` and passed after the initial
+nested fact boundary was sealed. A preliminary 502-case execution-core run and its static checks
+were then invalidated by the retained-state P0 below; they are diagnostic only. No prior full-suite,
+coverage, review, or CI result satisfies this thirteenth gate.
+
+## Retained-state P0 stop and fourteenth bounded re-gate (2026-08-01)
+
+A separate read-only implementation-seat adversarial pass found that audit hydration still accepted
+a `BrokerEffect` subclass. It could validate capacity four, later report capacity 99 without changing
+the stored commitment, and admit quantity five. The adjacent retained-owner seam was also P0: an
+exact `VenueIdentityOwner` could retain a subclassed `VenueEffectScope`, validate as `BUY`, later
+report `SELL`, and cause canonical execution to apply the opposite signed delta. Work stopped again;
+the preliminary thirteenth-gate result was not accepted.
+
+The same bounded sweep found P1 variants in position basis/price caches, dispatch claims, shared
+snapshot bindings, execution bindings, and passive retained input/attempt/closure values. Several
+verifiers also read equality, hash, or value properties before checking exact type. The directly
+necessary correction now:
+
+- exact-checks canonical fact, identity, price, basis, position-cache, shared-binding, and retained
+  venue-state components before any overridable property is read;
+- validates exact passive-state shapes both on normal construction where compatible and again at
+  hydration/storage boundaries, so deserialization cannot bypass constructor checks;
+- moves input-record and owner/claim/effect/binding validation ahead of uniqueness, equality,
+  indexing, commitment, or economic reads; and
+- keeps the global `values.py` module unchanged and remains within the listed execution-core paths.
+
+Eight new failure-first test functions reproduced the retained-effect, cached-basis/price/fold,
+shared-binding, owner/claim, input-ID, attempt-quantity, and closure-ID defects before their fixes.
+One additional exact execution-binding read-order pin was added from static reasoning and passed on
+first execution after that guard had already been corrected. A fresh read-only retained-value audit
+then reported no remaining P0 and no remaining P1 in this defect class.
+
+The exact corrected tree now passes all 511 collected execution-core cases, Ruff check and format,
+mypy over seven execution-core source files, all six import contracts, scope, and diff checks. The
+R2 gate first failed only because Windows denied pytest's shared user-temp directory; the unchanged
+61-case suite passed with `BROKER_ADAPTER=mock` and a new preserved workspace-local base-temp path.
+Its existing SQLite cases used only their authorized disposable test fixtures. No credential,
+Alpaca activity, persistent application database, runtime wiring, PR/merge, deletion, or cleanup was
+used. Fresh mutation, repository coverage, independent exact-head review, and dual-version CI still
+remain mandatory; no earlier artifact satisfies this fourteenth gate.
 
 ## Frozen semantic contract
 
