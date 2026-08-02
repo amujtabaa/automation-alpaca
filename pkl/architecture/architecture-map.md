@@ -23,9 +23,10 @@ does not replace current state on the live path.
 
 The checked-in Spine v2 application remains the as-built legacy generation and read-only evidence.
 The first two reset M1 semantic centers are implemented and unwired: closed `WO-0145` owns immutable
-execution facts and position truth; reviewed `WO-0146` owns venue effects, concrete acceptances,
-closure, ambiguity, and ADR-012 recovery. WO-0146 is a proposed closeout whose effective lifecycle
-remains `REVIEW` until immutable exact-head CI succeeds. Neither slice changes runtime behavior or
+execution facts and position truth; independently reviewed `WO-0146` owns venue effects, concrete
+acceptances, closure, ambiguity, and ADR-012 recovery. Its repaired Python-compatible test oracle
+changes no production byte. WO-0146 is a proposed closeout whose effective lifecycle remains
+`REVIEW` until immutable exact-head CI succeeds. Neither slice changes runtime behavior or
 persistence. Later M1 policy slices remain inactive until separately gated.
 
 ## Rules / facts
@@ -79,3 +80,8 @@ Seam discipline is what makes the safety invariants structurally enforceable rat
   remain I/O-free and unwired. Trading-mode/final-claim authority and later M1 slices remain
   inactive; WO-0146's effective lifecycle remains `REVIEW` until external exact-head Python
   3.11/3.12 CI succeeds.
+- 2026-08-02: Repaired the Python 3.11 closeout-oracle failure without production drift. The final
+  explicit-stack graph projector closes retained primary/auxiliary map, sequence, metadata, alias,
+  cycle, and output-determinism bypasses; REV-0048 addendum-04 returned `ACCEPT` with no P0/P1.
+  The effective lifecycle and later-slice activation boundary remain unchanged pending exact-head
+  Python 3.11/3.12 CI.

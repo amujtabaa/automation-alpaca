@@ -21,9 +21,10 @@ one SQLite production store, transactional current state/outbox, and broker-neut
 side-symmetric liquidity execution. The integrated Spine v2 application and R6 branch are frozen
 evidence, not the reset foundation. M0 and pure M1A `WO-0145` are closed. Pure M1B `WO-0146` owns
 venue effects, one-to-many concrete acceptances, immutable closure, ambiguity, and ADR-012 recovery
-semantics; it is filed as a proposed `CLOSED` closeout whose effective lifecycle remains `REVIEW`
-until its immutable exact SHA passes unchanged Python 3.11/3.12 CI. RESET-WO-03 and later slices
-remain inactive.
+semantics; its repaired implementation and complete Python-compatibility oracle have independent
+`ACCEPT`, and it is filed as a proposed `CLOSED` closeout whose effective lifecycle remains
+`REVIEW` until its immutable exact SHA passes unchanged Python 3.11/3.12 CI. RESET-WO-03 and later
+slices remain inactive.
 
 ## Rules / facts
 
@@ -69,9 +70,12 @@ Roadmapping against an unverified codebase state repeats the failure mode Fable 
   3.11/3.12 CI, Ameen authorized options 1–4. Activated only RESET-WO-02 as `WO-0146`, a pure
   I/O-free venue-ownership/recovery kernel; produced a read-only retirement inventory whose
   deletion actions remain gated by complete M1 review, non-squashed merge, and exact-master CI.
-- 2026-08-02: Filed the `WO-0146` pure venue-ownership/recovery closeout candidate after 521 pure tests,
-  61 R2 cases, a 5,109-case repository run at `93.00594652069468%` combined coverage, ten
-  failure-capability mutation groups, and reviewer-owned `REV-0048` addendum-02 `ACCEPT` with no
-  unresolved P0/P1. Its effective lifecycle remains `REVIEW` and the candidate is non-activating
-  until its unchanged exact SHA passes Python 3.11/3.12 CI; RESET-WO-03 and every later slice remain
-  inactive.
+- 2026-08-02: The first `WO-0146` closeout candidate failed exact-head Python 3.11 CI in a recursive
+  test-oracle rendering path. Reviewer-owned addendum-03 then blocked the first repair, and two
+  independent audits blocked an incomplete successor on auxiliary retained maps. Final test-only
+  freeze `5a89841` uses a complete iterative graph projector, passed 536 pure cases, 22 stateful
+  cases at recursion limit 700, 61 R2 cases, and a 5,124-case repository run at
+  `93.00594652069468%` combined coverage. Reviewer-owned addendum-04 accepted exact evidence target
+  `982d213` with no unresolved P0/P1. The repaired candidate remains effectively `REVIEW` and
+  non-activating until its immutable exact SHA passes Python 3.11/3.12 CI; RESET-WO-03 and every
+  later slice remain inactive.

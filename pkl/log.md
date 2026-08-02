@@ -83,3 +83,13 @@
   RESET-WO-03/WO-0147 remains inactive. Existing fixtures used only authorized disposable test SQLite with
   `BROKER_ADAPTER=mock`; no credential, broker/Paper activity, persistent database, runtime wiring,
   PR/merge, deletion, cleanup, or prohibited-R1-DDL reliance occurred.
+
+- 2026-08-02: Superseded the invalidated WO-0146 closeout evidence after exact-head Python 3.11 CI
+  exposed recursive test-oracle rendering. Preserved reviewer addendum-03 `BLOCK` and a later
+  independently blocked auxiliary-map freeze as negative evidence. Final test-only freeze
+  `5a89841` introduced a complete explicit-stack graph projector with no production-tree change;
+  15 named controls, 22 reduced-recursion stateful cases, 536 pure cases, 61 R2 cases, and the
+  5,124-case full run passed at `93.00594652069468%`. Reviewer-owned REV-0048 addendum-04 accepted
+  exact evidence target `982d213` with no unresolved P0/P1. The repaired documentation closeout is
+  still only a candidate: effective lifecycle remains `REVIEW`, WO-0147 remains inactive, and one
+  immutable exact-head Python 3.11/3.12 run is mandatory.

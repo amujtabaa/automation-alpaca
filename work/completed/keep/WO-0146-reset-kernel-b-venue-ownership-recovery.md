@@ -921,7 +921,7 @@ overfill or revision guards weaken; if runtime/schema/broker/ADR changes become 
 P0s or three same-root P1s emerge. Close only after focused/full/static/dual-version gates and blind
 review pass, then append one ledger row and reconcile PKL. Do not activate RESET-WO-03 here.
 
-## Review disposition and closeout (2026-08-02)
+## Original review disposition and closeout attempt (invalidated 2026-08-02)
 
 Reviewer-owned `REV-0048/result.md` first returned `BLOCK` on retained-history live scans and an
 importable checkpoint-construction capability. `result-addendum-01.md` confirmed those were closed
@@ -929,7 +929,7 @@ but returned `BLOCK` on delayed nested broker-fact component subclasses. Subsequ
 re-gates closed that P0 and the later checkpoint, provenance, retained-value, public-command, and
 evidence-provenance findings without widening into persistence or runtime work.
 
-The final independent addendum reviewed exact evidence target
+The then-final independent addendum reviewed exact evidence target
 `883c0b664708c3b1fba09f7f69b63e8c9b6f9d75`, whose production/test implementation freeze is
 `cd4295c29bc72bd7b16d9b6f7a6fb09f99ba1c4e`. It verified byte-identical source/test trees across
 that evidence-only successor, independently passed all 521 pure execution-core tests and focused
@@ -940,13 +940,15 @@ unresolved P0/P1. The reviewer artifact is
 `79ec258b580c91b0bc78cb15b7cae2a1ccd99154ae99bd96e9e51b7e7769769d`; its containing review-artifact
 commit is `c6b8481a206a6b116adfbe700e1e93fefe13b3ab`.
 
-This closeout changes documentation/governance only. The final closeout commit cannot name its own
-SHA or later workflow run. It must be pushed once, left unchanged, and accepted only by an external
-record binding that exact SHA to the repository's unchanged successful Python 3.11 and Python 3.12
-jobs. Until that succeeds, this `CLOSED` disposition is a non-activating closeout candidate:
-the effective lifecycle remains `REVIEW`, `WO-0147` remains inactive, and no later work may rely on
-closure. A red, canceled, mismatched-head, or incomplete job requires the candidate to be amended
-and re-run; no post-success evidence-only successor is permitted.
+That original closeout changed documentation/governance only. Its candidate commit could not name
+its own SHA or later workflow run and was accepted only if an external record bound the exact SHA
+to unchanged successful Python 3.11 and Python 3.12 jobs. Run #682 did not satisfy that condition:
+Python 3.11 failed, so the original proposed `CLOSED` disposition never became effective and the
+lifecycle remained `REVIEW`. The preserved addendum-03 block, later auxiliary-map block, final
+implementation freeze, and controlling addendum-04 successor are documented below. The same rule
+continues to apply: no post-success evidence-only closeout successor is permitted.
+
+## Reconciled done criteria
 
 ```yaml
 fable_done:
@@ -954,19 +956,19 @@ fable_done:
   done_when_results:
     - item: "Pure venue ownership, ambiguity, closure, and ADR-012 recovery behavior is exact and deterministic."
       status: MET
-      evidence: "The restored implementation freeze passed all 521 execution-core tests; named examples and stateful histories cover effect/attempt separation, one-to-many acceptances, immutable closure, unknown outcomes, human-attested fill/release, and later broker evidence."
+      evidence: "The repaired implementation freeze passed all 536 execution-core tests; named examples and stateful histories cover effect/attempt separation, one-to-many acceptances, immutable closure, unknown outcomes, human-attested fill/release, later broker evidence, and the complete retained-graph oracle."
     - item: "Every capital/authority guard is failure-capable and restored green."
       status: MET
       evidence: "The M1-M10 ledger records concrete commands, nodes, base-temp paths, decisive failures or disclosed safe survivors, and restoration. The final reviewer independently repeated stronger sibling-capacity and public-command mutants."
     - item: "Focused, static, R2, and repository coverage gates pass without a production dependency on persistence or broker code."
       status: MET
-      evidence: "521 pure tests, Ruff check/format, mypy over seven files, six import contracts, 61 R2 cases under BROKER_ADAPTER=mock, and 5,109 repository cases passed. The unchanged combined line/branch floor passed at 93.00594652069468%."
+      evidence: "536 pure tests, 22 stateful cases at recursion limit 700, Ruff check/format, mypy over seven files, six import contracts, 61 R2 cases under BROKER_ADAPTER=mock, and a 5,124-case repository run passed. The unchanged combined line/branch floor passed at 93.00594652069468%."
     - item: "Independent review has no unresolved P0/P1."
       status: MET
-      evidence: "REV-0048 result-addendum-02 returned ACCEPT at exact target 883c0b664708c3b1fba09f7f69b63e8c9b6f9d75 after fresh probes and source/test tree-identity verification."
+      evidence: "REV-0048 result-addendum-04 returned ACCEPT at exact evidence target 982d2137473a60e7052cae4d9cd88d9a384f001b after reproducing the predecessor RED bypasses, fresh graph probes, reduced-recursion and pure-suite execution, and production-tree identity verification."
     - item: "Allowed paths and broker, credential, persistence, runtime, merge, deletion, and cleanup exclusions remain respected."
       status: MET
-      evidence: "The cumulative 25-path inventory is entirely allowed or activation-only. Existing R2/full fixtures used only authorized disposable test SQLite; no persistent application database, credential, broker/Paper activity, runtime wiring, merge, deletion, or cleanup occurred."
+      evidence: "The cumulative recovery and closeout inventories are entirely allowed or activation-only. Existing R2/full fixtures used only authorized disposable test SQLite; no persistent application database, credential, broker/Paper activity, runtime wiring, merge, deletion, or cleanup occurred."
   scope_check:
     allowed_paths_respected: true
     drive_by_edits: false
@@ -1121,3 +1123,25 @@ exclusions remain unchanged.
   diff checks pass. All 61 R2 cases pass with the forced mock broker and fresh disposable test
   directory. Fresh full repository coverage, independent hostile review, and immutable exact-head
   Python 3.11/3.12 CI remain required before this re-gate can close.
+
+#### Final repaired closeout candidate
+
+- **Implementation and evidence identity:** final test-only implementation freeze
+  `5a8984133354ecfa0343d6fb4a7fdaef38d56dab`; exact evidence target
+  `982d2137473a60e7052cae4d9cd88d9a384f001b`; reviewer-owned result commit
+  `2725bdbd131323bc68d4e65536229ad4bc5af76e`. The production execution-core tree remains
+  `09f93d1577dd2c0e1499acf56cf4688cac8be665`, byte-identical to failed candidate `4b9b47d`.
+- **Final local gates:** 15 named controls, 22 stateful cases at recursion limit 700, 536 pure
+  execution-core cases, all static/import/AI-OS/scope checks, 61 R2 cases, and the 5,124-case full
+  repository run pass. The full run passed 5,112, skipped 11, retained one expected xfail, and
+  covered 23,617/25,393 combined obligations (`93.00594652069468%`).
+- **Independent disposition:** preserved addendum-03 remains negative evidence. Addendum-04
+  reproduced both predecessor auxiliary-map cases RED, restored the complete oracle GREEN, attacked
+  all current direct and sequence-backed maps plus metadata/alias/cycle/output divergence, and
+  returned `ACCEPT` with no unresolved P0/P1. Its 10,342-byte result has SHA-256
+  `d7bbd184cea8175aed33365dcbe15660c2e142ca63a0d1ac0258d66949750aba`.
+- **Remaining effectiveness boundary:** this documentation/governance reconciliation creates one
+  immutable closeout candidate. Its exact SHA must pass the unchanged Python 3.11 and Python 3.12
+  workflow before the `CLOSED` status becomes effective or WO-0147 may activate. A failed,
+  canceled, incomplete, or mismatched-head run reopens this same WO. No post-success evidence-only
+  closeout successor is permitted.
