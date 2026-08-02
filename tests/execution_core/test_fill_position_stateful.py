@@ -7,7 +7,7 @@ folds exact rational economics using the accepted long-only average-cost rule.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, fields, is_dataclass, replace
 from decimal import Decimal
 from fractions import Fraction
 
@@ -242,6 +242,9 @@ def _apply(
     second = apply_broker_execution_fact(
         position, integrity, root_heads, seen_facts, fact
     )
+    assert _iterative_value_fingerprint(first) == _iterative_value_fingerprint(
+        second
+    ), "the reducer produced structurally divergent transitions"
     assert first == second
     assert before == _input_semantic_fingerprint(
         position,
@@ -260,27 +263,91 @@ def _input_semantic_fingerprint(
     seen_facts: SeenFactIndex,
     fact: ExecutionFact,
 ) -> tuple[object, ...]:
-    """Re-derive test-only input semantics without rendering private radix trees."""
+    """Snapshot every retained field without recursive container rendering."""
 
-    return (
-        position.commitment,
-        tuple(repr(root_key) for root_key in position.root_fill_sequence),
-        tuple(repr(head_id) for head_id in position.effective_head_ids),
-        repr(position.binding),
+    return _iterative_value_fingerprint(
+        position,
         integrity,
-        root_heads.commitment,
-        tuple(repr(head) for head in root_heads.entries),
-        repr(root_heads.binding),
-        seen_facts.commitment,
-        tuple(repr(observation) for observation in seen_facts.entries),
-        repr(seen_facts.binding),
-        repr(fact),
+        root_heads,
+        seen_facts,
+        fact,
     )
+
+
+def _iterative_value_fingerprint(*roots: object) -> tuple[object, ...]:
+    """Flatten complete dataclass/tuple structure with an explicit work stack."""
+
+    pending = list(reversed(roots))
+    fingerprint: list[object] = []
+    seen_containers: dict[int, int] = {}
+    while pending:
+        value = pending.pop()
+        if is_dataclass(value) and not isinstance(value, type):
+            object_id = id(value)
+            if object_id in seen_containers:
+                fingerprint.append(("reference", seen_containers[object_id]))
+                continue
+            ordinal = len(seen_containers)
+            seen_containers[object_id] = ordinal
+            value_fields = fields(value)
+            value_type = type(value)
+            fingerprint.append(
+                (
+                    "dataclass",
+                    ordinal,
+                    value_type.__module__,
+                    value_type.__qualname__,
+                    tuple(field.name for field in value_fields),
+                )
+            )
+            pending.extend(
+                getattr(value, field.name) for field in reversed(value_fields)
+            )
+        elif type(value) is tuple:
+            object_id = id(value)
+            if object_id in seen_containers:
+                fingerprint.append(("reference", seen_containers[object_id]))
+                continue
+            ordinal = len(seen_containers)
+            seen_containers[object_id] = ordinal
+            fingerprint.append(("tuple", ordinal, len(value)))
+            pending.extend(reversed(value))
+        else:
+            value_type = type(value)
+            fingerprint.append(
+                (
+                    "leaf",
+                    value_type.__module__,
+                    value_type.__qualname__,
+                    repr(value),
+                )
+            )
+    return tuple(fingerprint)
+
+
+def _only_persistent_map_value_node(persistent_map: object) -> object:
+    """Return the sole populated radix node for focused mutation controls."""
+
+    stack = [getattr(persistent_map, "_root")]
+    value_nodes: list[object] = []
+    while stack:
+        node = stack.pop()
+        if getattr(node, "has_value"):
+            value_nodes.append(node)
+        stack.extend(child for _, child in getattr(node, "children"))
+    assert len(value_nodes) == 1
+    return value_nodes[0]
 
 
 @pytest.mark.parametrize(
     "target",
-    ("root-head", "seen-fact"),
+    (
+        "root-head",
+        "seen-fact",
+        "broker-scope-count",
+        "prefix-commitment",
+        "current-fact",
+    ),
 )
 def test_apply_guard_detects_retained_leaf_mutation(monkeypatch, target: str) -> None:
     snapshot = _flat_snapshot()
@@ -321,8 +388,22 @@ def test_apply_guard_detects_retained_leaf_mutation(monkeypatch, target: str) ->
         if call_count == 2:
             if target == "root-head":
                 object.__setattr__(root_heads.entries[0], "quantity", Quantity(10))
-            else:
+            elif target == "seen-fact":
                 object.__setattr__(seen_facts.entries[0].fact, "quantity", Quantity(10))
+            elif target == "broker-scope-count":
+                object.__setattr__(
+                    _only_persistent_map_value_node(root_heads._broker_scope_counts),
+                    "value",
+                    10,
+                )
+            elif target == "prefix-commitment":
+                object.__setattr__(
+                    _only_persistent_map_value_node(seen_facts._prefix_commitments),
+                    "value",
+                    bytes(32),
+                )
+            else:
+                object.__setattr__(fact, "quantity", Quantity(10))
         return transition
 
     monkeypatch.setitem(
@@ -340,7 +421,63 @@ def test_apply_guard_detects_retained_leaf_mutation(monkeypatch, target: str) ->
         )
 
 
-def test_input_semantic_fingerprint_reads_position_sequence_leaves() -> None:
+@pytest.mark.parametrize("target", ("broker-scope-count", "prefix-commitment"))
+def test_apply_guard_detects_structurally_divergent_output(
+    monkeypatch, target: str
+) -> None:
+    snapshot = _flat_snapshot()
+    fact = BrokerFillFact(
+        key=_fact_key(1),
+        scope=_scope(ExecutionSide.BUY, 1),
+        root_fill_id=RootFillId("divergent-output"),
+        quantity=Quantity(1),
+        price=_price(100),
+    )
+    original = apply_broker_execution_fact
+    call_count = 0
+
+    def mutate_second_output(
+        position: PositionState,
+        integrity: PositionIntegrity,
+        root_heads: RootHeadIndex,
+        seen_facts: SeenFactIndex,
+        fact: ExecutionFact,
+    ):
+        nonlocal call_count
+        transition = original(position, integrity, root_heads, seen_facts, fact)
+        call_count += 1
+        if call_count == 2:
+            target_map = (
+                transition.root_heads._broker_scope_counts
+                if target == "broker-scope-count"
+                else transition.seen_facts._prefix_commitments
+            )
+            object.__setattr__(
+                _only_persistent_map_value_node(target_map),
+                "value",
+                10 if target == "broker-scope-count" else bytes(32),
+            )
+        return transition
+
+    monkeypatch.setitem(
+        _apply.__globals__,
+        "apply_broker_execution_fact",
+        mutate_second_output,
+    )
+    with pytest.raises(AssertionError, match="structurally divergent"):
+        _apply(
+            snapshot.position,
+            snapshot.integrity,
+            snapshot.root_heads,
+            snapshot.seen_facts,
+            fact,
+        )
+
+
+@pytest.mark.parametrize("target", ("root-key", "effective-head"))
+def test_input_semantic_fingerprint_reads_position_sequence_leaves(
+    target: str,
+) -> None:
     snapshot = _flat_snapshot()
     position = PositionState.from_materialized(
         scope=_POSITION_SCOPE,
@@ -368,11 +505,18 @@ def test_input_semantic_fingerprint_reads_position_sequence_leaves() -> None:
         fact,
     )
 
-    object.__setattr__(
-        position.root_fill_sequence[0],
-        "root_fill_id",
-        RootFillId("mutated-position-leaf"),
-    )
+    if target == "root-key":
+        object.__setattr__(
+            position.root_fill_sequence[0],
+            "root_fill_id",
+            RootFillId("mutated-position-leaf"),
+        )
+    else:
+        object.__setattr__(
+            position.effective_head_ids[0],
+            "value",
+            "mutated-position-head",
+        )
 
     assert position.commitment == before_commitment
     assert before != _input_semantic_fingerprint(
@@ -380,6 +524,127 @@ def test_input_semantic_fingerprint_reads_position_sequence_leaves() -> None:
         snapshot.integrity,
         snapshot.root_heads,
         snapshot.seen_facts,
+        fact,
+    )
+
+
+@pytest.mark.parametrize(
+    "target",
+    (
+        "observed-root-occupancy",
+        "radix-value-commitment",
+        "shared-sequence-alias",
+        "binding-alias",
+        "radix-cycle",
+    ),
+)
+def test_input_semantic_fingerprint_covers_hidden_structure(target: str) -> None:
+    snapshot = _flat_snapshot()
+    fact = BrokerFillFact(
+        key=_fact_key(1),
+        scope=_scope(ExecutionSide.BUY, 1),
+        root_fill_id=RootFillId("hidden-structure"),
+        quantity=Quantity(1),
+        price=_price(100),
+    )
+    seeded = apply_broker_execution_fact(
+        snapshot.position,
+        snapshot.integrity,
+        snapshot.root_heads,
+        snapshot.seen_facts,
+        fact,
+    )
+    before = _input_semantic_fingerprint(
+        seeded.position,
+        seeded.integrity,
+        seeded.root_heads,
+        seeded.seen_facts,
+        fact,
+    )
+
+    if target == "observed-root-occupancy":
+        assert seeded.seen_facts.contains_root(fact.root_key)
+        object.__setattr__(
+            _only_persistent_map_value_node(seeded.seen_facts._observed_roots),
+            "has_value",
+            False,
+        )
+        assert not seeded.seen_facts.contains_root(fact.root_key)
+    elif target == "radix-value-commitment":
+        object.__setattr__(
+            _only_persistent_map_value_node(seeded.root_heads._broker_scope_counts),
+            "value_commitment",
+            bytes(32),
+        )
+    elif target == "shared-sequence-alias":
+        assert seeded.position._root_fill_sequence is seeded.root_heads._root_sequence
+        object.__setattr__(
+            seeded.root_heads,
+            "_root_sequence",
+            replace(seeded.root_heads._root_sequence),
+        )
+        assert (
+            seeded.position._root_fill_sequence is not seeded.root_heads._root_sequence
+        )
+    elif target == "binding-alias":
+        assert seeded.position.binding is seeded.root_heads.binding
+        assert seeded.root_heads.binding is not None
+        object.__setattr__(
+            seeded.root_heads,
+            "_binding",
+            replace(seeded.root_heads.binding),
+        )
+        assert seeded.position.binding is not seeded.root_heads.binding
+    else:
+        radix_root = seeded.root_heads._broker_scope_counts._root
+        object.__setattr__(radix_root, "children", ((255, radix_root),))
+
+    assert before != _input_semantic_fingerprint(
+        seeded.position,
+        seeded.integrity,
+        seeded.root_heads,
+        seeded.seen_facts,
+        fact,
+    )
+
+
+def test_input_semantic_fingerprint_covers_overfill_scope_index() -> None:
+    snapshot = _flat_snapshot()
+    fact = BrokerFillFact(
+        key=_fact_key(1),
+        scope=_scope(ExecutionSide.SELL, 1),
+        root_fill_id=RootFillId("overfill-index"),
+        quantity=Quantity(1),
+        price=_price(100),
+    )
+    overfilled = apply_broker_execution_fact(
+        snapshot.position,
+        snapshot.integrity,
+        snapshot.root_heads,
+        snapshot.seen_facts,
+        fact,
+    )
+    assert overfilled.seen_facts.has_overfill_observation(_POSITION_SCOPE)
+    before = _input_semantic_fingerprint(
+        overfilled.position,
+        overfilled.integrity,
+        overfilled.root_heads,
+        overfilled.seen_facts,
+        fact,
+    )
+
+    object.__setattr__(
+        _only_persistent_map_value_node(overfilled.seen_facts._overfill_scopes),
+        "has_value",
+        False,
+    )
+
+    assert not overfilled.seen_facts.has_overfill_observation(_POSITION_SCOPE)
+    assert before != _input_semantic_fingerprint(
+        overfilled.position,
+        overfilled.integrity,
+        overfilled.root_heads,
+        overfilled.seen_facts,
         fact,
     )
 

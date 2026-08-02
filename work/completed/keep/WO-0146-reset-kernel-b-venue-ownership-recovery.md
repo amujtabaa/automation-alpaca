@@ -1095,3 +1095,29 @@ exclusions remain unchanged.
   and is inadmissible for closeout. A new exact implementation freeze must pass focused lowered-
   recursion tests, the full static/R2/repository gates, hostile mutation probes, independent review,
   and exact-head Python 3.11/3.12 CI. WO-0147 remains inactive.
+
+#### FIX — complete iterative semantic graph projection
+
+- **RED:** the two permanent auxiliary-map cases reproduced the independent findings before the
+  helper changed: the root broker-scope-count and seen-prefix-commitment parameters both failed
+  because the expected immutable-input assertion did not occur; the existing root-head and
+  seen-fact parameters remained green.
+- **Root cause correction:** `_apply` now snapshots the complete input dataclass/tuple graph with an
+  explicit work stack. The projection records every exact field, radix node, key/value leaf, cached
+  commitment, structural edge, and shared/cyclic reference ordinal without recursively rendering a
+  persistent container. The same projection is the authoritative output-determinism oracle, because
+  ordinary `RootHeadIndex`/`SeenFactIndex` equality omits auxiliary caches and cannot prove complete
+  transition identity under hostile corruption. A static call-site search found production binding,
+  recovery, and venue checks use exact commitments rather than those equality methods, and normal
+  public constructors derive the auxiliary maps. No production equality or transition path changed.
+- **Permanent failure-capable controls:** five input-integration mutants cover retained root-head,
+  seen-fact, broker-count, prefix-proof, and current-fact leaves; two output mutants cover divergent
+  broker-count and prefix-proof maps; two position-sequence pins cover both root keys and effective
+  head IDs; and six structural pins cover observed-root and overfill indexes, cached radix metadata,
+  required sequence/binding alias topology, and a hostile radix cycle.
+- **Fresh focused evidence:** all 15 named controls pass; all 22 stateful cases pass with Python's
+  recursion limit reduced to 700; and all 536 execution-core cases pass under the forced mock broker.
+  Ruff check/format, mypy over seven source files, six import contracts, AI-OS integrity, scope, and
+  diff checks pass. All 61 R2 cases pass with the forced mock broker and fresh disposable test
+  directory. Fresh full repository coverage, independent hostile review, and immutable exact-head
+  Python 3.11/3.12 CI remain required before this re-gate can close.
