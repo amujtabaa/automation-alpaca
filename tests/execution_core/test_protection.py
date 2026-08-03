@@ -8,10 +8,13 @@ code exists.  No clock, database, broker, adapter, or runtime fixture is used.
 
 from __future__ import annotations
 
+import ast
+from copy import copy
 from dataclasses import FrozenInstanceError, fields, replace
 from decimal import Decimal
 from fractions import Fraction
 import importlib
+import inspect
 from types import ModuleType
 
 import pytest
@@ -19,8 +22,14 @@ import pytest
 import app.execution_core as execution_core
 from app.execution_core.authority import (
     AuthorityDisposition,
+    AuthorityReason,
     BrokerEffectRequest,
+    ClaimEffect,
     CreateBrokerEffect,
+    EnginePhase,
+    RequestBudget,
+    SupervisorFence,
+    TradingMode,
     apply_execution_authority_input,
     initial_execution_authority_state,
 )
@@ -28,8 +37,14 @@ from app.execution_core.fills import (
     BrokerTradeBustFact,
     BrokerTradeCorrectFact,
     ExecutionFactKey,
+    ExecutionScope,
     ExecutionSide,
     PositionScope,
+)
+from app.execution_core.position import (
+    ExecutionSnapshot,
+    TransitionDisposition,
+    apply_broker_execution_fact,
 )
 from app.execution_core.identity import (
     ClaimOccurrenceId,
@@ -49,6 +64,7 @@ from app.execution_core.identity import (
 from app.execution_core.recovery import (
     RecordBrokerFillEvidence,
     RecordBrokerRevisionEvidence,
+    ReleaseVenueLeg,
 )
 from app.execution_core.values import (
     PriceScale,
@@ -62,6 +78,7 @@ from app.execution_core.venue import (
     AcceptanceProofKind,
     AcceptanceSetState,
     BrokerEffectState,
+    CatchUpExecutionRegistry,
     CloseAcceptanceSet,
     DiscoverVenueLeg,
     EffectKind,
@@ -72,6 +89,7 @@ from app.execution_core.venue import (
     VenueAttemptState,
     VenueRecoveryBook,
     VenueRecoveryDisposition,
+    VenueExecutionCheckpoint,
 )
 from tests.execution_core import test_venue_recovery as venue_fixtures
 
@@ -129,6 +147,10 @@ def _mandate(
     max_step_fraction: Fraction = Fraction(1, 2),
     maximum_quantity: int = 20,
     maximum_goal_rate: int = 4,
+    deadline: int = 1_000,
+    configuration_version: str = "protection-v1",
+    normal_guard: object | None = None,
+    emergency_guard: object | None = None,
 ) -> object:
     evidence_type, mandate_type = _required(
         module,
@@ -147,18 +169,18 @@ def _mandate(
         mandate_id=mandate_id,
         position_scope=position_scope,
         session_id=session_type("session-rth-1"),
-        configuration_version="protection-v1",
+        configuration_version=configuration_version,
         loss_fraction=loss_fraction,
         approved_gain=approved_gain,
         percent_trail_fraction=percent_trail_fraction,
         atr_multiple=atr_multiple,
         tick=tick,
-        normal_guard=_guard(module, "normal-guard"),
-        emergency_guard=_guard(module, "emergency-guard"),
+        normal_guard=normal_guard or _guard(module, "normal-guard"),
+        emergency_guard=emergency_guard or _guard(module, "emergency-guard"),
         evidence_policy=evidence,
         maximum_quantity=Quantity(maximum_quantity),
         maximum_goal_rate=maximum_goal_rate,
-        deadline=1_000,
+        deadline=deadline,
     )
 
 
@@ -168,6 +190,7 @@ def _owned_fill_fixture(
     quantity: int = 4,
     units: int = 100,
     capacity: int = 20,
+    tick_units: int = 1,
 ):
     book, execution = venue_fixtures._seed_needs_review(capacity=capacity)
     fact = venue_fixtures._broker_fill(
@@ -176,6 +199,8 @@ def _owned_fill_fixture(
         quantity=quantity,
         units=units,
     )
+    if tick_units != 1:
+        fact = replace(fact, price=_price(units, tick_units=tick_units))
     command = RecordBrokerFillEvidence(
         input_id=VenueInputId(f"{label}-input"),
         effect_id=BASE_EFFECT,
@@ -201,12 +226,14 @@ def _owned_fill_transition(
     quantity: int = 4,
     units: int = 100,
     capacity: int = 20,
+    tick_units: int = 1,
 ):
     return _owned_fill_fixture(
         label=label,
         quantity=quantity,
         units=units,
         capacity=capacity,
+        tick_units=tick_units,
     )[-1]
 
 
@@ -251,6 +278,12 @@ def _correct_owned_root(
     resulting_quantity: int,
     units: int,
     prior_venue_cumulative: int,
+    tick_units: int = 1,
+    effect_id: EffectId = BASE_EFFECT,
+    leg_key: VenueLegKey = BASE_LEG,
+    scope: ExecutionScope | None = None,
+    closure_id: ClosureId | None = None,
+    evidence_reference: EvidenceReference | None = None,
 ):
     fact = BrokerTradeCorrectFact(
         key=ExecutionFactKey(
@@ -259,21 +292,23 @@ def _correct_owned_root(
             account=ACCOUNT,
             source_event_id=SourceEventId(f"{label}-source"),
         ),
-        scope=venue_fixtures._execution_scope(),
+        scope=scope if scope is not None else venue_fixtures._execution_scope(),
         root_fill_id=root_fill_id,
         predecessor_source_event_id=predecessor_source_event_id,
         revised_quantity=Quantity(resulting_quantity),
-        revised_price=_price(units),
+        revised_price=_price(units, tick_units=tick_units),
     )
     command = RecordBrokerRevisionEvidence(
         input_id=VenueInputId(f"{label}-input"),
-        effect_id=BASE_EFFECT,
-        leg_key=BASE_LEG,
+        effect_id=effect_id,
+        leg_key=leg_key,
         prior_root_quantity=Quantity(prior_root_quantity),
         prior_venue_cumulative_quantity=Quantity(prior_venue_cumulative),
         resulting_venue_cumulative_quantity=Quantity(resulting_quantity),
         fact=fact,
         evidence_digest=b"\x97" * 32,
+        closure_id=closure_id,
+        evidence_reference=evidence_reference,
     )
     result = venue_fixtures.apply_venue_recovery_input(
         transition.book,
@@ -292,6 +327,11 @@ def _bust_owned_root(
     predecessor_source_event_id: SourceEventId,
     prior_root_quantity: int,
     prior_venue_cumulative: int,
+    effect_id: EffectId = BASE_EFFECT,
+    leg_key: VenueLegKey = BASE_LEG,
+    scope: ExecutionScope | None = None,
+    closure_id: ClosureId | None = None,
+    evidence_reference: EvidenceReference | None = None,
 ):
     fact = BrokerTradeBustFact(
         key=ExecutionFactKey(
@@ -300,19 +340,21 @@ def _bust_owned_root(
             account=ACCOUNT,
             source_event_id=SourceEventId(f"{label}-source"),
         ),
-        scope=venue_fixtures._execution_scope(),
+        scope=scope if scope is not None else venue_fixtures._execution_scope(),
         root_fill_id=root_fill_id,
         predecessor_source_event_id=predecessor_source_event_id,
     )
     command = RecordBrokerRevisionEvidence(
         input_id=VenueInputId(f"{label}-input"),
-        effect_id=BASE_EFFECT,
-        leg_key=BASE_LEG,
+        effect_id=effect_id,
+        leg_key=leg_key,
         prior_root_quantity=Quantity(prior_root_quantity),
         prior_venue_cumulative_quantity=Quantity(prior_venue_cumulative),
         resulting_venue_cumulative_quantity=Quantity(0),
         fact=fact,
         evidence_digest=b"\x98" * 32,
+        closure_id=closure_id,
+        evidence_reference=evidence_reference,
     )
     result = venue_fixtures.apply_venue_recovery_input(
         transition.book,
@@ -374,6 +416,7 @@ def _occurrence(
     halted: bool = False,
     source_id: object | None = None,
     position_scope: PositionScope = POSITION_SCOPE,
+    session_id: object | None = None,
 ) -> object:
     market_kind, occurrence_type = _required(module, "MarketKind", "MarketOccurrence")
     occurrence_id_type, source_id_type, session_type = _required(
@@ -386,7 +429,7 @@ def _occurrence(
         occurrence_id=occurrence_id_type(label),
         source_id=source_id or source_id_type("sip-primary"),
         position_scope=position_scope,
-        session_id=session_type("session-rth-1"),
+        session_id=session_id or session_type("session-rth-1"),
         market_epoch=market_epoch,
         source_sequence=sequence,
         source_time=source_time,
@@ -591,6 +634,63 @@ def _sync_transitions(
     return state, projection, result
 
 
+def _emergency_goal_fixture(
+    module: ModuleType,
+    *,
+    label: str,
+    mandate: object | None = None,
+) -> tuple[object, object, object, object]:
+    fill = _owned_fill_transition(label=f"{label}-fill")
+    current_mandate, _, state = _start(module, fill, mandate)
+    terminal, closed = _close_base_parent(fill)
+    state, projection, _ = _sync_transitions(
+        module,
+        state,
+        current_mandate,
+        (terminal, closed),
+    )
+    first = _reduce(
+        module,
+        state,
+        projection,
+        _occurrence(module, f"{label}-first", bid=92, ask=93, sequence=1),
+    )
+    result = _reduce(
+        module,
+        first.state,
+        projection,
+        _occurrence(
+            module,
+            f"{label}-second",
+            bid=91,
+            ask=92,
+            sequence=2,
+            source_time=106,
+            evaluation_time=110,
+        ),
+    )
+    assert result.goal is not None
+    return current_mandate, closed, result.state, result.goal
+
+
+def _forge_authority_predecessor(
+    venue: VenueRecoveryBook,
+    *,
+    session_id: object,
+    kill_engaged: bool = False,
+    fence: SupervisorFence = SupervisorFence.PAPER_MUTATION_ELIGIBLE,
+) -> object:
+    state = copy(initial_execution_authority_state(VENUE_SCOPE))
+    object.__setattr__(state, "phase", EnginePhase.SERVING)
+    object.__setattr__(state, "mode", TradingMode.ACTIVE)
+    object.__setattr__(state, "supervisor_fence", fence)
+    object.__setattr__(state, "kill_engaged", kill_engaged)
+    object.__setattr__(state, "session_id", session_id)
+    object.__setattr__(state, "budget", RequestBudget(remaining=3, safety_reserve=1))
+    object.__setattr__(state, "venue", venue)
+    return state
+
+
 def test_public_protection_contract_is_exported_and_has_one_reducer() -> None:
     module = _protection_module()
     names = {
@@ -639,11 +739,18 @@ def test_mandate_is_frozen_exact_and_rejects_subclasses() -> None:
     ("override", "value", "error"),
     [
         ("loss_fraction", Fraction(0), ValueError),
+        ("loss_fraction", Fraction(-1), ValueError),
         ("loss_fraction", Fraction(1), ValueError),
         ("approved_gain", Fraction(0), ValueError),
+        ("approved_gain", Fraction(-1), ValueError),
         ("percent_trail_fraction", Fraction(0), ValueError),
+        ("percent_trail_fraction", Fraction(-1), ValueError),
         ("percent_trail_fraction", Fraction(1), ValueError),
         ("atr_multiple", Fraction(0), ValueError),
+        ("atr_multiple", Fraction(-1), ValueError),
+        ("max_step_fraction", Fraction(0), ValueError),
+        ("max_step_fraction", Fraction(-1), ValueError),
+        ("max_step_fraction", Fraction(2), ValueError),
         ("maximum_quantity", 0, ValueError),
         ("maximum_goal_rate", 0, ValueError),
         ("max_age", 0, ValueError),
@@ -658,6 +765,119 @@ def test_mandate_rejects_invalid_formula_evidence_quantity_and_rate(
     module = _protection_module()
     with pytest.raises(error):
         _mandate(module, **{override: value})
+
+
+@pytest.mark.parametrize(
+    ("field_name", "value", "error"),
+    [
+        ("mandate_id", "mandate", TypeError),
+        ("position_scope", "scope", TypeError),
+        ("session_id", "session", TypeError),
+        ("configuration_version", "   ", ValueError),
+        ("configuration_version", 1, TypeError),
+        ("loss_fraction", True, TypeError),
+        ("approved_gain", 1, TypeError),
+        ("percent_trail_fraction", Decimal("0.1"), TypeError),
+        ("atr_multiple", 2.5, TypeError),
+        ("tick", object(), TypeError),
+        ("normal_guard", object(), TypeError),
+        ("emergency_guard", object(), TypeError),
+        ("evidence_policy", object(), TypeError),
+        ("maximum_quantity", 1, TypeError),
+        ("maximum_goal_rate", True, TypeError),
+        ("maximum_goal_rate", -1, ValueError),
+        ("deadline", True, TypeError),
+        ("deadline", -1, ValueError),
+    ],
+)
+def test_mandate_rejects_every_malformed_authority_field(
+    field_name: str,
+    value: object,
+    error: type[Exception],
+) -> None:
+    module = _protection_module()
+    with pytest.raises(error):
+        replace(_mandate(module), **{field_name: value})
+
+
+@pytest.mark.parametrize(
+    ("field_name", "value", "error"),
+    [
+        ("source_id", "feed", TypeError),
+        ("max_age", True, TypeError),
+        ("max_age", -1, ValueError),
+        ("corroboration_window", True, TypeError),
+        ("corroboration_window", 0, ValueError),
+        ("max_step_fraction", True, TypeError),
+        ("max_step_fraction", Fraction(0), ValueError),
+        ("max_step_fraction", Fraction(2), ValueError),
+    ],
+)
+def test_evidence_policy_rejects_malformed_fields(
+    field_name: str,
+    value: object,
+    error: type[Exception],
+) -> None:
+    module = _protection_module()
+    evidence = _mandate(module).evidence_policy
+    with pytest.raises(error):
+        replace(evidence, **{field_name: value})
+
+
+@pytest.mark.parametrize(
+    ("guard_id", "commitment", "error"),
+    [
+        ("   ", b"x" * 32, ValueError),
+        (1, b"x" * 32, TypeError),
+        ("guard", "not-bytes", TypeError),
+        ("guard", b"x" * 31, ValueError),
+        ("guard", b"x" * 33, ValueError),
+    ],
+)
+def test_execution_guard_requires_nonblank_identity_and_exact_commitment(
+    guard_id: object,
+    commitment: object,
+    error: type[Exception],
+) -> None:
+    module = _protection_module()
+    (guard_type,) = _required(module, "ExecutionGuard")
+    with pytest.raises(error):
+        guard_type(guard_id=guard_id, policy_commitment=commitment)
+
+
+@pytest.mark.parametrize(
+    ("field_name", "value", "error"),
+    [
+        ("occurrence_id", "occurrence", TypeError),
+        ("source_id", "source", TypeError),
+        ("position_scope", "scope", TypeError),
+        ("session_id", "session", TypeError),
+        ("market_epoch", True, TypeError),
+        ("market_epoch", -1, ValueError),
+        ("source_sequence", True, TypeError),
+        ("source_sequence", -1, ValueError),
+        ("source_time", True, TypeError),
+        ("source_time", -1, ValueError),
+        ("evaluation_time", True, TypeError),
+        ("evaluation_time", -1, ValueError),
+        ("kind", "BEST_BID", TypeError),
+        ("best_bid", object(), TypeError),
+        ("best_ask", object(), TypeError),
+        ("trade_price", object(), TypeError),
+        ("atr_distance", object(), TypeError),
+        ("structure_trail", object(), TypeError),
+        ("halted", 0, TypeError),
+    ],
+)
+def test_market_occurrence_rejects_malformed_exact_fields(
+    field_name: str,
+    value: object,
+    error: type[Exception],
+) -> None:
+    module = _protection_module()
+    occurrence = _occurrence(module, "shape-valid", bid=100, ask=101)
+    with pytest.raises(error):
+        replace(occurrence, **{field_name: value})
 
 
 def test_state_projection_and_transition_are_opaque_and_sealed() -> None:
@@ -688,6 +908,46 @@ def test_projection_rejects_substituted_transition_book_or_execution() -> None:
         )
 
 
+def test_projection_rejects_forged_transition_envelope_and_donated_proof() -> None:
+    module = _protection_module()
+    _, _, _, applied = _owned_fill_fixture()
+    mandate = _mandate(module)
+    for forged in (
+        _clone_opaque(
+            applied,
+            disposition=VenueRecoveryDisposition.EXACT_REPLAY,
+        ),
+        _clone_opaque(applied, quantity_delta=applied.quantity_delta + 1),
+    ):
+        with pytest.raises(ValueError):
+            _projection(module, forged, mandate)
+
+    _, branch_a = _terminal_fixture(
+        applied,
+        effect_id=BASE_EFFECT,
+        leg_key=BASE_LEG,
+        label="protection-proof-donor-a",
+        cumulative_quantity=4,
+    )
+    _, branch_b = _terminal_fixture(
+        applied,
+        effect_id=BASE_EFFECT,
+        leg_key=BASE_LEG,
+        label="protection-proof-donor-b",
+        cumulative_quantity=4,
+    )
+    assert branch_a.execution == branch_b.execution
+    assert branch_a.disposition == branch_b.disposition
+    assert branch_a.quantity_delta == branch_b.quantity_delta
+    assert branch_a.book != branch_b.book
+    donated = _clone_opaque(
+        branch_b,
+        _protection_proof=branch_a._protection_proof,
+    )
+    with pytest.raises(ValueError):
+        _projection(module, donated, mandate)
+
+
 def test_transition_and_projection_replace_cannot_donate_proof() -> None:
     module = _protection_module()
     prior_book, _, _, applied = _owned_fill_fixture()
@@ -716,6 +976,8 @@ def test_transition_and_projection_replace_cannot_donate_proof() -> None:
         "cursor_head",
         "predecessor_execution_commitment",
         "execution_commitment",
+        "predecessor_blocking_effect_count",
+        "predecessor_blocking_buy_effect_count",
         "blocking_effect_count",
         "blocking_buy_effect_count",
     ],
@@ -798,6 +1060,187 @@ def test_exact_venue_replay_never_advances_cursor_or_policy() -> None:
     assert replayed.state == after_terminal.state
     assert replayed.goal is None
     assert replayed.critical_alert is None
+
+
+def test_protection_cursor_and_blocking_summaries_are_per_position_scope() -> None:
+    module = _protection_module()
+    fill = _owned_fill_transition()
+    mandate, aapl_projection, state = _start(module, fill)
+    msft_symbol = type(SYMBOL)("MSFT")
+    msft_scope = PositionScope(
+        broker=BROKER,
+        environment=ENVIRONMENT,
+        account=ACCOUNT,
+        symbol_id=msft_symbol,
+    )
+    msft_execution = ExecutionSnapshot.bind_verified(
+        execution_core.PositionState.flat(msft_scope),
+        execution_core.PositionIntegrity.CONSISTENT,
+        execution_core.RootHeadIndex.empty(msft_scope),
+        fill.execution.seen_facts,
+    )
+    msft_effect = EffectId("protection-cursor-msft-effect")
+    registered = venue_fixtures.apply_venue_recovery_input(
+        fill.book,
+        msft_execution,
+        RequestedEffect(
+            input_id=VenueInputId("protection-cursor-msft-request"),
+            effect_id=msft_effect,
+            request_occurrence_id=RequestOccurrenceId(
+                "protection-cursor-msft-occurrence"
+            ),
+            mandate_id=MandateId("protection-cursor-msft-mandate"),
+            kind=EffectKind.SUBMIT,
+            client_order_id=ClientOrderId("protection-cursor-msft-client"),
+            symbol_id=msft_symbol,
+            side=ExecutionSide.BUY,
+            quantity=Quantity(1),
+            economic_scope=b"MSFT|BUY|one",
+        ),
+    )
+    assert registered.disposition is VenueRecoveryDisposition.APPLIED
+    assert registered.book.effect(msft_effect) is not None
+    aapl_terminal = venue_fixtures.apply_venue_recovery_input(
+        registered.book,
+        fill.execution,
+        ObserveVenueStatus(
+            input_id=VenueInputId("protection-cursor-aapl-terminal"),
+            leg_key=BASE_LEG,
+            status=VenueAttemptState.FILLED,
+            observation_id=VenueObservationId(
+                "protection-cursor-aapl-terminal-observation"
+            ),
+            cumulative_quantity=Quantity(4),
+            closure_id=ClosureId("protection-cursor-aapl-terminal-closure"),
+            evidence_reference=EvidenceReference(
+                "protection-cursor-aapl-terminal-evidence"
+            ),
+        ),
+    )
+    assert aapl_terminal.disposition is VenueRecoveryDisposition.APPLIED
+    next_projection = _projection(module, aapl_terminal, mandate)
+    assert next_projection.predecessor_cursor_ordinal == aapl_projection.cursor_ordinal
+    assert next_projection.predecessor_cursor_head == aapl_projection.cursor_head
+    assert (
+        next_projection.predecessor_blocking_effect_count
+        == aapl_projection.blocking_effect_count
+        == 1
+    )
+    assert (
+        next_projection.predecessor_blocking_buy_effect_count
+        == aapl_projection.blocking_buy_effect_count
+        == 1
+    )
+    assert next_projection.blocking_effect_count == 1
+    assert next_projection.blocking_buy_effect_count == 1
+    result = _reduce(module, state, next_projection)
+    assert result.state != state
+
+
+def test_refused_and_conflicting_venue_inputs_do_not_advance_protection_cursor() -> (
+    None
+):
+    module = _protection_module()
+    _, _, fill_command, fill = _owned_fill_fixture(label="protection-nonadvancing")
+    mandate, _, state = _start(module, fill)
+    refused = venue_fixtures.apply_venue_recovery_input(
+        fill.book,
+        fill.execution,
+        RecordBrokerFillEvidence(
+            input_id=VenueInputId("protection-refused-unknown-effect"),
+            effect_id=EffectId("protection-unknown-effect"),
+            leg_key=BASE_LEG,
+            prior_cumulative_quantity=Quantity(0),
+            resulting_cumulative_quantity=Quantity(1),
+            fact=venue_fixtures._broker_fill(
+                "protection-refused-source",
+                "protection-refused-root",
+                quantity=1,
+            ),
+            evidence_digest=b"\xa1" * 32,
+        ),
+    )
+    conflict = venue_fixtures.apply_venue_recovery_input(
+        fill.book,
+        fill.execution,
+        replace(fill_command, evidence_digest=b"\xa2" * 32),
+    )
+    assert refused.disposition is VenueRecoveryDisposition.REFUSED
+    assert conflict.disposition is VenueRecoveryDisposition.CONFLICT
+    for transition in (refused, conflict):
+        assert transition.book == fill.book
+        assert transition.execution == fill.execution
+        assert transition.quantity_delta == 0
+        projection = _projection(module, transition, mandate)
+        assert projection.predecessor_cursor_ordinal == projection.cursor_ordinal
+        assert projection.predecessor_cursor_head == projection.cursor_head
+        result = _reduce(module, state, projection)
+        assert result.state == state
+        assert result.goal is None
+        assert result.critical_alert is None
+
+
+def test_nonmutating_reconciliation_does_not_advance_protection_cursor() -> None:
+    module = _protection_module()
+    book, execution = venue_fixtures._seed_needs_review(capacity=4)
+    attested = venue_fixtures._ingest(
+        book,
+        execution,
+        venue_fixtures._human_fill(quantity=4, prior=0, resulting=4),
+    )
+    mandate, _, state = _start(module, attested)
+    contradicted = venue_fixtures.apply_venue_recovery_input(
+        attested.book,
+        attested.execution,
+        RecordBrokerFillEvidence(
+            input_id=VenueInputId("protection-nonmutating-contradiction"),
+            effect_id=BASE_EFFECT,
+            leg_key=BASE_LEG,
+            prior_cumulative_quantity=Quantity(0),
+            resulting_cumulative_quantity=Quantity(4),
+            fact=venue_fixtures._broker_fill(
+                "protection-nonmutating-contradiction-source",
+                "protection-nonmutating-contradiction-root",
+                quantity=4,
+                units=101,
+            ),
+            evidence_digest=b"\xa3" * 32,
+        ),
+    )
+    assert contradicted.disposition is VenueRecoveryDisposition.RECONCILIATION_REQUIRED
+    synced = _reduce(
+        module,
+        state,
+        _projection(module, contradicted, mandate),
+    )
+    release = venue_fixtures.apply_venue_recovery_input(
+        contradicted.book,
+        contradicted.execution,
+        ReleaseVenueLeg(
+            input_id=VenueInputId("protection-nonmutating-release"),
+            effect_id=BASE_EFFECT,
+            leg_key=BASE_LEG,
+            claim_occurrence_id=venue_fixtures.CLAIM,
+            venue_cumulative_quantity=Quantity(4),
+            broker_terminal_state=VenueAttemptState.CANCELED,
+            actor=venue_fixtures.ACTOR,
+            reason="unresolved contradiction remains blocking",
+            evidence_reference=venue_fixtures.EVIDENCE,
+            closure_id=ClosureId("protection-nonmutating-release-closure"),
+            evidence_digest=b"\xa4" * 32,
+        ),
+    )
+    assert release.disposition is VenueRecoveryDisposition.RECONCILIATION_REQUIRED
+    assert release.book == contradicted.book
+    assert release.execution == contradicted.execution
+    assert release.quantity_delta == 0
+    projection = _projection(module, release, mandate)
+    assert projection.predecessor_cursor_ordinal == projection.cursor_ordinal
+    assert projection.predecessor_cursor_head == projection.cursor_head
+    result = _reduce(module, synced.state, projection)
+    assert result.state == synced.state
+    assert result.goal is None
+    assert result.critical_alert is None
 
 
 def test_replayed_parent_close_cannot_release_a_preclose_state() -> None:
@@ -942,6 +1385,115 @@ def test_flat_requires_zero_quantity_and_closed_buy_and_sell_parents() -> None:
     assert sell_closed.book.effect(sell_effect) is not None
 
 
+def test_zero_quantity_with_account_reconciliation_cannot_remain_flat() -> None:
+    module = _protection_module()
+    _, _, fill_command, fill = _owned_fill_fixture(
+        label="protection-flat-reconciliation-root",
+        quantity=4,
+        units=100,
+        capacity=4,
+    )
+    mandate, _, state = _start(module, fill)
+    _, busted = _bust_owned_root(
+        fill,
+        label="protection-flat-reconciliation-bust",
+        root_fill_id=fill_command.fact.root_fill_id,
+        predecessor_source_event_id=fill_command.fact.key.source_event_id,
+        prior_root_quantity=4,
+        prior_venue_cumulative=4,
+    )
+    state = _reduce(module, state, _projection(module, busted, mandate)).state
+    _, terminal = _terminal_fixture(
+        busted,
+        effect_id=BASE_EFFECT,
+        leg_key=BASE_LEG,
+        label="protection-flat-reconciliation",
+        cumulative_quantity=4,
+    )
+    state = _reduce(module, state, _projection(module, terminal, mandate)).state
+    _, closed = _close_parent_fixture(
+        terminal,
+        effect_id=BASE_EFFECT,
+        label="protection-flat-reconciliation",
+    )
+    flat = _reduce(module, state, _projection(module, closed, mandate))
+    (policy,) = _required(module, "ProtectionPolicy")
+    assert flat.state.policy is policy.FLAT
+    assert flat.state.raw_quantity == 0
+
+    external_leg = VenueLegKey(
+        broker=BROKER,
+        environment=ENVIRONMENT,
+        account=ACCOUNT,
+        order_id=OrderId("protection-flat-reconciliation-external-leg"),
+    )
+    external_fill = venue_fixtures._broker_fill(
+        "protection-flat-reconciliation-external-fill",
+        "protection-flat-reconciliation-external-root",
+        leg_key=external_leg,
+        quantity=1,
+        units=101,
+    )
+    ahead = venue_fixtures._apply_broker(closed.execution, external_fill)
+    external_bust = BrokerTradeBustFact(
+        key=ExecutionFactKey(
+            broker=BROKER,
+            environment=ENVIRONMENT,
+            account=ACCOUNT,
+            source_event_id=SourceEventId(
+                "protection-flat-reconciliation-external-bust"
+            ),
+        ),
+        scope=external_fill.scope,
+        root_fill_id=external_fill.root_fill_id,
+        predecessor_source_event_id=external_fill.key.source_event_id,
+    )
+    bust_transition = apply_broker_execution_fact(
+        ahead.position,
+        ahead.integrity,
+        ahead.root_heads,
+        ahead.seen_facts,
+        external_bust,
+    )
+    assert bust_transition.disposition is TransitionDisposition.APPLIED
+    source_execution = ExecutionSnapshot(
+        position=bust_transition.position,
+        integrity=bust_transition.integrity,
+        root_heads=bust_transition.root_heads,
+        seen_facts=bust_transition.seen_facts,
+    )
+    assert source_execution.position.raw_quantity == 0
+    reconciled = venue_fixtures.apply_venue_recovery_input(
+        closed.book,
+        closed.execution,
+        CatchUpExecutionRegistry(
+            input_id=VenueInputId("protection-flat-reconciliation-catch-up"),
+            target_checkpoint=VenueExecutionCheckpoint.from_execution(closed.execution),
+            prior_account_registry_count=closed.book.execution_registry_count,
+            prior_account_registry_commitment=(
+                closed.book.execution_registry_commitment
+            ),
+            prior_source_binding=closed.book.execution_binding(
+                source_execution.position.scope
+            ),
+            source_execution=source_execution,
+        ),
+    )
+    assert reconciled.disposition is VenueRecoveryDisposition.RECONCILIATION_REQUIRED
+    assert reconciled.execution.position.raw_quantity == 0
+    assert reconciled.execution.account_reconciliation_required is True
+    assert (
+        reconciled.book.effect(BASE_EFFECT).acceptance_set_state
+        is AcceptanceSetState.CLOSED
+    )
+    projection = _projection(module, reconciled, mandate)
+    assert projection.blocking_effect_count == 0
+    result = _reduce(module, flat.state, projection)
+    assert result.state.raw_quantity == 0
+    assert result.state.policy is not policy.FLAT
+    assert result.goal is None
+
+
 def test_late_owned_buy_after_flat_restores_hard_bail_and_alert() -> None:
     module = _protection_module()
     fill = _owned_fill_transition(quantity=4)
@@ -1046,6 +1598,122 @@ def test_late_owned_buy_after_flat_restores_hard_bail_and_alert() -> None:
     assert recovered.goal is None
 
 
+@pytest.mark.parametrize("revision_kind", ["correction", "bust"])
+def test_late_sell_revision_after_flat_restores_positive_hard_bail(
+    revision_kind: str,
+) -> None:
+    module = _protection_module()
+    buy = _owned_fill_transition(
+        label=f"protection-late-{revision_kind}-buy",
+        quantity=4,
+        capacity=4,
+    )
+    mandate, _, state = _start(module, buy)
+    buy_terminal, buy_closed = _close_base_parent(buy)
+    state, _, _ = _sync_transitions(
+        module,
+        state,
+        mandate,
+        (buy_terminal, buy_closed),
+    )
+    sell_chain, sell_effect, sell_leg, _ = _append_needs_review_effect(
+        buy_closed,
+        prefix=f"protection-late-{revision_kind}-sell",
+        side=ExecutionSide.SELL,
+        quantity=4,
+    )
+    state, _, _ = _sync_transitions(module, state, mandate, sell_chain)
+    sell_fact = venue_fixtures._broker_fill(
+        f"protection-late-{revision_kind}-sell-source",
+        f"protection-late-{revision_kind}-sell-root",
+        leg_key=sell_leg,
+        side=ExecutionSide.SELL,
+        quantity=4,
+        units=110,
+    )
+    sold = venue_fixtures.apply_venue_recovery_input(
+        sell_chain[-1].book,
+        sell_chain[-1].execution,
+        RecordBrokerFillEvidence(
+            input_id=VenueInputId(f"protection-late-{revision_kind}-sell-fill"),
+            effect_id=sell_effect,
+            leg_key=sell_leg,
+            prior_cumulative_quantity=Quantity(0),
+            resulting_cumulative_quantity=Quantity(4),
+            fact=sell_fact,
+            evidence_digest=b"\xa5" * 32,
+        ),
+    )
+    assert sold.disposition is VenueRecoveryDisposition.APPLIED
+    state = _reduce(module, state, _projection(module, sold, mandate)).state
+    _, sell_terminal = _terminal_fixture(
+        sold,
+        effect_id=sell_effect,
+        leg_key=sell_leg,
+        label=f"protection-late-{revision_kind}-sell",
+        cumulative_quantity=4,
+    )
+    state = _reduce(
+        module,
+        state,
+        _projection(module, sell_terminal, mandate),
+    ).state
+    _, sell_closed = _close_parent_fixture(
+        sell_terminal,
+        effect_id=sell_effect,
+        label=f"protection-late-{revision_kind}-sell",
+    )
+    flat = _reduce(module, state, _projection(module, sell_closed, mandate))
+    (policy,) = _required(module, "ProtectionPolicy")
+    assert flat.state.policy is policy.FLAT
+    closure_id = ClosureId(f"protection-late-{revision_kind}-revision-closure")
+    evidence = EvidenceReference(f"protection-late-{revision_kind}-revision-evidence")
+    if revision_kind == "correction":
+        _, revised = _correct_owned_root(
+            sell_closed,
+            label="protection-late-correction-revision",
+            root_fill_id=sell_fact.root_fill_id,
+            predecessor_source_event_id=sell_fact.key.source_event_id,
+            prior_root_quantity=4,
+            resulting_quantity=3,
+            units=110,
+            prior_venue_cumulative=4,
+            effect_id=sell_effect,
+            leg_key=sell_leg,
+            scope=sell_fact.scope,
+            closure_id=closure_id,
+            evidence_reference=evidence,
+        )
+        expected_quantity = 1
+    else:
+        _, revised = _bust_owned_root(
+            sell_closed,
+            label="protection-late-bust-revision",
+            root_fill_id=sell_fact.root_fill_id,
+            predecessor_source_event_id=sell_fact.key.source_event_id,
+            prior_root_quantity=4,
+            prior_venue_cumulative=4,
+            effect_id=sell_effect,
+            leg_key=sell_leg,
+            scope=sell_fact.scope,
+            closure_id=closure_id,
+            evidence_reference=evidence,
+        )
+        expected_quantity = 4
+    assert revised.quantity_delta == expected_quantity
+    assert revised.execution.position.raw_quantity == expected_quantity
+    recovered = _reduce(
+        module,
+        flat.state,
+        _projection(module, revised, mandate),
+    )
+    assert recovered.state.raw_quantity == expected_quantity
+    assert recovered.state.policy is policy.HARD_BAIL
+    assert recovered.state.mandate == mandate
+    assert recovered.critical_alert is not None
+    assert recovered.goal is None
+
+
 def test_rollback_and_mixed_book_execution_pairs_are_nonserving() -> None:
     module = _protection_module()
     fill = _owned_fill_transition(quantity=2)
@@ -1069,7 +1737,17 @@ def test_protection_projection_never_materializes_slow_venue_histories(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     module = _protection_module()
-    fill = _owned_fill_transition()
+    venue_module = importlib.import_module("app.execution_core.venue")
+    small = _owned_fill_transition(label="protection-extractor-small")
+    large = small
+    for index in range(32):
+        chain, _, _, _ = _append_needs_review_effect(
+            large,
+            prefix=f"protection-extractor-volume-{index}",
+            side=ExecutionSide.BUY,
+            quantity=1,
+        )
+        large = chain[-1]
 
     def fail_if_called(*_args: object, **_kwargs: object) -> None:
         raise AssertionError("protection materialized a slow venue history")
@@ -1082,10 +1760,63 @@ def test_protection_projection_never_materializes_slow_venue_histories(
         "closure_heads",
         "execution_bindings",
         "closure_history",
+        "input_records",
+        "human_coverages",
+        "broker_coverages",
+        "reconciliations",
+        "execution_reconciliations",
     ):
         monkeypatch.setattr(VenueRecoveryBook, name, property(fail_if_called))
-    projection = _projection(module, fill, _mandate(module))
-    assert projection.execution_commitment == fill.execution.commitment
+    for name in ("effect", "active_attempt", "owner", "closure_head"):
+        monkeypatch.setattr(VenueRecoveryBook, name, fail_if_called)
+
+    sequence_type = getattr(venue_module, "_PersistentSequence")
+    map_type = getattr(venue_module, "_PersistentKeyMap")
+    monkeypatch.setattr(sequence_type, "get", fail_if_called)
+    original_map_get = map_type.get
+    calls = 0
+
+    def counted_map_get(retained: object, key: bytes) -> object:
+        nonlocal calls
+        calls += 1
+        return original_map_get(retained, key)
+
+    monkeypatch.setattr(map_type, "get", counted_map_get)
+    mandate = _mandate(module)
+    small_projection = _projection(module, small, mandate)
+    small_calls = calls
+    calls = 0
+    large_projection = _projection(module, large, mandate)
+    large_calls = calls
+    assert small_projection.blocking_effect_count == 1
+    assert small_projection.blocking_buy_effect_count == 1
+    assert large_projection.blocking_effect_count == 33
+    assert large_projection.blocking_buy_effect_count == 33
+    assert large_calls == small_calls
+
+    extractor = getattr(venue_module, "_extract_protection_transition")
+    tree = ast.parse(inspect.getsource(extractor))
+    forbidden = {
+        "_effect_order",
+        "_claim_order",
+        "_owner_order",
+        "_input_ledger",
+        "_closure_ledger",
+        "_human_coverage_ledger",
+        "_broker_coverage_ledger",
+        "_reconciliation_ledger",
+        "_execution_reconciliation_ledger",
+        "_registry_transition_ledger",
+        "_binding_order",
+    }
+    accessed = {
+        node.attr
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Attribute) and node.attr in forbidden
+    }
+    assert not accessed, (
+        f"protection extractor traverses raw venue ledgers: {accessed!r}"
+    )
 
 
 def test_first_owned_fill_arms_only_its_exact_mandate_after_economics() -> None:
@@ -1332,7 +2063,6 @@ def test_pending_basis_advances_quantity_but_withholds_stale_formula() -> None:
     assert result.state.raw_quantity == 2
     assert result.state.execution_commitment == pending.execution.commitment
     assert result.state.formula_available is False
-    assert result.state.armed_hard_bail_trigger is None
     assert result.state.policy is policy.HARD_BAIL
     assert result.goal is None
 
@@ -1724,6 +2454,433 @@ def test_ineligible_market_data_cannot_change_policy_or_emit_goal(case: str) -> 
     assert result.goal is None
 
 
+@pytest.mark.parametrize(
+    "case",
+    [
+        "nonpositive",
+        "misaligned",
+        "tick_mismatch",
+        "wrong_session",
+        "future_source_time",
+        "step_deviation",
+    ],
+)
+def test_capital_relevant_market_eligibility_failures_are_inert(case: str) -> None:
+    module = _protection_module()
+    fill = _owned_fill_transition()
+    mandate, _, state = _start(module, fill)
+    terminal, closed = _close_base_parent(fill)
+    state, projection, _ = _sync_transitions(module, state, mandate, (terminal, closed))
+    sequence = 1
+    source_time = 100
+    if case == "step_deviation":
+        anchored = _reduce(
+            module,
+            state,
+            projection,
+            _occurrence(module, "step-anchor", bid=100, ask=101, sequence=1),
+        )
+        state = anchored.state
+        sequence = 2
+        source_time = 106
+    occurrence = _occurrence(
+        module,
+        f"capital-ineligible-{case}",
+        bid=160 if case == "step_deviation" else 92,
+        ask=161 if case == "step_deviation" else 93,
+        sequence=sequence,
+        source_time=source_time,
+        evaluation_time=source_time + 4,
+    )
+    if case == "nonpositive":
+        occurrence = replace(occurrence, best_bid=_price(0), best_ask=_price(1))
+    elif case == "misaligned":
+        occurrence = replace(
+            occurrence,
+            best_bid=_price(93, tick_units=2),
+            best_ask=_price(94, tick_units=2),
+        )
+    elif case == "tick_mismatch":
+        occurrence = replace(
+            occurrence,
+            best_bid=_price(92, tick_units=2),
+            best_ask=_price(94, tick_units=2),
+        )
+    elif case == "wrong_session":
+        occurrence = replace(
+            occurrence,
+            session_id=execution_core.SessionId("session-rth-other"),
+        )
+    elif case == "future_source_time":
+        occurrence = replace(occurrence, source_time=110, evaluation_time=105)
+    result = _reduce(module, state, projection, occurrence)
+    assert result.state == state
+    assert result.goal is None
+    assert result.critical_alert is None
+
+
+@pytest.mark.parametrize(
+    ("case", "triggers"),
+    [
+        ("age-at-boundary", True),
+        ("age-one-past", False),
+        ("locked-quote", True),
+        ("crossed-quote", False),
+        ("equal-source-time", True),
+        ("regressed-source-time", False),
+        ("step-at-boundary", True),
+        ("step-one-past", False),
+    ],
+)
+def test_market_eligibility_boundaries_use_trigger_behavior_as_acceptance_oracle(
+    case: str,
+    triggers: bool,
+) -> None:
+    module = _protection_module()
+    fill = _owned_fill_transition()
+    mandate = _mandate(
+        module,
+        max_age=10 if case.startswith("age-") else 100,
+        max_step_fraction=Fraction(1, 2),
+    )
+    mandate, _, state = _start(module, fill, mandate)
+    terminal, closed = _close_base_parent(fill)
+    state, projection, _ = _sync_transitions(module, state, mandate, (terminal, closed))
+    if case.startswith("step-"):
+        anchor = _reduce(
+            module,
+            state,
+            projection,
+            _occurrence(
+                module,
+                f"{case}-anchor",
+                bid=100,
+                ask=101,
+                sequence=1,
+                source_time=100,
+                evaluation_time=104,
+            ),
+        )
+        first_bid = 50 if case == "step-at-boundary" else 49
+        first = _reduce(
+            module,
+            anchor.state,
+            projection,
+            _occurrence(
+                module,
+                f"{case}-first",
+                bid=first_bid,
+                ask=first_bid + 1,
+                sequence=2,
+                source_time=106,
+                evaluation_time=110,
+            ),
+        )
+        second_bid = 49 if case == "step-at-boundary" else 48
+        second = _reduce(
+            module,
+            first.state,
+            projection,
+            _occurrence(
+                module,
+                f"{case}-second",
+                bid=second_bid,
+                ask=second_bid + 1,
+                sequence=3,
+                source_time=112,
+                evaluation_time=116,
+            ),
+        )
+    else:
+        first_ask = 92 if case == "locked-quote" else 93
+        first = _reduce(
+            module,
+            state,
+            projection,
+            _occurrence(
+                module,
+                f"{case}-first",
+                bid=92,
+                ask=first_ask,
+                sequence=1,
+                source_time=100,
+                evaluation_time=110 if case.startswith("age-") else 104,
+            ),
+        )
+        second_source_time = 100 if case == "equal-source-time" else 106
+        if case == "regressed-source-time":
+            second_source_time = 99
+        second_ask = 90 if case == "crossed-quote" else 91
+        second = _reduce(
+            module,
+            first.state,
+            projection,
+            _occurrence(
+                module,
+                f"{case}-second",
+                bid=91,
+                ask=second_ask,
+                sequence=2,
+                source_time=second_source_time,
+                evaluation_time=(
+                    117
+                    if case == "age-one-past"
+                    else 116
+                    if case == "age-at-boundary"
+                    else 110
+                ),
+            ),
+        )
+    (policy,) = _required(module, "ProtectionPolicy")
+    assert (second.state.policy is policy.HARD_BAIL) is triggers
+    assert (second.goal is not None) is triggers
+
+
+@pytest.mark.parametrize(
+    ("case", "triggers"),
+    [
+        ("aligned", True),
+        ("misaligned", False),
+        ("metadata-mismatch", False),
+    ],
+)
+def test_tick_alignment_and_metadata_compatibility_are_independently_required(
+    case: str,
+    triggers: bool,
+) -> None:
+    module = _protection_module()
+    uses_two_unit_authority = case != "metadata-mismatch"
+    fill = _owned_fill_transition(
+        label=f"protection-tick-{case}",
+        tick_units=2 if uses_two_unit_authority else 1,
+    )
+    mandate = _mandate(
+        module,
+        tick=(
+            TickMetadata(tick_units=PriceUnits(2), scale=SCALE)
+            if uses_two_unit_authority
+            else TICK
+        ),
+    )
+    mandate, _, state = _start(module, fill, mandate)
+    terminal, closed = _close_base_parent(fill)
+    state, projection, _ = _sync_transitions(module, state, mandate, (terminal, closed))
+    first = _occurrence(
+        module,
+        f"tick-{case}-first",
+        bid=92,
+        ask=94,
+        sequence=1,
+    )
+    if case == "misaligned":
+        first = replace(first, best_bid=_price(93, tick_units=2))
+    elif case == "metadata-mismatch":
+        first = replace(
+            first,
+            best_bid=_price(92, tick_units=2),
+            best_ask=_price(94, tick_units=2),
+        )
+    first_result = _reduce(module, state, projection, first)
+    second = _occurrence(
+        module,
+        f"tick-{case}-second",
+        bid=90 if uses_two_unit_authority else 91,
+        ask=92,
+        sequence=2,
+        source_time=106,
+        evaluation_time=110,
+    )
+    if uses_two_unit_authority:
+        second = replace(
+            second,
+            best_bid=_price(90, tick_units=2),
+            best_ask=_price(92, tick_units=2),
+        )
+    second_result = _reduce(module, first_result.state, projection, second)
+    (policy,) = _required(module, "ProtectionPolicy")
+    assert (second_result.state.policy is policy.HARD_BAIL) is triggers
+    assert (second_result.goal is not None) is triggers
+
+
+def test_market_epoch_regression_cannot_reuse_reopen_evidence() -> None:
+    module = _protection_module()
+    fill = _owned_fill_transition()
+    mandate, _, state = _start(module, fill)
+    terminal, closed = _close_base_parent(fill)
+    state, projection, _ = _sync_transitions(module, state, mandate, (terminal, closed))
+    halted = _reduce(
+        module,
+        state,
+        projection,
+        _occurrence(
+            module,
+            "epoch-halt",
+            bid=100,
+            ask=101,
+            sequence=1,
+            halted=True,
+        ),
+    )
+    reopened = _reduce(
+        module,
+        halted.state,
+        projection,
+        _occurrence(
+            module,
+            "epoch-reopen",
+            bid=100,
+            ask=101,
+            sequence=2,
+            source_time=106,
+            evaluation_time=110,
+            market_epoch=1,
+        ),
+    )
+    regressed = _reduce(
+        module,
+        reopened.state,
+        projection,
+        _occurrence(
+            module,
+            "epoch-regression",
+            bid=92,
+            ask=93,
+            sequence=3,
+            source_time=112,
+            evaluation_time=116,
+            market_epoch=0,
+        ),
+    )
+    assert regressed.state == reopened.state
+    assert regressed.goal is None
+
+
+@pytest.mark.parametrize(
+    ("order", "gap", "triggers"),
+    [
+        ("trade-bid", 10, True),
+        ("trade-bid", 11, False),
+        ("bid-trade", 10, True),
+        ("bid-trade", 11, False),
+    ],
+)
+def test_trade_bid_corroboration_honors_both_orders_and_window_boundary(
+    order: str,
+    gap: int,
+    triggers: bool,
+) -> None:
+    module = _protection_module()
+    fill = _owned_fill_transition()
+    mandate, _, state = _start(
+        module,
+        fill,
+        _mandate(module, max_age=100, corroboration_window=10),
+    )
+    terminal, closed = _close_base_parent(fill)
+    state, projection, _ = _sync_transitions(module, state, mandate, (terminal, closed))
+    first_kind, second_kind = order.split("-")
+    first = _reduce(
+        module,
+        state,
+        projection,
+        _occurrence(
+            module,
+            f"window-{order}-first-{gap}",
+            kind=first_kind.upper().replace("BID", "BEST_BID"),
+            bid=92 if first_kind == "bid" else None,
+            ask=93 if first_kind == "bid" else None,
+            trade=92 if first_kind == "trade" else None,
+            sequence=1,
+            source_time=100,
+            evaluation_time=104,
+        ),
+    )
+    second = _reduce(
+        module,
+        first.state,
+        projection,
+        _occurrence(
+            module,
+            f"window-{order}-second-{gap}",
+            kind=second_kind.upper().replace("BID", "BEST_BID"),
+            bid=91 if second_kind == "bid" else None,
+            ask=92 if second_kind == "bid" else None,
+            trade=91 if second_kind == "trade" else None,
+            sequence=2,
+            source_time=100 + gap,
+            evaluation_time=104 + gap,
+        ),
+    )
+    (policy,) = _required(module, "ProtectionPolicy")
+    assert (second.state.policy is policy.HARD_BAIL) is triggers
+    assert (second.goal is not None) is triggers
+
+
+def test_trade_bid_pair_with_one_price_above_trigger_cannot_trip_hard_bail() -> None:
+    module = _protection_module()
+    fill = _owned_fill_transition()
+    mandate, _, state = _start(module, fill)
+    terminal, closed = _close_base_parent(fill)
+    state, projection, _ = _sync_transitions(module, state, mandate, (terminal, closed))
+    trade = _reduce(
+        module,
+        state,
+        projection,
+        _occurrence(module, "mixed-threshold-trade", kind="TRADE", trade=92),
+    )
+    bid = _reduce(
+        module,
+        trade.state,
+        projection,
+        _occurrence(
+            module,
+            "mixed-threshold-bid",
+            bid=94,
+            ask=95,
+            sequence=2,
+            source_time=106,
+            evaluation_time=110,
+        ),
+    )
+    (policy,) = _required(module, "ProtectionPolicy")
+    assert bid.state.policy is policy.FLOOR_ONLY
+    assert bid.goal is None
+
+
+def test_activation_requires_the_exact_tick_rounded_approved_gain_boundary() -> None:
+    module = _protection_module()
+    fill = _owned_fill_transition()
+    mandate, _, state = _start(module, fill)
+    terminal, closed = _close_base_parent(fill)
+    state, projection, _ = _sync_transitions(module, state, mandate, (terminal, closed))
+    below = _reduce(
+        module,
+        state,
+        projection,
+        _occurrence(module, "activation-below", bid=107, ask=108, sequence=1),
+    )
+    (policy,) = _required(module, "ProtectionPolicy")
+    assert below.state.policy is policy.FLOOR_ONLY
+    exact = _reduce(
+        module,
+        below.state,
+        projection,
+        _occurrence(
+            module,
+            "activation-exact",
+            bid=108,
+            ask=109,
+            sequence=2,
+            source_time=106,
+            evaluation_time=110,
+        ),
+    )
+    assert exact.state.policy is policy.TRAIL_ACTIVE
+    assert exact.state.high_watermark.exact_value == Fraction(108)
+    assert exact.state.trail.exact_value == Fraction(100)
+    assert exact.goal is None
+
+
 def test_activation_and_hybrid_trail_ratchet_use_available_components_only() -> None:
     module = _protection_module()
     fill = _owned_fill_transition()
@@ -1764,6 +2921,111 @@ def test_activation_and_hybrid_trail_ratchet_use_available_components_only() -> 
     )
     assert without_components.state.high_watermark.exact_value == Fraction(125)
     assert without_components.state.trail.exact_value == Fraction(115)
+
+
+def test_fill_correction_and_bust_after_trail_activation_never_deactivate_or_loosen() -> (
+    None
+):
+    module = _protection_module()
+    fill = _owned_fill_transition(quantity=4, capacity=8)
+    mandate, _, state = _start(module, fill)
+    terminal, closed = _close_base_parent(fill)
+    state, projection, _ = _sync_transitions(module, state, mandate, (terminal, closed))
+    activated = _reduce(
+        module,
+        state,
+        projection,
+        _occurrence(module, "trail-before-economics", bid=120, ask=121, sequence=1),
+    )
+    (policy,) = _required(module, "ProtectionPolicy")
+    assert activated.state.policy is policy.TRAIL_ACTIVE
+    high_watermark = activated.state.high_watermark
+    trail = activated.state.trail
+
+    buy_chain, buy_effect, buy_leg, _ = _append_needs_review_effect(
+        closed,
+        prefix="protection-trail-late-buy",
+        side=ExecutionSide.BUY,
+        quantity=2,
+    )
+    state, _, _ = _sync_transitions(
+        module,
+        activated.state,
+        mandate,
+        buy_chain,
+    )
+    buy_fact = venue_fixtures._broker_fill(
+        "protection-trail-late-buy-source",
+        "protection-trail-late-buy-root",
+        leg_key=buy_leg,
+        quantity=2,
+        units=140,
+    )
+    bought = venue_fixtures.apply_venue_recovery_input(
+        buy_chain[-1].book,
+        buy_chain[-1].execution,
+        RecordBrokerFillEvidence(
+            input_id=VenueInputId("protection-trail-late-buy-fill"),
+            effect_id=buy_effect,
+            leg_key=buy_leg,
+            prior_cumulative_quantity=Quantity(0),
+            resulting_cumulative_quantity=Quantity(2),
+            fact=buy_fact,
+            evidence_digest=b"\xa6" * 32,
+        ),
+    )
+    bought_result = _reduce(
+        module,
+        state,
+        _projection(module, bought, mandate),
+    )
+    assert bought_result.state.policy is policy.TRAIL_ACTIVE
+    assert bought_result.state.high_watermark == high_watermark
+    assert bought_result.state.trail == trail
+    _, corrected = _correct_owned_root(
+        bought,
+        label="protection-trail-late-buy-correction",
+        root_fill_id=buy_fact.root_fill_id,
+        predecessor_source_event_id=buy_fact.key.source_event_id,
+        prior_root_quantity=2,
+        resulting_quantity=1,
+        units=80,
+        prior_venue_cumulative=2,
+        effect_id=buy_effect,
+        leg_key=buy_leg,
+        scope=buy_fact.scope,
+    )
+    corrected_result = _reduce(
+        module,
+        bought_result.state,
+        _projection(module, corrected, mandate),
+    )
+    assert corrected_result.state.policy is policy.TRAIL_ACTIVE
+    assert corrected_result.state.high_watermark == high_watermark
+    assert corrected_result.state.trail == trail
+    _, busted = _bust_owned_root(
+        corrected,
+        label="protection-trail-late-buy-bust",
+        root_fill_id=buy_fact.root_fill_id,
+        predecessor_source_event_id=SourceEventId(
+            "protection-trail-late-buy-correction-source"
+        ),
+        prior_root_quantity=1,
+        prior_venue_cumulative=1,
+        effect_id=buy_effect,
+        leg_key=buy_leg,
+        scope=buy_fact.scope,
+    )
+    busted_result = _reduce(
+        module,
+        corrected_result.state,
+        _projection(module, busted, mandate),
+    )
+    assert busted_result.state.raw_quantity == 4
+    assert busted_result.state.policy is policy.TRAIL_ACTIVE
+    assert busted_result.state.high_watermark == high_watermark
+    assert busted_result.state.trail == trail
+    assert busted_result.goal is None
 
 
 def test_trail_never_decreases_or_reuses_missing_optional_components() -> None:
@@ -2169,64 +3431,165 @@ def test_late_acceptance_invalidates_release_and_preserves_normal_policy() -> No
     assert result.goal is None
 
 
-def test_goal_is_bound_policy_data_and_does_not_bypass_m1c() -> None:
+def test_goal_carries_complete_current_policy_binding() -> None:
     module = _protection_module()
-    fill = _owned_fill_transition()
-    mandate, _, state = _start(module, fill)
-    terminal, closed = _close_base_parent(fill)
-    state, projection, _ = _sync_transitions(module, state, mandate, (terminal, closed))
-    first = _reduce(
+    mandate, closed, state, goal = _emergency_goal_fixture(
         module,
-        state,
-        projection,
-        _occurrence(module, "goal-hard-1", bid=92, ask=93, sequence=1),
+        label="goal-binding",
     )
-    result = _reduce(
-        module,
-        first.state,
-        projection,
-        _occurrence(
-            module,
-            "goal-hard-2",
-            bid=91,
-            ask=92,
-            sequence=2,
-            source_time=106,
-            evaluation_time=110,
-        ),
-    )
-    goal = result.goal
-    assert goal is not None
+    (urgency,) = _required(module, "ProtectionUrgency")
     assert goal.side is ExecutionSide.SELL
     assert goal.residual == Quantity(4)
-    assert goal.execution_commitment == fill.execution.commitment
+    assert goal.urgency is urgency.EMERGENCY
+    assert goal.guard == mandate.emergency_guard
+    assert goal.deadline == mandate.deadline
+    assert goal.session_id == mandate.session_id
     assert goal.mandate_id == mandate.mandate_id
+    assert goal.maximum_goal_rate == mandate.maximum_goal_rate
+    assert goal.residual.value <= mandate.maximum_quantity.value
+    assert goal.execution_commitment == closed.execution.commitment
+    assert goal.protection_commitment == state.commitment
+    assert type(goal.protection_commitment) is bytes
+    assert len(goal.protection_commitment) == 32
+    with pytest.raises(FrozenInstanceError):
+        goal.residual = Quantity(1)
+
+    changed_mandate = _mandate(
+        module,
+        configuration_version="protection-v2",
+    )
+    _, changed_closed, changed_state, changed_goal = _emergency_goal_fixture(
+        module,
+        label="goal-binding-changed-config",
+        mandate=changed_mandate,
+    )
+    assert changed_goal.execution_commitment == changed_closed.execution.commitment
+    assert changed_goal.execution_commitment == goal.execution_commitment
+    assert changed_goal.protection_commitment == changed_state.commitment
+    assert changed_goal.protection_commitment != goal.protection_commitment
+
+
+def test_execution_goal_rejects_every_malformed_authority_binding() -> None:
+    module = _protection_module()
+    mandate, _, _, goal = _emergency_goal_fixture(
+        module,
+        label="goal-validation",
+    )
+    invalid = (
+        ("side", "SELL", TypeError),
+        ("side", ExecutionSide.BUY, ValueError),
+        ("residual", 1, TypeError),
+        ("residual", Quantity(0), ValueError),
+        ("urgency", "EMERGENCY", TypeError),
+        ("guard", object(), TypeError),
+        ("deadline", True, TypeError),
+        ("deadline", -1, ValueError),
+        ("session_id", "session-rth-1", TypeError),
+        ("mandate_id", "mandate", TypeError),
+        ("maximum_goal_rate", True, TypeError),
+        ("maximum_goal_rate", 0, ValueError),
+        ("execution_commitment", "commitment", TypeError),
+        ("execution_commitment", b"x" * 31, ValueError),
+        ("protection_commitment", "commitment", TypeError),
+        ("protection_commitment", b"x" * 33, ValueError),
+    )
+    for field_name, value, error in invalid:
+        with pytest.raises(error):
+            replace(goal, **{field_name: value})
+    assert goal.guard == mandate.emergency_guard
+
+
+def test_goal_translation_remains_subject_to_m1c_create_and_claim_gates() -> None:
+    module = _protection_module()
+    _, closed, _, goal = _emergency_goal_fixture(
+        module,
+        label="goal-m1c",
+    )
     request = BrokerEffectRequest(
-        effect_id=EffectId("protection-goal-effect"),
-        request_occurrence_id=RequestOccurrenceId("protection-goal-occurrence"),
+        effect_id=EffectId("protection-goal-m1c-effect"),
+        request_occurrence_id=RequestOccurrenceId("protection-goal-m1c-occurrence"),
         mandate_id=goal.mandate_id,
         kind=EffectKind.SUBMIT,
-        client_order_id=ClientOrderId("protection-goal-client"),
+        client_order_id=ClientOrderId("protection-goal-m1c-client"),
         symbol_id=SYMBOL,
         side=goal.side,
         quantity=goal.residual,
         economic_scope=goal.protection_commitment,
         target_leg_key=None,
     )
-    authority = initial_execution_authority_state(VENUE_SCOPE)
-    denied = apply_execution_authority_input(
-        authority,
-        fill.execution,
-        CreateBrokerEffect(
-            input_id=execution_core.AuthorityInputId("protection-goal-create"),
-            session_id=goal.session_id,
-            request=request,
-            manual_flatten_id=None,
-            emergency_grant_id=None,
-        ),
+    create = CreateBrokerEffect(
+        input_id=execution_core.AuthorityInputId("protection-goal-m1c-create"),
+        session_id=goal.session_id,
+        request=request,
+        manual_flatten_id=None,
+        emergency_grant_id=None,
     )
-    assert denied.disposition is AuthorityDisposition.REFUSED
-    assert denied.state == authority
+    for label, authority, reason in (
+        (
+            "kill",
+            _forge_authority_predecessor(
+                closed.book,
+                session_id=goal.session_id,
+                kill_engaged=True,
+            ),
+            AuthorityReason.KILL_ENGAGED,
+        ),
+        (
+            "fence",
+            _forge_authority_predecessor(
+                closed.book,
+                session_id=goal.session_id,
+                fence=SupervisorFence.RECONCILIATION_ONLY,
+            ),
+            AuthorityReason.SUPERVISOR_FENCE_BLOCKED,
+        ),
+    ):
+        denied = apply_execution_authority_input(authority, closed.execution, create)
+        assert denied.disposition is AuthorityDisposition.REFUSED, label
+        assert denied.reason is reason, label
+        assert denied.state == authority, label
+
+    eligible = _forge_authority_predecessor(
+        closed.book,
+        session_id=goal.session_id,
+    )
+    created = apply_execution_authority_input(eligible, closed.execution, create)
+    assert created.disposition is AuthorityDisposition.APPLIED
+    assert created.reason is None
+    retained = created.state.venue.effect(request.effect_id)
+    assert retained is not None
+    assert retained.state is BrokerEffectState.REQUESTED
+    assert retained.claim_occurrence_id is None
+    claim = ClaimEffect(
+        input_id=execution_core.AuthorityInputId("protection-goal-m1c-claim"),
+        effect_id=request.effect_id,
+        claim_occurrence_id=ClaimOccurrenceId("protection-goal-m1c-claim"),
+    )
+    for label, field_name, value, reason in (
+        ("kill", "kill_engaged", True, AuthorityReason.KILL_ENGAGED),
+        (
+            "fence",
+            "supervisor_fence",
+            SupervisorFence.RECONCILIATION_ONLY,
+            AuthorityReason.SUPERVISOR_FENCE_BLOCKED,
+        ),
+    ):
+        regated = copy(created.state)
+        object.__setattr__(regated, field_name, value)
+        denied = apply_execution_authority_input(
+            regated,
+            closed.execution,
+            claim,
+        )
+        assert denied.disposition is AuthorityDisposition.REFUSED, label
+        assert denied.reason is reason, label
+        assert denied.state == regated, label
+        assert denied.state.budget == regated.budget, label
+        retained = denied.state.venue.effect(request.effect_id)
+        assert retained is not None
+        assert retained.state is BrokerEffectState.REQUESTED
+        assert retained.claim_occurrence_id is None
+        assert denied.fresh_claim is None
 
 
 def test_value_objects_expose_no_mutating_or_broker_capability_fields() -> None:

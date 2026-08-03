@@ -265,6 +265,45 @@ Fresh RED evidence before any production implementation:
   reset, optional-component, emergency-wait, and late-positive recovery controls. Production work
   remains barred until an independent reviewer accepts the frozen RED commit with zero P0/P1.
 
+### Independent RED review and second freeze
+
+A fresh independent Sol review reproduced the first freeze at `0271f0f5c398` and returned `BLOCK`
+with thirteen P1 test-contract gaps. The findings were test-strength findings, not production
+defects: generated histories were too shallow; the venue seal omitted command/disposition/delta
+and predecessor-summary mutation pins; cursor tests did not isolate per-position scope or every
+non-advancing outcome; the no-scan test could miss private traversal; flatness omitted account
+reconciliation; late-positive recovery omitted correction/bust; post-activation economics were not
+exercised; market eligibility, corroboration-window, and activation edges were incomplete; exact
+value validation and goal binding were partial; and the M1C example never reached final claim.
+
+The second freeze closes those findings at their owning boundaries:
+
+- deterministic tests now authenticate the complete transition envelope, donated-proof rejection,
+  predecessor/current summaries, per-position cursor interleaving, exact replay/refusal/conflict/
+  non-mutating-reconciliation cursor behavior, constant-work map access, and AST-forbidden raw
+  ledger traversal;
+- zero-quantity account reconciliation, late ordinary BUY plus late correction/bust restoration,
+  fill/correction/bust after trail activation, pending/incompatible formula authority, and exact
+  all-effect flatness are separate failure-capable examples;
+- exact-type/range/commitment validation, freshness/quote/time/step/tick/session/epoch edges,
+  both trade-bid orders at the exact corroboration-window boundary, and the exact rounded
+  activation edge are pinned without conflating eligibility causes;
+- generated histories now cover revision/bust/restoration, incompatible tick loss/restoration,
+  projection substitution, stale rollback, flat/late-positive recovery, duplicate/non-advancing/
+  max-step evidence, halt/reopen epochs, optional trail inputs, and normal-exit wait/release; and
+- goals now carry complete current policy bindings and are translated through genuine M1C create
+  and final-claim denial checks for kill and reconciliation fence, without claiming that opaque
+  economic scope authenticates the guard.
+
+Fresh second-freeze evidence: collection succeeds for 169 focused tests (154 deterministic, two
+state machines, and 13 import/public-boundary tests). RED execution yields 160 expected failures and
+nine existing boundary passes; every failure is caused by the deliberately absent protection module
+or its required export/import-boundary delta. Ruff check and format-check pass, `git diff --check`
+passes, and direct pure venue probes validate the new cross-symbol, non-mutating reconciliation,
+zero-quantity account-reconciliation, closed-parent revision, and tick-restoration fixtures.
+Production remains barred until a fresh independent review accepts this second freeze with zero
+P0/P1.
+
 ## Stop conditions
 
 Stop rather than widen scope if the contract requires an ADR change, a new dependency, persistence,
