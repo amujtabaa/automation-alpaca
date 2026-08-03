@@ -20,11 +20,12 @@ accepted reset target is a modular monolith with one sequenced writer, one pure 
 one SQLite production store, transactional current state/outbox, and broker-neutral protection and
 side-symmetric liquidity execution. The integrated Spine v2 application and R6 branch are frozen
 evidence, not the reset foundation. M0 and pure M1A/M1B `WO-0145`/`WO-0146` are closed. Their
-immutable execution-truth and venue/recovery centers remain I/O-free and unwired. After repaired
-`WO-0146` closeout `7d1c9e5` passed independent review and exact-head Python 3.11/3.12 CI, pure
-M1C `WO-0147` was activated to own deny-by-default trading mode, manual controls, request budgets,
-symbol-wide execution authority, and atomic final claim. RESET-WO-04 and later slices remain
-inactive.
+immutable execution-truth and venue/recovery centers remain I/O-free and unwired. Pure M1C
+`WO-0147` now has an independently accepted implementation and a proposed `CLOSED` documentation
+closeout for deny-by-default trading mode, manual controls, request budgets, symbol-wide execution
+authority, and atomic final claim. Its effective lifecycle remains `REVIEW` until the immutable
+closeout SHA passes unchanged Python 3.11/3.12 CI. No reset implementation work order is active;
+RESET-WO-04/WO-0148 and every later slice remain inactive.
 
 ## Rules / facts
 
@@ -37,10 +38,11 @@ inactive.
   use transactional current state under ADR-020.
 - The permanent safety core lives verbatim in `CLAUDE.md` and is never overridden by tooling or convenience defaults.
 - Reset implementation advances only through independently reviewed work orders explicitly activated
-  after their predecessor gates. `WO-0145` and `WO-0146` are `CLOSED`; `WO-0147` is the only active
-  reset implementation work order. It remains pure, credential-free, deny-by-default, and unwired.
-  RESET-WO-04 inherits no implementation authority until WO-0147 closes by independent review and
-  unchanged exact-head Python 3.11/3.12 CI.
+  after their predecessor gates. `WO-0145` and `WO-0146` are effective `CLOSED`; `WO-0147` is a
+  proposed `CLOSED` closeout with independent `ACCEPT` and effective lifecycle `REVIEW` pending its
+  immutable exact-head Python 3.11/3.12 CI gate. No reset implementation work order is active.
+  RESET-WO-04/WO-0148 inherits no implementation authority until that external gate succeeds and a
+  later activation explicitly opens it.
 
 ## Rationale
 
@@ -85,3 +87,9 @@ Roadmapping against an unverified codebase state repeats the failure mode Fable 
   supervisor fence or perform broker, database, persistence, runtime, merge, deletion, or cleanup
   work. M2 may persist and hydrate the deny-only fence but cannot promote it without those later
   adapter/cutover gates.
+- 2026-08-02: Filed the repaired WO-0147 closeout after the 710-case pure kernel, 61-case R2 oracle,
+  5,298-test repository gate at `93.02945093976616%` combined coverage, and REV-0049 result
+  addendum 02 `ACCEPT` closed every preserved P0/P1. The closeout is effective `REVIEW` until its
+  immutable SHA passes unchanged Python 3.11/3.12 CI. WO-0148 and all later slices remain inactive;
+  no runtime, persistence, broker, credential, database cutover, merge, deletion, or cleanup
+  authority was added.

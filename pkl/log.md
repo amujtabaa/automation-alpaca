@@ -100,3 +100,13 @@
   controls, shared request budgets, symbol-wide blockers, and atomic final claim. No broker,
   credential, database/persistence, runtime, protection/acquisition, merge, deletion, cleanup, or
   prohibited-R1-DDL authority was added.
+
+- 2026-08-02: Filed the repaired WO-0147 pure execution-authority closeout. Final implementation
+  freeze `4e93585` rejects coordinated audit-checkpoint omission and exact-shape malformed
+  authority state before replay or mutation. Author gates passed 18 focused cases, 710 pure cases,
+  61 R2 cases, and a 5,298-test repository run at `93.02945093976616%` combined coverage. Fresh
+  neutral REV-0049 result addendum 02 independently reproduced all six preserved issue classes,
+  killed two reversible controls, restored exact hashes, and returned `ACCEPT` with no unresolved
+  P0/P1. The proposed `CLOSED` disposition remains effective `REVIEW` until the immutable closeout
+  SHA passes unchanged Python 3.11/3.12 CI. WO-0148 and all broker, credential, persistence,
+  runtime, merge, deletion, and cleanup work remain inactive.

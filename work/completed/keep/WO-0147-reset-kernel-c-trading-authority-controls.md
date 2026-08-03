@@ -1,12 +1,12 @@
 ---
 type: Work Order
 title: "Reset kernel C: trading authority and manual controls"
-status: ACTIVE
+status: CLOSED
 work_order_id: WO-0147
 wave: RESET-M1C
 model_tier: strong
 risk: high
-disposition: []
+disposition: [PKL_UPDATED, RESULT_SUMMARY_KEPT]
 owner: Codex implementation seat
 created: 2026-08-02
 branch: codex/arch-reset-2026-07-r1
@@ -723,13 +723,6 @@ updated `REV-0049/request-addendum-01.md`, a fresh independent `result-addendum-
 unresolved P0/P1, closeout disposition, one final immutable SHA, push, and unchanged exact-head
 Python 3.11/3.12 CI remain mandatory before WO-0148 activation.
 
-fable_done:
-  status: UNVERIFIED
-  evidence:
-    - "Re-gate 6 RED, focused GREEN, failure-capability checks, full repository coverage, static gates, and exact artifact hashes are recorded below."
-  remaining:
-    - "Immutable freeze, fresh independent review addendum, disposition, final push, and exact-head Python 3.11/3.12 CI."
-
 ## Independent-review interruption and author re-gate 6 (2026-08-02)
 
 Two fresh independent Sol review contexts inspected the immutable re-gate-5 target
@@ -837,6 +830,75 @@ retained artifacts are:
 
 The full run used only authorized mock configuration and existing disposable test-only fixtures.
 It made no broker connection, used no credentials, and changed no persistent application database.
-The author-side candidate is green but not accepted. Freeze, a new neutrally worded independent
-review request/result pair, zero unresolved P0/P1, closeout reconciliation, final push, and exact-
+At that checkpoint the author-side candidate was green but not accepted. Freeze, a new neutrally
+worded independent review request/result pair, zero unresolved P0/P1, closeout reconciliation,
+final push, and exact-
 head Python 3.11/3.12 CI remain mandatory; WO-0148 remains inactive.
+
+## Independent acceptance and conditional closeout
+
+The final implementation freeze is `4e935851edd26f9f38ea93a9544815f5b49ecf88`. Neutral request
+commit `e3936f07dbab9df534e75312062d8f3d1382e363` preserved the frozen target and assigned a fresh
+independent Sol seat without inherited conversation context. Reviewer-owned result commit
+`49e76c21659e5efcec8902f2403522750bdd53af` added only
+`work/review/REV-0049/result-addendum-02.md`. The 13,236-byte result has SHA-256
+`72bc191b9480e7aab3ae76e1eb69b612d4276c6cf7e871417c27c8c2b86e838e`.
+
+The result returned `ACCEPT`. It independently closed the original completion-metadata P0, manual-
+residual P1, and query-phase P1; the later private-closure P0; the coordinated checkpoint-omission
+P0; and the malformed-state finding. Five fresh pure scenarios, 18/18 focused cases, 710/710
+execution-core tests, static/type/import/diff checks, and two reversible failure-capability checks
+passed. Baseline and final hashes matched the implementation freeze, and no new P0/P1 was found.
+The two earlier platform-classified attempts remain no-verdict provenance and were not used as
+acceptance evidence.
+
+Final implementation-seat evidence is 18/18 focused cases, 710/710 execution-core tests, 61/61 R2
+cases under `BROKER_ADAPTER=mock`, all static/import/AI-OS/scope checks, and a 5,298-test repository
+run with 5,286 passed, 11 skipped, one expected xfail, zero failures/errors, and raw combined
+coverage `93.02945093976616%`. The retained exact-tree artifacts and hashes are recorded in the
+re-gate-6 checkpoint above.
+
+This atomic documentation/governance reconciliation creates the immutable closeout candidate. Its
+exact commit SHA is recorded externally by Git and as `HEAD` in the append-only ledger to avoid a
+self-referential or evidence-only successor. The proposed `CLOSED` disposition becomes effective
+only if that exact SHA passes the unchanged Python 3.11 and 3.12 workflow. Until then effective
+lifecycle remains `REVIEW`; WO-0148 and every later slice remain inactive. A failed, canceled,
+incomplete, or mismatched-head run reopens this same WO. No post-success evidence-only closeout
+successor is permitted.
+
+## Reconciled done criteria
+
+```yaml
+fable_done:
+  task: "WO-0147 reset kernel C: trading authority and manual controls"
+  done_when_results:
+    - item: "Pure execution authority, request budgets, query claims, and manual controls are exact and deterministic."
+      status: MET
+      evidence: "The implementation freeze passed 710 execution-core tests; focused cases cover phase/mode/fence/kill/session, final claims, budgets, grants, venue uncertainty, query identity, manual lifecycle, malformed state, and exact replay."
+    - item: "Caller-shaped closure or checkpoint state cannot mint authority, and every new safety control is failure-capable."
+      status: MET
+      evidence: "Five author controls and two independent controls turned the intended focused cases red before exact restoration; coordinated omission and malformed replay state both fail closed."
+    - item: "Focused, static, R2, and repository coverage gates pass without runtime, persistence, credential, or broker dependency."
+      status: MET
+      evidence: "18 focused, 710 pure, 61 R2, all static/import/AI-OS/scope checks, and 5,298 repository tests passed; raw combined coverage is 93.02945093976616%."
+    - item: "Independent review has no unresolved P0/P1."
+      status: MET
+      evidence: "REV-0049 result-addendum-02 returned ACCEPT at target 4e935851edd26f9f38ea93a9544815f5b49ecf88 after independently closing all six issue classes and restoring exact source/test hashes."
+    - item: "Allowed paths and operational exclusions remain respected."
+      status: MET
+      evidence: "All implementation and closeout paths are allowed. No broker/Paper activity, credential use, persistent application database, runtime wiring, PR/merge, deletion, cleanup, or prohibited-R1-DDL reliance occurred."
+  scope_check:
+    allowed_paths_respected: true
+    drive_by_edits: false
+  debt_check: "No in-scope P0/P1 remains. Persisted hydration, adapters, protection, acquisition, runtime composition, and cutover remain later gated work."
+  deferred:
+    - "External exact-head Python 3.11/3.12 CI is the effectiveness gate for this immutable closeout candidate; effective lifecycle remains REVIEW until it succeeds."
+  status: VERIFIED
+  verification_scope: "Implementation, static, scope, evidence, and independent-review gates only; no in-commit claim that later CI has passed."
+  acceptance_condition: "EXTERNAL_EXACT_HEAD_CI_REQUIRED_BEFORE_WO_0148"
+```
+
+WO-0147 is retained with `[PKL_UPDATED, RESULT_SUMMARY_KEPT]`. No ADR changed. No packet, accepted
+ADR, runtime, persistence, broker, credential, branch/worktree, or retained evidence artifact was
+mutated or removed. The prohibited R1 DDL result was not used for any design, test, review, or
+acceptance conclusion.
