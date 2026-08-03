@@ -643,6 +643,48 @@ Actual Python 3.11 execution remains an exact-head CI obligation. This pre-fligh
 independent exact-commit RED acceptance. Production remains absent and barred until the eighth
 candidate is frozen and a fresh independent seat accepts that immutable commit with zero P0/P1.
 
+### Independent eighth-freeze review and ninth re-gate
+
+A fresh Sol seat independently reviewed exact eighth RED commit
+`7beda3f61e4d44f035143e883d7efa35a424f661` against activation base
+`d75806b1a79d1769db25ae962c0977cd9388a886`. It reproduced the complete focused RED
+classification, all 698 predecessor tests, static/format/grammar/diff/scope gates, and accepted ADR
+digests. Production remained absent. The reviewer found no P0 and returned `BLOCK` with two P1
+test-contract gaps:
+
+1. A restart replay with the same adapter-stable source occurrence and changed local evaluation
+   context was proven not to corroborate, but was not required to be `EXACT_REPLAY` with byte-for-
+   byte unchanged state. It could therefore advance a retained evaluation watermark and suppress a
+   later valid occurrence. Accepted ADR-021 makes the changed local context an evidence no-op, not
+   source-payload equivocation.
+2. The purity scanner rejected I/O modules and several effectful calls but allowed direct `print`
+   and nested `sys.stdout.write`; the future pure reducer could emit observable output without
+   failing the RED boundary.
+
+Both findings are accepted and repaired at their owning oracle:
+
+- the restart history now pins `EXACT_REPLAY`, complete state/commitment equality, no goal/alert,
+  and a valid advancing successor whose evaluation time lies between the original and replay
+  delivery contexts; and
+- a package-wide AST effect detector rejects effectful builtins, forbidden modules, imported
+  aliases, dynamic call targets, and stream capabilities. A protection-specific positive capability
+  model accepts only exact builtin, local, imported, attribute-call, decorator, base-class, and
+  callback bindings from an exact top-level import manifest. It rejects module, nested,
+  conditional, and duplicate imports; rebinding; fake approved roots; unauthenticated callbacks;
+  implicit imported protocols; mutable or dynamic attribute access; and dynamic type construction.
+  Runtime capture independently requires each public entry point to leave stdout and stderr empty.
+
+The remediated complete focus collects 284 tests and yields 228 expected RED failures / 56 passes:
+225 failures are caused solely by deliberate absence of the protection module and 3 are its required
+inventory/AST/export deltas. The structural mutant matrix and positive skeleton pass; all current
+execution-core sources have zero effect-call violations. Ruff check/format-check, Python 3.11
+grammar, diff, activation-base scope, and production-absence gates pass. Iterative hostile re-review
+found and drove closure of callback donation, fake approved roots, arbitrary relative callables,
+conditional import binding, and relative module implicit-protocol paths. Its final current-worktree
+verdict is `ACCEPT` with zero P0/P1. The original reviewer result remains unchanged in
+`RED-EIGHTH-RESULT.md`; the accepted disposition is separate. Production remains absent and barred
+pending a ninth immutable freeze and fresh independent zero-P0/P1 exact-commit acceptance.
+
 ## Stop conditions
 
 Stop rather than widen scope if the contract requires an ADR change, a new dependency, persistence,
@@ -661,9 +703,10 @@ and a running external CI gate are progress states, not goal blockers.
   retained untracked WO-0145/0146/0147 evidence remains untouched.
 - Pre-build clause map: one new protection reducer plus narrow identity, venue projection, exports,
   and two test suites; existing position/authority reducers stay unchanged.
-- Current RED state: all nine seventh-freeze P1 oracle gaps are repaired; complete focus is 282
-  collected / 227 expected RED / 55 pass, predecessor preservation is 698 pass, and hostile
-  pre-flight reports zero P0/P1. Production remains absent and barred.
-- Next action: pass final static/format/grammar/diff/scope gates, freeze the eighth RED candidate,
-  and obtain fresh independent exact-commit acceptance with zero unresolved P0/P1 before production
-  begins.
+- Current RED state: eighth freeze `7beda3f61e4d44f035143e883d7efa35a424f661` received
+  independent `BLOCK` with no P0 and two P1 oracle gaps. Both are repaired at their owning
+  invariants. Complete focus is 284 collected / 228 expected RED / 56 pass, predecessor
+  preservation is 698 pass, all final static gates pass, and hostile current-worktree re-review is
+  `ACCEPT` with zero P0/P1. Production remains absent and barred.
+- Next action: freeze the ninth RED candidate and obtain fresh independent exact-commit acceptance
+  with zero unresolved P0/P1 before production begins.

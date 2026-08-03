@@ -20,7 +20,19 @@ import pytest
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _PACKAGE_ROOT = _REPO_ROOT / "app" / "execution_core"
 
+_ALLOWED_STDLIB_ROOTS = {
+    "__future__",
+    "dataclasses",
+    "decimal",
+    "enum",
+    "fractions",
+    "hashlib",
+    "typing",
+}
+
 _FORBIDDEN_IMPORT_ROOTS = {
+    # Runtime capability laundering.
+    "builtins",
     # Persistence, process, filesystem, and general I/O surfaces.
     "asyncio",
     "dbm",
@@ -34,6 +46,7 @@ _FORBIDDEN_IMPORT_ROOTS = {
     "shutil",
     "sqlite3",
     "subprocess",
+    "sys",
     "tempfile",
     # Wall-clock, nondeterminism, and dynamic loading.
     "datetime",
@@ -56,10 +69,23 @@ _FORBIDDEN_IMPORT_ROOTS = {
 
 _FORBIDDEN_CALL_NAMES = {
     "__import__",
+    "breakpoint",
     "compile",
+    "copyright",
+    "credits",
+    "dir",
     "eval",
     "exec",
+    "exit",
+    "globals",
+    "help",
+    "input",
+    "license",
+    "locals",
     "open",
+    "print",
+    "quit",
+    "vars",
 }
 
 _FORBIDDEN_CALL_ATTRIBUTES = {
@@ -71,6 +97,7 @@ _FORBIDDEN_CALL_ATTRIBUTES = {
     "now",
     "open",
     "perf_counter",
+    "print",
     "read_bytes",
     "read_text",
     "sleep",
@@ -83,6 +110,115 @@ _FORBIDDEN_CALL_ATTRIBUTES = {
     "uuid4",
     "write_bytes",
     "write_text",
+}
+
+_FORBIDDEN_CAPABILITY_ATTRIBUTES = {
+    "flush",
+    "print",
+    "stderr",
+    "stdin",
+    "stdout",
+    "write",
+    "writelines",
+}
+
+_PROTECTION_ALLOWED_BUILTIN_CALLS = {
+    "TypeError",
+    "ValueError",
+    "abs",
+    "all",
+    "any",
+    "bool",
+    "bytes",
+    "enumerate",
+    "frozenset",
+    "int",
+    "isinstance",
+    "len",
+    "max",
+    "min",
+    "object",
+    "range",
+    "set",
+    "sorted",
+    "str",
+    "sum",
+    "tuple",
+    "type",
+    "zip",
+}
+
+_PROTECTION_ALLOWED_ATTRIBUTE_CALLS = {
+    ("_PersistentKeyMap", "empty"),
+    ("_PersistentKeyMap", "get"),
+    ("_PersistentKeyMap", "insert_new"),
+    ("_PersistentKeyMap", "replace_existing"),
+    ("object", "__getattribute__"),
+    ("object", "__new__"),
+    ("object", "__setattr__"),
+    ("str", "strip"),
+}
+
+_PROTECTION_ALLOWED_STDLIB_IMPORTED_CALLS = {
+    ("dataclasses", "dataclass"),
+    ("dataclasses", "field"),
+    ("decimal", "Decimal"),
+    ("fractions", "Fraction"),
+    ("typing", "cast"),
+}
+
+_PROTECTION_ALLOWED_INTERNAL_IMPORTED_CALLS = {
+    ("app.execution_core.fills", "PositionScope"),
+    ("app.execution_core.fills", "_PersistentKeyMap"),
+    ("app.execution_core.fills", "_commit_parts"),
+    ("app.execution_core.fills", "_encode_fraction"),
+    ("app.execution_core.fills", "_encode_int"),
+    ("app.execution_core.fills", "_encode_position_scope"),
+    ("app.execution_core.fills", "_encode_reported_price"),
+    ("app.execution_core.fills", "_encode_text"),
+    ("app.execution_core.values", "PriceScale"),
+    ("app.execution_core.values", "PriceUnits"),
+    ("app.execution_core.values", "Quantity"),
+    ("app.execution_core.values", "ReportedPrice"),
+    ("app.execution_core.values", "TickMetadata"),
+    ("app.execution_core.venue", "_extract_protection_transition"),
+}
+
+_PROTECTION_ALLOWED_IMPORTED_BINDINGS = (
+    _PROTECTION_ALLOWED_STDLIB_IMPORTED_CALLS
+    | _PROTECTION_ALLOWED_INTERNAL_IMPORTED_CALLS
+    | {
+        ("__future__", "annotations"),
+        ("enum", "Enum"),
+        ("app.execution_core.fills", "ExecutionSide"),
+        ("app.execution_core.identity", "MandateId"),
+        ("app.execution_core.identity", "MarketDataSourceId"),
+        ("app.execution_core.identity", "MarketOccurrenceId"),
+        ("app.execution_core.identity", "SessionId"),
+        ("app.execution_core.position", "BasisAuthority"),
+        ("app.execution_core.position", "ExecutionSnapshot"),
+        ("app.execution_core.position", "PositionIntegrity"),
+        ("app.execution_core.venue", "VenueExecutionBinding"),
+        ("app.execution_core.venue", "VenueRecoveryDisposition"),
+        ("app.execution_core.venue", "VenueRecoveryTransition"),
+        ("app.execution_core.venue", "_ProtectionCursor"),
+        ("app.execution_core.venue", "_ProtectionTransitionProof"),
+        ("app.execution_core.venue", "_SymbolAuthoritySummary"),
+    }
+)
+
+_PROTECTION_FORBIDDEN_BINDING_ATTRIBUTES = {
+    "__bases__",
+    "__builtins__",
+    "__class__",
+    "__closure__",
+    "__code__",
+    "__dict__",
+    "__func__",
+    "__globals__",
+    "__mro__",
+    "__self__",
+    "__subclasses__",
 }
 
 _PUBLIC_SURFACE = {
@@ -325,6 +461,533 @@ def _display(path: Path, node: ast.AST) -> str:
     return f"{path.relative_to(_REPO_ROOT)}:{getattr(node, 'lineno', '?')}"
 
 
+def _call_root_name(node: ast.AST) -> str:
+    while isinstance(node, ast.Attribute):
+        node = node.value
+    return node.id if isinstance(node, ast.Name) else ""
+
+
+def _static_attribute_path(node: ast.AST) -> tuple[str, ...] | None:
+    if isinstance(node, ast.Name):
+        return (node.id,)
+    if not isinstance(node, ast.Attribute):
+        return None
+    prefix = _static_attribute_path(node.value)
+    return None if prefix is None else prefix + (node.attr,)
+
+
+def _absolute_import_is_allowed(name: str) -> bool:
+    root = name.split(".", 1)[0]
+    return (
+        root in _ALLOWED_STDLIB_ROOTS
+        or name == "app.execution_core"
+        or name.startswith("app.execution_core.")
+    )
+
+
+def _effect_call_violations(tree: ast.AST, path: Path) -> list[str]:
+    """Reject direct or imported effect capabilities without executing them."""
+
+    violations: list[str] = []
+    aliases: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                aliases[alias.asname or alias.name.split(".", 1)[0]] = alias.name
+                if not _absolute_import_is_allowed(alias.name):
+                    violations.append(
+                        f"{_display(path, node)} forbidden capability import {alias.name}"
+                    )
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            for alias in node.names:
+                aliases[alias.asname or alias.name] = f"{node.module}.{alias.name}"
+                if node.level == 0 and not _absolute_import_is_allowed(node.module):
+                    violations.append(
+                        f"{_display(path, node)} forbidden capability import {node.module}"
+                    )
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and (
+            node.id in _FORBIDDEN_CALL_NAMES or node.id == "__builtins__"
+        ):
+            violations.append(f"{_display(path, node)} forbidden capability {node.id}")
+        if (
+            isinstance(node, ast.Attribute)
+            and node.attr in _FORBIDDEN_CAPABILITY_ATTRIBUTES
+        ):
+            violations.append(
+                f"{_display(path, node)} forbidden capability attribute {node.attr}"
+            )
+        if not isinstance(node, ast.Call):
+            continue
+        if (
+            isinstance(node.func, ast.Name)
+            and node.func.id == "getattr"
+            and len(node.args) >= 2
+            and isinstance(node.args[1], ast.Constant)
+            and node.args[1].value in _FORBIDDEN_CAPABILITY_ATTRIBUTES
+        ):
+            violations.append(
+                f"{_display(path, node)} forbidden dynamic capability "
+                f"{node.args[1].value}"
+            )
+        if isinstance(node.func, ast.Name):
+            resolved = aliases.get(node.func.id, node.func.id)
+            root = resolved.split(".", 1)[0]
+            leaf = resolved.rsplit(".", 1)[-1]
+            if (
+                node.func.id in _FORBIDDEN_CALL_NAMES
+                or leaf in _FORBIDDEN_CALL_NAMES
+                or root in _FORBIDDEN_IMPORT_ROOTS
+            ):
+                violations.append(f"{_display(path, node)} forbidden call {resolved}")
+        elif isinstance(node.func, ast.Attribute):
+            base_name = _call_root_name(node.func)
+            resolved_root = aliases.get(base_name, base_name).split(".", 1)[0]
+            if (
+                node.func.attr in _FORBIDDEN_CALL_ATTRIBUTES
+                or resolved_root in _FORBIDDEN_IMPORT_ROOTS
+            ):
+                violations.append(
+                    f"{_display(path, node)} forbidden call *.{node.func.attr}"
+                )
+        else:
+            violations.append(
+                f"{_display(path, node)} dynamically constructed call target "
+                f"{type(node.func).__name__}"
+            )
+    return violations
+
+
+def _protection_call_binding_violations(tree: ast.AST, path: Path) -> list[str]:
+    """Allow only statically authenticated callable bindings in protection."""
+
+    if not isinstance(tree, ast.Module):
+        return [f"{_display(path, tree)} protection source is not a module"]
+    violations: list[str] = []
+    declared = {
+        node.name
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+    }
+    imported: dict[str, tuple[str, str, int]] = {}
+    module_imports: set[str] = set()
+    ambiguous_imports: set[str] = set()
+    non_module_imports: set[str] = set()
+    top_level_imports = {
+        node for node in tree.body if isinstance(node, (ast.Import, ast.ImportFrom))
+    }
+
+    def retain_import_name(name: str, node: ast.AST) -> None:
+        if name in imported or name in module_imports:
+            ambiguous_imports.add(name)
+            violations.append(f"{_display(path, node)} duplicate import binding {name}")
+
+    def canonical_import(binding: tuple[str, str, int]) -> tuple[str, str]:
+        module, imported_name, level = binding
+        if level == 1:
+            owner = "app.execution_core"
+            if module:
+                owner = f"{owner}.{module}"
+            return owner, imported_name
+        return module, imported_name
+
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.Import, ast.ImportFrom)):
+            continue
+        if node not in top_level_imports:
+            violations.append(f"{_display(path, node)} non-module import binding")
+            non_module_imports.update(
+                alias.asname or alias.name.split(".", 1)[0] for alias in node.names
+            )
+            continue
+        if isinstance(node, ast.Import):
+            violations.append(f"{_display(path, node)} module import binding")
+            for alias in node.names:
+                retained = alias.asname or alias.name.split(".", 1)[0]
+                retain_import_name(retained, node)
+                module_imports.add(retained)
+            continue
+        if any(alias.name == "*" for alias in node.names):
+            violations.append(f"{_display(path, node)} wildcard import")
+        if node.module is None:
+            violations.append(f"{_display(path, node)} module import binding")
+        for alias in node.names:
+            if alias.name == "*":
+                continue
+            retained = alias.asname or alias.name
+            retain_import_name(retained, node)
+            if node.module is None:
+                module_imports.add(retained)
+            else:
+                binding = (node.module, alias.name, node.level)
+                imported[retained] = binding
+                if (
+                    canonical_import(binding)
+                    not in _PROTECTION_ALLOWED_IMPORTED_BINDINGS
+                ):
+                    violations.append(
+                        f"{_display(path, node)} unapproved imported binding "
+                        f"{canonical_import(binding)[0]}.{alias.name}"
+                    )
+
+    rebound = {
+        node.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del))
+    }
+    rebound.update(
+        argument.arg for argument in ast.walk(tree) if isinstance(argument, ast.arg)
+    )
+
+    def imported_call_is_allowed(name: str) -> bool:
+        if name in ambiguous_imports or name in non_module_imports:
+            return False
+        binding = imported.get(name)
+        if binding is None:
+            return False
+        canonical = canonical_import(binding)
+        return canonical in (
+            _PROTECTION_ALLOWED_STDLIB_IMPORTED_CALLS
+            | _PROTECTION_ALLOWED_INTERNAL_IMPORTED_CALLS
+        )
+
+    def callable_name_is_allowed(name: str) -> bool:
+        if (
+            name in rebound
+            or name in module_imports
+            or name in ambiguous_imports
+            or name in non_module_imports
+        ):
+            return False
+        if name in imported:
+            return (
+                name not in declared
+                and name not in _PROTECTION_ALLOWED_BUILTIN_CALLS
+                and imported_call_is_allowed(name)
+            )
+        if name in declared:
+            return name not in _PROTECTION_ALLOWED_BUILTIN_CALLS
+        return name in _PROTECTION_ALLOWED_BUILTIN_CALLS
+
+    def attribute_call_is_allowed(attribute_path: tuple[str, ...] | None) -> bool:
+        if attribute_path not in _PROTECTION_ALLOWED_ATTRIBUTE_CALLS:
+            return False
+        root = attribute_path[0]
+        if root in {"object", "str"}:
+            return (
+                root not in declared
+                and root not in imported
+                and root not in rebound
+                and root not in module_imports
+                and root not in ambiguous_imports
+                and root not in non_module_imports
+            )
+        return (
+            root == "_PersistentKeyMap"
+            and root not in declared
+            and root not in rebound
+            and root not in module_imports
+            and root not in ambiguous_imports
+            and root not in non_module_imports
+            and root in imported
+            and canonical_import(imported[root])
+            == ("app.execution_core.fills", "_PersistentKeyMap")
+        )
+
+    def callback_binding_is_allowed(node: ast.AST) -> bool:
+        if isinstance(node, ast.Constant) and node.value is None:
+            return True
+        if isinstance(node, ast.Name):
+            return callable_name_is_allowed(node.id)
+        if isinstance(node, ast.Attribute):
+            return attribute_call_is_allowed(_static_attribute_path(node))
+        return False
+
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.decorator_list
+        ):
+            violations.append(
+                f"{_display(path, node)} decorated function binding {node.name}"
+            )
+        if isinstance(node, ast.ClassDef):
+            if node.keywords:
+                violations.append(f"{_display(path, node)} custom class construction")
+            for base in node.bases:
+                if not (
+                    isinstance(base, ast.Name)
+                    and (
+                        (base.id == "object" and callable_name_is_allowed(base.id))
+                        or (
+                            imported.get(base.id) == ("enum", "Enum", 0)
+                            and base.id not in declared
+                            and base.id not in rebound
+                            and base.id not in module_imports
+                            and base.id not in ambiguous_imports
+                            and base.id not in non_module_imports
+                        )
+                    )
+                ):
+                    violations.append(
+                        f"{_display(path, base)} unapproved class base binding"
+                    )
+            for decorator in node.decorator_list:
+                target = (
+                    decorator.func if isinstance(decorator, ast.Call) else decorator
+                )
+                if not (
+                    isinstance(target, ast.Name)
+                    and imported.get(target.id) == ("dataclasses", "dataclass", 0)
+                    and target.id not in declared
+                    and target.id not in rebound
+                    and target.id not in module_imports
+                    and target.id not in ambiguous_imports
+                    and target.id not in non_module_imports
+                ):
+                    violations.append(
+                        f"{_display(path, decorator)} unapproved class decorator binding"
+                    )
+        if (
+            isinstance(node, ast.Attribute)
+            and node.attr in _PROTECTION_FORBIDDEN_BINDING_ATTRIBUTES
+        ):
+            violations.append(
+                f"{_display(path, node)} forbidden binding attribute {node.attr}"
+            )
+        if isinstance(node, ast.Attribute) and isinstance(
+            node.ctx, (ast.Store, ast.Del)
+        ):
+            violations.append(f"{_display(path, node)} mutable attribute binding")
+        if (
+            isinstance(node, ast.Constant)
+            and type(node.value) is str
+            and node.value in _PROTECTION_FORBIDDEN_BINDING_ATTRIBUTES
+        ):
+            violations.append(
+                f"{_display(path, node)} forbidden dynamic binding name {node.value}"
+            )
+        if not isinstance(node, ast.Call):
+            continue
+        callback_keywords: set[str] = set()
+        if isinstance(node.func, ast.Name):
+            binding = imported.get(node.func.id)
+            if binding is not None and canonical_import(binding) == (
+                "dataclasses",
+                "field",
+            ):
+                callback_keywords.add("default_factory")
+            if (
+                node.func.id in {"max", "min", "sorted"}
+                and node.func.id not in declared
+                and node.func.id not in imported
+                and node.func.id not in rebound
+            ):
+                callback_keywords.add("key")
+            if (
+                node.func.id == "type"
+                and node.func.id not in declared
+                and node.func.id not in imported
+                and node.func.id not in rebound
+                and (len(node.args) != 1 or node.keywords)
+            ):
+                violations.append(f"{_display(path, node)} dynamic type construction")
+        for keyword in node.keywords:
+            if keyword.arg in callback_keywords and not callback_binding_is_allowed(
+                keyword.value
+            ):
+                violations.append(
+                    f"{_display(path, keyword)} unproven callback binding {keyword.arg}"
+                )
+        if isinstance(node.func, ast.Name):
+            if not callable_name_is_allowed(node.func.id):
+                violations.append(
+                    f"{_display(path, node)} unproven call binding {node.func.id}"
+                )
+        elif isinstance(node.func, ast.Attribute):
+            attribute_path = _static_attribute_path(node.func)
+            if not attribute_call_is_allowed(attribute_path):
+                rendered = (
+                    ".".join(attribute_path)
+                    if attribute_path is not None
+                    else type(node.func.value).__name__
+                )
+                violations.append(
+                    f"{_display(path, node)} unproven attribute call binding {rendered}"
+                )
+            elif attribute_path in {
+                ("object", "__getattribute__"),
+                ("object", "__setattr__"),
+            } and (
+                len(node.args) < 2
+                or not isinstance(node.args[1], ast.Constant)
+                or type(node.args[1].value) is not str
+                or node.args[1].value in _PROTECTION_FORBIDDEN_BINDING_ATTRIBUTES
+            ):
+                violations.append(
+                    f"{_display(path, node)} unproven object attribute name"
+                )
+        else:
+            violations.append(
+                f"{_display(path, node)} unproven dynamic call binding "
+                f"{type(node.func).__name__}"
+            )
+    return violations
+
+
+def test_effect_call_oracle_rejects_direct_runtime_output() -> None:
+    path = _PACKAGE_ROOT / "synthetic_output_mutant.py"
+    mutants = (
+        (
+            "def reduce(occurrence):\n"
+            "    if occurrence is not None:\n"
+            "        print('mutant output')\n"
+        ),
+        "import sys\ndef reduce():\n    sys.stdout.write('mutant output')\n",
+        "from builtins import print as emit\ndef reduce():\n    emit('mutant output')\n",
+        (
+            "import builtins\n"
+            "emit = builtins.print\n"
+            "def reduce():\n"
+            "    emit('mutant output')\n"
+        ),
+        (
+            "import builtins\n"
+            "def reduce():\n"
+            "    getattr(builtins, 'print')('mutant output')\n"
+        ),
+        ("def reduce():\n    __builtins__['print']('mutant output')\n"),
+        (
+            "def reduce(occurrence):\n"
+            "    if occurrence.source_sequence == 424242:\n"
+            "        globals()['__builtins__']['print']('mutant output')\n"
+        ),
+        "def reduce():\n    help('mutant output')\n",
+        "import traceback\ndef reduce():\n    traceback.print_exc()\n",
+    )
+    for source in mutants:
+        assert _effect_call_violations(ast.parse(source), path), source
+
+    passive = ast.parse("def reduce(values):\n    return len(values)\n")
+    assert _effect_call_violations(passive, path) == []
+
+    binding_mutants = (
+        (
+            "import dataclasses\n"
+            "_emit = dataclasses.__builtins__['print']\n"
+            "def reduce(occurrence):\n"
+            "    if occurrence.source_sequence == 424242:\n"
+            "        _emit('escaped output')\n"
+        ),
+        "def reduce():\n    credits()\n",
+        (
+            "def _helper():\n"
+            "    return None\n"
+            "_helper = lambda: None\n"
+            "def reduce():\n"
+            "    _helper()\n"
+        ),
+        (
+            "import dataclasses\n"
+            "def _helper():\n"
+            "    return None\n"
+            "_helper.__globals__['_helper'] = "
+            "dataclasses.__builtins__['print']\n"
+            "def reduce():\n"
+            "    _helper('escaped output')\n"
+        ),
+        (
+            "def _helper():\n"
+            "    return None\n"
+            "def reduce():\n"
+            "    namespace = object.__getattribute__(\n"
+            "        _helper, '__glo' + 'bals__'\n"
+            "    )\n"
+            "    namespace['_helper'] = len\n"
+            "    _helper()\n"
+        ),
+        (
+            "def _replacement(value):\n"
+            "    return value\n"
+            "str.strip = _replacement\n"
+            "def reduce(value):\n"
+            "    return str.strip(value)\n"
+        ),
+        (
+            "from dataclasses import dataclass as _dataclass, field as _field\n"
+            "@_dataclass(frozen=True)\n"
+            "class _Payload:\n"
+            "    value: object = _field(default_factory=credits)\n"
+            "def reduce(flag):\n"
+            "    if flag:\n"
+            "        _Payload()\n"
+        ),
+        (
+            "class _PersistentKeyMap:\n"
+            "    empty = credits\n"
+            "def reduce(flag):\n"
+            "    if flag:\n"
+            "        _PersistentKeyMap.empty()\n"
+        ),
+        ("class str:\n    strip = credits\ndef reduce():\n    str.strip()\n"),
+        "from .venue import _emit\ndef reduce():\n    _emit()\n",
+        (
+            "from .venue import _evil_iterable\n"
+            "def reduce(flag):\n"
+            "    if flag:\n"
+            "        for _ in _evil_iterable:\n"
+            "            pass\n"
+        ),
+        (
+            "if flag:\n"
+            "    from .venue import _emit as target\n"
+            "else:\n"
+            "    from .venue import _extract_protection_transition as target\n"
+            "def reduce(value):\n"
+            "    target(value)\n"
+        ),
+        (
+            "from . import fills as str\n"
+            "def reduce(value):\n"
+            "    return str.strip(value)\n"
+        ),
+        (
+            "from . import venue as _venue\n"
+            "def reduce(flag):\n"
+            "    if flag:\n"
+            "        for _ in _venue._evil_iterable:\n"
+            "            pass\n"
+        ),
+        (
+            "def reduce():\n"
+            "    dynamic = type('Dynamic', (object,), {})\n"
+            "    return dynamic\n"
+        ),
+    )
+    for source in binding_mutants:
+        assert _protection_call_binding_violations(ast.parse(source), path), source
+
+    authenticated = ast.parse(
+        "from dataclasses import dataclass, field\n"
+        "from .fills import _PersistentKeyMap\n"
+        "from .venue import _extract_protection_transition\n"
+        "@dataclass(frozen=True)\n"
+        "class Value:\n"
+        "    item: int\n"
+        "@dataclass(frozen=True)\n"
+        "class Book:\n"
+        "    retained: object = field(default_factory=_PersistentKeyMap.empty)\n"
+        "def _helper(values):\n"
+        "    return len(values)\n"
+        "def reduce(values, transition):\n"
+        "    _extract_protection_transition(transition)\n"
+        "    _PersistentKeyMap.get(_PersistentKeyMap.empty(), b'key')\n"
+        "    return Value(_helper(values)), Book()\n"
+    )
+    assert _protection_call_binding_violations(authenticated, path) == []
+
+
 def test_execution_core_imports_only_itself_and_deterministic_stdlib() -> None:
     """Direct imports stay inside the new kernel or deterministic stdlib."""
 
@@ -361,6 +1024,10 @@ def test_execution_core_imports_only_itself_and_deterministic_stdlib() -> None:
                         )
                 elif root not in stdlib:
                     violations.append(f"{_display(path, node)} external import {name}")
+                elif root not in _ALLOWED_STDLIB_ROOTS:
+                    violations.append(
+                        f"{_display(path, node)} unapproved stdlib import {name}"
+                    )
 
     assert not violations, "execution-core import boundary crossed:\n" + "\n".join(
         violations
@@ -373,39 +1040,9 @@ def test_execution_core_ast_has_no_dynamic_import_io_clock_or_nondeterminism() -
     violations: list[str] = []
     for path in _python_files():
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        aliases: dict[str, str] = {}
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                for alias in node.names:
-                    aliases[alias.asname or alias.name.split(".", 1)[0]] = alias.name
-            elif isinstance(node, ast.ImportFrom) and node.module:
-                for alias in node.names:
-                    aliases[alias.asname or alias.name] = f"{node.module}.{alias.name}"
-
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Call):
-                continue
-            if isinstance(node.func, ast.Name):
-                resolved = aliases.get(node.func.id, node.func.id)
-                root = resolved.split(".", 1)[0]
-                if (
-                    node.func.id in _FORBIDDEN_CALL_NAMES
-                    or root in _FORBIDDEN_IMPORT_ROOTS
-                ):
-                    violations.append(
-                        f"{_display(path, node)} forbidden call {resolved}"
-                    )
-            elif isinstance(node.func, ast.Attribute):
-                base = node.func.value
-                base_name = base.id if isinstance(base, ast.Name) else ""
-                resolved_root = aliases.get(base_name, base_name).split(".", 1)[0]
-                if (
-                    node.func.attr in _FORBIDDEN_CALL_ATTRIBUTES
-                    or resolved_root in _FORBIDDEN_IMPORT_ROOTS
-                ):
-                    violations.append(
-                        f"{_display(path, node)} forbidden call *.{node.func.attr}"
-                    )
+        violations.extend(_effect_call_violations(tree, path))
+        if path.name == "protection.py":
+            violations.extend(_protection_call_binding_violations(tree, path))
 
     assert not violations, "execution-core effect boundary crossed:\n" + "\n".join(
         violations

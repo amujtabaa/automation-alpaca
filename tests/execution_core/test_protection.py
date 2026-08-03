@@ -3702,6 +3702,36 @@ def test_public_entrypoints_reject_every_wrong_exact_type_before_protocol_access
         assert events == [], label
 
 
+def test_public_entrypoints_emit_no_stdout_or_stderr(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    module = _protection_module()
+    fill = _owned_fill_transition(label="public-entrypoint-no-output")
+    mandate = _mandate(module)
+    project, initialize, reduce = _required(
+        module,
+        "project_protection_venue",
+        "initialize_position_protection",
+        "reduce_position_protection",
+    )
+    capsys.readouterr()
+
+    projection = project(fill, mandate)
+    assert capsys.readouterr() == ("", "")
+    state = initialize(mandate, projection)
+    assert capsys.readouterr() == ("", "")
+    reduce(state, projection, None)
+    assert capsys.readouterr() == ("", "")
+    occurrence = _occurrence(
+        module,
+        "public-entrypoint-no-output",
+        bid=100,
+        ask=101,
+    )
+    reduce(state, projection, occurrence)
+    assert capsys.readouterr() == ("", "")
+
+
 def test_public_value_shapes_and_enum_members_are_exact() -> None:
     module = _protection_module()
     expected_fields = {
@@ -6822,10 +6852,34 @@ def test_duplicate_restart_and_nonadvancing_sequence_do_not_corroborate() -> Non
             evaluation_time=110,
         ),
     )
-    (policy,) = _required(module, "ProtectionPolicy")
+    valid_after_replay = _reduce(
+        module,
+        replay.state,
+        projection,
+        _occurrence(
+            module,
+            "valid-after-duplicate-replay",
+            bid=91,
+            ask=92,
+            sequence=8,
+            source_time=106,
+            evaluation_time=107,
+        ),
+    )
+    disposition, policy = _required(
+        module,
+        "ProtectionDisposition",
+        "ProtectionPolicy",
+    )
+    assert replay.disposition is disposition.EXACT_REPLAY
+    assert replay.state == first.state
+    assert replay.state.commitment == first.state.commitment
     assert replay.state.policy is policy.FLOOR_ONLY
     assert equal_sequence.state.policy is policy.FLOOR_ONLY
     assert replay.goal is None and equal_sequence.goal is None
+    assert replay.critical_alert is None
+    assert valid_after_replay.state.policy is policy.HARD_BAIL
+    assert valid_after_replay.goal is not None
 
 
 @pytest.mark.parametrize("second_sequence", [2, None])
