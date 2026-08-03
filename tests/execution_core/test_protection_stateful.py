@@ -8,6 +8,7 @@ predecessor to prove determinism and input immutability.
 
 from __future__ import annotations
 
+import inspect
 from fractions import Fraction
 
 from hypothesis import settings, strategies as st
@@ -29,7 +30,7 @@ from app.execution_core.recovery import (
     RecordBrokerFillEvidence,
     RecordBrokerRevisionEvidence,
 )
-from app.execution_core.values import PriceUnits, Quantity, TickMetadata
+from app.execution_core.values import Quantity
 from tests.execution_core import test_protection as protection_fixtures
 from tests.execution_core import test_venue_recovery as venue_fixtures
 
@@ -56,6 +57,10 @@ class ProtectionEconomicsMachine(RuleBasedStateMachine):
         )
         self.raw_quantity = 2
         self.total_cost = Fraction(200)
+        self.root_quantity = 2
+        self.root_units = 100
+        self.root_head = SourceEventId("stateful-economics-root-source")
+        self.formula_expected = True
         self.armed = _ceil_exact(Fraction(100) * Fraction(37, 40))
         self.activation = _ceil_exact(Fraction(100) * Fraction(43, 40))
         self.expected_policy = "FLOOR_ONLY"
@@ -63,7 +68,7 @@ class ProtectionEconomicsMachine(RuleBasedStateMachine):
         self.late_recovered = False
         self.late_correction_recovered = False
         self.next_identity = 0
-        self.first_projection = self.projection
+        self.projection_history = [self.projection]
 
     def _sync(self, transition: object) -> object:
         projection = protection_fixtures._projection(
@@ -79,6 +84,7 @@ class ProtectionEconomicsMachine(RuleBasedStateMachine):
         self.state = result.state
         self.projection = projection
         self.current = transition
+        self.projection_history.append(projection)
         return result
 
     def _sync_many(self, transitions: tuple[object, ...]) -> object:
@@ -101,11 +107,12 @@ class ProtectionEconomicsMachine(RuleBasedStateMachine):
         )
         self.raw_quantity += quantity
         self.total_cost += Fraction(quantity * units)
-        average = self.total_cost / self.raw_quantity
-        candidate = _ceil_exact(average * Fraction(37, 40))
-        if candidate < average:
-            self.armed = max(self.armed, candidate)
-        self.activation = _ceil_exact(average * Fraction(43, 40))
+        if self.formula_expected:
+            average = self.total_cost / self.raw_quantity
+            candidate = _ceil_exact(average * Fraction(37, 40))
+            if candidate < average:
+                self.armed = max(self.armed, candidate)
+            self.activation = _ceil_exact(average * Fraction(43, 40))
         result = self._sync(transition)
         assert result.goal is None
         assert result.critical_alert is None
@@ -113,13 +120,13 @@ class ProtectionEconomicsMachine(RuleBasedStateMachine):
     @precondition(lambda self: not self.closed)
     @rule()
     def stale_projection_cannot_roll_back_current_state(self) -> None:
-        if self.projection == self.first_projection:
+        if len(self.projection_history) < 2:
             return
         before = self.state
         result = protection_fixtures._reduce(
             self.module,
             self.state,
-            self.first_projection,
+            self.projection_history[-2],
         )
         (disposition,) = protection_fixtures._required(
             self.module,
@@ -231,6 +238,7 @@ class ProtectionEconomicsMachine(RuleBasedStateMachine):
         recovered = self._sync(late)
         self.raw_quantity = quantity
         self.total_cost = Fraction(quantity * units)
+        self.formula_expected = True
         self.expected_policy = "HARD_BAIL"
         self.late_recovered = True
         assert recovered.critical_alert is not None
@@ -287,137 +295,153 @@ class ProtectionEconomicsMachine(RuleBasedStateMachine):
         assert recovered.goal is None
         self.raw_quantity = 1
         self.total_cost = Fraction(100)
+        self.formula_expected = True
         self.expected_policy = "HARD_BAIL"
         self.late_correction_recovered = True
 
-    @rule()
-    def correction_bust_and_authentic_restore_preserve_execution_truth(self) -> None:
-        """A revision chain changes economics before any protection conclusion.
-
-        This is deliberately a small, independent history rather than an oracle
-        copied from the execution reducer: the assertions are only the public
-        quantity/formula consequences that protection must retain.
-        """
-        initial = protection_fixtures._owned_fill_transition(
-            label="stateful-revision-root",
-            quantity=2,
-            units=100,
-            capacity=4,
+    @precondition(
+        lambda self: (
+            not self.closed
+            and self.next_identity == 0
+            and self.expected_policy == "FLOOR_ONLY"
         )
-        mandate, _, state = protection_fixtures._start(self.module, initial)
+    )
+    @rule(
+        resulting_quantity=st.integers(min_value=1, max_value=4),
+        units=st.integers(min_value=80, max_value=130),
+    )
+    def correction_bust_and_authentic_restore_compose_with_later_history(
+        self,
+        resulting_quantity: int,
+        units: int,
+    ) -> None:
+        """Revision, bust, and restore advance this machine's one history."""
+        self.next_identity += 1
+        correct_label = f"stateful-revision-correct-{self.next_identity}"
         _, corrected = protection_fixtures._correct_owned_root(
-            initial,
-            label="stateful-revision-correct",
-            root_fill_id=RootFillId("stateful-revision-root-root"),
-            predecessor_source_event_id=SourceEventId("stateful-revision-root-source"),
-            prior_root_quantity=2,
-            resulting_quantity=3,
-            units=102,
-            prior_venue_cumulative=2,
+            self.current,
+            label=correct_label,
+            root_fill_id=RootFillId("stateful-economics-root-root"),
+            predecessor_source_event_id=self.root_head,
+            prior_root_quantity=self.root_quantity,
+            resulting_quantity=resulting_quantity,
+            units=units,
+            prior_venue_cumulative=self.root_quantity,
         )
-        corrected_result = protection_fixtures._reduce(
-            self.module,
-            state,
-            protection_fixtures._projection(self.module, corrected, mandate),
-        )
-        assert corrected_result.state.raw_quantity == 3
+        corrected_result = self._sync(corrected)
+        self.raw_quantity = resulting_quantity
+        self.total_cost = Fraction(resulting_quantity * units)
+        self.root_quantity = resulting_quantity
+        self.root_units = units
+        self.root_head = SourceEventId(f"{correct_label}-source")
+        assert corrected_result.state.raw_quantity == self.raw_quantity
         assert corrected_result.state.formula_available is True
 
+        bust_label = f"stateful-revision-bust-{self.next_identity}"
         _, busted = protection_fixtures._bust_owned_root(
-            corrected,
-            label="stateful-revision-bust",
-            root_fill_id=RootFillId("stateful-revision-root-root"),
-            predecessor_source_event_id=SourceEventId(
-                "stateful-revision-correct-source"
-            ),
-            prior_root_quantity=3,
-            prior_venue_cumulative=3,
+            self.current,
+            label=bust_label,
+            root_fill_id=RootFillId("stateful-economics-root-root"),
+            predecessor_source_event_id=self.root_head,
+            prior_root_quantity=self.root_quantity,
+            prior_venue_cumulative=self.root_quantity,
         )
-        busted_result = protection_fixtures._reduce(
-            self.module,
-            corrected_result.state,
-            protection_fixtures._projection(self.module, busted, mandate),
-        )
+        busted_result = self._sync(busted)
+        self.root_head = SourceEventId(f"{bust_label}-source")
+        self.root_quantity = 0
+        self.raw_quantity = 0
+        self.total_cost = Fraction(0)
         assert busted_result.state.raw_quantity == 0
         assert busted_result.goal is None
 
+        restore_label = f"stateful-revision-restore-{self.next_identity}"
         _, restored = protection_fixtures._correct_owned_root(
-            busted,
-            label="stateful-revision-restore",
-            root_fill_id=RootFillId("stateful-revision-root-root"),
-            predecessor_source_event_id=SourceEventId("stateful-revision-bust-source"),
+            self.current,
+            label=restore_label,
+            root_fill_id=RootFillId("stateful-economics-root-root"),
+            predecessor_source_event_id=self.root_head,
             prior_root_quantity=0,
-            resulting_quantity=2,
-            units=104,
+            resulting_quantity=resulting_quantity,
+            units=units,
             prior_venue_cumulative=0,
         )
-        restored_result = protection_fixtures._reduce(
-            self.module,
-            busted_result.state,
-            protection_fixtures._projection(self.module, restored, mandate),
-        )
-        (policy,) = protection_fixtures._required(self.module, "ProtectionPolicy")
-        assert restored_result.state.raw_quantity == 2
+        restored_result = self._sync(restored)
+        self.root_head = SourceEventId(f"{restore_label}-source")
+        self.root_quantity = resulting_quantity
+        self.root_units = units
+        self.raw_quantity = resulting_quantity
+        self.total_cost = Fraction(resulting_quantity * units)
+        average = self.total_cost / self.raw_quantity
+        candidate = _ceil_exact(average * Fraction(37, 40))
+        if candidate < average:
+            self.armed = max(self.armed, candidate)
+        self.activation = _ceil_exact(average * Fraction(43, 40))
+        self.formula_expected = True
+        assert restored_result.state.raw_quantity == self.raw_quantity
         assert restored_result.state.formula_available is True
-        assert restored_result.state.policy is not policy.FLAT
 
-    @rule()
-    def incompatible_tick_withholds_only_formula_then_restores_it(self) -> None:
-        """An authoritative correction stays economic even when its tick is bad."""
-        incompatible_tick = TickMetadata(
-            tick_units=PriceUnits(2),
-            scale=protection_fixtures.SCALE,
+    @precondition(
+        lambda self: (
+            not self.closed
+            and self.next_identity == 0
+            and self.root_quantity > 0
+            and self.formula_expected
         )
-        initial = protection_fixtures._owned_fill_transition(
-            label="stateful-tick-root",
-            quantity=2,
-            units=100,
-            capacity=4,
+    )
+    @rule(units=st.integers(min_value=40, max_value=65).map(lambda value: value * 2))
+    def incompatible_tick_loss_and_restore_advance_shared_history(
+        self,
+        units: int,
+    ) -> None:
+        """Formula loss and restoration remain composable with later rules."""
+        self.next_identity += 1
+        incompatible_label = f"stateful-tick-incompatible-{self.next_identity}"
+        _, incompatible = protection_fixtures._correct_owned_root(
+            self.current,
+            label=incompatible_label,
+            root_fill_id=RootFillId("stateful-economics-root-root"),
+            predecessor_source_event_id=self.root_head,
+            prior_root_quantity=self.root_quantity,
+            resulting_quantity=self.root_quantity,
+            units=units,
+            prior_venue_cumulative=self.root_quantity,
             tick_units=2,
         )
-        mandate = protection_fixtures._mandate(self.module, tick=incompatible_tick)
-        _, _, state = protection_fixtures._start(self.module, initial, mandate)
-        assert state.formula_available is True
-
-        _, incompatible = protection_fixtures._correct_owned_root(
-            initial,
-            label="stateful-tick-incompatible",
-            root_fill_id=RootFillId("stateful-tick-root-root"),
-            predecessor_source_event_id=SourceEventId("stateful-tick-root-source"),
-            prior_root_quantity=2,
-            resulting_quantity=2,
-            units=101,
-            prior_venue_cumulative=2,
-        )
-        unavailable = protection_fixtures._reduce(
-            self.module,
-            state,
-            protection_fixtures._projection(self.module, incompatible, mandate),
-        )
-        assert unavailable.state.raw_quantity == 2
+        unavailable = self._sync(incompatible)
+        self.root_units = units
+        self.root_head = SourceEventId(f"{incompatible_label}-source")
+        self.total_cost = Fraction(self.root_quantity * units)
+        self.formula_expected = False
+        self.expected_policy = "HARD_BAIL"
+        assert unavailable.state.raw_quantity == self.raw_quantity
         assert unavailable.state.formula_available is False
         assert unavailable.goal is None
 
+        restored_units = units + 1
+        restored_label = f"stateful-tick-restored-{self.next_identity}"
         _, restored = protection_fixtures._correct_owned_root(
-            incompatible,
-            label="stateful-tick-restored",
-            root_fill_id=RootFillId("stateful-tick-root-root"),
-            predecessor_source_event_id=SourceEventId(
-                "stateful-tick-incompatible-source"
-            ),
-            prior_root_quantity=2,
-            resulting_quantity=2,
-            units=102,
-            prior_venue_cumulative=2,
-            tick_units=2,
+            self.current,
+            label=restored_label,
+            root_fill_id=RootFillId("stateful-economics-root-root"),
+            predecessor_source_event_id=self.root_head,
+            prior_root_quantity=self.root_quantity,
+            resulting_quantity=self.root_quantity,
+            units=restored_units,
+            prior_venue_cumulative=self.root_quantity,
         )
-        available = protection_fixtures._reduce(
-            self.module,
-            unavailable.state,
-            protection_fixtures._projection(self.module, restored, mandate),
-        )
-        assert available.state.raw_quantity == 2
+        available = self._sync(restored)
+        self.root_units = restored_units
+        self.root_head = SourceEventId(f"{restored_label}-source")
+        self.total_cost = Fraction(self.root_quantity * restored_units)
+        average = self.total_cost / self.raw_quantity
+        candidate = _ceil_exact(average * Fraction(37, 40))
+        if candidate < average:
+            self.armed = max(self.armed, candidate)
+        self.activation = _ceil_exact(average * Fraction(43, 40))
+        self.formula_expected = True
+        assert available.state.raw_quantity == self.raw_quantity
         assert available.state.formula_available is True
+        assert available.goal is None
 
     @rule()
     def authentic_projection_cannot_be_substituted_or_mixed(self) -> None:
@@ -467,8 +491,9 @@ class ProtectionEconomicsMachine(RuleBasedStateMachine):
         assert self.state.policy is getattr(policy, self.expected_policy)
         assert self.state.execution_commitment == self.current.execution.commitment
         assert self.state.mandate == self.mandate
-        if self.expected_policy == "FLOOR_ONLY":
-            assert self.state.formula_available is True
+        if self.raw_quantity > 0:
+            assert self.state.formula_available is self.formula_expected
+        if self.expected_policy == "FLOOR_ONLY" and self.formula_expected:
             assert self.state.armed_hard_bail_trigger.exact_value == self.armed
             assert self.state.activation_price.exact_value == self.activation
         if self.raw_quantity > 0:
@@ -495,6 +520,7 @@ class ProtectionMarketMachine(RuleBasedStateMachine):
             self.mandate,
             (terminal, closed),
         )
+        self.current = closed
         self.policy = "FLOOR_ONLY"
         self.hard_trigger = 93
         self.activation = 108
@@ -509,7 +535,26 @@ class ProtectionMarketMachine(RuleBasedStateMachine):
         self.last_bid = 100
         self.last_occurrence: object | None = None
         self.market_epoch = 0
-        self.optional_tightening_seen = False
+        self.waiting = False
+        self.buy_effect = None
+        self.buy_leg = None
+        self.buy_stage = "NONE"
+
+    def _sync(self, transition: object) -> object:
+        projection = protection_fixtures._projection(
+            self.module,
+            transition,
+            self.mandate,
+        )
+        result = protection_fixtures._reduce(
+            self.module,
+            self.state,
+            projection,
+        )
+        self.state = result.state
+        self.projection = projection
+        self.current = transition
+        return result
 
     def _deliver(self, occurrence: object) -> object:
         return protection_fixtures._reduce(
@@ -519,14 +564,14 @@ class ProtectionMarketMachine(RuleBasedStateMachine):
             occurrence,
         )
 
-    @precondition(lambda self: not self.optional_tightening_seen)
+    @precondition(lambda self: self.policy in {"FLOOR_ONLY", "TRAIL_ACTIVE"})
     @rule(bid=st.integers(min_value=90, max_value=130))
     def eligible_bid(self, bid: int) -> None:
         self.sequence += 1
         self.source_time += 6
         occurrence = protection_fixtures._occurrence(
             self.module,
-            f"stateful-market-{self.sequence}",
+            f"stateful-market-{self.market_epoch}-{self.sequence}",
             bid=bid,
             ask=bid + 1,
             sequence=self.sequence,
@@ -562,8 +607,15 @@ class ProtectionMarketMachine(RuleBasedStateMachine):
         self.last_accepted_source_time = self.source_time
         self.last_accepted_sequence = self.sequence
         self.last_bid = bid
+        self.waiting = self.policy in {"EXIT_NORMAL", "HARD_BAIL"} and (
+            self.buy_stage in {"OPEN", "TERMINAL"}
+        )
         if self.policy != prior_policy and self.policy in {"EXIT_NORMAL", "HARD_BAIL"}:
-            assert result.goal is not None
+            if self.waiting:
+                assert result.state.waiting_buy_resolution is True
+                assert result.goal is None
+            else:
+                assert result.goal is not None
 
     @precondition(lambda self: self.last_occurrence is not None)
     @rule()
@@ -579,12 +631,13 @@ class ProtectionMarketMachine(RuleBasedStateMachine):
         self.source_time += 6
         occurrence = protection_fixtures._occurrence(
             self.module,
-            f"stateful-crossed-{self.sequence}",
+            f"stateful-crossed-{self.market_epoch}-{self.sequence}",
             bid=101,
             ask=100,
             sequence=self.sequence,
             source_time=self.source_time,
             evaluation_time=self.source_time + 4,
+            market_epoch=self.market_epoch,
         )
         before = self.state
         result = self._deliver(occurrence)
@@ -597,12 +650,13 @@ class ProtectionMarketMachine(RuleBasedStateMachine):
         self.sequence += 1
         occurrence = protection_fixtures._occurrence(
             self.module,
-            f"stateful-time-regression-{self.sequence}",
+            f"stateful-time-regression-{self.market_epoch}-{self.sequence}",
             bid=92,
             ask=93,
             sequence=self.sequence,
             source_time=self.last_accepted_source_time - 1,
             evaluation_time=self.source_time + 4,
+            market_epoch=self.market_epoch,
         )
         before = self.state
         result = self._deliver(occurrence)
@@ -616,7 +670,7 @@ class ProtectionMarketMachine(RuleBasedStateMachine):
         self.source_time += 6
         occurrence = protection_fixtures._occurrence(
             self.module,
-            f"stateful-nonadvancing-{self.sequence}",
+            f"stateful-nonadvancing-{self.market_epoch}-{self.sequence}",
             bid=92,
             ask=93,
             sequence=self.last_accepted_sequence,
@@ -637,7 +691,7 @@ class ProtectionMarketMachine(RuleBasedStateMachine):
         self.source_time += 6
         occurrence = protection_fixtures._occurrence(
             self.module,
-            f"stateful-step-jump-{self.sequence}",
+            f"stateful-step-jump-{self.market_epoch}-{self.sequence}",
             bid=max(160, self.last_bid * 2),
             ask=max(161, self.last_bid * 2 + 1),
             sequence=self.sequence,
@@ -658,9 +712,11 @@ class ProtectionMarketMachine(RuleBasedStateMachine):
         self.sequence += 1
         self.source_time += 6
         percent_floor = -(-(self.high_water * 23) // 25)
+        atr_floor = self.high_water - 5
+        structure_floor = self.high_water - 1
         occurrence = protection_fixtures._occurrence(
             self.module,
-            f"stateful-optional-trail-{self.sequence}",
+            f"stateful-optional-trail-{self.market_epoch}-{self.sequence}",
             bid=self.high_water,
             ask=self.high_water + 1,
             sequence=self.sequence,
@@ -668,210 +724,176 @@ class ProtectionMarketMachine(RuleBasedStateMachine):
             evaluation_time=self.source_time + 4,
             market_epoch=self.market_epoch,
             atr_distance=2,
-            structure_trail=max(percent_floor, self.high_water - 1),
+            structure_trail=structure_floor,
+        )
+        self.trail = max(
+            self.trail,
+            percent_floor,
+            atr_floor,
+            structure_floor,
         )
         result = self._deliver(occurrence)
         self.state = result.state
         self.last_occurrence = occurrence
         self.last_accepted_source_time = self.source_time
         self.last_accepted_sequence = self.sequence
-        self.optional_tightening_seen = True
+        self.last_bid = self.high_water
+        self.hard_count = 0
+        self.trail_count = 0
         assert result.state.policy is not None
-        assert result.state.trail.exact_value >= percent_floor
+        assert result.state.trail.exact_value == self.trail
         assert result.goal is None
 
+    @precondition(
+        lambda self: (
+            self.policy == "FLOOR_ONLY"
+            and self.hard_count == 0
+            and self.buy_stage == "NONE"
+        )
+    )
     @rule()
     def interruption_reopen_epoch_requires_fresh_corroboration(self) -> None:
-        """A halt and new epoch cannot carry a one-observation exit across it."""
-        fill = protection_fixtures._owned_fill_transition(
-            label="stateful-epoch-root",
-            quantity=4,
-            units=100,
-            capacity=4,
-        )
-        mandate, _, state = protection_fixtures._start(self.module, fill)
-        terminal, closed = protection_fixtures._close_base_parent(fill)
-        state, projection, _ = protection_fixtures._sync_transitions(
-            self.module,
-            state,
-            mandate,
-            (terminal, closed),
-        )
+        """A halt and new epoch reset corroboration in this shared history."""
+        self.sequence += 1
+        self.source_time += 6
         first = protection_fixtures._occurrence(
             self.module,
-            "stateful-epoch-first",
+            f"stateful-epoch-first-{self.market_epoch}-{self.sequence}",
             bid=92,
             ask=93,
-            sequence=1,
-            source_time=100,
-            evaluation_time=104,
-            market_epoch=0,
+            sequence=self.sequence,
+            source_time=self.source_time,
+            evaluation_time=self.source_time + 4,
+            market_epoch=self.market_epoch,
         )
-        first_result = protection_fixtures._reduce(
-            self.module, state, projection, first
-        )
+        first_result = self._deliver(first)
+        self.state = first_result.state
         assert first_result.goal is None
+        self.hard_count = 1
+
+        self.sequence += 1
+        self.source_time += 6
         interrupted = protection_fixtures._occurrence(
             self.module,
-            "stateful-epoch-halt",
+            f"stateful-epoch-halt-{self.market_epoch}-{self.sequence}",
             bid=92,
             ask=93,
-            sequence=2,
-            source_time=106,
-            evaluation_time=110,
-            market_epoch=0,
+            sequence=self.sequence,
+            source_time=self.source_time,
+            evaluation_time=self.source_time + 4,
+            market_epoch=self.market_epoch,
             halted=True,
         )
-        halted = protection_fixtures._reduce(
-            self.module,
-            first_result.state,
-            projection,
-            interrupted,
-        )
+        halted = self._deliver(interrupted)
+        self.state = halted.state
         assert halted.goal is None
+        self.market_epoch += 1
+        self.sequence = 1
+        self.source_time += 6
+        self.hard_count = 0
         reopen_first = protection_fixtures._occurrence(
             self.module,
-            "stateful-epoch-reopen-first",
+            f"stateful-epoch-reopen-first-{self.market_epoch}",
             bid=92,
             ask=93,
-            sequence=1,
-            source_time=112,
-            evaluation_time=116,
-            market_epoch=1,
+            sequence=self.sequence,
+            source_time=self.source_time,
+            evaluation_time=self.source_time + 4,
+            market_epoch=self.market_epoch,
         )
-        reopened = protection_fixtures._reduce(
-            self.module,
-            halted.state,
-            projection,
-            reopen_first,
-        )
+        reopened = self._deliver(reopen_first)
+        self.state = reopened.state
         assert reopened.goal is None
+        self.hard_count = 1
+        self.sequence += 1
+        self.source_time += 6
         reopen_second = protection_fixtures._occurrence(
             self.module,
-            "stateful-epoch-reopen-second",
+            f"stateful-epoch-reopen-second-{self.market_epoch}",
             bid=92,
             ask=93,
-            sequence=2,
-            source_time=118,
-            evaluation_time=122,
-            market_epoch=1,
+            sequence=self.sequence,
+            source_time=self.source_time,
+            evaluation_time=self.source_time + 4,
+            market_epoch=self.market_epoch,
         )
-        bailed = protection_fixtures._reduce(
-            self.module,
-            reopened.state,
-            projection,
-            reopen_second,
-        )
+        bailed = self._deliver(reopen_second)
+        self.state = bailed.state
         (policy,) = protection_fixtures._required(self.module, "ProtectionPolicy")
+        self.policy = "HARD_BAIL"
+        self.hard_count = 2
+        self.last_occurrence = reopen_second
+        self.last_accepted_source_time = self.source_time
+        self.last_accepted_sequence = self.sequence
+        self.last_bid = 92
         assert bailed.state.policy is policy.HARD_BAIL
         assert bailed.goal is not None
 
+    @precondition(
+        lambda self: (
+            self.buy_stage == "NONE" and self.policy in {"FLOOR_ONLY", "TRAIL_ACTIVE"}
+        )
+    )
     @rule()
-    def normal_exit_wait_survives_restart_until_exact_buy_closure(self) -> None:
-        """Normal urgency remains normal while an owned BUY is unresolved."""
-        fill = protection_fixtures._owned_fill_transition(
-            label="stateful-wait-root",
-            quantity=4,
-            units=100,
-            capacity=4,
-        )
-        mandate, _, state = protection_fixtures._start(self.module, fill)
-        base_terminal, base_closed = protection_fixtures._close_base_parent(fill)
-        state, _, _ = protection_fixtures._sync_transitions(
-            self.module,
-            state,
-            mandate,
-            (base_terminal, base_closed),
-        )
+    def introduce_unresolved_buy_into_shared_history(self) -> None:
+        """An owned unresolved BUY composes with later market-policy changes."""
         buy_chain, buy_effect, buy_leg, _ = (
             protection_fixtures._append_needs_review_effect(
-                base_closed,
+                self.current,
                 prefix="stateful-wait-buy",
                 side=ExecutionSide.BUY,
                 quantity=1,
             )
         )
-        state, projection, _ = protection_fixtures._sync_transitions(
-            self.module,
-            state,
-            mandate,
-            buy_chain,
-        )
-        activate = protection_fixtures._occurrence(
-            self.module,
-            "stateful-wait-activate",
-            bid=120,
-            ask=121,
-            sequence=1,
-            source_time=100,
-            evaluation_time=104,
-        )
-        trailed = protection_fixtures._reduce(self.module, state, projection, activate)
-        first_exit = protection_fixtures._occurrence(
-            self.module,
-            "stateful-wait-first-exit",
-            bid=110,
-            ask=111,
-            sequence=2,
-            source_time=106,
-            evaluation_time=110,
-        )
-        first = protection_fixtures._reduce(
-            self.module,
-            trailed.state,
-            projection,
-            first_exit,
-        )
-        second_exit = protection_fixtures._occurrence(
-            self.module,
-            "stateful-wait-second-exit",
-            bid=110,
-            ask=111,
-            sequence=3,
-            source_time=112,
-            evaluation_time=116,
-        )
-        waiting = protection_fixtures._reduce(
-            self.module,
-            first.state,
-            projection,
-            second_exit,
-        )
-        (policy,) = protection_fixtures._required(self.module, "ProtectionPolicy")
-        assert waiting.state.policy is policy.EXIT_NORMAL
-        assert waiting.state.waiting_buy_resolution is True
-        assert waiting.goal is None
+        for transition in buy_chain:
+            result = self._sync(transition)
+            assert result.goal is None
+        self.buy_effect = buy_effect
+        self.buy_leg = buy_leg
+        self.buy_stage = "OPEN"
+        self.waiting = self.policy in {"EXIT_NORMAL", "HARD_BAIL"}
 
-        restarted = protection_fixtures._reduce(self.module, waiting.state, projection)
-        assert restarted.state == waiting.state
-        assert restarted.goal is None
+    @precondition(lambda self: self.buy_stage == "OPEN")
+    @rule()
+    def terminalize_unresolved_buy_in_shared_history(self) -> None:
+        assert self.buy_effect is not None and self.buy_leg is not None
         _, terminal = protection_fixtures._terminal_fixture(
-            buy_chain[-1],
-            effect_id=buy_effect,
-            leg_key=buy_leg,
+            self.current,
+            effect_id=self.buy_effect,
+            leg_key=self.buy_leg,
             label="stateful-wait-buy",
             cumulative_quantity=0,
         )
-        after_terminal = protection_fixtures._reduce(
-            self.module,
-            restarted.state,
-            protection_fixtures._projection(self.module, terminal, mandate),
-        )
-        assert after_terminal.state.waiting_buy_resolution is True
+        result = self._sync(terminal)
+        self.buy_stage = "TERMINAL"
+        self.waiting = self.policy in {"EXIT_NORMAL", "HARD_BAIL"}
+        assert result.state.waiting_buy_resolution is self.waiting
+        assert result.goal is None
+
+    @precondition(lambda self: self.buy_stage == "TERMINAL")
+    @rule()
+    def close_unresolved_buy_parent_in_shared_history(self) -> None:
+        assert self.buy_effect is not None
+        was_waiting = self.waiting
         _, closed = protection_fixtures._close_parent_fixture(
-            terminal,
-            effect_id=buy_effect,
+            self.current,
+            effect_id=self.buy_effect,
             label="stateful-wait-buy",
         )
-        released = protection_fixtures._reduce(
-            self.module,
-            after_terminal.state,
-            protection_fixtures._projection(self.module, closed, mandate),
-        )
-        assert released.state.policy is policy.EXIT_NORMAL
+        released = self._sync(closed)
+        self.buy_stage = "CLOSED"
+        self.waiting = False
         assert released.state.waiting_buy_resolution is False
-        assert released.goal is not None
-        assert released.goal.guard == mandate.normal_guard
+        if was_waiting:
+            assert released.goal is not None
+            expected_guard = (
+                self.mandate.normal_guard
+                if self.policy == "EXIT_NORMAL"
+                else self.mandate.emergency_guard
+            )
+            assert released.goal.guard == expected_guard
+        else:
+            assert released.goal is None
 
     @invariant()
     def market_oracle_matches_public_state(self) -> None:
@@ -880,12 +902,26 @@ class ProtectionMarketMachine(RuleBasedStateMachine):
         if self.high_water is not None:
             assert self.state.high_watermark.exact_value == self.high_water
         if self.trail is not None:
-            if self.optional_tightening_seen:
-                assert self.state.trail.exact_value >= self.trail
-            else:
-                assert self.state.trail.exact_value == self.trail
-        assert self.state.waiting_buy_resolution is False
+            assert self.state.trail.exact_value == self.trail
+        assert self.state.waiting_buy_resolution is self.waiting
         assert self.state.raw_quantity == 4
+        assert self.state.execution_commitment == self.current.execution.commitment
+
+
+def test_high_risk_stateful_rules_advance_one_machine_history() -> None:
+    """Keep composition controls from regressing into isolated mini-scenarios."""
+    shared_rules = (
+        ProtectionEconomicsMachine.correction_bust_and_authentic_restore_compose_with_later_history,
+        ProtectionEconomicsMachine.incompatible_tick_loss_and_restore_advance_shared_history,
+        ProtectionMarketMachine.interruption_reopen_epoch_requires_fresh_corroboration,
+        ProtectionMarketMachine.introduce_unresolved_buy_into_shared_history,
+        ProtectionMarketMachine.terminalize_unresolved_buy_in_shared_history,
+        ProtectionMarketMachine.close_unresolved_buy_parent_in_shared_history,
+    )
+    for shared_rule in shared_rules:
+        source = inspect.getsource(shared_rule)
+        assert "._start(" not in source
+        assert "self.state" in source or "self._sync(" in source
 
 
 TestProtectionEconomicsMachine = ProtectionEconomicsMachine.TestCase

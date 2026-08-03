@@ -304,6 +304,93 @@ zero-quantity account-reconciliation, closed-parent revision, and tick-restorati
 Production remains barred until a fresh independent review accepts this second freeze with zero
 P0/P1.
 
+### Independent second-freeze review and third freeze
+
+A second fresh Sol review re-derived the RED contract at
+`9ceae2aa5cbf0cc69af2a082ec6598e86bcbae65`. It found no P0 and fourteen P1 test-strength gaps.
+The gaps concerned exact public shape, state/projection authenticity, cursor anchoring, bypassable
+constant-work inspection, positive overfill and mandate caps, formula loss/restoration, sticky
+post-activation economics, market-kind ownership, evaluation-time monotonicity, optional trail
+validity, all-effect SELL uncertainty, complete commitment sensitivity, and isolated rather than
+composed generated histories. They were not production defects; production remained absent and
+barred throughout the re-gate.
+
+The third freeze closes each review class at its owning boundary:
+
+1. Every reducer-owned state field, projection field, and retained venue-transition proof input is
+   individually mutated; unauthentic state or projection is `REFUSED` with no goal or alert.
+2. The public module exports only the frozen vocabulary and three functions. Enum members are
+   exact: `MarketKind(BEST_BID, TRADE)`,
+   `ProtectionPolicy(FLOOR_ONLY, TRAIL_ACTIVE, EXIT_NORMAL, HARD_BAIL, FLAT)`,
+   `ProtectionUrgency(NORMAL, EMERGENCY)`,
+   `ProtectionDisposition(APPLIED, EXACT_REPLAY, STALE, REFUSED)`, and
+   `ProtectionAlert(LATE_POSITIVE_AFTER_FLAT)`.
+3. Frozen public fields are exact: `EvidencePolicy(source_id, max_age, corroboration_window,
+   max_step_fraction)`; `ExecutionGuard(guard_id, policy_commitment)`;
+   `ProtectionMandate(mandate_id, position_scope, session_id, configuration_version,
+   loss_fraction, approved_gain, percent_trail_fraction, atr_multiple, tick, normal_guard,
+   emergency_guard, evidence_policy, maximum_quantity, maximum_goal_rate, deadline)`;
+   `MarketOccurrence(occurrence_id, source_id, position_scope, session_id, market_epoch,
+   source_sequence, source_time, evaluation_time, kind, best_bid, best_ask, trade_price,
+   atr_distance, structure_trail, halted)`; `PositionProtectionState(policy, mandate,
+   raw_quantity, execution_commitment, formula_available, armed_hard_bail_trigger,
+   activation_price, high_watermark, trail, waiting_buy_resolution, commitment)`;
+   `ProtectionVenueProjection(predecessor_cursor_ordinal, predecessor_cursor_head,
+   cursor_ordinal, cursor_head, predecessor_execution_commitment, execution_commitment,
+   predecessor_blocking_effect_count, predecessor_blocking_buy_effect_count,
+   blocking_effect_count, blocking_buy_effect_count, predecessor_execution_binding_matches,
+   execution_binding_matches, predecessor_account_reconciliation_clear,
+   account_reconciliation_clear)`; `ExecutionGoal(side, residual, urgency, guard, deadline,
+   session_id, mandate_id, maximum_goal_rate, execution_commitment, protection_commitment)`; and
+   `ProtectionTransition(state, disposition, goal, critical_alert)`. Public value classes expose no
+   behavioral or broker-mutating surface.
+4. Refusal, conflict, replay, and non-mutating reconciliation are anchored to the exact current
+   venue cursor. They are `EXACT_REPLAY` at that cursor and become `STALE` after a genuine advance.
+5. The constant-work oracle walks the extractor's transitive venue-local call graph and rejects raw
+   ledgers, private radix roots, dynamic or aggregate iteration, non-map method indirection, loops,
+   comprehensions, and recursion, in addition to comparing bounded-map access counts across small
+   and large books.
+6. Authentic positive overfill retains economics but is quarantined; residual above
+   `maximum_quantity` is never truncated or emitted. Favorable and emergency-shaped evidence both
+   remain non-serving `HARD_BAIL` with no goal.
+7. Loss of exact formula authority discards stale market evidence. Restoration recomputes exact
+   formula state but requires a fresh corroboration branch before any goal.
+8. Economics after trail activation may tighten hard-bail authority but cannot deactivate or
+   loosen the trail; later correction or bust cannot undo the tightened trigger.
+9. `BEST_BID` owns exactly bid/ask payload and may activate, ratchet, or trail-exit. `TRADE` owns
+   exactly trade price and may only corroborate hard bail with a distinct eligible bid; it cannot
+   activate, ratchet, or satisfy trail exit.
+10. Evaluation time is nondecreasing for one source/scope/session/epoch stream, equality is
+    allowed, regression is inert, and `source_time <= evaluation_time` remains required.
+11. Exact percent, ATR, and structure candidates compete independently. Invalid optional ATR or
+    structure data omits only that candidate, grants no trail authority, and cannot suppress valid
+    hard-bail or percent-trail behavior; non-unit tick rounding and structure dominance are exact.
+12. Any unresolved owned SELL suppresses both normal and emergency goals through terminal leg
+    state; only exact parent closure releases a goal with the correct guard.
+13. Protection and goal commitments change with mandate/session/configuration, every formula and
+    evidence-policy parameter, tick, guard, quantity/rate/deadline, execution quantity/economics,
+    and exit provenance.
+14. Revision/bust/restore, incompatible-tick loss/restore, epoch interruption/reopen, and unresolved
+    BUY terminal/parent closure now advance the same generated machine histories. A structural pin
+    prevents those high-risk rules from regressing into isolated `_start` scenarios.
+
+The bounded resolutions used by this freeze are: state/projection forgery fails closed; a residual
+above the mandate maximum is not a partial-goal authority; invalid optional trail components are
+omitted rather than poisoning independent valid candidates; evaluation time may equal but not
+precede the retained evaluation time; and non-advancing venue outcomes are current replay until a
+real cursor advance makes them stale. These are clause clarifications inside the accepted ADRs,
+not new architecture or runtime authority.
+
+Fresh third-freeze evidence: collection succeeds for 213 focused tests (197 deterministic, two
+state machines, one composition-strength pin, and 13 import/public-boundary tests). Exact RED
+execution yields 203 expected failures and ten passes; all failures are the deliberately absent
+protection module or its required export/import-boundary delta, with no collection or unrelated
+failure. Ruff check and format-check pass, `git diff --check` passes, and the activation-base scope
+check reports `SCOPE CHECK PASSED`. As a hostile preservation pre-flight, all 698 pre-existing
+execution-kernel tests outside the deliberately RED import/protection files pass. Production
+remains barred until a new independent review accepts the exact third-freeze commit with zero
+unresolved P0/P1.
+
 ## Stop conditions
 
 Stop rather than widen scope if the contract requires an ADR change, a new dependency, persistence,
@@ -322,5 +409,5 @@ and a running external CI gate are progress states, not goal blockers.
   retained untracked WO-0145/0146/0147 evidence remains untouched.
 - Pre-build clause map: one new protection reducer plus narrow identity, venue projection, exports,
   and two test suites; existing position/authority reducers stay unchanged.
-- Next action after activation: freeze failure-first tests, independently refute their ability to
-  detect wrong implementations, then begin production code only from that immutable RED checkpoint.
+- Next action: commit this third RED freeze, obtain fresh independent exact-commit acceptance with
+  zero unresolved P0/P1, and only then begin production code from the accepted immutable checkpoint.

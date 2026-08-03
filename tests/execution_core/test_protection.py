@@ -10,8 +10,9 @@ from __future__ import annotations
 
 import ast
 from copy import copy
-from dataclasses import FrozenInstanceError, fields, replace
+from dataclasses import FrozenInstanceError, fields, is_dataclass, replace
 from decimal import Decimal
+from enum import Enum
 from fractions import Fraction
 import importlib
 import inspect
@@ -43,6 +44,7 @@ from app.execution_core.fills import (
 )
 from app.execution_core.position import (
     ExecutionSnapshot,
+    PositionIntegrity,
     TransitionDisposition,
     apply_broker_execution_fact,
 )
@@ -137,6 +139,8 @@ def _mandate(
     *,
     mandate_id: MandateId = MANDATE_ID,
     position_scope: PositionScope = POSITION_SCOPE,
+    session_id: object | None = None,
+    source_id: object | None = None,
     loss_fraction: Fraction = Fraction(3, 40),
     approved_gain: Fraction = Fraction(3, 40),
     percent_trail_fraction: Fraction = Fraction(2, 25),
@@ -160,7 +164,7 @@ def _mandate(
     (source_type,) = _required(execution_core, "MarketDataSourceId")
     (session_type,) = _required(execution_core, "SessionId")
     evidence = evidence_type(
-        source_id=source_type("sip-primary"),
+        source_id=(source_id if source_id is not None else source_type("sip-primary")),
         max_age=max_age,
         corroboration_window=corroboration_window,
         max_step_fraction=max_step_fraction,
@@ -168,7 +172,9 @@ def _mandate(
     return mandate_type(
         mandate_id=mandate_id,
         position_scope=position_scope,
-        session_id=session_type("session-rth-1"),
+        session_id=(
+            session_id if session_id is not None else session_type("session-rth-1")
+        ),
         configuration_version=configuration_version,
         loss_fraction=loss_fraction,
         approved_gain=approved_gain,
@@ -413,6 +419,7 @@ def _occurrence(
     market_epoch: int = 0,
     atr_distance: int | None = None,
     structure_trail: int | None = None,
+    tick_units: int = 1,
     halted: bool = False,
     source_id: object | None = None,
     position_scope: PositionScope = POSITION_SCOPE,
@@ -427,19 +434,31 @@ def _occurrence(
     )
     return occurrence_type(
         occurrence_id=occurrence_id_type(label),
-        source_id=source_id or source_id_type("sip-primary"),
+        source_id=(
+            source_id if source_id is not None else source_id_type("sip-primary")
+        ),
         position_scope=position_scope,
-        session_id=session_id or session_type("session-rth-1"),
+        session_id=(
+            session_id if session_id is not None else session_type("session-rth-1")
+        ),
         market_epoch=market_epoch,
         source_sequence=sequence,
         source_time=source_time,
         evaluation_time=evaluation_time,
         kind=getattr(market_kind, kind),
-        best_bid=None if bid is None else _price(bid),
-        best_ask=None if ask is None else _price(ask),
-        trade_price=None if trade is None else _price(trade),
-        atr_distance=(None if atr_distance is None else _price(atr_distance)),
-        structure_trail=(None if structure_trail is None else _price(structure_trail)),
+        best_bid=None if bid is None else _price(bid, tick_units=tick_units),
+        best_ask=None if ask is None else _price(ask, tick_units=tick_units),
+        trade_price=(None if trade is None else _price(trade, tick_units=tick_units)),
+        atr_distance=(
+            None
+            if atr_distance is None
+            else _price(atr_distance, tick_units=tick_units)
+        ),
+        structure_trail=(
+            None
+            if structure_trail is None
+            else _price(structure_trail, tick_units=tick_units)
+        ),
         halted=halted,
     )
 
@@ -605,6 +624,42 @@ def _flip_digest(value: bytes) -> bytes:
     return bytes((value[0] ^ 1,)) + value[1:]
 
 
+def _different_value(value: object) -> object:
+    """Return a deterministic unequal value for exhaustive seal mutation pins."""
+    if type(value) is bool:
+        return not value
+    if type(value) is int:
+        return value + 1
+    if type(value) is bytes:
+        return _flip_digest(value) if value else b"forged"
+    if type(value) is str:
+        return f"{value}-forged"
+    if isinstance(value, Fraction):
+        return value + 1
+    if isinstance(value, Decimal):
+        return value + 1
+    if isinstance(value, Enum):
+        alternatives = tuple(member for member in type(value) if member is not value)
+        return alternatives[0] if alternatives else object()
+    if isinstance(value, tuple):
+        return value + (object(),)
+    if value is None:
+        return object()
+    if is_dataclass(value):
+        retained_fields = fields(value)
+        if retained_fields:
+            target = retained_fields[0]
+            clone = _clone_opaque(
+                value,
+                **{
+                    target.name: _different_value(getattr(value, target.name)),
+                },
+            )
+            assert clone != value
+            return clone
+    return object()
+
+
 def _assert_stale_unchanged(
     module: ModuleType,
     state: object,
@@ -639,8 +694,21 @@ def _emergency_goal_fixture(
     *,
     label: str,
     mandate: object | None = None,
+    market_label: str | None = None,
+    fill_quantity: int = 4,
+    fill_units: int = 100,
+    tick_units: int = 1,
+    first_bid: int = 92,
+    second_bid: int = 91,
 ) -> tuple[object, object, object, object]:
-    fill = _owned_fill_transition(label=f"{label}-fill")
+    occurrence_label = market_label or label
+    fill = _owned_fill_transition(
+        label=f"{label}-fill",
+        quantity=fill_quantity,
+        units=fill_units,
+        capacity=max(20, fill_quantity),
+        tick_units=tick_units,
+    )
     current_mandate, _, state = _start(module, fill, mandate)
     terminal, closed = _close_base_parent(fill)
     state, projection, _ = _sync_transitions(
@@ -653,7 +721,16 @@ def _emergency_goal_fixture(
         module,
         state,
         projection,
-        _occurrence(module, f"{label}-first", bid=92, ask=93, sequence=1),
+        _occurrence(
+            module,
+            f"{occurrence_label}-first",
+            bid=first_bid,
+            ask=first_bid + tick_units,
+            sequence=1,
+            tick_units=tick_units,
+            source_id=current_mandate.evidence_policy.source_id,
+            session_id=current_mandate.session_id,
+        ),
     )
     result = _reduce(
         module,
@@ -661,12 +738,15 @@ def _emergency_goal_fixture(
         projection,
         _occurrence(
             module,
-            f"{label}-second",
-            bid=91,
-            ask=92,
+            f"{occurrence_label}-second",
+            bid=second_bid,
+            ask=second_bid + tick_units,
             sequence=2,
             source_time=106,
             evaluation_time=110,
+            tick_units=tick_units,
+            source_id=current_mandate.evidence_policy.source_id,
+            session_id=current_mandate.session_id,
         ),
     )
     assert result.goal is not None
@@ -721,6 +801,136 @@ def test_public_protection_contract_is_exported_and_has_one_reducer() -> None:
         for name in dir(module)
         if name.startswith(("create_", "claim_", "dispatch_", "grant_", "submit_"))
     } == set()
+
+
+def test_public_value_shapes_and_enum_members_are_exact() -> None:
+    module = _protection_module()
+    expected_fields = {
+        "EvidencePolicy": (
+            "source_id",
+            "max_age",
+            "corroboration_window",
+            "max_step_fraction",
+        ),
+        "ExecutionGuard": ("guard_id", "policy_commitment"),
+        "ProtectionMandate": (
+            "mandate_id",
+            "position_scope",
+            "session_id",
+            "configuration_version",
+            "loss_fraction",
+            "approved_gain",
+            "percent_trail_fraction",
+            "atr_multiple",
+            "tick",
+            "normal_guard",
+            "emergency_guard",
+            "evidence_policy",
+            "maximum_quantity",
+            "maximum_goal_rate",
+            "deadline",
+        ),
+        "MarketOccurrence": (
+            "occurrence_id",
+            "source_id",
+            "position_scope",
+            "session_id",
+            "market_epoch",
+            "source_sequence",
+            "source_time",
+            "evaluation_time",
+            "kind",
+            "best_bid",
+            "best_ask",
+            "trade_price",
+            "atr_distance",
+            "structure_trail",
+            "halted",
+        ),
+        "PositionProtectionState": (
+            "policy",
+            "mandate",
+            "raw_quantity",
+            "execution_commitment",
+            "formula_available",
+            "armed_hard_bail_trigger",
+            "activation_price",
+            "high_watermark",
+            "trail",
+            "waiting_buy_resolution",
+            "commitment",
+        ),
+        "ProtectionVenueProjection": (
+            "predecessor_cursor_ordinal",
+            "predecessor_cursor_head",
+            "cursor_ordinal",
+            "cursor_head",
+            "predecessor_execution_commitment",
+            "execution_commitment",
+            "predecessor_blocking_effect_count",
+            "predecessor_blocking_buy_effect_count",
+            "blocking_effect_count",
+            "blocking_buy_effect_count",
+            "predecessor_execution_binding_matches",
+            "execution_binding_matches",
+            "predecessor_account_reconciliation_clear",
+            "account_reconciliation_clear",
+        ),
+        "ExecutionGoal": (
+            "side",
+            "residual",
+            "urgency",
+            "guard",
+            "deadline",
+            "session_id",
+            "mandate_id",
+            "maximum_goal_rate",
+            "execution_commitment",
+            "protection_commitment",
+        ),
+        "ProtectionTransition": (
+            "state",
+            "disposition",
+            "goal",
+            "critical_alert",
+        ),
+    }
+    expected_enums = {
+        "MarketKind": ("BEST_BID", "TRADE"),
+        "ProtectionPolicy": (
+            "FLOOR_ONLY",
+            "TRAIL_ACTIVE",
+            "EXIT_NORMAL",
+            "HARD_BAIL",
+            "FLAT",
+        ),
+        "ProtectionUrgency": ("NORMAL", "EMERGENCY"),
+        "ProtectionDisposition": ("APPLIED", "EXACT_REPLAY", "STALE", "REFUSED"),
+        "ProtectionAlert": ("LATE_POSITIVE_AFTER_FLAT",),
+    }
+    public_names = {name for name in vars(module) if not name.startswith("_")}
+    assert public_names == set(module.__all__)
+    for name, expected in expected_enums.items():
+        (enum_type,) = _required(module, name)
+        assert tuple(enum_type.__members__) == expected
+    for name, expected in expected_fields.items():
+        (value_type,) = _required(module, name)
+        params = value_type.__dataclass_params__
+        assert params.frozen is True
+        assert (
+            tuple(
+                retained.name
+                for retained in fields(value_type)
+                if not retained.name.startswith("_")
+            )
+            == expected
+        )
+        assert {
+            member_name
+            for member_name, member in vars(value_type).items()
+            if not member_name.startswith("_")
+            and (callable(member) or isinstance(member, property))
+        } == set()
 
 
 def test_mandate_is_frozen_exact_and_rejects_subclasses() -> None:
@@ -880,6 +1090,28 @@ def test_market_occurrence_rejects_malformed_exact_fields(
         replace(occurrence, **{field_name: value})
 
 
+def test_market_kind_owns_one_exact_payload_shape() -> None:
+    module = _protection_module()
+    quote = _occurrence(module, "shape-quote", bid=100, ask=101)
+    trade = _occurrence(module, "shape-trade", kind="TRADE", trade=100)
+    invalid = (
+        (quote, {"best_bid": None}),
+        (quote, {"best_ask": None}),
+        (quote, {"trade_price": _price(100)}),
+        (
+            quote,
+            {"best_bid": None, "best_ask": None, "trade_price": _price(100)},
+        ),
+        (trade, {"trade_price": None}),
+        (trade, {"best_bid": _price(100), "best_ask": _price(101)}),
+        (trade, {"atr_distance": _price(2)}),
+        (trade, {"structure_trail": _price(99)}),
+    )
+    for occurrence, overrides in invalid:
+        with pytest.raises(ValueError):
+            replace(occurrence, **overrides)
+
+
 def test_state_projection_and_transition_are_opaque_and_sealed() -> None:
     module = _protection_module()
     state_type, projection_type = _required(
@@ -892,6 +1124,78 @@ def test_state_projection_and_transition_are_opaque_and_sealed() -> None:
             opaque()
         with pytest.raises(TypeError):
             type("ForgedProtectionCapability", (opaque,), {})
+
+
+def test_every_reducer_owned_state_field_is_authenticated_before_advancement() -> None:
+    module = _protection_module()
+    fill = _owned_fill_transition(label="protection-state-seal")
+    mandate, _, state = _start(module, fill)
+    _, terminal = _terminal_fixture(
+        fill,
+        effect_id=BASE_EFFECT,
+        leg_key=BASE_LEG,
+        label="protection-state-seal",
+        cumulative_quantity=4,
+    )
+    successor = _projection(module, terminal, mandate)
+    (disposition,) = _required(module, "ProtectionDisposition")
+    tested = set()
+    for retained in fields(state):
+        current = getattr(state, retained.name)
+        replacement = _different_value(current)
+        assert replacement != current
+        forged = _clone_opaque(state, **{retained.name: replacement})
+        result = _reduce(module, forged, successor)
+        assert result.disposition is disposition.REFUSED, retained.name
+        assert result.state == forged, retained.name
+        assert result.goal is None, retained.name
+        assert result.critical_alert is None, retained.name
+        tested.add(retained.name)
+    assert tested == {retained.name for retained in fields(state)}
+
+
+def test_every_projection_field_is_sealed_against_single_field_forgery() -> None:
+    module = _protection_module()
+    fill = _owned_fill_transition(label="protection-projection-seal")
+    mandate, _, state = _start(module, fill)
+    _, terminal = _terminal_fixture(
+        fill,
+        effect_id=BASE_EFFECT,
+        leg_key=BASE_LEG,
+        label="protection-projection-seal",
+        cumulative_quantity=4,
+    )
+    projection = _projection(module, terminal, mandate)
+    (disposition,) = _required(module, "ProtectionDisposition")
+    tested = set()
+    for retained in fields(projection):
+        current = getattr(projection, retained.name)
+        replacement = _different_value(current)
+        assert replacement != current
+        forged = _clone_opaque(projection, **{retained.name: replacement})
+        result = _reduce(module, state, forged)
+        assert result.disposition is disposition.REFUSED, retained.name
+        assert result.state == state, retained.name
+        assert result.goal is None, retained.name
+        assert result.critical_alert is None, retained.name
+        tested.add(retained.name)
+    assert tested == {retained.name for retained in fields(projection)}
+
+
+def test_every_venue_transition_field_is_bound_into_the_protection_proof() -> None:
+    module = _protection_module()
+    _, _, _, applied = _owned_fill_fixture(label="protection-envelope-seal")
+    mandate = _mandate(module)
+    tested = set()
+    for retained in fields(applied):
+        current = getattr(applied, retained.name)
+        replacement = _different_value(current)
+        assert replacement != current
+        forged = _clone_opaque(applied, **{retained.name: replacement})
+        with pytest.raises((TypeError, ValueError)):
+            _projection(module, forged, mandate)
+        tested.add(retained.name)
+    assert tested == {retained.name for retained in fields(applied)}
 
 
 def test_projection_rejects_substituted_transition_book_or_execution() -> None:
@@ -1142,7 +1446,7 @@ def test_refused_and_conflicting_venue_inputs_do_not_advance_protection_cursor()
 ):
     module = _protection_module()
     _, _, fill_command, fill = _owned_fill_fixture(label="protection-nonadvancing")
-    mandate, _, state = _start(module, fill)
+    mandate, fill_projection, state = _start(module, fill)
     refused = venue_fixtures.apply_venue_recovery_input(
         fill.book,
         fill.execution,
@@ -1167,6 +1471,8 @@ def test_refused_and_conflicting_venue_inputs_do_not_advance_protection_cursor()
     )
     assert refused.disposition is VenueRecoveryDisposition.REFUSED
     assert conflict.disposition is VenueRecoveryDisposition.CONFLICT
+    old_projections = []
+    (disposition,) = _required(module, "ProtectionDisposition")
     for transition in (refused, conflict):
         assert transition.book == fill.book
         assert transition.execution == fill.execution
@@ -1174,10 +1480,26 @@ def test_refused_and_conflicting_venue_inputs_do_not_advance_protection_cursor()
         projection = _projection(module, transition, mandate)
         assert projection.predecessor_cursor_ordinal == projection.cursor_ordinal
         assert projection.predecessor_cursor_head == projection.cursor_head
+        assert projection.cursor_ordinal == fill_projection.cursor_ordinal
+        assert projection.cursor_head == fill_projection.cursor_head
         result = _reduce(module, state, projection)
+        assert result.disposition is disposition.EXACT_REPLAY
         assert result.state == state
         assert result.goal is None
         assert result.critical_alert is None
+        old_projections.append(projection)
+
+    _, terminal = _terminal_fixture(
+        fill,
+        effect_id=BASE_EFFECT,
+        leg_key=BASE_LEG,
+        label="protection-nonadvancing-current",
+        cumulative_quantity=4,
+    )
+    advanced = _reduce(module, state, _projection(module, terminal, mandate))
+    assert advanced.state != state
+    for old_projection in old_projections:
+        _assert_stale_unchanged(module, advanced.state, old_projection)
 
 
 def test_nonmutating_reconciliation_does_not_advance_protection_cursor() -> None:
@@ -1208,10 +1530,11 @@ def test_nonmutating_reconciliation_does_not_advance_protection_cursor() -> None
         ),
     )
     assert contradicted.disposition is VenueRecoveryDisposition.RECONCILIATION_REQUIRED
+    contradicted_projection = _projection(module, contradicted, mandate)
     synced = _reduce(
         module,
         state,
-        _projection(module, contradicted, mandate),
+        contradicted_projection,
     )
     release = venue_fixtures.apply_venue_recovery_input(
         contradicted.book,
@@ -1237,7 +1560,11 @@ def test_nonmutating_reconciliation_does_not_advance_protection_cursor() -> None
     projection = _projection(module, release, mandate)
     assert projection.predecessor_cursor_ordinal == projection.cursor_ordinal
     assert projection.predecessor_cursor_head == projection.cursor_head
+    assert projection.cursor_ordinal == contradicted_projection.cursor_ordinal
+    assert projection.cursor_head == contradicted_projection.cursor_head
     result = _reduce(module, synced.state, projection)
+    (disposition,) = _required(module, "ProtectionDisposition")
+    assert result.disposition is disposition.EXACT_REPLAY
     assert result.state == synced.state
     assert result.goal is None
     assert result.critical_alert is None
@@ -1551,7 +1878,7 @@ def test_late_owned_buy_after_flat_restores_hard_bail_and_alert() -> None:
         label="protection-late-flat-sell",
     )
     flat = _reduce(module, state, _projection(module, sell_closed, mandate))
-    (policy,) = _required(module, "ProtectionPolicy")
+    policy, alert = _required(module, "ProtectionPolicy", "ProtectionAlert")
     assert flat.state.policy is policy.FLAT
     late_chain, late_effect, late_leg, _ = _append_needs_review_effect(
         sell_closed,
@@ -1594,7 +1921,7 @@ def test_late_owned_buy_after_flat_restores_hard_bail_and_alert() -> None:
     assert recovered.state.policy is policy.HARD_BAIL
     assert recovered.state.mandate == mandate
     assert recovered.state.waiting_buy_resolution is True
-    assert recovered.critical_alert is not None
+    assert recovered.critical_alert is alert.LATE_POSITIVE_AFTER_FLAT
     assert recovered.goal is None
 
 
@@ -1710,7 +2037,8 @@ def test_late_sell_revision_after_flat_restores_positive_hard_bail(
     assert recovered.state.raw_quantity == expected_quantity
     assert recovered.state.policy is policy.HARD_BAIL
     assert recovered.state.mandate == mandate
-    assert recovered.critical_alert is not None
+    (alert,) = _required(module, "ProtectionAlert")
+    assert recovered.critical_alert is alert.LATE_POSITIVE_AFTER_FLAT
     assert recovered.goal is None
 
 
@@ -1795,7 +2123,6 @@ def test_protection_projection_never_materializes_slow_venue_histories(
     assert large_calls == small_calls
 
     extractor = getattr(venue_module, "_extract_protection_transition")
-    tree = ast.parse(inspect.getsource(extractor))
     forbidden = {
         "_effect_order",
         "_claim_order",
@@ -1809,13 +2136,108 @@ def test_protection_projection_never_materializes_slow_venue_histories(
         "_registry_transition_ledger",
         "_binding_order",
     }
+    forbidden.update({"_root", "__dict__"})
+    pending = [extractor]
+    scanned: dict[str, ast.AST] = {}
+    call_graph: dict[str, set[str]] = {}
+    while pending:
+        current = pending.pop()
+        if current.__name__ in scanned:
+            continue
+        tree = ast.parse(inspect.getsource(current))
+        scanned[current.__name__] = tree
+        local_calls = {
+            node.func.id
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        }
+        call_graph[current.__name__] = set()
+        for called_name in local_calls:
+            candidate = vars(venue_module).get(called_name)
+            if (
+                inspect.isfunction(candidate)
+                and candidate.__module__ == venue_module.__name__
+            ):
+                call_graph[current.__name__].add(called_name)
+                pending.append(candidate)
+
     accessed = {
         node.attr
+        for tree in scanned.values()
         for node in ast.walk(tree)
         if isinstance(node, ast.Attribute) and node.attr in forbidden
     }
-    assert not accessed, (
-        f"protection extractor traverses raw venue ledgers: {accessed!r}"
+    dynamic_calls = {
+        node.func.id
+        for tree in scanned.values()
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id
+        in {
+            "all",
+            "any",
+            "dict",
+            "enumerate",
+            "filter",
+            "getattr",
+            "iter",
+            "list",
+            "map",
+            "max",
+            "min",
+            "next",
+            "set",
+            "sorted",
+            "sum",
+            "tuple",
+            "vars",
+            "zip",
+        }
+    }
+    indirect_calls = {
+        node.func.attr
+        for tree in scanned.values()
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr != "get"
+    }
+    iterative_nodes = {
+        type(node).__name__
+        for tree in scanned.values()
+        for node in ast.walk(tree)
+        if isinstance(
+            node,
+            (
+                ast.For,
+                ast.While,
+                ast.comprehension,
+                ast.GeneratorExp,
+                ast.ListComp,
+                ast.SetComp,
+                ast.DictComp,
+            ),
+        )
+    }
+
+    def assert_acyclic(name: str, path: tuple[str, ...] = ()) -> None:
+        assert name not in path, (
+            f"recursive protection extractor path: {path + (name,)!r}"
+        )
+        for called_name in call_graph.get(name, set()):
+            assert_acyclic(called_name, path + (name,))
+
+    assert_acyclic(extractor.__name__)
+    assert not accessed, f"protection extractor traverses raw venue state: {accessed!r}"
+    assert not dynamic_calls, (
+        f"protection extractor uses dynamic traversal: {dynamic_calls!r}"
+    )
+    assert not indirect_calls, (
+        f"protection extractor hides work behind method calls: {indirect_calls!r}"
+    )
+    assert not iterative_nodes, (
+        f"protection extractor uses history-shaped iteration: {iterative_nodes!r}"
     )
 
 
@@ -1985,6 +2407,99 @@ def test_overfill_economics_are_retained_but_never_serving() -> None:
     assert result.goal is None
 
 
+def test_positive_broker_overfill_is_quarantined_before_any_goal_authority() -> None:
+    module = _protection_module()
+    overfill = _owned_fill_transition(
+        label="protection-positive-overfill",
+        quantity=5,
+        capacity=4,
+    )
+    assert overfill.execution.position.raw_quantity == 5
+    assert overfill.execution.integrity & PositionIntegrity.OVERFILL_QUARANTINE
+    mandate, _, state = _start(module, overfill)
+    (policy,) = _required(module, "ProtectionPolicy")
+    assert state.raw_quantity == 5
+    assert state.policy is policy.HARD_BAIL
+    assert state.formula_available is False
+    terminal, closed = _close_base_parent(overfill)
+    state, projection, _ = _sync_transitions(
+        module,
+        state,
+        mandate,
+        (terminal, closed),
+    )
+    for index, bid in enumerate((92, 91), start=1):
+        result = _reduce(
+            module,
+            state,
+            projection,
+            _occurrence(
+                module,
+                f"positive-overfill-{index}",
+                bid=bid,
+                ask=bid + 1,
+                sequence=index,
+                source_time=94 + index * 6,
+                evaluation_time=98 + index * 6,
+            ),
+        )
+        state = result.state
+        assert result.goal is None
+    assert state.policy is policy.HARD_BAIL
+
+
+@pytest.mark.parametrize(
+    "bids",
+    [
+        (120, 110, 109),
+        (92, 91),
+    ],
+)
+def test_residual_above_mandate_quantity_is_never_truncated_or_emitted(
+    bids: tuple[int, ...],
+) -> None:
+    module = _protection_module()
+    fill = _owned_fill_transition(
+        label=f"protection-over-authority-{len(bids)}",
+        quantity=5,
+        capacity=20,
+    )
+    mandate, _, state = _start(
+        module,
+        fill,
+        _mandate(module, maximum_quantity=4),
+    )
+    terminal, closed = _close_base_parent(fill)
+    state, projection, _ = _sync_transitions(
+        module,
+        state,
+        mandate,
+        (terminal, closed),
+    )
+    (policy,) = _required(module, "ProtectionPolicy")
+    assert state.raw_quantity == 5
+    assert state.policy is policy.HARD_BAIL
+    for index, bid in enumerate(bids, start=1):
+        result = _reduce(
+            module,
+            state,
+            projection,
+            _occurrence(
+                module,
+                f"over-authority-{len(bids)}-{index}",
+                bid=bid,
+                ask=bid + 1,
+                sequence=index,
+                source_time=94 + index * 6,
+                evaluation_time=98 + index * 6,
+            ),
+        )
+        state = result.state
+        assert result.goal is None
+    assert state.raw_quantity == 5
+    assert state.policy is policy.HARD_BAIL
+
+
 def test_pending_basis_advances_quantity_but_withholds_stale_formula() -> None:
     module = _protection_module()
     _, _, buy_command, buy = _owned_fill_fixture(
@@ -2065,6 +2580,136 @@ def test_pending_basis_advances_quantity_but_withholds_stale_formula() -> None:
     assert result.state.formula_available is False
     assert result.state.policy is policy.HARD_BAIL
     assert result.goal is None
+
+
+def test_formula_loss_discards_market_evidence_and_restores_a_fresh_branch() -> None:
+    module = _protection_module()
+    _, _, fill_command, fill = _owned_fill_fixture(
+        label="protection-formula-loss",
+        quantity=4,
+        units=100,
+        capacity=4,
+    )
+    mandate, _, state = _start(module, fill)
+    terminal, closed = _close_base_parent(fill)
+    state, projection, _ = _sync_transitions(
+        module,
+        state,
+        mandate,
+        (terminal, closed),
+    )
+    activated = _reduce(
+        module,
+        state,
+        projection,
+        _occurrence(
+            module,
+            "formula-loss-activation",
+            bid=120,
+            ask=121,
+            sequence=1,
+        ),
+    )
+    (policy,) = _required(module, "ProtectionPolicy")
+    assert activated.state.policy is policy.TRAIL_ACTIVE
+    assert activated.state.armed_hard_bail_trigger.exact_value == Fraction(93)
+    assert activated.state.trail.exact_value == Fraction(111)
+
+    _, incompatible = _correct_owned_root(
+        closed,
+        label="protection-formula-loss-incompatible",
+        root_fill_id=fill_command.fact.root_fill_id,
+        predecessor_source_event_id=fill_command.fact.key.source_event_id,
+        prior_root_quantity=4,
+        resulting_quantity=4,
+        units=102,
+        prior_venue_cumulative=4,
+        tick_units=2,
+    )
+    unavailable = _reduce(
+        module,
+        activated.state,
+        _projection(module, incompatible, mandate),
+    )
+    assert unavailable.state.raw_quantity == 4
+    assert unavailable.state.formula_available is False
+    assert unavailable.state.policy is policy.HARD_BAIL
+    assert unavailable.goal is None
+    state = unavailable.state
+    projection = _projection(module, incompatible, mandate)
+    for index, bid in enumerate((92, 91), start=2):
+        ignored = _reduce(
+            module,
+            state,
+            projection,
+            _occurrence(
+                module,
+                f"formula-loss-ignored-{index}",
+                bid=bid,
+                ask=bid + 1,
+                sequence=index,
+                source_time=94 + index * 6,
+                evaluation_time=98 + index * 6,
+            ),
+        )
+        state = ignored.state
+        assert state.formula_available is False
+        assert state.policy is policy.HARD_BAIL
+        assert ignored.goal is None
+
+    _, restored_transition = _correct_owned_root(
+        incompatible,
+        label="protection-formula-loss-restored",
+        root_fill_id=fill_command.fact.root_fill_id,
+        predecessor_source_event_id=SourceEventId(
+            "protection-formula-loss-incompatible-source"
+        ),
+        prior_root_quantity=4,
+        resulting_quantity=4,
+        units=100,
+        prior_venue_cumulative=4,
+    )
+    restored_projection = _projection(module, restored_transition, mandate)
+    restored = _reduce(module, state, restored_projection)
+    assert restored.state.formula_available is True
+    assert restored.state.armed_hard_bail_trigger.exact_value == Fraction(93)
+    assert restored.state.activation_price.exact_value == Fraction(108)
+    assert restored.state.high_watermark.exact_value == Fraction(120)
+    assert restored.state.trail.exact_value == Fraction(111)
+    assert restored.state.policy is policy.HARD_BAIL
+    assert restored.goal is None
+
+    fresh_first = _reduce(
+        module,
+        restored.state,
+        restored_projection,
+        _occurrence(
+            module,
+            "formula-loss-fresh-1",
+            bid=92,
+            ask=93,
+            sequence=4,
+            source_time=124,
+            evaluation_time=128,
+        ),
+    )
+    assert fresh_first.goal is None
+    fresh_second = _reduce(
+        module,
+        fresh_first.state,
+        restored_projection,
+        _occurrence(
+            module,
+            "formula-loss-fresh-2",
+            bid=91,
+            ask=92,
+            sequence=5,
+            source_time=130,
+            evaluation_time=134,
+        ),
+    )
+    assert fresh_second.state.policy is policy.HARD_BAIL
+    assert fresh_second.goal is not None
 
 
 def test_single_below_trigger_bid_cannot_emit_hard_bail_goal() -> None:
@@ -2413,6 +3058,63 @@ def test_source_time_regression_and_halt_reopen_start_fresh_branches() -> None:
         ),
     )
     assert reopened_second.state.policy is policy.HARD_BAIL
+
+
+@pytest.mark.parametrize(
+    ("second_source_time", "second_evaluation_time", "triggers"),
+    [
+        (105, 105, True),
+        (103, 104, False),
+    ],
+)
+def test_evaluation_time_is_monotone_nondecreasing_per_market_stream(
+    second_source_time: int,
+    second_evaluation_time: int,
+    triggers: bool,
+) -> None:
+    module = _protection_module()
+    fill = _owned_fill_transition(label=f"evaluation-time-{triggers}")
+    mandate, _, state = _start(module, fill)
+    terminal, closed = _close_base_parent(fill)
+    state, projection, _ = _sync_transitions(
+        module,
+        state,
+        mandate,
+        (terminal, closed),
+    )
+    first = _reduce(
+        module,
+        state,
+        projection,
+        _occurrence(
+            module,
+            f"evaluation-time-{triggers}-first",
+            bid=92,
+            ask=93,
+            sequence=1,
+            source_time=100,
+            evaluation_time=105,
+        ),
+    )
+    second = _reduce(
+        module,
+        first.state,
+        projection,
+        _occurrence(
+            module,
+            f"evaluation-time-{triggers}-second",
+            bid=91,
+            ask=92,
+            sequence=2,
+            source_time=second_source_time,
+            evaluation_time=second_evaluation_time,
+        ),
+    )
+    (policy,) = _required(module, "ProtectionPolicy")
+    assert (second.state.policy is policy.HARD_BAIL) is triggers
+    assert (second.goal is not None) is triggers
+    if not triggers:
+        assert second.state == first.state
 
 
 @pytest.mark.parametrize(
@@ -2816,7 +3518,17 @@ def test_trade_bid_corroboration_honors_both_orders_and_window_boundary(
     assert (second.goal is not None) is triggers
 
 
-def test_trade_bid_pair_with_one_price_above_trigger_cannot_trip_hard_bail() -> None:
+@pytest.mark.parametrize(
+    ("trade_price", "bid_price"),
+    [
+        (92, 94),
+        (94, 92),
+    ],
+)
+def test_trade_bid_pair_with_one_price_above_trigger_cannot_trip_hard_bail(
+    trade_price: int,
+    bid_price: int,
+) -> None:
     module = _protection_module()
     fill = _owned_fill_transition()
     mandate, _, state = _start(module, fill)
@@ -2826,7 +3538,12 @@ def test_trade_bid_pair_with_one_price_above_trigger_cannot_trip_hard_bail() -> 
         module,
         state,
         projection,
-        _occurrence(module, "mixed-threshold-trade", kind="TRADE", trade=92),
+        _occurrence(
+            module,
+            f"mixed-threshold-trade-{trade_price}",
+            kind="TRADE",
+            trade=trade_price,
+        ),
     )
     bid = _reduce(
         module,
@@ -2834,9 +3551,9 @@ def test_trade_bid_pair_with_one_price_above_trigger_cannot_trip_hard_bail() -> 
         projection,
         _occurrence(
             module,
-            "mixed-threshold-bid",
-            bid=94,
-            ask=95,
+            f"mixed-threshold-bid-{bid_price}",
+            bid=bid_price,
+            ask=bid_price + 1,
             sequence=2,
             source_time=106,
             evaluation_time=110,
@@ -2845,6 +3562,117 @@ def test_trade_bid_pair_with_one_price_above_trigger_cannot_trip_hard_bail() -> 
     (policy,) = _required(module, "ProtectionPolicy")
     assert bid.state.policy is policy.FLOOR_ONLY
     assert bid.goal is None
+
+
+def test_trade_never_activates_ratchets_or_satisfies_a_trail_exit() -> None:
+    module = _protection_module()
+    fill = _owned_fill_transition(label="protection-trade-trail-ownership")
+    mandate, _, state = _start(module, fill)
+    terminal, closed = _close_base_parent(fill)
+    state, projection, _ = _sync_transitions(
+        module,
+        state,
+        mandate,
+        (terminal, closed),
+    )
+    favorable_trade = _reduce(
+        module,
+        state,
+        projection,
+        _occurrence(
+            module,
+            "trade-cannot-activate",
+            kind="TRADE",
+            trade=130,
+            sequence=1,
+        ),
+    )
+    (policy,) = _required(module, "ProtectionPolicy")
+    assert favorable_trade.state.policy is policy.FLOOR_ONLY
+    assert favorable_trade.state.high_watermark is None
+    assert favorable_trade.state.trail is None
+
+    activated = _reduce(
+        module,
+        favorable_trade.state,
+        projection,
+        _occurrence(
+            module,
+            "trade-control-activation",
+            bid=120,
+            ask=121,
+            sequence=2,
+            source_time=106,
+            evaluation_time=110,
+        ),
+    )
+    assert activated.state.policy is policy.TRAIL_ACTIVE
+    favorable_after_activation = _reduce(
+        module,
+        activated.state,
+        projection,
+        _occurrence(
+            module,
+            "trade-cannot-ratchet",
+            kind="TRADE",
+            trade=130,
+            sequence=3,
+            source_time=112,
+            evaluation_time=116,
+        ),
+    )
+    assert (
+        favorable_after_activation.state.high_watermark
+        == activated.state.high_watermark
+    )
+    assert favorable_after_activation.state.trail == activated.state.trail
+
+    ratcheted = _reduce(
+        module,
+        favorable_after_activation.state,
+        projection,
+        _occurrence(
+            module,
+            "trade-control-ratchet",
+            bid=130,
+            ask=131,
+            sequence=4,
+            source_time=118,
+            evaluation_time=122,
+        ),
+    )
+    below_trade = _reduce(
+        module,
+        ratcheted.state,
+        projection,
+        _occurrence(
+            module,
+            "trade-cannot-exit",
+            kind="TRADE",
+            trade=110,
+            sequence=5,
+            source_time=124,
+            evaluation_time=128,
+        ),
+    )
+    assert below_trade.state.policy is policy.TRAIL_ACTIVE
+    assert below_trade.goal is None
+    one_bid = _reduce(
+        module,
+        below_trade.state,
+        projection,
+        _occurrence(
+            module,
+            "trade-control-one-exit-bid",
+            bid=110,
+            ask=111,
+            sequence=6,
+            source_time=130,
+            evaluation_time=134,
+        ),
+    )
+    assert one_bid.state.policy is policy.TRAIL_ACTIVE
+    assert one_bid.goal is None
 
 
 def test_activation_requires_the_exact_tick_rounded_approved_gain_boundary() -> None:
@@ -2923,6 +3751,168 @@ def test_activation_and_hybrid_trail_ratchet_use_available_components_only() -> 
     assert without_components.state.trail.exact_value == Fraction(115)
 
 
+def test_structure_can_be_the_exact_dominant_trail_candidate() -> None:
+    module = _protection_module()
+    fill = _owned_fill_transition(label="protection-structure-dominant")
+    mandate, _, state = _start(module, fill)
+    terminal, closed = _close_base_parent(fill)
+    state, projection, _ = _sync_transitions(
+        module,
+        state,
+        mandate,
+        (terminal, closed),
+    )
+    activated = _reduce(
+        module,
+        state,
+        projection,
+        _occurrence(
+            module,
+            "structure-dominant-activation",
+            bid=120,
+            ask=121,
+            sequence=1,
+            atr_distance=10,
+            structure_trail=118,
+        ),
+    )
+    (policy,) = _required(module, "ProtectionPolicy")
+    assert activated.state.policy is policy.TRAIL_ACTIVE
+    assert activated.state.high_watermark.exact_value == Fraction(120)
+    assert activated.state.trail.exact_value == Fraction(118)
+
+
+def test_nonunit_tick_rounds_each_trail_candidate_once_and_forgets_missing_inputs() -> (
+    None
+):
+    module = _protection_module()
+    tick = TickMetadata(tick_units=PriceUnits(2), scale=SCALE)
+    fill = _owned_fill_transition(
+        label="protection-nonunit-trail",
+        tick_units=2,
+    )
+    mandate, _, state = _start(module, fill, _mandate(module, tick=tick))
+    terminal, closed = _close_base_parent(fill)
+    state, projection, _ = _sync_transitions(
+        module,
+        state,
+        mandate,
+        (terminal, closed),
+    )
+    activated = _reduce(
+        module,
+        state,
+        projection,
+        _occurrence(
+            module,
+            "nonunit-trail-activation",
+            bid=120,
+            ask=122,
+            sequence=1,
+            atr_distance=2,
+            structure_trail=114,
+            tick_units=2,
+        ),
+    )
+    assert activated.state.high_watermark.exact_value == Fraction(120)
+    assert activated.state.trail.exact_value == Fraction(116)
+    missing = _reduce(
+        module,
+        activated.state,
+        projection,
+        _occurrence(
+            module,
+            "nonunit-trail-missing",
+            bid=122,
+            ask=124,
+            sequence=2,
+            source_time=106,
+            evaluation_time=110,
+            tick_units=2,
+        ),
+    )
+    assert missing.state.high_watermark.exact_value == Fraction(122)
+    assert missing.state.trail.exact_value == Fraction(116)
+
+
+@pytest.mark.parametrize(
+    ("case", "field_name", "value"),
+    [
+        ("atr-nonpositive", "atr_distance", _price(0)),
+        ("atr-wrong-tick", "atr_distance", _price(3, tick_units=2)),
+        ("structure-nonpositive", "structure_trail", _price(0)),
+        ("structure-above-high", "structure_trail", _price(122)),
+        ("structure-wrong-tick", "structure_trail", _price(115, tick_units=2)),
+    ],
+)
+def test_invalid_optional_trail_components_are_omitted_without_authority(
+    case: str,
+    field_name: str,
+    value: ReportedPrice,
+) -> None:
+    module = _protection_module()
+    fill = _owned_fill_transition(label=f"invalid-optional-{case}")
+    mandate, _, state = _start(module, fill)
+    terminal, closed = _close_base_parent(fill)
+    state, projection, _ = _sync_transitions(
+        module,
+        state,
+        mandate,
+        (terminal, closed),
+    )
+    occurrence = _occurrence(
+        module,
+        f"invalid-optional-{case}",
+        bid=120,
+        ask=121,
+        sequence=1,
+    )
+    result = _reduce(
+        module,
+        state,
+        projection,
+        replace(occurrence, **{field_name: value}),
+    )
+    (policy,) = _required(module, "ProtectionPolicy")
+    assert result.state.policy is policy.TRAIL_ACTIVE
+    assert result.state.high_watermark.exact_value == Fraction(120)
+    assert result.state.trail.exact_value == Fraction(111)
+    assert result.goal is None
+
+
+def test_invalid_optional_components_cannot_suppress_core_hard_bail_evidence() -> None:
+    module = _protection_module()
+    fill = _owned_fill_transition(label="invalid-optional-hard-bail")
+    mandate, _, state = _start(module, fill)
+    terminal, closed = _close_base_parent(fill)
+    state, projection, _ = _sync_transitions(
+        module,
+        state,
+        mandate,
+        (terminal, closed),
+    )
+    for index, bid in enumerate((92, 91), start=1):
+        occurrence = _occurrence(
+            module,
+            f"invalid-optional-hard-bail-{index}",
+            bid=bid,
+            ask=bid + 1,
+            sequence=index,
+            source_time=94 + index * 6,
+            evaluation_time=98 + index * 6,
+        )
+        result = _reduce(
+            module,
+            state,
+            projection,
+            replace(occurrence, atr_distance=_price(0)),
+        )
+        state = result.state
+    (policy,) = _required(module, "ProtectionPolicy")
+    assert state.policy is policy.HARD_BAIL
+    assert result.goal is not None
+
+
 def test_fill_correction_and_bust_after_trail_activation_never_deactivate_or_loosen() -> (
     None
 ):
@@ -2982,6 +3972,7 @@ def test_fill_correction_and_bust_after_trail_activation_never_deactivate_or_loo
     assert bought_result.state.policy is policy.TRAIL_ACTIVE
     assert bought_result.state.high_watermark == high_watermark
     assert bought_result.state.trail == trail
+    assert bought_result.state.armed_hard_bail_trigger.exact_value == Fraction(105)
     _, corrected = _correct_owned_root(
         bought,
         label="protection-trail-late-buy-correction",
@@ -3003,6 +3994,7 @@ def test_fill_correction_and_bust_after_trail_activation_never_deactivate_or_loo
     assert corrected_result.state.policy is policy.TRAIL_ACTIVE
     assert corrected_result.state.high_watermark == high_watermark
     assert corrected_result.state.trail == trail
+    assert corrected_result.state.armed_hard_bail_trigger.exact_value == Fraction(105)
     _, busted = _bust_owned_root(
         corrected,
         label="protection-trail-late-buy-bust",
@@ -3025,6 +4017,7 @@ def test_fill_correction_and_bust_after_trail_activation_never_deactivate_or_loo
     assert busted_result.state.policy is policy.TRAIL_ACTIVE
     assert busted_result.state.high_watermark == high_watermark
     assert busted_result.state.trail == trail
+    assert busted_result.state.armed_hard_bail_trigger.exact_value == Fraction(105)
     assert busted_result.goal is None
 
 
@@ -3255,6 +4248,91 @@ def test_exit_normal_escalates_to_sticky_hard_bail() -> None:
     assert hard_two.goal.guard == mandate.emergency_guard
 
 
+@pytest.mark.parametrize("exit_kind", ["normal", "emergency"])
+def test_any_live_sell_effect_suppresses_goal_until_leg_and_parent_close(
+    exit_kind: str,
+) -> None:
+    module = _protection_module()
+    fill = _owned_fill_transition(label=f"all-effect-{exit_kind}")
+    mandate, _, state = _start(module, fill)
+    terminal, closed = _close_base_parent(fill)
+    state, _, _ = _sync_transitions(module, state, mandate, (terminal, closed))
+    sell_chain, sell_effect, sell_leg, _ = _append_needs_review_effect(
+        closed,
+        prefix=f"all-effect-{exit_kind}-sell",
+        side=ExecutionSide.SELL,
+        quantity=4,
+    )
+    state, projection, _ = _sync_transitions(
+        module,
+        state,
+        mandate,
+        sell_chain,
+    )
+    assert projection.blocking_effect_count == 1
+    assert projection.blocking_buy_effect_count == 0
+    if exit_kind == "normal":
+        bids = (120, 110, 109)
+    else:
+        bids = (92, 91)
+    result = None
+    for index, bid in enumerate(bids, start=1):
+        result = _reduce(
+            module,
+            state,
+            projection,
+            _occurrence(
+                module,
+                f"all-effect-{exit_kind}-{index}",
+                bid=bid,
+                ask=bid + 1,
+                sequence=index,
+                source_time=94 + index * 6,
+                evaluation_time=98 + index * 6,
+            ),
+        )
+        state = result.state
+    assert result is not None
+    policy, urgency = _required(module, "ProtectionPolicy", "ProtectionUrgency")
+    expected_policy = policy.EXIT_NORMAL if exit_kind == "normal" else policy.HARD_BAIL
+    expected_urgency = urgency.NORMAL if exit_kind == "normal" else urgency.EMERGENCY
+    expected_guard = (
+        mandate.normal_guard if exit_kind == "normal" else mandate.emergency_guard
+    )
+    assert result.state.policy is expected_policy
+    assert result.state.waiting_buy_resolution is False
+    assert result.goal is None
+
+    _, sell_terminal = _terminal_fixture(
+        sell_chain[-1],
+        effect_id=sell_effect,
+        leg_key=sell_leg,
+        label=f"all-effect-{exit_kind}-sell",
+        cumulative_quantity=0,
+    )
+    terminal_result = _reduce(
+        module,
+        state,
+        _projection(module, sell_terminal, mandate),
+    )
+    assert terminal_result.state.policy is expected_policy
+    assert terminal_result.goal is None
+    _, sell_closed = _close_parent_fixture(
+        sell_terminal,
+        effect_id=sell_effect,
+        label=f"all-effect-{exit_kind}-sell",
+    )
+    released = _reduce(
+        module,
+        terminal_result.state,
+        _projection(module, sell_closed, mandate),
+    )
+    assert released.state.policy is expected_policy
+    assert released.goal is not None
+    assert released.goal.urgency is expected_urgency
+    assert released.goal.guard == expected_guard
+
+
 def test_buy_wait_is_orthogonal_and_parent_close_not_leg_terminal_releases() -> None:
     module = _protection_module()
     fill = _owned_fill_transition()
@@ -3467,6 +4545,111 @@ def test_goal_carries_complete_current_policy_binding() -> None:
     assert changed_goal.execution_commitment == goal.execution_commitment
     assert changed_goal.protection_commitment == changed_state.commitment
     assert changed_goal.protection_commitment != goal.protection_commitment
+
+
+@pytest.mark.parametrize(
+    "binding",
+    [
+        "mandate_id",
+        "session_id",
+        "configuration_version",
+        "loss_fraction",
+        "approved_gain",
+        "percent_trail_fraction",
+        "atr_multiple",
+        "tick",
+        "normal_guard",
+        "emergency_guard",
+        "evidence_source",
+        "evidence_max_age",
+        "evidence_window",
+        "evidence_max_step",
+        "maximum_quantity",
+        "maximum_goal_rate",
+        "deadline",
+        "execution_quantity",
+        "execution_price",
+        "exit_provenance",
+    ],
+)
+def test_protection_commitment_binds_each_retained_authority_independently(
+    binding: str,
+) -> None:
+    module = _protection_module()
+    baseline_mandate = _mandate(module)
+    _, baseline_closed, baseline_state, baseline_goal = _emergency_goal_fixture(
+        module,
+        label="goal-binding-sensitivity",
+        mandate=baseline_mandate,
+    )
+    mandate_kwargs: dict[str, object] = {}
+    fixture_kwargs: dict[str, object] = {}
+    market_label: str | None = None
+    if binding == "mandate_id":
+        mandate_kwargs["mandate_id"] = MandateId("protection-mandate-v2")
+    elif binding == "session_id":
+        mandate_kwargs["session_id"] = execution_core.SessionId("session-rth-2")
+    elif binding == "configuration_version":
+        mandate_kwargs["configuration_version"] = "protection-v2"
+    elif binding == "loss_fraction":
+        mandate_kwargs["loss_fraction"] = Fraction(1, 20)
+    elif binding == "approved_gain":
+        mandate_kwargs["approved_gain"] = Fraction(1, 10)
+    elif binding == "percent_trail_fraction":
+        mandate_kwargs["percent_trail_fraction"] = Fraction(1, 10)
+    elif binding == "atr_multiple":
+        mandate_kwargs["atr_multiple"] = Fraction(3)
+    elif binding == "tick":
+        mandate_kwargs["tick"] = TickMetadata(
+            tick_units=PriceUnits(2),
+            scale=SCALE,
+        )
+        fixture_kwargs.update(tick_units=2, first_bid=92, second_bid=90)
+    elif binding == "normal_guard":
+        mandate_kwargs["normal_guard"] = _guard(module, "normal-guard-v2")
+    elif binding == "emergency_guard":
+        mandate_kwargs["emergency_guard"] = _guard(module, "emergency-guard-v2")
+    elif binding == "evidence_source":
+        mandate_kwargs["source_id"] = execution_core.MarketDataSourceId("sip-backup")
+    elif binding == "evidence_max_age":
+        mandate_kwargs["max_age"] = 20
+    elif binding == "evidence_window":
+        mandate_kwargs["corroboration_window"] = 20
+    elif binding == "evidence_max_step":
+        mandate_kwargs["max_step_fraction"] = Fraction(1, 3)
+    elif binding == "maximum_quantity":
+        mandate_kwargs["maximum_quantity"] = 21
+    elif binding == "maximum_goal_rate":
+        mandate_kwargs["maximum_goal_rate"] = 5
+    elif binding == "deadline":
+        mandate_kwargs["deadline"] = 1_001
+    elif binding == "execution_quantity":
+        fixture_kwargs["fill_quantity"] = 5
+    elif binding == "execution_price":
+        fixture_kwargs["fill_units"] = 102
+    else:
+        market_label = "goal-binding-sensitivity-other-exit"
+
+    changed_mandate = _mandate(module, **mandate_kwargs)
+    _, changed_closed, changed_state, changed_goal = _emergency_goal_fixture(
+        module,
+        label="goal-binding-sensitivity",
+        mandate=changed_mandate,
+        market_label=market_label,
+        **fixture_kwargs,
+    )
+    assert baseline_goal.execution_commitment == baseline_closed.execution.commitment
+    assert baseline_goal.protection_commitment == baseline_state.commitment
+    assert changed_goal.execution_commitment == changed_closed.execution.commitment
+    assert changed_goal.protection_commitment == changed_state.commitment
+    assert changed_goal.protection_commitment != baseline_goal.protection_commitment
+    assert changed_goal.side is ExecutionSide.SELL
+    assert changed_goal.residual == Quantity(changed_state.raw_quantity)
+    assert changed_goal.guard == changed_mandate.emergency_guard
+    assert changed_goal.deadline == changed_mandate.deadline
+    assert changed_goal.session_id == changed_mandate.session_id
+    assert changed_goal.mandate_id == changed_mandate.mandate_id
+    assert changed_goal.maximum_goal_rate == changed_mandate.maximum_goal_rate
 
 
 def test_execution_goal_rejects_every_malformed_authority_binding() -> None:
