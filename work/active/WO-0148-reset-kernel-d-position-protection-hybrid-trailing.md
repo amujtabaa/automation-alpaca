@@ -452,6 +452,49 @@ The fourth freeze adds no production code or runtime authority. Production remai
 fresh independent reviewer accepts the exact immutable fourth-freeze commit with zero unresolved
 P0/P1.
 
+### Independent fourth-freeze review and fifth freeze
+
+A fresh Sol reviewer independently re-derived exact fourth-freeze commit
+`fa737f446d746e19bef40c0fbe6f33a80595cf1d`. It found no P0 and returned `BLOCK` with four P1
+test-strength findings. Production remained absent and barred. The findings were that the public
+value seal ignored capability-bearing special methods; the constant-work oracle trusted every
+method named `get`; the later-BUY cap/overfill negative did not first prove its exact predecessor
+could serve a goal; and position-scope commitment sensitivity was confounded by changing the
+execution commitment at the same time.
+
+The fifth freeze closes each finding at the failure-capable test boundary:
+
+1. The complete-MRO public-value seal now also rejects inherited `__call__`, dynamic lookup,
+   descriptor, indexing, and iteration hooks. A mutant with inherited callable and `__getattr__`
+   broker-capability escape is detected without invoking it.
+2. The constant-work oracle now permits `.get` only on the three exact bounded protection map
+   fields. A global `SlowGetter.get` mutant that hides an input-ledger materialization is rejected
+   by the same method-call classifier used against the production extractor.
+3. Both later-BUY boundaries now branch the identical closed-parent pre-BUY state and projection
+   through their supplied favorable or emergency market histories and prove the expected normal or
+   emergency goal before applying the BUY that crosses the mandate cap or broker overfill.
+4. A same-execution exact-replay control changes only the retained mandate `PositionScope`; every
+   other mandate field, execution commitment, and raw quantity remains identical. The forged state
+   must be `REFUSED` unchanged with no goal or alert.
+
+Fresh fifth-freeze evidence before any production implementation:
+
+- focused collection succeeds for 231 tests: 214 deterministic examples, two stateful meta
+  controls, two bounded state machines, and 13 import/public-boundary tests;
+- exact RED execution yields 214 expected failures and 17 passes. The only failure classes remain
+  the deliberately absent protection module and required export/module/import-boundary deltas; all
+  eight pre-production meta controls pass;
+- Ruff check and format-check pass, `git diff --check` passes, both changed protection test files
+  parse at the Python 3.11 grammar target, and the activation-base scope checker reports
+  `SCOPE CHECK PASSED`;
+- the hostile preservation pre-flight remains green: all 698 predecessor execution-kernel tests
+  outside the deliberately RED protection/import files pass in 186.84 seconds; and
+- no Python 3.11 interpreter is installed locally, so actual 3.11 execution remains an exact-head
+  CI obligation rather than a local acceptance claim.
+
+The fifth freeze still adds no production code or operational authority. Production remains barred
+until a fresh independent reviewer accepts its exact immutable commit with zero unresolved P0/P1.
+
 ## Stop conditions
 
 Stop rather than widen scope if the contract requires an ADR change, a new dependency, persistence,
@@ -470,5 +513,5 @@ and a running external CI gate are progress states, not goal blockers.
   retained untracked WO-0145/0146/0147 evidence remains untouched.
 - Pre-build clause map: one new protection reducer plus narrow identity, venue projection, exports,
   and two test suites; existing position/authority reducers stay unchanged.
-- Next action: commit this fourth RED freeze, obtain fresh independent exact-commit acceptance with
+- Next action: commit the fifth RED freeze, obtain fresh independent exact-commit acceptance with
   zero unresolved P0/P1, and only then begin production code from the accepted immutable checkpoint.

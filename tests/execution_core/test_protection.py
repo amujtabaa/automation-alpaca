@@ -680,14 +680,27 @@ def _different_value(value: object) -> object:
     return object()
 
 
+_CAPABILITY_SPECIAL_HOOKS = frozenset(
+    {
+        "__call__",
+        "__get__",
+        "__getattr__",
+        "__getattribute__",
+        "__getitem__",
+        "__iter__",
+        "__next__",
+    }
+)
+
+
 def _public_behavior_names(value_type: type[object]) -> set[str]:
-    """Return every public class-level member inherited through the exact MRO."""
+    """Return every public or capability-bearing member in the exact MRO."""
     public_names: set[str] = set()
     for base in inspect.getmro(value_type):
         if base is object:
             continue
         for name in vars(base):
-            if name.startswith("_"):
+            if name.startswith("_") and name not in _CAPABILITY_SPECIAL_HOOKS:
                 continue
             inspect.getattr_static(value_type, name)
             public_names.add(name)
@@ -832,6 +845,47 @@ def _make_closure_scan_mutant() -> Callable[[object], object]:
 
 
 _CLOSURE_SCAN_MUTANT = _make_closure_scan_mutant()
+
+
+class _SlowGetter:
+    def get(self, book: object) -> object:
+        return tuple(book._input_ledger)
+
+
+_SLOW_GETTER = _SlowGetter()
+
+
+def _hidden_get_scan_mutant(book: object) -> object:
+    return _SLOW_GETTER.get(book)
+
+
+_BOUNDED_PROTECTION_MAP_FIELDS = frozenset(
+    {
+        "_authority_summary_by_scope",
+        "_binding_by_scope",
+        "_protection_cursor_by_scope",
+    }
+)
+
+
+def _disallowed_constant_work_method_calls(
+    scanned: dict[str, ast.AST],
+) -> set[str]:
+    disallowed: set[str] = set()
+    for tree in scanned.values():
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or not isinstance(
+                node.func, ast.Attribute
+            ):
+                continue
+            if (
+                node.func.attr == "get"
+                and isinstance(node.func.value, ast.Attribute)
+                and node.func.value.attr in _BOUNDED_PROTECTION_MAP_FIELDS
+            ):
+                continue
+            disallowed.add(node.func.attr)
+    return disallowed
 
 
 def _assert_stale_unchanged(
@@ -1242,6 +1296,14 @@ def test_public_value_shapes_and_enum_members_are_exact() -> None:
 
 def test_public_behavior_seal_detects_inherited_capability_mutant() -> None:
     class _HiddenCapabilityMixin:
+        def __call__(self) -> None:
+            raise AssertionError("mutant callable capability must never run")
+
+        def __getattr__(self, name: str) -> object:
+            if name == "submit_order":
+                return lambda: None
+            raise AttributeError(name)
+
         def submit_order(self) -> None:
             raise AssertionError("mutant capability must never run")
 
@@ -1253,6 +1315,8 @@ def test_public_behavior_seal_detects_inherited_capability_mutant() -> None:
         pass
 
     assert _public_behavior_names(_ApparentlySafeValue) == {
+        "__call__",
+        "__getattr__",
         "broker_client",
         "submit_order",
     }
@@ -2538,14 +2602,7 @@ def test_protection_projection_never_materializes_slow_venue_histories(
             "zip",
         }
     }
-    indirect_calls = {
-        node.func.attr
-        for tree in scanned.values()
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr != "get"
-    }
+    indirect_calls = _disallowed_constant_work_method_calls(scanned)
     opaque_call_targets = {
         ast.dump(node.func, include_attributes=False)
         for tree in scanned.values()
@@ -2625,6 +2682,17 @@ def test_constant_work_oracle_rejects_alias_and_callable_mutants(
         assert unresolved_name in unresolved
     if raw_attribute is not None:
         assert raw_attribute in accessed
+
+
+def test_constant_work_oracle_rejects_hidden_get_scan_mutant() -> None:
+    owner_module = inspect.getmodule(_hidden_get_scan_mutant)
+    assert owner_module is not None
+    scanned, _, unresolved = _constant_work_call_graph(
+        _hidden_get_scan_mutant,
+        owner_module,
+    )
+    assert not unresolved
+    assert "get" in _disallowed_constant_work_method_calls(scanned)
 
 
 def test_first_owned_fill_arms_only_its_exact_mandate_after_economics() -> None:
@@ -2906,15 +2974,46 @@ def test_later_owned_buy_crossing_a_serving_boundary_is_never_goal_authority(
         _mandate(module, maximum_quantity=maximum_quantity),
     )
     terminal, closed = _close_base_parent(fill)
-    state, _, _ = _sync_transitions(
+    state, serving_projection, _ = _sync_transitions(
         module,
         state,
         mandate,
         (terminal, closed),
     )
-    (policy,) = _required(module, "ProtectionPolicy")
+    policy, urgency = _required(
+        module,
+        "ProtectionPolicy",
+        "ProtectionUrgency",
+    )
     assert state.policy is policy.FLOOR_ONLY
     assert state.formula_available is True
+
+    serving_state = state
+    for index, bid in enumerate(bids, start=1):
+        serving_result = _reduce(
+            module,
+            serving_state,
+            serving_projection,
+            _occurrence(
+                module,
+                f"{label}-pre-buy-serving-{index}",
+                bid=bid,
+                ask=bid + 1,
+                sequence=index,
+                source_time=94 + index * 6,
+                evaluation_time=98 + index * 6,
+            ),
+        )
+        serving_state = serving_result.state
+    assert serving_result.goal is not None
+    if len(bids) == 3:
+        assert serving_state.policy is policy.EXIT_NORMAL
+        assert serving_result.goal.urgency is urgency.NORMAL
+        assert serving_result.goal.guard == mandate.normal_guard
+    else:
+        assert serving_state.policy is policy.HARD_BAIL
+        assert serving_result.goal.urgency is urgency.EMERGENCY
+        assert serving_result.goal.guard == mandate.emergency_guard
 
     buy_chain, buy_effect, buy_leg, _ = _append_needs_review_effect(
         closed,
@@ -5336,6 +5435,42 @@ def test_protection_commitment_binds_each_retained_authority_independently(
     assert changed_goal.session_id == changed_mandate.session_id
     assert changed_goal.mandate_id == changed_mandate.mandate_id
     assert changed_goal.maximum_goal_rate == changed_mandate.maximum_goal_rate
+
+
+def test_state_replay_rejects_scope_only_mandate_forgery_without_execution_confound() -> (
+    None
+):
+    module = _protection_module()
+    fill = _owned_fill_transition(label="state-scope-only-forgery")
+    mandate, projection, state = _start(module, fill)
+    changed_scope = PositionScope(
+        broker=BROKER,
+        environment=ENVIRONMENT,
+        account=ACCOUNT,
+        symbol_id=type(SYMBOL)("MSFT"),
+    )
+    changed_mandate = replace(mandate, position_scope=changed_scope)
+    for retained in fields(mandate):
+        if retained.name == "position_scope":
+            assert getattr(changed_mandate, retained.name) != getattr(
+                mandate,
+                retained.name,
+            )
+        else:
+            assert getattr(changed_mandate, retained.name) == getattr(
+                mandate,
+                retained.name,
+            )
+
+    forged = _clone_opaque(state, mandate=changed_mandate)
+    assert forged.execution_commitment == state.execution_commitment
+    assert forged.raw_quantity == state.raw_quantity
+    result = _reduce(module, forged, projection)
+    (disposition,) = _required(module, "ProtectionDisposition")
+    assert result.disposition is disposition.REFUSED
+    assert result.state == forged
+    assert result.goal is None
+    assert result.critical_alert is None
 
 
 @pytest.mark.parametrize("tick_leaf", ["tick_units", "scale"])
