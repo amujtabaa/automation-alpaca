@@ -495,6 +495,68 @@ Fresh fifth-freeze evidence before any production implementation:
 The fifth freeze still adds no production code or operational authority. Production remains barred
 until a fresh independent reviewer accepts its exact immutable commit with zero unresolved P0/P1.
 
+### Independent fifth-freeze review and seventh freeze
+
+A fresh Sol review independently attacked exact fifth-freeze commit
+`4daf322e67b5cf433be5552976c63209a8d873d2`. It found no P0 and six P1 oracle-bypass classes:
+unsafe type truth/equality and hidden function metadata in lifecycle validation; custom-metaclass
+equality/hash spoofing; replaced dataclass slot descriptors; enum-member capability payloads;
+extractor helper/wrapper/aggregate/descriptor escapes; and private-field/enum-representation
+overfitting. Production remained absent and barred while each class was repaired.
+
+Two fresh read-only audits then attacked the repaired worktree before it was frozen. They found no
+P0 and four further P1 classes: venue-local rebinding of the trusted bounded-map `get`; arbitrary
+`<string>` code impersonating dataclass-generated freeze methods; source-location forgery causing
+the lifecycle AST oracle to inspect benign text while different bytecode executed; and executable
+or forged dataclass annotations, documentation, field tables, and frozen parameters. Those audits
+also raised two P2 design cautions: positively pin every accepted inert enum payload type, and avoid
+mistaking the selected three-map venue projection for an ADR-level universal representation.
+
+The seventh freeze closes every P1 at the owning proof boundary:
+
+1. Passive-value dispatch is identity-only. Exact built-in slot descriptors are pinned before any
+   field read, custom metaclasses cannot reach equality/hash protocols, enum class/member state is
+   sealed, and arbitrary private implementation fields remain recursively capability-checked.
+2. Dataclass annotations, documentation, exact field/parameter metadata, slots, match arguments,
+   defaults, and generated methods are verified before `dataclasses` helpers can traverse them.
+   Generated behavior must match a fresh same-shape interpreter reference, including executable
+   code and closures; forged mutable dataclasses and forged freeze methods are direct mutants.
+3. Lifecycle functions have no defaults, closures, decorators, attributes, or capability-bearing
+   annotations. Their executable bytecode must match the inspected source before the sequential
+   exact-type validation grammar is accepted. A source-location/code-swap mutant proves this gate
+   can fail without first executing its payload, while a valid sequential lifecycle remains green.
+4. The extractor is exactly one cached position-scope key plus three direct bounded-map reads in
+   fixed semantic order. Helper, wrapper, aggregate, descriptor, alias, and rebinding mutants fail.
+   The imported `_PersistentKeyMap` has exact canonical identity; venue source cannot alias, capture,
+   mutate, dynamically recover, or module-qualify the class; and its `get` bytecode is tied to the
+   canonical `fills.py` source before access counts are measured.
+5. Plain and string enums remain representation-neutral within the exact inert payload set. Direct
+   positive controls cover `bool`, `bytes`, `int`, `str`, `Decimal`, `Fraction`, and `None` so a
+   future narrowing mutation fails.
+
+The three-map extractor shape is retained deliberately as the smallest non-duplicative extension:
+M1B already owns the authority-summary and execution-binding indexes, and M1D adds only the scoped
+protection cursor. A new aggregate projection map would duplicate those semantic sources and add a
+second synchronization invariant. This is an implementation freeze, not an ADR claim that every
+future bounded projection must use three maps.
+
+Fresh seventh-freeze evidence before any production implementation:
+
+- focused collection succeeds for 245 tests;
+- exact RED execution yields 207 expected failures and 38 passes; the only error lines are the
+  deliberately absent `app.execution_core.protection` module and its resulting import failure;
+- all 37 passive-seal and constant-work meta controls pass, including every new negative mutant;
+- Ruff check and format-check pass, `git diff --check` passes, the protection test parses at the
+  Python 3.11 grammar target, and the post-activation scope checker reports `SCOPE CHECK PASSED`;
+- the canonical bounded-map source/provenance check passes independently of the absent production
+  module; and
+- no Python 3.11 interpreter is installed locally, so actual 3.11 execution remains an exact-head
+  CI obligation rather than a local acceptance claim.
+
+The seventh freeze adds no production code, database/broker/runtime activity, or operational
+authority. Production remains barred until a fresh independent reviewer accepts its exact immutable
+commit with zero unresolved P0/P1.
+
 ## Stop conditions
 
 Stop rather than widen scope if the contract requires an ADR change, a new dependency, persistence,
@@ -513,5 +575,5 @@ and a running external CI gate are progress states, not goal blockers.
   retained untracked WO-0145/0146/0147 evidence remains untouched.
 - Pre-build clause map: one new protection reducer plus narrow identity, venue projection, exports,
   and two test suites; existing position/authority reducers stay unchanged.
-- Next action: commit the fifth RED freeze, obtain fresh independent exact-commit acceptance with
+- Next action: commit the seventh RED freeze, obtain fresh independent exact-commit acceptance with
   zero unresolved P0/P1, and only then begin production code from the accepted immutable checkpoint.

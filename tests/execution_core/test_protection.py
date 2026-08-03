@@ -9,16 +9,26 @@ code exists.  No clock, database, broker, adapter, or runtime fixture is used.
 from __future__ import annotations
 
 import ast
+import builtins
 from collections.abc import Callable
 from copy import copy
-from dataclasses import FrozenInstanceError, fields, is_dataclass, replace
+from dataclasses import (
+    MISSING,
+    FrozenInstanceError,
+    dataclass,
+    fields,
+    is_dataclass,
+    make_dataclass,
+    replace,
+)
 from decimal import Decimal
 from enum import Enum
 from fractions import Fraction
 import importlib
 import inspect
+from pathlib import Path
 import textwrap
-from types import ModuleType
+from types import CodeType, ModuleType
 
 import pytest
 
@@ -680,31 +690,1081 @@ def _different_value(value: object) -> object:
     return object()
 
 
-_CAPABILITY_SPECIAL_HOOKS = frozenset(
+@dataclass(frozen=True, slots=True)
+class _PassiveDataclassProbe:
+    """Version-adaptive baseline for behaviorless frozen dataclass machinery."""
+
+    value: object
+
+    def __post_init__(self) -> None:
+        return None
+
+
+_PASSIVE_SLOT_DESCRIPTOR_TYPE = type(vars(_PassiveDataclassProbe)["value"])
+_PASSIVE_FIELD_METADATA_TYPE = type(
+    vars(_PassiveDataclassProbe)["__dataclass_fields__"]["value"]
+)
+_PASSIVE_PARAMS_TYPE = type(vars(_PassiveDataclassProbe)["__dataclass_params__"])
+_PASSIVE_FIELD_KIND = vars(_PassiveDataclassProbe)["__dataclass_fields__"][
+    "value"
+]._field_type
+_PASSIVE_FIELD_METADATA_MAPPING_TYPE = type(
+    vars(_PassiveDataclassProbe)["__dataclass_fields__"]["value"].metadata
+)
+_LIFECYCLE_SOURCE_SWAP_CALLS: list[str] = []
+
+
+def _lifecycle_source_swap_payload(_self: object) -> None:
+    _LIFECYCLE_SOURCE_SWAP_CALLS.append("executed")
+
+
+_DATACLASS_METADATA_SPECIALS = frozenset(
     {
-        "__call__",
-        "__get__",
-        "__getattr__",
-        "__getattribute__",
-        "__getitem__",
-        "__iter__",
-        "__next__",
+        "__annotations__",
+        "__classcell__",
+        "__dataclass_fields__",
+        "__dataclass_params__",
+        "__dict__",
+        "__doc__",
+        "__firstlineno__",
+        "__match_args__",
+        "__module__",
+        "__qualname__",
+        "__slots__",
+        "__static_attributes__",
+        "__weakref__",
     }
+)
+_DATACLASS_LIFECYCLE_SPECIALS = frozenset(
+    {"__init__", "__init_subclass__", "__post_init__"}
+)
+_DATACLASS_GENERATED_SPECIALS = frozenset(
+    name
+    for name in vars(_PassiveDataclassProbe)
+    if name.startswith("__")
+    and name not in _DATACLASS_METADATA_SPECIALS
+    and name not in {"__init_subclass__", "__post_init__"}
 )
 
 
-def _public_behavior_names(value_type: type[object]) -> set[str]:
-    """Return every public or capability-bearing member in the exact MRO."""
-    public_names: set[str] = set()
+class _PassiveEnumProbe(Enum):
+    """Version-adaptive baseline for a behaviorless plain enum."""
+
+    FIRST = 1
+    SECOND = 2
+
+
+class _PassiveStrEnumProbe(str, Enum):
+    """Version-adaptive baseline for a behaviorless string enum."""
+
+    FIRST = "FIRST"
+    SECOND = "SECOND"
+
+
+def _assert_passive_enum_type(
+    enum_type: type[Enum],
+    expected_members: tuple[str, ...],
+) -> None:
+    """Seal enum behavior and member payloads without freezing wire representation."""
+    assert type(enum_type) is type(Enum), "enum metaclass changed"
+    enum_mro = inspect.getmro(enum_type)
+    if enum_mro == (enum_type, Enum, object):
+        reference_type: type[Enum] = _PassiveEnumProbe
+        required_value_type: type[object] | None = None
+    else:
+        assert enum_mro == (enum_type, str, Enum, object), (
+            "enum class hierarchy retains an unsafe mixin"
+        )
+        reference_type = _PassiveStrEnumProbe
+        required_value_type = str
+
+    actual = vars(enum_type)
+    actual_members = actual["_member_map_"]
+    assert type(actual_members) is dict
+    assert tuple(actual_members) == expected_members, "enum member inventory changed"
+    assert all(type(member) is enum_type for member in actual_members.values())
+    assert len({id(member) for member in actual_members.values()}) == len(
+        expected_members
+    ), "enum aliases changed"
+
+    reference = vars(reference_type)
+    reference_members = reference["_member_map_"]
+    reference_residual = set(reference) - set(reference_members)
+    actual_residual = set(actual) - set(actual_members)
+    assert actual_residual == reference_residual, "enum class shape changed"
+
+    reference_member = next(iter(reference_members.values()))
+    reference_member_shape = vars(reference_member)
+    for index, (name, member) in enumerate(actual_members.items()):
+        member_state = object.__getattribute__(member, "__dict__")
+        assert type(member_state) is dict
+        assert set(member_state) == set(reference_member_shape), (
+            f"enum member payload changed: {name}"
+        )
+        value = member_state["_value_"]
+        assert any(
+            type(value) is allowed
+            for allowed in (bool, bytes, int, str, Decimal, Fraction, type(None))
+        ), f"enum member retains a capability value: {name}"
+        if required_value_type is not None:
+            assert type(value) is required_value_type, "string enum value type changed"
+        assert member_state["_name_"] == name
+        assert member_state["__objclass__"] is enum_type
+        if "_sort_order_" in reference_member_shape:
+            assert type(member_state["_sort_order_"]) is int
+            assert member_state["_sort_order_"] == index
+        for retained_name in set(reference_member_shape) - {
+            "_value_",
+            "_name_",
+            "__objclass__",
+            "_sort_order_",
+        }:
+            assert type(member_state[retained_name]) is type(
+                reference_member_shape[retained_name]
+            )
+
+    for name in reference_residual:
+        expected = reference[name]
+        retained = actual[name]
+        if name == "__module__":
+            assert type(retained) is str
+        elif name == "__doc__":
+            assert retained is None or type(retained) is str
+        elif name == "_member_names_":
+            assert type(retained) is list and retained == list(expected_members)
+        elif name == "_member_map_":
+            assert type(retained) is dict and tuple(retained) == expected_members
+            assert all(retained[key] is actual_members[key] for key in expected_members)
+        elif name == "_value2member_map_":
+            assert type(retained) is dict and len(retained) == len(expected_members)
+            assert all(
+                retained.get(object.__getattribute__(member, "_value_")) is member
+                for member in actual_members.values()
+            )
+        elif name in {"_unhashable_values_", "_unhashable_values_map_"}:
+            assert type(retained) is type(expected) and not retained
+        elif isinstance(expected, staticmethod):
+            assert isinstance(retained, staticmethod)
+            assert retained.__func__ is expected.__func__
+        elif name in {"__dict__", "__weakref__"}:
+            assert type(retained) is type(expected)
+        else:
+            assert retained is expected, f"enum behavior changed: {name}"
+
+
+_PASSIVE_RUNTIME_CODE_FLAGS = sum(
+    getattr(inspect, name, 0)
+    for name in (
+        "CO_OPTIMIZED",
+        "CO_NEWLOCALS",
+        "CO_VARARGS",
+        "CO_VARKEYWORDS",
+        "CO_GENERATOR",
+        "CO_COROUTINE",
+        "CO_ASYNC_GENERATOR",
+    )
+)
+
+
+def _passive_constant_signature(value: object) -> tuple[object, ...]:
+    """Describe code constants without invoking attacker-controlled protocols."""
+    if value is None or value is Ellipsis or value is NotImplemented:
+        return ("singleton", value)
+    if any(
+        type(value) is allowed for allowed in (bool, bytes, complex, float, int, str)
+    ):
+        return ("scalar", type(value), value)
+    if type(value) is tuple:
+        return (
+            "tuple",
+            tuple(_passive_constant_signature(item) for item in value),
+        )
+    if type(value) is frozenset:
+        return (
+            "frozenset",
+            frozenset(_passive_constant_signature(item) for item in value),
+        )
+    if type(value) is CodeType:
+        return ("code", _passive_code_signature(value, include_location=True))
+    raise AssertionError(
+        f"generated or lifecycle code retains a capability constant: {type(value).__name__}"
+    )
+
+
+def _passive_code_signature(
+    code: CodeType,
+    *,
+    include_location: bool,
+) -> tuple[object, ...]:
+    """Return exact executable semantics, optionally including source location metadata."""
+    signature: tuple[object, ...] = (
+        code.co_code,
+        tuple(_passive_constant_signature(item) for item in code.co_consts),
+        code.co_names,
+        code.co_varnames,
+        code.co_freevars,
+        code.co_cellvars,
+        code.co_argcount,
+        code.co_posonlyargcount,
+        code.co_kwonlyargcount,
+        code.co_nlocals,
+        code.co_stacksize,
+        code.co_flags & _PASSIVE_RUNTIME_CODE_FLAGS,
+        getattr(code, "co_exceptiontable", b""),
+    )
+    if not include_location:
+        return signature
+    return signature + (
+        code.co_name,
+        code.co_qualname,
+        code.co_filename,
+        code.co_firstlineno,
+        code.co_linetable,
+    )
+
+
+def _assert_function_matches_inspected_source(
+    function: Callable[..., object],
+    source: str,
+    *,
+    message: str,
+) -> None:
+    """Tie executable bytecode to the exact source inspected by a static oracle."""
+    compiled = compile(
+        source,
+        "<inspected-function-source>",
+        "exec",
+        dont_inherit=True,
+    )
+    source_codes = [
+        constant
+        for constant in compiled.co_consts
+        if type(constant) is CodeType and constant.co_name == function.__name__
+    ]
+    assert len(source_codes) == 1
+    assert _passive_code_signature(
+        function.__code__, include_location=False
+    ) == _passive_code_signature(source_codes[0], include_location=False), message
+
+
+def _assert_generated_function_metadata(function: Callable[..., object]) -> None:
+    """Reject defaults, annotations, or attributes that retain executable capability."""
+    assert function.__defaults__ is None
+    assert function.__kwdefaults__ is None
+    annotations = function.__annotations__
+    assert type(annotations) is dict
+    assert all(type(name) is str for name in annotations)
+    assert all(
+        type(value) is str or value is None or value is type(None) or value is object
+        for value in annotations.values()
+    ), "generated function annotation retains a capability"
+    assert function.__doc__ is None or type(function.__doc__) is str
+    assert type(function.__dict__) is dict
+
+
+def _assert_generated_special_matches(
+    member: object,
+    reference: object,
+    *,
+    owner: type[object],
+    reference_owner: type[object],
+) -> None:
+    """Match generated behavior to a fresh same-shape dataclass reference."""
+    assert type(member) is type(reference), "dataclass generated special type changed"
+    assert inspect.isfunction(member) and inspect.isfunction(reference)
+    _assert_generated_function_metadata(member)
+    assert member.__name__ == reference.__name__
+    assert _passive_code_signature(
+        member.__code__, include_location=True
+    ) == _passive_code_signature(reference.__code__, include_location=True), (
+        f"dataclass generated behavior changed: {member.__name__}"
+    )
+
+    member_attributes = member.__dict__
+    reference_attributes = reference.__dict__
+    assert set(member_attributes) == set(reference_attributes)
+    for name, reference_attribute in reference_attributes.items():
+        attribute = member_attributes[name]
+        if inspect.isfunction(reference_attribute):
+            _assert_generated_special_matches(
+                attribute,
+                reference_attribute,
+                owner=owner,
+                reference_owner=reference_owner,
+            )
+        else:
+            assert attribute is reference_attribute
+
+    member_closure = member.__closure__ or ()
+    reference_closure = reference.__closure__ or ()
+    assert len(member_closure) == len(reference_closure)
+    for member_cell, reference_cell in zip(
+        member_closure,
+        reference_closure,
+        strict=True,
+    ):
+        member_value = member_cell.cell_contents
+        reference_value = reference_cell.cell_contents
+        if reference_value is reference_owner:
+            assert member_value is owner
+        elif inspect.isfunction(reference_value):
+            _assert_generated_special_matches(
+                member_value,
+                reference_value,
+                owner=owner,
+                reference_owner=reference_owner,
+            )
+        elif (
+            inspect.isclass(reference_value)
+            and type(reference_value) is type
+            and reference_value.__name__ == reference_owner.__name__
+            and reference_value is not reference_owner
+        ):
+            assert inspect.isclass(member_value) and type(member_value) is type
+            assert member_value is not owner
+            assert member_value.__name__ == owner.__name__
+            assert member_value.__module__ == owner.__module__
+            assert member_value.__qualname__ == owner.__qualname__
+            assert inspect.getmro(member_value) == (member_value, object)
+        elif type(reference_value) is set:
+            assert (
+                type(member_value) is set and not member_value and not reference_value
+            )
+        elif reference_value is None or any(
+            type(reference_value) is allowed
+            for allowed in (bool, bytes, complex, float, int, str)
+        ):
+            assert type(member_value) is type(reference_value)
+            assert member_value == reference_value
+        else:
+            assert member_value is reference_value
+
+
+def _assert_passive_dataclass_metadata(
+    value_type: type[object],
+    expected_shape: tuple[str, ...] | None = None,
+) -> tuple[str, ...]:
+    """Pin dataclass metadata before any helper or descriptor is allowed to read it."""
+    assert type(value_type) is type, "dataclass has a custom metaclass"
+    namespace = vars(value_type)
+    assert type(namespace["__module__"]) is str
+    assert type(value_type.__qualname__) is str
+    assert namespace.get("__doc__") is None or type(namespace["__doc__"]) is str, (
+        "dataclass documentation retains a capability"
+    )
+    assert "__classcell__" not in namespace
+    assert "__dict__" not in namespace and "__weakref__" not in namespace
+    if "__firstlineno__" in namespace:
+        assert type(namespace["__firstlineno__"]) is int
+    if "__static_attributes__" in namespace:
+        static_attributes = namespace["__static_attributes__"]
+        assert type(static_attributes) is tuple
+        assert all(type(name) is str for name in static_attributes)
+
+    annotations = namespace.get("__annotations__")
+    assert type(annotations) is dict, "dataclass annotations are not an exact dict"
+    assert all(type(name) is str for name in annotations)
+    assert all(type(annotation) is str for annotation in annotations.values()), (
+        "dataclass annotation retains a capability"
+    )
+
+    raw_fields = namespace.get("__dataclass_fields__")
+    assert type(raw_fields) is dict, "dataclass field metadata is not an exact dict"
+    field_names = tuple(raw_fields)
+    if expected_shape is not None:
+        assert field_names == expected_shape, "passive value field inventory changed"
+    assert tuple(annotations) == field_names, "dataclass annotation inventory changed"
+    for name, retained in raw_fields.items():
+        assert type(retained) is _PASSIVE_FIELD_METADATA_TYPE
+        assert object.__getattribute__(retained, "name") == name
+        assert type(object.__getattribute__(retained, "type")) is str, (
+            "dataclass field annotation retains a capability"
+        )
+        assert object.__getattribute__(retained, "default") is MISSING
+        assert object.__getattribute__(retained, "default_factory") is MISSING
+        assert object.__getattribute__(retained, "repr") is True
+        assert object.__getattribute__(retained, "hash") is None
+        assert object.__getattribute__(retained, "init") is True
+        assert object.__getattribute__(retained, "compare") is True
+        assert object.__getattribute__(retained, "kw_only") is False
+        assert object.__getattribute__(retained, "_field_type") is _PASSIVE_FIELD_KIND
+        metadata = object.__getattribute__(retained, "metadata")
+        assert type(metadata) is _PASSIVE_FIELD_METADATA_MAPPING_TYPE and not metadata
+
+    params = namespace.get("__dataclass_params__")
+    assert type(params) is _PASSIVE_PARAMS_TYPE, (
+        "dataclass parameters are not interpreter-owned metadata"
+    )
+    parameter_names = type(params).__slots__
+    assert type(parameter_names) is tuple
+    parameter_values = {
+        name: object.__getattribute__(params, name) for name in parameter_names
+    }
+    assert all(type(value) is bool for value in parameter_values.values())
+    assert parameter_values["frozen"] is True
+    assert parameter_values["slots"] is True
+    for name, expected in {
+        "repr": True,
+        "eq": True,
+        "order": False,
+        "unsafe_hash": False,
+        "match_args": True,
+        "kw_only": False,
+        "weakref_slot": False,
+    }.items():
+        if name in parameter_values:
+            assert parameter_values[name] is expected, (
+                f"unsafe dataclass parameter: {name}"
+            )
+    assert type(parameter_values["init"]) is bool
+
+    slots = namespace.get("__slots__")
+    assert type(slots) is tuple and slots == field_names
+    match_args = namespace.get("__match_args__")
+    assert type(match_args) is tuple and match_args == field_names
+
+    reference_namespace: dict[str, object] = {}
+    if "__post_init__" in namespace:
+
+        def __post_init__(_self: object) -> None:
+            return None
+
+        reference_namespace["__post_init__"] = __post_init__
+    reference_type = make_dataclass(
+        "_PassiveDataclassReference",
+        [(name, object) for name in field_names],
+        namespace=reference_namespace,
+        init=parameter_values["init"],
+        repr=True,
+        eq=True,
+        order=False,
+        unsafe_hash=False,
+        frozen=True,
+        match_args=True,
+        kw_only=False,
+        slots=True,
+        weakref_slot=False,
+    )
+    reference_members = vars(reference_type)
+    for name in _DATACLASS_GENERATED_SPECIALS:
+        reference = reference_members.get(name)
+        if reference is None:
+            continue
+        member = namespace.get(name)
+        assert member is not None, f"missing dataclass generated behavior: {name}"
+        _assert_generated_special_matches(
+            member,
+            reference,
+            owner=value_type,
+            reference_owner=reference_type,
+        )
+    return field_names
+
+
+def _assert_passive_slot_descriptors(
+    value_type: type[object],
+    field_names: tuple[str, ...] | None = None,
+) -> None:
+    """Pin every dataclass field to its original inert slot descriptor."""
+    namespace = vars(value_type)
+    if field_names is None:
+        raw_fields = namespace.get("__dataclass_fields__")
+        assert type(raw_fields) is dict
+        field_names = tuple(raw_fields)
+    for name in field_names:
+        descriptor = namespace.get(name)
+        assert type(descriptor) is _PASSIVE_SLOT_DESCRIPTOR_TYPE, (
+            f"dataclass field descriptor changed: {name}"
+        )
+        assert descriptor.__objclass__ is value_type
+        assert descriptor.__name__ == name
+
+
+def _retained_behavior_names(value_type: type[object]) -> set[str]:
+    """Return every member outside exact passive dataclass fields and machinery."""
+    behavior_names: set[str] = set()
+    raw_fields = vars(value_type).get("__dataclass_fields__")
+    retained_names = set(raw_fields) if type(raw_fields) is dict else set()
+    if type(value_type) is not type:
+        behavior_names.add("<custom-metaclass>")
     for base in inspect.getmro(value_type):
         if base is object:
             continue
-        for name in vars(base):
-            if name.startswith("_") and name not in _CAPABILITY_SPECIAL_HOOKS:
+        for name, member in vars(base).items():
+            if base is value_type and name in retained_names:
+                continue
+            if name in _DATACLASS_METADATA_SPECIALS:
+                continue
+            if base is value_type and name in _DATACLASS_GENERATED_SPECIALS:
+                params = vars(value_type).get("__dataclass_params__")
+                if (
+                    name == "__init__"
+                    and type(params) is _PASSIVE_PARAMS_TYPE
+                    and object.__getattribute__(params, "init") is False
+                ):
+                    behavior_names.add(name)
                 continue
             inspect.getattr_static(value_type, name)
-            public_names.add(name)
-    return public_names
+            behavior_names.add(name)
+    return behavior_names
+
+
+def _lifecycle_attribute_path(node: ast.AST) -> tuple[str, ...] | None:
+    if isinstance(node, ast.Name):
+        return (node.id,)
+    if not isinstance(node, ast.Attribute):
+        return None
+    prefix = _lifecycle_attribute_path(node.value)
+    return None if prefix is None else prefix + (node.attr,)
+
+
+def _lifecycle_value_path(
+    node: ast.AST,
+    field_names: frozenset[str],
+    guarded_types: dict[tuple[str, ...], type[object]],
+) -> tuple[str, ...] | None:
+    path = _lifecycle_attribute_path(node)
+    if path is None or len(path) < 2 or path[:1] != ("self",):
+        return None
+    if len(path) == 2 and path[1] in field_names:
+        return path
+    parent_type = guarded_types.get(path[:-1])
+    if parent_type is None:
+        return None
+    descriptor = vars(parent_type).get(path[-1])
+    if (
+        type(descriptor) is _PASSIVE_SLOT_DESCRIPTOR_TYPE
+        and descriptor.__objclass__ is parent_type
+        and descriptor.__name__ == path[-1]
+    ):
+        return path
+    return None
+
+
+def _resolve_lifecycle_name(lifecycle: Callable[..., object], name: str) -> object:
+    if name in lifecycle.__globals__:
+        return lifecycle.__globals__[name]
+    retained_builtins = lifecycle.__globals__.get("__builtins__", builtins)
+    if retained_builtins is builtins:
+        return getattr(builtins, name, None)
+    assert type(retained_builtins) is dict, "lifecycle builtins source changed"
+    return retained_builtins.get(name)
+
+
+def _assert_lifecycle_builtin(
+    lifecycle: Callable[..., object],
+    name: str,
+    expected: object,
+) -> None:
+    assert _resolve_lifecycle_name(lifecycle, name) is expected, (
+        f"shadowed lifecycle builtin: {name}"
+    )
+
+
+def _lifecycle_global_type(
+    lifecycle: Callable[..., object],
+    name: str,
+) -> type[object]:
+    candidate = _resolve_lifecycle_name(lifecycle, name)
+    assert inspect.isclass(candidate), f"lifecycle type target is not a class: {name}"
+    assert type(candidate) is type or type(candidate) is type(Enum), (
+        f"lifecycle type target has a custom metaclass: {name}"
+    )
+    module_name = candidate.__module__
+    assert type(module_name) is str, "lifecycle type module is not exact text"
+    assert module_name in {"builtins", "decimal", "enum", "fractions"} or (
+        module_name.startswith("app.execution_core")
+    ), f"unapproved lifecycle type target: {name}"
+    return candidate
+
+
+def _is_lifecycle_enum_member(
+    lifecycle: Callable[..., object],
+    node: ast.AST,
+) -> bool:
+    path = _lifecycle_attribute_path(node)
+    if path is None or len(path) != 2:
+        return False
+    enum_type = _resolve_lifecycle_name(lifecycle, path[0])
+    if not inspect.isclass(enum_type) or type(enum_type) is not type(Enum):
+        return False
+    members = vars(enum_type).get("_member_map_")
+    return type(members) is dict and path[1] in members
+
+
+def _lifecycle_type_guard(
+    node: ast.AST,
+    *,
+    lifecycle: Callable[..., object],
+    field_names: frozenset[str],
+    guarded_types: dict[tuple[str, ...], type[object]],
+) -> tuple[tuple[str, ...], type[object], ast.cmpop] | None:
+    if not (
+        isinstance(node, ast.Compare)
+        and len(node.ops) == 1
+        and isinstance(node.ops[0], (ast.Is, ast.IsNot))
+        and len(node.comparators) == 1
+        and isinstance(node.left, ast.Call)
+        and isinstance(node.left.func, ast.Name)
+        and node.left.func.id == "type"
+        and len(node.left.args) == 1
+        and not node.left.keywords
+        and isinstance(node.comparators[0], ast.Name)
+    ):
+        return None
+    _assert_lifecycle_builtin(lifecycle, "type", builtins.type)
+    path = _lifecycle_value_path(
+        node.left.args[0],
+        field_names,
+        guarded_types,
+    )
+    assert path is not None, "lifecycle type guard targets an unaudited value"
+    expected_type = _lifecycle_global_type(lifecycle, node.comparators[0].id)
+    return path, expected_type, node.ops[0]
+
+
+def _lifecycle_safe_call_result_type(
+    node: ast.Call,
+    *,
+    lifecycle: Callable[..., object],
+    field_names: frozenset[str],
+    guarded_types: dict[tuple[str, ...], type[object]],
+) -> type[object]:
+    if isinstance(node.func, ast.Name) and node.func.id == "len":
+        _assert_lifecycle_builtin(lifecycle, "len", builtins.len)
+        assert len(node.args) == 1 and not node.keywords
+        path = _lifecycle_value_path(node.args[0], field_names, guarded_types)
+        retained_type = None if path is None else guarded_types.get(path)
+        assert path is not None and (retained_type is bytes or retained_type is str), (
+            "lifecycle len requires a prior exact bytes or str guard"
+        )
+        return int
+    if isinstance(node.func, ast.Attribute) and node.func.attr == "strip":
+        assert not node.args and not node.keywords
+        path = _lifecycle_value_path(node.func.value, field_names, guarded_types)
+        assert path is not None and guarded_types.get(path) is str, (
+            "lifecycle strip requires a prior exact str guard"
+        )
+        return str
+    raise AssertionError(
+        f"unapproved lifecycle call: {_lifecycle_attribute_path(node.func)!r}"
+    )
+
+
+def _assert_lifecycle_operand(
+    node: ast.AST,
+    *,
+    lifecycle: Callable[..., object],
+    field_names: frozenset[str],
+    guarded_types: dict[tuple[str, ...], type[object]],
+    protocol_comparison: bool,
+) -> None:
+    if isinstance(node, ast.Constant):
+        assert any(
+            type(node.value) is allowed
+            for allowed in (bool, bytes, int, str, type(None))
+        ), "unsupported lifecycle constant"
+        return
+    path = _lifecycle_value_path(node, field_names, guarded_types)
+    if path is not None:
+        if protocol_comparison:
+            retained_type = guarded_types.get(path)
+            assert any(
+                retained_type is allowed
+                for allowed in (bool, bytes, int, str, Decimal, Fraction)
+            ), "lifecycle comparison lacks a prior exact scalar guard"
+        return
+    if _is_lifecycle_enum_member(lifecycle, node):
+        assert not protocol_comparison, (
+            "enum lifecycle validation must use identity comparison"
+        )
+        return
+    if isinstance(node, ast.Call):
+        _lifecycle_safe_call_result_type(
+            node,
+            lifecycle=lifecycle,
+            field_names=field_names,
+            guarded_types=guarded_types,
+        )
+        return
+    raise AssertionError("unsupported lifecycle comparison operand")
+
+
+def _assert_passive_lifecycle_test(
+    node: ast.AST,
+    *,
+    lifecycle: Callable[..., object],
+    field_names: frozenset[str],
+    guarded_types: dict[tuple[str, ...], type[object]],
+) -> None:
+    """Accept only identity tests and guarded exact-scalar validation."""
+    if (
+        _lifecycle_type_guard(
+            node,
+            lifecycle=lifecycle,
+            field_names=field_names,
+            guarded_types=guarded_types,
+        )
+        is not None
+    ):
+        return
+    if isinstance(node, ast.BoolOp):
+        assert isinstance(node.op, (ast.And, ast.Or))
+        for value in node.values:
+            _assert_passive_lifecycle_test(
+                value,
+                lifecycle=lifecycle,
+                field_names=field_names,
+                guarded_types=guarded_types,
+            )
+        return
+    if isinstance(node, ast.UnaryOp):
+        assert isinstance(node.op, ast.Not), "unsupported lifecycle unary operator"
+        _assert_passive_lifecycle_test(
+            node.operand,
+            lifecycle=lifecycle,
+            field_names=field_names,
+            guarded_types=guarded_types,
+        )
+        return
+    if isinstance(node, ast.Compare):
+        assert all(
+            isinstance(
+                operator,
+                (
+                    ast.Is,
+                    ast.IsNot,
+                    ast.Eq,
+                    ast.NotEq,
+                    ast.Lt,
+                    ast.LtE,
+                    ast.Gt,
+                    ast.GtE,
+                ),
+            )
+            for operator in node.ops
+        ), "unsupported lifecycle comparison"
+        protocol_comparison = any(
+            not isinstance(operator, (ast.Is, ast.IsNot)) for operator in node.ops
+        )
+        for operand in (node.left, *node.comparators):
+            _assert_lifecycle_operand(
+                operand,
+                lifecycle=lifecycle,
+                field_names=field_names,
+                guarded_types=guarded_types,
+                protocol_comparison=protocol_comparison,
+            )
+        return
+    if isinstance(node, ast.Call):
+        _lifecycle_safe_call_result_type(
+            node,
+            lifecycle=lifecycle,
+            field_names=field_names,
+            guarded_types=guarded_types,
+        )
+        return
+    if isinstance(node, ast.Constant):
+        assert type(node.value) is bool, "lifecycle truth test is not boolean"
+        return
+    path = _lifecycle_value_path(node, field_names, guarded_types)
+    retained_type = None if path is None else guarded_types.get(path)
+    assert path is not None and any(
+        retained_type is allowed for allowed in (bool, bytes, int, str)
+    ), "lifecycle truth test lacks a prior exact scalar guard"
+
+
+def _assert_lifecycle_raise(
+    node: ast.Raise,
+    *,
+    lifecycle: Callable[..., object],
+    error_names: tuple[str, ...] = ("TypeError", "ValueError"),
+) -> None:
+    assert isinstance(node.exc, ast.Call) and isinstance(node.exc.func, ast.Name), (
+        "lifecycle raises a nonlocal value"
+    )
+    assert node.exc.func.id in error_names
+    expected = getattr(builtins, node.exc.func.id)
+    _assert_lifecycle_builtin(lifecycle, node.exc.func.id, expected)
+    assert (
+        len(node.exc.args) == 1
+        and isinstance(node.exc.args[0], ast.Constant)
+        and type(node.exc.args[0].value) is str
+        and not node.exc.keywords
+    ), "lifecycle errors require one constant message"
+    assert node.cause is None or (
+        isinstance(node.cause, ast.Constant) and node.cause.value is None
+    )
+
+
+def _assert_passive_post_init_statements(
+    statements: list[ast.stmt],
+    *,
+    lifecycle: Callable[..., object],
+    field_names: frozenset[str],
+    guarded_types: dict[tuple[str, ...], type[object]],
+) -> None:
+    retained_guards = dict(guarded_types)
+    for statement in statements:
+        if isinstance(statement, ast.If):
+            guard = _lifecycle_type_guard(
+                statement.test,
+                lifecycle=lifecycle,
+                field_names=field_names,
+                guarded_types=retained_guards,
+            )
+            _assert_passive_lifecycle_test(
+                statement.test,
+                lifecycle=lifecycle,
+                field_names=field_names,
+                guarded_types=retained_guards,
+            )
+            if (
+                guard is not None
+                and isinstance(guard[2], ast.IsNot)
+                and len(statement.body) == 1
+                and isinstance(statement.body[0], ast.Raise)
+                and not statement.orelse
+            ):
+                _assert_lifecycle_raise(statement.body[0], lifecycle=lifecycle)
+                retained_guards[guard[0]] = guard[1]
+                continue
+            body_guards = dict(retained_guards)
+            else_guards = dict(retained_guards)
+            if guard is not None:
+                target = body_guards if isinstance(guard[2], ast.Is) else else_guards
+                target[guard[0]] = guard[1]
+            _assert_passive_post_init_statements(
+                statement.body,
+                lifecycle=lifecycle,
+                field_names=field_names,
+                guarded_types=body_guards,
+            )
+            _assert_passive_post_init_statements(
+                statement.orelse,
+                lifecycle=lifecycle,
+                field_names=field_names,
+                guarded_types=else_guards,
+            )
+        elif isinstance(statement, ast.Raise):
+            _assert_lifecycle_raise(statement, lifecycle=lifecycle)
+        elif isinstance(statement, ast.Return):
+            assert statement.value is None or (
+                isinstance(statement.value, ast.Constant)
+                and statement.value.value is None
+            ), "lifecycle returns a capability"
+        elif isinstance(statement, ast.Expr):
+            assert (
+                isinstance(statement.value, ast.Constant)
+                and type(statement.value.value) is str
+            ), "lifecycle expression is not a docstring"
+        else:
+            assert isinstance(statement, ast.Pass), (
+                f"unsupported lifecycle statement: {type(statement).__name__}"
+            )
+
+
+def _assert_lifecycle_function_metadata(
+    lifecycle: Callable[..., object],
+    function: ast.FunctionDef,
+    owner_module: ModuleType,
+    source: str,
+) -> None:
+    assert lifecycle.__globals__ is vars(owner_module)
+    assert lifecycle.__module__ == owner_module.__name__
+    assert lifecycle.__defaults__ is None
+    assert lifecycle.__kwdefaults__ is None
+    assert lifecycle.__closure__ is None and not lifecycle.__code__.co_freevars
+    assert type(lifecycle.__dict__) is dict and not lifecycle.__dict__
+    assert not function.decorator_list, "decorated lifecycle is forbidden"
+    annotations = lifecycle.__annotations__
+    assert type(annotations) is dict
+    assert all(type(name) is str for name in annotations), (
+        "lifecycle annotation name is not exact text"
+    )
+    assert set(annotations) <= {
+        argument.arg
+        for argument in (
+            *function.args.posonlyargs,
+            *function.args.args,
+            *function.args.kwonlyargs,
+            *((function.args.vararg,) if function.args.vararg is not None else ()),
+            *((function.args.kwarg,) if function.args.kwarg is not None else ()),
+        )
+    } | {"return"}
+    assert all(
+        type(value) is str or value is None or value is type(None) or value is object
+        for value in annotations.values()
+    ), "lifecycle annotation retains a capability"
+    _assert_function_matches_inspected_source(
+        lifecycle,
+        source,
+        message="lifecycle bytecode does not match inspected source",
+    )
+
+
+def _assert_opaque_lifecycle(
+    name: str,
+    lifecycle: Callable[..., object],
+    function: ast.FunctionDef,
+) -> None:
+    positional = (*function.args.posonlyargs, *function.args.args)
+    assert len(positional) == 1 and not function.args.posonlyargs
+    assert not function.args.kwonlyargs
+    assert not function.args.defaults and not function.args.kw_defaults
+    if name == "__init__":
+        assert function.args.vararg is not None and function.args.kwarg is not None
+    else:
+        assert function.args.vararg is None and function.args.kwarg is not None
+    local_names = {
+        positional[0].arg,
+        *((function.args.vararg.arg,) if function.args.vararg is not None else ()),
+        function.args.kwarg.arg,
+    }
+    statements = list(function.body)
+    if statements and isinstance(statements[0], ast.Expr):
+        assert (
+            isinstance(statements[0].value, ast.Constant)
+            and type(statements[0].value.value) is str
+        )
+        statements.pop(0)
+    assert statements and len(statements) <= 2
+    if len(statements) == 2:
+        deletion = statements[0]
+        assert isinstance(deletion, ast.Delete)
+        assert all(
+            isinstance(target, ast.Name) and target.id in local_names
+            for target in deletion.targets
+        ), "opaque lifecycle deletes external state"
+    terminal = statements[-1]
+    assert isinstance(terminal, ast.Raise)
+    _assert_lifecycle_raise(
+        terminal,
+        lifecycle=lifecycle,
+        error_names=("TypeError",),
+    )
+
+
+def _assert_passive_lifecycle(
+    value_type: type[object],
+    owner_module: ModuleType,
+) -> None:
+    """Constrain lifecycle code to exact opaque or sequential validation forms."""
+    field_names = _assert_passive_dataclass_metadata(value_type)
+    _assert_passive_slot_descriptors(value_type, field_names)
+    for name in _retained_behavior_names(value_type) & _DATACLASS_LIFECYCLE_SPECIALS:
+        raw_lifecycle = inspect.getattr_static(value_type, name)
+        if name == "__init_subclass__":
+            assert isinstance(raw_lifecycle, classmethod)
+            lifecycle = raw_lifecycle.__func__
+        else:
+            assert inspect.isfunction(raw_lifecycle)
+            lifecycle = raw_lifecycle
+        assert inspect.isfunction(lifecycle), f"{name} is not an exact function"
+        source = textwrap.dedent(inspect.getsource(lifecycle))
+        tree = ast.parse(source)
+        functions = [
+            node
+            for node in tree.body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        ]
+        assert len(functions) == 1
+        function = functions[0]
+        assert isinstance(function, ast.FunctionDef), "async lifecycle is forbidden"
+        _assert_lifecycle_function_metadata(lifecycle, function, owner_module, source)
+        if name in {"__init__", "__init_subclass__"}:
+            _assert_opaque_lifecycle(name, lifecycle, function)
+            continue
+        assert not function.args.posonlyargs
+        assert tuple(argument.arg for argument in function.args.args) == ("self",)
+        assert function.args.vararg is None and function.args.kwarg is None
+        assert not function.args.kwonlyargs
+        assert not function.args.defaults and not function.args.kw_defaults
+        _assert_passive_post_init_statements(
+            function.body,
+            lifecycle=lifecycle,
+            field_names=frozenset(field_names),
+            guarded_types={},
+        )
+
+
+def _assert_passive_value_graph(
+    value: object,
+    *,
+    allowed_shapes: dict[type[object], tuple[str, ...]],
+    trusted_leaf_types: frozenset[type[object]] = frozenset(),
+    allowed_enum_shapes: dict[type[Enum], tuple[str, ...]] | None = None,
+) -> None:
+    """Seal every retained field, slot, lifecycle, and nested value type."""
+    pending = [value]
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop()
+        current_type = type(current)
+        if current is None or any(
+            current_type is allowed
+            for allowed in (bool, bytes, int, str, Decimal, Fraction)
+        ):
+            continue
+        if any(current_type is trusted for trusted in trusted_leaf_types):
+            continue
+        enum_shape = (
+            None
+            if allowed_enum_shapes is None
+            else next(
+                (
+                    shape
+                    for enum_type, shape in allowed_enum_shapes.items()
+                    if current_type is enum_type
+                ),
+                None,
+            )
+        )
+        if enum_shape is not None:
+            _assert_passive_enum_type(
+                current_type,
+                enum_shape,
+            )
+            continue
+        assert type(current_type) is type, (
+            f"passive value retains a custom metaclass: {current_type.__name__}"
+        )
+        if current_type is tuple or current_type is frozenset:
+            pending.extend(current)
+            continue
+        identity = id(current)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        assert not callable(current), (
+            f"passive value retains callable capability: {type(current).__name__}"
+        )
+        expected_shape = next(
+            (
+                shape
+                for allowed_type, shape in allowed_shapes.items()
+                if current_type is allowed_type
+            ),
+            None,
+        )
+        assert expected_shape is not None, (
+            f"passive value retains unapproved dataclass or capability type: "
+            f"{current_type.__name__}"
+        )
+        assert inspect.getmro(current_type) == (current_type, object)
+        actual_fields = _assert_passive_dataclass_metadata(
+            current_type,
+            expected_shape,
+        )
+        _assert_passive_slot_descriptors(current_type, actual_fields)
+        behavior = _retained_behavior_names(current_type)
+        assert behavior <= _DATACLASS_LIFECYCLE_SPECIALS, (
+            f"passive value retains behavior: {sorted(behavior)!r}"
+        )
+        owner_module = inspect.getmodule(current_type)
+        assert owner_module is not None
+        _assert_passive_lifecycle(current_type, owner_module)
+        pending.extend(object.__getattribute__(current, name) for name in actual_fields)
 
 
 _CONSTANT_WORK_ALLOWED_EXTERNAL_CALLS = frozenset(
@@ -859,29 +1919,432 @@ def _hidden_get_scan_mutant(book: object) -> object:
     return _SLOW_GETTER.get(book)
 
 
-_BOUNDED_PROTECTION_MAP_FIELDS = frozenset(
-    {
-        "_authority_summary_by_scope",
-        "_binding_by_scope",
-        "_protection_cursor_by_scope",
-    }
+@dataclass(frozen=True, slots=True)
+class _BoundedMapLookalikeProxy:
+    _authority_summary_by_scope: object
+
+
+_BOUNDED_MAP_LOOKALIKE = _BoundedMapLookalikeProxy(
+    _authority_summary_by_scope=_SLOW_GETTER
 )
+
+
+def _lookalike_field_get_scan_mutant(book: object) -> object:
+    return _BOUNDED_MAP_LOOKALIKE._authority_summary_by_scope.get(book)
+
+
+@dataclass(frozen=True, slots=True)
+class _ExactShapeLookalikeProof:
+    position_scope: object
+
+
+@dataclass(frozen=True, slots=True)
+class _ExactShapeLookalikeBook:
+    _authority_summary_by_scope: object
+    _binding_by_scope: object
+    _protection_cursor_by_scope: object
+
+
+@dataclass(frozen=True, slots=True)
+class _ExactShapeLookalikeTransition:
+    book: _ExactShapeLookalikeBook
+    _protection_proof: _ExactShapeLookalikeProof
+
+
+class _LedgerTripwire:
+    @property
+    def _input_ledger(self) -> object:
+        raise AssertionError("lookalike get reached a private venue ledger")
+
+
+_EXACT_SHAPE_LOOKALIKE_TRANSITION = _ExactShapeLookalikeTransition(
+    book=_ExactShapeLookalikeBook(
+        _authority_summary_by_scope=_SLOW_GETTER,
+        _binding_by_scope=_SLOW_GETTER,
+        _protection_cursor_by_scope=_SLOW_GETTER,
+    ),
+    _protection_proof=_ExactShapeLookalikeProof(position_scope=_LedgerTripwire()),
+)
+
+
+def _position_scope_index_key(position_scope: object) -> object:
+    """Test-only spelling twin for exact-shape receiver mutants."""
+    return position_scope
+
+
+def _make_rebound_exact_shape_get_mutant() -> Callable[[object], object]:
+    def _extract_protection_transition(transition: object) -> object:
+        transition = _EXACT_SHAPE_LOOKALIKE_TRANSITION
+        return (
+            transition.book._authority_summary_by_scope.get(
+                _position_scope_index_key(transition._protection_proof.position_scope)
+            ),
+            transition.book._binding_by_scope.get(
+                _position_scope_index_key(transition._protection_proof.position_scope)
+            ),
+            transition.book._protection_cursor_by_scope.get(
+                _position_scope_index_key(transition._protection_proof.position_scope)
+            ),
+        )
+
+    return _extract_protection_transition
+
+
+def _make_extra_exact_shape_get_mutant() -> Callable[[object], object]:
+    def _extract_protection_transition(transition: object) -> object:
+        return (
+            transition.book._authority_summary_by_scope.get(
+                _position_scope_index_key(transition._protection_proof.position_scope)
+            ),
+            transition.book._binding_by_scope.get(
+                _position_scope_index_key(transition._protection_proof.position_scope)
+            ),
+            transition.book._protection_cursor_by_scope.get(
+                _position_scope_index_key(transition._protection_proof.position_scope)
+            ),
+            transition.book._authority_summary_by_scope.get(
+                _position_scope_index_key(transition._protection_proof.position_scope)
+            ),
+        )
+
+    return _extract_protection_transition
+
+
+_REBOUND_EXACT_SHAPE_GET_MUTANT = _make_rebound_exact_shape_get_mutant()
+_EXTRA_EXACT_SHAPE_GET_MUTANT = _make_extra_exact_shape_get_mutant()
+
+
+class _BenignBoundedGetter:
+    def get(self, _key: object) -> None:
+        return None
+
+
+class _DescriptorLedgerTripwire:
+    def __iter__(self) -> object:
+        raise AssertionError("descriptor reached a private venue ledger")
+
+
+@dataclass(frozen=True, slots=True)
+class _DescriptorSlowBook:
+    _authority_summary_by_scope: object
+    _binding_by_scope: object
+    _protection_cursor_by_scope: object
+    _input_ledger: object
+
+    @property
+    def _slow_summary(self) -> object:
+        return tuple(self._input_ledger)
+
+
+@dataclass(frozen=True, slots=True)
+class _DescriptorSlowTransition:
+    book: _DescriptorSlowBook
+    _protection_proof: _ExactShapeLookalikeProof
+
+
+_DESCRIPTOR_SLOW_TRANSITION = _DescriptorSlowTransition(
+    book=_DescriptorSlowBook(
+        _authority_summary_by_scope=_BenignBoundedGetter(),
+        _binding_by_scope=_BenignBoundedGetter(),
+        _protection_cursor_by_scope=_BenignBoundedGetter(),
+        _input_ledger=_DescriptorLedgerTripwire(),
+    ),
+    _protection_proof=_ExactShapeLookalikeProof(position_scope=object()),
+)
+
+
+def _make_descriptor_slow_scan_mutant() -> Callable[[object], object]:
+    def _extract_protection_transition(transition: object) -> object:
+        authority = transition.book._authority_summary_by_scope.get(
+            _position_scope_index_key(transition._protection_proof.position_scope)
+        )
+        binding = transition.book._binding_by_scope.get(
+            _position_scope_index_key(transition._protection_proof.position_scope)
+        )
+        cursor = transition.book._protection_cursor_by_scope.get(
+            _position_scope_index_key(transition._protection_proof.position_scope)
+        )
+        return authority, binding, cursor, transition.book._slow_summary
+
+    return _extract_protection_transition
+
+
+_DESCRIPTOR_SLOW_SCAN_MUTANT = _make_descriptor_slow_scan_mutant()
+
+
+def _make_exact_leaf_extractor_probe() -> Callable[[object], object]:
+    def _extract_protection_transition(transition: object) -> object:
+        scope_key = _position_scope_index_key(
+            transition._protection_proof.position_scope
+        )
+        return (
+            transition.book._authority_summary_by_scope.get(scope_key),
+            transition.book._binding_by_scope.get(scope_key),
+            transition.book._protection_cursor_by_scope.get(scope_key),
+        )
+
+    return _extract_protection_transition
+
+
+def _transition_descriptor_helper(candidate: object) -> object:
+    return candidate.book._slow_summary
+
+
+def _make_helper_escape_mutant() -> Callable[[object], object]:
+    def _extract_protection_transition(transition: object) -> object:
+        scope_key = _position_scope_index_key(
+            transition._protection_proof.position_scope
+        )
+        _transition_descriptor_helper(transition)
+        return (
+            transition.book._authority_summary_by_scope.get(scope_key),
+            transition.book._binding_by_scope.get(scope_key),
+            transition.book._protection_cursor_by_scope.get(scope_key),
+        )
+
+    return _extract_protection_transition
+
+
+def _make_wrapped_receiver_mutant() -> Callable[[object], object]:
+    def _extract_protection_transition(transition: object) -> object:
+        wrapped = (transition,)[0]
+        scope_key = _position_scope_index_key(wrapped._protection_proof.position_scope)
+        return (
+            wrapped.book._authority_summary_by_scope.get(scope_key),
+            wrapped.book._binding_by_scope.get(scope_key),
+            wrapped.book._protection_cursor_by_scope.get(scope_key),
+        )
+
+    return _extract_protection_transition
+
+
+def _make_aggregate_map_mutant() -> Callable[[object], object]:
+    def _extract_protection_transition(transition: object) -> object:
+        scope_key = _position_scope_index_key(
+            transition._protection_proof.position_scope
+        )
+        bounded_maps = (
+            transition.book._authority_summary_by_scope,
+            transition.book._binding_by_scope,
+            transition.book._protection_cursor_by_scope,
+        )
+        return tuple(bounded_map.get(scope_key) for bounded_map in bounded_maps)
+
+    return _extract_protection_transition
+
+
+_EXACT_LEAF_EXTRACTOR_PROBE = _make_exact_leaf_extractor_probe()
+_HELPER_ESCAPE_MUTANT = _make_helper_escape_mutant()
+_WRAPPED_RECEIVER_MUTANT = _make_wrapped_receiver_mutant()
+_AGGREGATE_MAP_MUTANT = _make_aggregate_map_mutant()
+
+
+_BOUNDED_PROTECTION_MAP_FIELD_ORDER = (
+    "_authority_summary_by_scope",
+    "_binding_by_scope",
+    "_protection_cursor_by_scope",
+)
+_BOUNDED_PROTECTION_MAP_FIELDS = frozenset(_BOUNDED_PROTECTION_MAP_FIELD_ORDER)
+
+
+def _attribute_path(node: ast.AST) -> tuple[str, ...] | None:
+    if isinstance(node, ast.Name):
+        return (node.id,)
+    if not isinstance(node, ast.Attribute):
+        return None
+    prefix = _attribute_path(node.value)
+    return None if prefix is None else prefix + (node.attr,)
+
+
+def _persistent_map_provenance_violations(tree: ast.AST) -> set[str]:
+    """Forbid venue-local aliases or mutation of the trusted bounded-map class."""
+    violations: set[str] = set()
+    parents = {
+        child: parent
+        for parent in ast.walk(tree)
+        for child in ast.iter_child_nodes(parent)
+    }
+    annotation_nodes: set[ast.AST] = set()
+    for candidate in ast.walk(tree):
+        annotation: ast.AST | None = None
+        if isinstance(candidate, ast.arg):
+            annotation = candidate.annotation
+        elif isinstance(candidate, ast.AnnAssign):
+            annotation = candidate.annotation
+        elif isinstance(candidate, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            annotation = candidate.returns
+        if annotation is not None:
+            annotation_nodes.update(ast.walk(annotation))
+
+    imports = []
+    for candidate in ast.walk(tree):
+        if not isinstance(candidate, ast.ImportFrom):
+            continue
+        for imported in candidate.names:
+            if imported.name == "_PersistentKeyMap":
+                imports.append((candidate, imported))
+    if len(imports) != 1:
+        violations.add("persistent-map-import-count")
+    for statement, imported in imports:
+        if (
+            statement.level != 1
+            or statement.module != "fills"
+            or imported.asname is not None
+        ):
+            violations.add("persistent-map-import-provenance")
+
+    for candidate in ast.walk(tree):
+        if (
+            isinstance(candidate, ast.Attribute)
+            and candidate.attr == "_PersistentKeyMap"
+        ):
+            violations.add("qualified-persistent-map-access")
+        if (
+            isinstance(candidate, ast.Constant)
+            and candidate.value == "_PersistentKeyMap"
+        ):
+            violations.add("dynamic-persistent-map-name")
+        if not isinstance(candidate, ast.Name) or candidate.id != "_PersistentKeyMap":
+            continue
+        if not isinstance(candidate.ctx, ast.Load):
+            violations.add("persistent-map-rebind")
+            continue
+        if candidate in annotation_nodes:
+            continue
+        attribute = parents.get(candidate)
+        if not (
+            isinstance(attribute, ast.Attribute)
+            and attribute.value is candidate
+            and attribute.attr == "empty"
+        ):
+            violations.add("persistent-map-capability-escape")
+            continue
+        retained = parents.get(attribute)
+        if isinstance(retained, ast.Call) and retained.func is attribute:
+            continue
+        if isinstance(retained, ast.keyword) and retained.arg == "default_factory":
+            call = parents.get(retained)
+            if (
+                isinstance(call, ast.Call)
+                and isinstance(call.func, ast.Name)
+                and call.func.id == "field"
+            ):
+                continue
+        violations.add("persistent-map-member-capture")
+    return violations
+
+
+def _is_exact_scope_key_call(node: ast.AST) -> bool:
+    return (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_position_scope_index_key"
+        and len(node.args) == 1
+        and not node.keywords
+        and _attribute_path(node.args[0])
+        == ("transition", "_protection_proof", "position_scope")
+    )
+
+
+def _exact_protection_map_get_field(node: ast.AST) -> str | None:
+    if not (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "get"
+        and len(node.args) == 1
+        and not node.keywords
+        and isinstance(node.args[0], ast.Name)
+        and node.args[0].id == "scope_key"
+        and isinstance(node.args[0].ctx, ast.Load)
+    ):
+        return None
+    receiver = _attribute_path(node.func.value)
+    if (
+        receiver is None
+        or receiver[:2] != ("transition", "book")
+        or len(receiver) != 3
+        or receiver[2] not in _BOUNDED_PROTECTION_MAP_FIELDS
+    ):
+        return None
+    return receiver[2]
+
+
+def _extractor_receiver_violations(scanned: dict[str, ast.AST]) -> set[str]:
+    """Require the complete two-statement bounded extractor leaf grammar."""
+    violations: set[str] = set()
+    root = scanned.get("_extract_protection_transition")
+    if root is None:
+        return {"missing-extractor"}
+    top_level_functions = [
+        node
+        for node in root.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    ]
+    if len(top_level_functions) != 1 or not isinstance(
+        top_level_functions[0], ast.FunctionDef
+    ):
+        return {"extractor-shape"}
+    function = top_level_functions[0]
+    positional = (*function.args.posonlyargs, *function.args.args)
+    if (
+        function.name != "_extract_protection_transition"
+        or function.decorator_list
+        or function.args.posonlyargs
+        or tuple(argument.arg for argument in positional) != ("transition",)
+        or function.args.vararg is not None
+        or function.args.kwarg is not None
+        or function.args.kwonlyargs
+        or function.args.defaults
+        or function.args.kw_defaults
+    ):
+        violations.add("extractor-signature")
+    statements = list(function.body)
+    if statements and isinstance(statements[0], ast.Expr):
+        docstring = statements[0].value
+        if isinstance(docstring, ast.Constant) and type(docstring.value) is str:
+            statements.pop(0)
+    if len(statements) != 2:
+        violations.add("extractor-leaf-statement-count")
+        return violations
+
+    assignment, terminal = statements
+    if not (
+        isinstance(assignment, ast.Assign)
+        and len(assignment.targets) == 1
+        and isinstance(assignment.targets[0], ast.Name)
+        and assignment.targets[0].id == "scope_key"
+        and _is_exact_scope_key_call(assignment.value)
+    ):
+        violations.add("scope-key-assignment")
+    if not (
+        isinstance(terminal, ast.Return)
+        and isinstance(terminal.value, ast.Tuple)
+        and len(terminal.value.elts) == 3
+    ):
+        violations.add("bounded-get-tuple")
+        return violations
+
+    exact_fields = tuple(
+        _exact_protection_map_get_field(item) for item in terminal.value.elts
+    )
+    if exact_fields != _BOUNDED_PROTECTION_MAP_FIELD_ORDER:
+        violations.add("bounded-get-field-order")
+    return violations
 
 
 def _disallowed_constant_work_method_calls(
     scanned: dict[str, ast.AST],
 ) -> set[str]:
     disallowed: set[str] = set()
-    for tree in scanned.values():
+    for function_name, tree in scanned.items():
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call) or not isinstance(
                 node.func, ast.Attribute
             ):
                 continue
             if (
-                node.func.attr == "get"
-                and isinstance(node.func.value, ast.Attribute)
-                and node.func.value.attr in _BOUNDED_PROTECTION_MAP_FIELDS
+                function_name == "_extract_protection_transition"
+                and _exact_protection_map_get_field(node) is not None
             ):
                 continue
             disallowed.add(node.func.attr)
@@ -1278,20 +2741,26 @@ def test_public_value_shapes_and_enum_members_are_exact() -> None:
     assert public_names == set(module.__all__)
     for name, expected in expected_enums.items():
         (enum_type,) = _required(module, name)
-        assert tuple(enum_type.__members__) == expected
+        _assert_passive_enum_type(enum_type, expected)
     for name, expected in expected_fields.items():
         (value_type,) = _required(module, name)
-        params = value_type.__dataclass_params__
-        assert params.frozen is True
+        assert type(value_type) is type
+        assert inspect.getmro(value_type) == (value_type, object)
+        actual_fields = _assert_passive_dataclass_metadata(value_type)
         assert (
             tuple(
-                retained.name
-                for retained in fields(value_type)
-                if not retained.name.startswith("_")
+                field_name
+                for field_name in actual_fields
+                if not field_name.startswith("_")
             )
             == expected
         )
-        assert _public_behavior_names(value_type) == set()
+        if name not in {"PositionProtectionState", "ProtectionVenueProjection"}:
+            assert actual_fields == expected
+        _assert_passive_slot_descriptors(value_type, actual_fields)
+        behavior = _retained_behavior_names(value_type)
+        assert behavior <= _DATACLASS_LIFECYCLE_SPECIALS
+        _assert_passive_lifecycle(value_type, module)
 
 
 def test_public_behavior_seal_detects_inherited_capability_mutant() -> None:
@@ -1299,10 +2768,22 @@ def test_public_behavior_seal_detects_inherited_capability_mutant() -> None:
         def __call__(self) -> None:
             raise AssertionError("mutant callable capability must never run")
 
+        def __await__(self) -> object:
+            raise AssertionError("mutant await capability must never run")
+
+        def __enter__(self) -> object:
+            raise AssertionError("mutant context capability must never run")
+
+        def __exit__(self, *_args: object) -> None:
+            raise AssertionError("mutant context capability must never run")
+
         def __getattr__(self, name: str) -> object:
             if name == "submit_order":
                 return lambda: None
             raise AttributeError(name)
+
+        def __setitem__(self, _key: object, _value: object) -> None:
+            raise AssertionError("mutant index-mutation capability must never run")
 
         def submit_order(self) -> None:
             raise AssertionError("mutant capability must never run")
@@ -1314,12 +2795,490 @@ def test_public_behavior_seal_detects_inherited_capability_mutant() -> None:
     class _ApparentlySafeValue(_HiddenCapabilityMixin):
         pass
 
-    assert _public_behavior_names(_ApparentlySafeValue) == {
+    assert _retained_behavior_names(_ApparentlySafeValue) == {
         "__call__",
+        "__await__",
+        "__enter__",
+        "__exit__",
         "__getattr__",
+        "__setitem__",
         "broker_client",
         "submit_order",
     }
+
+
+def test_passive_enum_seal_rejects_capability_method_mutant() -> None:
+    class _PlainEnum(Enum):
+        SAFE = 1
+        HALT = 7
+
+    class _CapabilityEnum(str, Enum):
+        SAFE = "SAFE"
+
+        def submit_order(self) -> None:
+            raise AssertionError("enum capability mutant must never run")
+
+    class _OverrideEnum(str, Enum):
+        SAFE = "SAFE"
+
+        def __str__(self) -> str:
+            raise AssertionError("enum override mutant must never run")
+
+    class _MemberPayloadEnum(Enum):
+        SAFE = 1
+
+    object.__setattr__(_MemberPayloadEnum.SAFE, "broker_client", lambda: None)
+
+    _assert_passive_enum_type(_PlainEnum, ("SAFE", "HALT"))
+    with pytest.raises(AssertionError, match="enum class shape changed"):
+        _assert_passive_enum_type(_CapabilityEnum, ("SAFE",))
+    with pytest.raises(AssertionError, match="enum behavior changed: __str__"):
+        _assert_passive_enum_type(_OverrideEnum, ("SAFE",))
+    with pytest.raises(AssertionError, match="enum member payload changed"):
+        _assert_passive_enum_type(_MemberPayloadEnum, ("SAFE",))
+    with pytest.raises(AssertionError, match="enum class shape changed"):
+        _assert_passive_value_graph(
+            _CapabilityEnum.SAFE,
+            allowed_shapes={},
+            allowed_enum_shapes={_CapabilityEnum: ("SAFE",)},
+        )
+
+
+@pytest.mark.parametrize(
+    ("first", "second"),
+    [
+        (False, True),
+        (b"first", b"second"),
+        (1, 2),
+        ("first", "second"),
+        (Decimal("1.25"), Decimal("2.5")),
+        (Fraction(1, 3), Fraction(2, 3)),
+        (None, "present"),
+    ],
+)
+def test_passive_enum_seal_accepts_every_inert_exact_payload_type(
+    first: object,
+    second: object,
+) -> None:
+    enum_type = Enum(
+        "_PassivePayloadProbe",
+        {"FIRST": first, "SECOND": second},
+    )
+    _assert_passive_enum_type(enum_type, ("FIRST", "SECOND"))
+
+
+def test_passive_value_graph_rejects_private_capability_field_mutant() -> None:
+    @dataclass(frozen=True, slots=True)
+    class _SafeDefaultPrivateFieldMutant:
+        value: int
+        _broker_client: None = None
+
+    @dataclass(frozen=True, slots=True)
+    class _PrivateCapabilityFieldMutant:
+        _broker_client: object
+
+    @dataclass(frozen=True, slots=True)
+    class _FrozenBrokerClient:
+        def submit_order(self) -> None:
+            raise AssertionError("nested mutant capability must never run")
+
+    @dataclass(frozen=True, slots=True)
+    class _NestedCapabilityFieldMutant:
+        value: int
+        _payload: object
+
+    with pytest.raises(AssertionError, match="field inventory changed"):
+        _assert_passive_value_graph(
+            _SafeDefaultPrivateFieldMutant(value=1),
+            allowed_shapes={_SafeDefaultPrivateFieldMutant: ("value",)},
+        )
+    with pytest.raises(AssertionError, match="callable capability"):
+        _assert_passive_value_graph(
+            _PrivateCapabilityFieldMutant(_broker_client=lambda: None),
+            allowed_shapes={
+                _PrivateCapabilityFieldMutant: ("_broker_client",),
+            },
+        )
+    with pytest.raises(AssertionError, match="unapproved dataclass or capability"):
+        _assert_passive_value_graph(
+            _PrivateCapabilityFieldMutant(_broker_client=object()),
+            allowed_shapes={
+                _PrivateCapabilityFieldMutant: ("_broker_client",),
+            },
+        )
+    with pytest.raises(AssertionError, match="unapproved dataclass or capability"):
+        _assert_passive_value_graph(
+            _NestedCapabilityFieldMutant(
+                value=1,
+                _payload=_FrozenBrokerClient(),
+            ),
+            allowed_shapes={
+                _NestedCapabilityFieldMutant: ("value", "_payload"),
+            },
+        )
+
+
+def test_passive_value_graph_rejects_metaclass_and_descriptor_spoofs() -> None:
+    metaclass_calls: list[str] = []
+
+    class _SpoofMeta(type):
+        def __hash__(cls) -> int:
+            metaclass_calls.append("hash")
+            return hash(int)
+
+        def __eq__(cls, _other: object) -> bool:
+            metaclass_calls.append("eq")
+            return True
+
+    class _MetaclassCapability(metaclass=_SpoofMeta):
+        def submit_order(self) -> None:
+            raise AssertionError("metaclass mutant capability must never run")
+
+    with pytest.raises(AssertionError, match="custom metaclass"):
+        _assert_passive_value_graph(
+            _MetaclassCapability(),
+            allowed_shapes={},
+        )
+    assert metaclass_calls == []
+
+    @dataclass(frozen=True, slots=True)
+    class _DescriptorReplacementMutant:
+        value: int
+
+    retained = _DescriptorReplacementMutant(value=1)
+    descriptor_reads: list[str] = []
+
+    def read_value(_instance: object) -> int:
+        descriptor_reads.append("read")
+        return 1
+
+    _DescriptorReplacementMutant.value = property(read_value)  # type: ignore[assignment]
+    with pytest.raises(AssertionError, match="field descriptor changed"):
+        _assert_passive_value_graph(
+            retained,
+            allowed_shapes={_DescriptorReplacementMutant: ("value",)},
+        )
+    assert descriptor_reads == []
+
+
+def test_passive_value_graph_rejects_forged_generated_freeze_behavior() -> None:
+    @dataclass(frozen=True, slots=True)
+    class _GeneratedFreezeMutant:
+        value: int
+
+    retained = _GeneratedFreezeMutant(value=1)
+
+    def mutable_setattr(self: object, name: str, value: object) -> None:
+        object.__setattr__(self, name, value)
+
+    mutable_setattr.__code__ = mutable_setattr.__code__.replace(co_filename="<string>")
+    _GeneratedFreezeMutant.__setattr__ = mutable_setattr  # type: ignore[assignment]
+    with pytest.raises(AssertionError):
+        _assert_passive_value_graph(
+            retained,
+            allowed_shapes={_GeneratedFreezeMutant: ("value",)},
+        )
+    retained.value = 2
+    assert retained.value == 2
+
+
+def test_passive_value_graph_rejects_capability_and_forged_dataclass_metadata() -> None:
+    @dataclass(frozen=True, slots=True)
+    class _AnnotationMetadataMutant:
+        value: int
+
+    _AnnotationMetadataMutant.__annotations__["value"] = lambda: None
+    with pytest.raises(AssertionError, match="annotation retains a capability"):
+        _assert_passive_value_graph(
+            _AnnotationMetadataMutant(value=1),
+            allowed_shapes={_AnnotationMetadataMutant: ("value",)},
+        )
+
+    @dataclass(frozen=True, slots=True)
+    class _DocumentationMetadataMutant:
+        value: int
+
+    _DocumentationMetadataMutant.__doc__ = lambda: None  # type: ignore[assignment]
+    with pytest.raises(AssertionError, match="documentation retains a capability"):
+        _assert_passive_value_graph(
+            _DocumentationMetadataMutant(value=1),
+            allowed_shapes={_DocumentationMetadataMutant: ("value",)},
+        )
+
+    field_metadata_calls: list[str] = []
+
+    class _FieldMetadataDict(dict[str, object]):
+        def values(self) -> object:
+            field_metadata_calls.append("values")
+            return super().values()
+
+    @dataclass(frozen=True, slots=True)
+    class _FieldMetadataMutant:
+        value: int
+
+    _FieldMetadataMutant.__dataclass_fields__ = _FieldMetadataDict(  # type: ignore[assignment]
+        vars(_FieldMetadataMutant)["__dataclass_fields__"]
+    )
+    with pytest.raises(AssertionError, match="field metadata is not an exact dict"):
+        _assert_passive_value_graph(
+            _FieldMetadataMutant(value=1),
+            allowed_shapes={_FieldMetadataMutant: ("value",)},
+        )
+    assert field_metadata_calls == []
+
+    @dataclass(slots=True)
+    class _ForgedFrozenMetadataMutant:
+        value: int
+
+    mutable = _ForgedFrozenMetadataMutant(value=1)
+    _ForgedFrozenMetadataMutant.__dataclass_params__ = vars(_PassiveDataclassProbe)[  # type: ignore[assignment]
+        "__dataclass_params__"
+    ]
+    with pytest.raises(AssertionError, match="dataclass generated"):
+        _assert_passive_value_graph(
+            mutable,
+            allowed_shapes={_ForgedFrozenMetadataMutant: ("value",)},
+        )
+    mutable.value = 2
+    assert mutable.value == 2
+
+
+def test_passive_lifecycle_accepts_exact_sequential_validation() -> None:
+    @dataclass(frozen=True, slots=True)
+    class _SequentialValidationProbe:
+        label: str
+        commitment: bytes
+        source_time: int
+        evaluation_time: int
+        optional_time: int | None
+        kind: _PassiveEnumProbe
+        active: bool
+
+        def __post_init__(self) -> None:
+            if type(self.label) is not str:
+                raise TypeError("label")
+            if not self.label.strip():
+                raise ValueError("label")
+            if type(self.commitment) is not bytes:
+                raise TypeError("commitment")
+            if len(self.commitment) != 32:
+                raise ValueError("commitment")
+            if type(self.source_time) is not int:
+                raise TypeError("source_time")
+            if self.source_time < 0:
+                raise ValueError("source_time")
+            if type(self.evaluation_time) is not int:
+                raise TypeError("evaluation_time")
+            if self.evaluation_time < self.source_time:
+                raise ValueError("evaluation_time")
+            if self.optional_time is not None:
+                if type(self.optional_time) is not int:
+                    raise TypeError("optional_time")
+                if self.optional_time < 0:
+                    raise ValueError("optional_time")
+            if self.kind is not _PassiveEnumProbe.FIRST:
+                raise ValueError("kind")
+            if type(self.active) is not bool:
+                raise TypeError("active")
+            if not self.active:
+                raise ValueError("active")
+
+    owner_module = inspect.getmodule(_SequentialValidationProbe)
+    assert owner_module is not None
+    _assert_passive_lifecycle(_SequentialValidationProbe, owner_module)
+    valid = _SequentialValidationProbe(
+        label="exact",
+        commitment=b"x" * 32,
+        source_time=10,
+        evaluation_time=10,
+        optional_time=11,
+        kind=_PassiveEnumProbe.FIRST,
+        active=True,
+    )
+    assert valid.label == "exact"
+    with pytest.raises(ValueError, match="label"):
+        replace(valid, label=" ")
+    with pytest.raises(ValueError, match="commitment"):
+        replace(valid, commitment=b"x" * 31)
+    with pytest.raises(ValueError, match="evaluation_time"):
+        replace(valid, evaluation_time=9)
+
+
+def test_passive_lifecycle_rejects_capability_and_metadata_mutants() -> None:
+    @dataclass(frozen=True, slots=True, init=False)
+    class _PassiveOpaqueProbe:
+        value: int
+
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            del args, kwargs
+            raise TypeError("opaque")
+
+        def __init_subclass__(cls, **kwargs: object) -> None:
+            del cls, kwargs
+            raise TypeError("sealed")
+
+    @dataclass(frozen=True, slots=True)
+    class _CustomPostInitMutant:
+        _broker_client: object
+
+        def __post_init__(self) -> None:
+            if self._broker_client.submit_order():
+                raise ValueError("capability")
+
+    @dataclass(frozen=True, slots=True)
+    class _GlobalSubscriptMutationMutant:
+        value: int
+
+        def __post_init__(self) -> None:
+            globals()["_lifecycle_mutation_target"] = self
+
+    @dataclass(frozen=True, slots=True)
+    class _FakeStripMutant:
+        value: object
+
+        def __post_init__(self) -> None:
+            if self.value.strip():
+                raise ValueError("fake strip")
+
+    type_protocol_calls: list[str] = []
+
+    class _TypeProbeMeta(type):
+        def __bool__(cls) -> bool:
+            type_protocol_calls.append("bool")
+            return True
+
+        def __eq__(cls, _other: object) -> bool:
+            type_protocol_calls.append("eq")
+            return True
+
+    class _TypeProbe(metaclass=_TypeProbeMeta):
+        pass
+
+    @dataclass(frozen=True, slots=True)
+    class _UnsafeTypeTruthMutant:
+        value: object
+
+        def __post_init__(self) -> None:
+            if type(self.value):
+                raise ValueError("unsafe type truth")
+
+    @dataclass(frozen=True, slots=True)
+    class _UnsafeTypeEqualityMutant:
+        value: object
+
+        def __post_init__(self) -> None:
+            if type(self.value) == object:  # noqa: E721 - deliberate unsafe mutant
+                raise ValueError("unsafe type equality")
+
+    def shadowed_error(_message: str) -> bool:
+        raise AssertionError("shadowed default must never run")
+
+    @dataclass(frozen=True, slots=True)
+    class _DefaultShadowMutant:
+        value: int
+
+        def __post_init__(self, TypeError=shadowed_error) -> None:  # noqa: N803
+            if TypeError("shadowed"):
+                raise ValueError("shadowed")
+
+    def make_closure_mutant() -> type[object]:
+        def capability() -> None:
+            return None
+
+        @dataclass(frozen=True, slots=True)
+        class _ClosureMutant:
+            value: int
+
+            def __post_init__(self) -> None:
+                capability()
+
+        return _ClosureMutant
+
+    _ClosureMutant = make_closure_mutant()
+
+    @dataclass(frozen=True, slots=True)
+    class _DecoratedLifecycleMutant:
+        value: int
+
+        @staticmethod
+        def __post_init__() -> None:
+            return None
+
+    @dataclass(frozen=True, slots=True)
+    class _AnnotationMutant:
+        value: int
+
+        def __post_init__(self) -> None:
+            return None
+
+    _AnnotationMutant.__post_init__.__annotations__["return"] = lambda: None
+
+    @dataclass(frozen=True, slots=True)
+    class _FunctionAttributeMutant:
+        value: int
+
+        def __post_init__(self) -> None:
+            return None
+
+    _FunctionAttributeMutant.__post_init__.broker_client = lambda: None
+
+    owner_module = inspect.getmodule(_PassiveOpaqueProbe)
+    assert owner_module is not None
+    assert _retained_behavior_names(_PassiveOpaqueProbe) == {
+        "__init__",
+        "__init_subclass__",
+    }
+    _assert_passive_lifecycle(_PassiveOpaqueProbe, owner_module)
+
+    assert "__post_init__" in _retained_behavior_names(_CustomPostInitMutant)
+    with pytest.raises(AssertionError, match="unapproved lifecycle call"):
+        _assert_passive_lifecycle(_CustomPostInitMutant, owner_module)
+    with pytest.raises(AssertionError, match="unsupported lifecycle statement"):
+        _assert_passive_lifecycle(_GlobalSubscriptMutationMutant, owner_module)
+    with pytest.raises(AssertionError, match="prior exact str guard"):
+        _assert_passive_lifecycle(_FakeStripMutant, owner_module)
+    with pytest.raises(AssertionError, match="unapproved lifecycle call"):
+        _assert_passive_lifecycle(_UnsafeTypeTruthMutant, owner_module)
+    with pytest.raises(AssertionError, match="unapproved lifecycle call"):
+        _assert_passive_lifecycle(_UnsafeTypeEqualityMutant, owner_module)
+    assert type_protocol_calls == []
+    with pytest.raises(AssertionError):
+        _assert_passive_lifecycle(_DefaultShadowMutant, owner_module)
+    with pytest.raises(AssertionError):
+        _assert_passive_lifecycle(_ClosureMutant, owner_module)
+    with pytest.raises(AssertionError):
+        _assert_passive_lifecycle(_DecoratedLifecycleMutant, owner_module)
+    with pytest.raises(AssertionError, match="annotation retains a capability"):
+        _assert_passive_lifecycle(_AnnotationMutant, owner_module)
+    with pytest.raises(AssertionError):
+        _assert_passive_lifecycle(_FunctionAttributeMutant, owner_module)
+
+
+def test_passive_lifecycle_rejects_source_and_bytecode_provenance_split() -> None:
+    @dataclass(frozen=True, slots=True)
+    class _SourceSwapMutant:
+        value: int
+
+        def __post_init__(self) -> None:
+            return None
+
+    benign = _SourceSwapMutant.__post_init__
+    benign.__code__ = _lifecycle_source_swap_payload.__code__.replace(
+        co_filename=benign.__code__.co_filename,
+        co_firstlineno=benign.__code__.co_firstlineno,
+    )
+    owner_module = inspect.getmodule(_SourceSwapMutant)
+    assert owner_module is not None
+    _LIFECYCLE_SOURCE_SWAP_CALLS.clear()
+    with pytest.raises(
+        AssertionError,
+        match="bytecode does not match inspected source",
+    ):
+        _assert_passive_lifecycle(_SourceSwapMutant, owner_module)
+    assert _LIFECYCLE_SOURCE_SWAP_CALLS == []
+    _SourceSwapMutant(value=1)
+    assert _LIFECYCLE_SOURCE_SWAP_CALLS == ["executed"]
+    _LIFECYCLE_SOURCE_SWAP_CALLS.clear()
 
 
 def test_mandate_is_frozen_exact_and_rejects_subclasses() -> None:
@@ -2492,6 +4451,38 @@ def test_protection_projection_never_materializes_slow_venue_histories(
 ) -> None:
     module = _protection_module()
     venue_module = importlib.import_module("app.execution_core.venue")
+    fills_module = importlib.import_module("app.execution_core.fills")
+    venue_source = inspect.getsource(venue_module)
+    provenance_violations = _persistent_map_provenance_violations(
+        ast.parse(venue_source)
+    )
+    assert not provenance_violations, (
+        f"venue mutates or aliases the trusted bounded map: {provenance_violations!r}"
+    )
+    map_type = getattr(venue_module, "_PersistentKeyMap")
+    assert map_type is getattr(fills_module, "_PersistentKeyMap")
+    original_map_get = inspect.getattr_static(map_type, "get")
+    assert inspect.isfunction(original_map_get)
+    assert original_map_get.__module__ == fills_module.__name__
+    assert original_map_get.__qualname__ == "_PersistentKeyMap.get"
+    assert (
+        Path(original_map_get.__code__.co_filename).resolve()
+        == Path(fills_module.__file__).resolve()
+    )
+    assert original_map_get.__defaults__ is None
+    assert original_map_get.__kwdefaults__ is None
+    assert original_map_get.__closure__ is None
+    assert type(original_map_get.__dict__) is dict and not original_map_get.__dict__
+    _assert_function_matches_inspected_source(
+        original_map_get,
+        textwrap.dedent(inspect.getsource(original_map_get)),
+        message="bounded-map get bytecode does not match its trusted source",
+    )
+    for name in _BOUNDED_PROTECTION_MAP_FIELD_ORDER:
+        descriptor = inspect.getattr_static(VenueRecoveryBook, name)
+        assert type(descriptor) is _PASSIVE_SLOT_DESCRIPTOR_TYPE
+        assert descriptor.__objclass__ is VenueRecoveryBook
+        assert descriptor.__name__ == name
     small = _owned_fill_transition(label="protection-extractor-small")
     large = small
     for index in range(32):
@@ -2525,13 +4516,14 @@ def test_protection_projection_never_materializes_slow_venue_histories(
         monkeypatch.setattr(VenueRecoveryBook, name, fail_if_called)
 
     sequence_type = getattr(venue_module, "_PersistentSequence")
-    map_type = getattr(venue_module, "_PersistentKeyMap")
     monkeypatch.setattr(sequence_type, "get", fail_if_called)
-    original_map_get = map_type.get
     calls = 0
+    receiver_types: set[type[object]] = set()
 
     def counted_map_get(retained: object, key: bytes) -> object:
         nonlocal calls
+        receiver_types.add(type(retained))
+        assert type(retained) is map_type
         calls += 1
         return original_map_get(retained, key)
 
@@ -2546,7 +4538,9 @@ def test_protection_projection_never_materializes_slow_venue_histories(
     assert small_projection.blocking_buy_effect_count == 1
     assert large_projection.blocking_effect_count == 33
     assert large_projection.blocking_buy_effect_count == 33
+    assert small_calls == 3
     assert large_calls == small_calls
+    assert receiver_types == {map_type}
 
     extractor = getattr(venue_module, "_extract_protection_transition")
     forbidden = {
@@ -2603,6 +4597,7 @@ def test_protection_projection_never_materializes_slow_venue_histories(
         }
     }
     indirect_calls = _disallowed_constant_work_method_calls(scanned)
+    receiver_violations = _extractor_receiver_violations(scanned)
     opaque_call_targets = {
         ast.dump(node.func, include_attributes=False)
         for tree in scanned.values()
@@ -2646,12 +4641,75 @@ def test_protection_projection_never_materializes_slow_venue_histories(
     assert not indirect_calls, (
         f"protection extractor hides work behind method calls: {indirect_calls!r}"
     )
+    assert not receiver_violations, (
+        f"protection extractor receiver provenance is not exact: "
+        f"{receiver_violations!r}"
+    )
     assert not opaque_call_targets, (
         f"protection extractor uses opaque callable targets: {opaque_call_targets!r}"
     )
     assert not iterative_nodes, (
         f"protection extractor uses history-shaped iteration: {iterative_nodes!r}"
     )
+
+
+def test_constant_work_oracle_pins_trusted_bounded_map_provenance() -> None:
+    safe_source = """
+from dataclasses import field
+from .fills import _PersistentKeyMap
+
+class Book:
+    retained: _PersistentKeyMap[int] = field(
+        default_factory=_PersistentKeyMap.empty
+    )
+
+def fresh() -> _PersistentKeyMap[int]:
+    return _PersistentKeyMap.empty()
+"""
+    assert not _persistent_map_provenance_violations(ast.parse(safe_source))
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected_violation"),
+    [
+        (
+            "_PersistentKeyMap.get = slow_get",
+            "persistent-map-capability-escape",
+        ),
+        (
+            "setattr(_PersistentKeyMap, 'get', slow_get)",
+            "persistent-map-capability-escape",
+        ),
+        (
+            "_Map = _PersistentKeyMap\n_Map.get = slow_get",
+            "persistent-map-capability-escape",
+        ),
+        (
+            "original_get = _PersistentKeyMap.get",
+            "persistent-map-capability-escape",
+        ),
+        (
+            "vars(_PersistentKeyMap)['get'] = slow_get",
+            "persistent-map-capability-escape",
+        ),
+        (
+            "from .fills import _PersistentKeyMap as _Map",
+            "persistent-map-import-provenance",
+        ),
+        (
+            "import app.execution_core.fills as fills\n"
+            "fills._PersistentKeyMap.get = slow_get",
+            "qualified-persistent-map-access",
+        ),
+    ],
+)
+def test_constant_work_oracle_rejects_bounded_map_mutation_and_aliases(
+    mutation: str,
+    expected_violation: str,
+) -> None:
+    source = f"from .fills import _PersistentKeyMap\n{mutation}\n"
+    violations = _persistent_map_provenance_violations(ast.parse(source))
+    assert expected_violation in violations
 
 
 @pytest.mark.parametrize(
@@ -2693,6 +4751,100 @@ def test_constant_work_oracle_rejects_hidden_get_scan_mutant() -> None:
     )
     assert not unresolved
     assert "get" in _disallowed_constant_work_method_calls(scanned)
+
+
+def test_constant_work_oracle_rejects_approved_name_lookalike_get_mutant() -> None:
+    owner_module = inspect.getmodule(_lookalike_field_get_scan_mutant)
+    assert owner_module is not None
+    scanned, _, unresolved = _constant_work_call_graph(
+        _lookalike_field_get_scan_mutant,
+        owner_module,
+    )
+    assert not unresolved
+    assert "get" in _disallowed_constant_work_method_calls(scanned)
+
+    with pytest.raises(AssertionError, match="private venue ledger"):
+        _lookalike_field_get_scan_mutant(_LedgerTripwire())
+
+
+@pytest.mark.parametrize(
+    ("mutant", "expected_violation"),
+    [
+        (_REBOUND_EXACT_SHAPE_GET_MUTANT, "scope-key-assignment"),
+        (_EXTRA_EXACT_SHAPE_GET_MUTANT, "extractor-leaf-statement-count"),
+    ],
+)
+def test_constant_work_oracle_rejects_exact_shape_receiver_mutants(
+    mutant: Callable[[object], object],
+    expected_violation: str,
+) -> None:
+    owner_module = inspect.getmodule(mutant)
+    assert owner_module is not None
+    scanned, _, unresolved = _constant_work_call_graph(mutant, owner_module)
+    assert not unresolved
+    assert expected_violation in _extractor_receiver_violations(scanned)
+    with pytest.raises(AssertionError, match="private venue ledger"):
+        mutant(_EXACT_SHAPE_LOOKALIKE_TRANSITION)
+
+
+def test_constant_work_oracle_accepts_only_exact_leaf_extractor_grammar() -> None:
+    owner_module = inspect.getmodule(_EXACT_LEAF_EXTRACTOR_PROBE)
+    assert owner_module is not None
+    scanned, _, unresolved = _constant_work_call_graph(
+        _EXACT_LEAF_EXTRACTOR_PROBE,
+        owner_module,
+    )
+    assert not unresolved
+    assert not _disallowed_constant_work_method_calls(scanned)
+    assert not _extractor_receiver_violations(scanned)
+
+
+@pytest.mark.parametrize(
+    ("mutant", "transition", "runtime_message"),
+    [
+        (
+            _HELPER_ESCAPE_MUTANT,
+            _DESCRIPTOR_SLOW_TRANSITION,
+            "descriptor reached a private venue ledger",
+        ),
+        (
+            _WRAPPED_RECEIVER_MUTANT,
+            _EXACT_SHAPE_LOOKALIKE_TRANSITION,
+            "private venue ledger",
+        ),
+        (
+            _AGGREGATE_MAP_MUTANT,
+            _EXACT_SHAPE_LOOKALIKE_TRANSITION,
+            "private venue ledger",
+        ),
+    ],
+)
+def test_constant_work_oracle_rejects_helper_wrapping_and_aggregate_escapes(
+    mutant: Callable[[object], object],
+    transition: object,
+    runtime_message: str,
+) -> None:
+    owner_module = inspect.getmodule(mutant)
+    assert owner_module is not None
+    scanned, _, _ = _constant_work_call_graph(mutant, owner_module)
+    assert _extractor_receiver_violations(scanned)
+    with pytest.raises(AssertionError, match=runtime_message):
+        mutant(transition)
+
+
+def test_constant_work_oracle_rejects_descriptor_slow_scan_mutant() -> None:
+    owner_module = inspect.getmodule(_DESCRIPTOR_SLOW_SCAN_MUTANT)
+    assert owner_module is not None
+    scanned, _, unresolved = _constant_work_call_graph(
+        _DESCRIPTOR_SLOW_SCAN_MUTANT,
+        owner_module,
+    )
+    assert not unresolved
+    assert "extractor-leaf-statement-count" in _extractor_receiver_violations(scanned)
+    with pytest.raises(
+        AssertionError, match="descriptor reached a private venue ledger"
+    ):
+        _DESCRIPTOR_SLOW_SCAN_MUTANT(_DESCRIPTOR_SLOW_TRANSITION)
 
 
 def test_first_owned_fill_arms_only_its_exact_mandate_after_economics() -> None:
@@ -5664,11 +7816,94 @@ def test_value_objects_expose_no_mutating_or_broker_capability_fields() -> None:
         "buy_clear",
         "flat_ready",
     }
-    for name in (
+    value_names = (
+        "EvidencePolicy",
+        "ExecutionGuard",
+        "MarketOccurrence",
         "ProtectionMandate",
         "PositionProtectionState",
         "ProtectionVenueProjection",
         "ExecutionGoal",
-    ):
+        "ProtectionTransition",
+    )
+    for name in value_names:
         (value_type,) = _required(module, name)
         assert forbidden.isdisjoint(field.name for field in fields(value_type))
+
+    venue_transition = _owned_fill_transition(label="passive-value-surface")
+    mandate, projection, state = _start(module, venue_transition)
+    goal_type, urgency = _required(module, "ExecutionGoal", "ProtectionUrgency")
+    goal = goal_type(
+        side=ExecutionSide.SELL,
+        residual=Quantity(state.raw_quantity),
+        urgency=urgency.NORMAL,
+        guard=mandate.normal_guard,
+        deadline=mandate.deadline,
+        session_id=mandate.session_id,
+        mandate_id=mandate.mandate_id,
+        maximum_goal_rate=mandate.maximum_goal_rate,
+        execution_commitment=state.execution_commitment,
+        protection_commitment=state.commitment,
+    )
+    occurrence = _occurrence(
+        module,
+        "passive-value-occurrence",
+        bid=120,
+        ask=121,
+    )
+    replay = _reduce(module, state, projection)
+    allowed_shapes = {
+        value_type: tuple(retained.name for retained in fields(value_type))
+        for value_type in _required(module, *value_names)
+    }
+    market_source_type, occurrence_id_type, session_type = _required(
+        execution_core,
+        "MarketDataSourceId",
+        "MarketOccurrenceId",
+        "SessionId",
+    )
+    trusted_leaf_types = frozenset(
+        {
+            ExecutionSnapshot,
+            ExecutionSide,
+            MandateId,
+            PositionIntegrity,
+            PositionScope,
+            PriceScale,
+            PriceUnits,
+            Quantity,
+            ReportedPrice,
+            TickMetadata,
+            market_source_type,
+            occurrence_id_type,
+            session_type,
+        }
+    )
+    protection_enum_types = _required(
+        module,
+        "MarketKind",
+        "ProtectionPolicy",
+        "ProtectionUrgency",
+        "ProtectionDisposition",
+        "ProtectionAlert",
+    )
+    allowed_enum_shapes = dict(
+        zip(
+            protection_enum_types,
+            (
+                ("BEST_BID", "TRADE"),
+                ("FLOOR_ONLY", "TRAIL_ACTIVE", "EXIT_NORMAL", "HARD_BAIL", "FLAT"),
+                ("NORMAL", "EMERGENCY"),
+                ("APPLIED", "EXACT_REPLAY", "STALE", "REFUSED"),
+                ("LATE_POSITIVE_AFTER_FLAT",),
+            ),
+            strict=True,
+        )
+    )
+    for retained in (mandate, projection, state, goal, occurrence, replay):
+        _assert_passive_value_graph(
+            retained,
+            allowed_shapes=allowed_shapes,
+            trusted_leaf_types=trusted_leaf_types,
+            allowed_enum_shapes=allowed_enum_shapes,
+        )
