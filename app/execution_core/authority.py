@@ -434,6 +434,45 @@ class ExecutionAuthorityState:
         return self._consumed_grant_ids.get(_grant_key(grant_id)) is True
 
 
+_AUTHORITY_STATE_INDEX_FIELDS = (
+    "_input_by_id",
+    "_effect_authority_by_id",
+    "_claim_by_effect",
+    "_claim_by_occurrence",
+    "_query_by_id",
+    "_manual_by_id",
+    "_consumed_grant_ids",
+)
+
+
+def _validate_authority_state(state: object) -> ExecutionAuthorityState:
+    """Validate constant-work state shape before any authority decision."""
+
+    _require("state", state, ExecutionAuthorityState)
+    exact = cast(ExecutionAuthorityState, state)
+    for name, expected in (
+        ("phase", EnginePhase),
+        ("mode", TradingMode),
+        ("supervisor_fence", SupervisorFence),
+        ("budget", RequestBudget),
+        ("venue", VenueRecoveryBook),
+    ):
+        _require(name, getattr(exact, name), expected)
+    if type(exact.kill_engaged) is not bool:
+        raise TypeError("kill_engaged must be the exact bool type")
+    _require_optional("session_id", exact.session_id, SessionId)
+    for name in ("remaining", "safety_reserve"):
+        value = getattr(exact.budget, name)
+        if type(value) is not int:
+            raise TypeError(f"budget.{name} must be the exact int type")
+        if value < 0:
+            raise ValueError(f"budget.{name} must be non-negative")
+    for name in _AUTHORITY_STATE_INDEX_FIELDS:
+        _require(name, getattr(exact, name), _PersistentKeyMap)
+    _require_optional("_emergency_grant", exact._emergency_grant, _EmergencyGrant)
+    return exact
+
+
 @dataclass(frozen=True, slots=True)
 class ExecutionAuthorityTransition:
     state: ExecutionAuthorityState
@@ -447,7 +486,7 @@ def _new_state(**values: object) -> ExecutionAuthorityState:
     result = object.__new__(ExecutionAuthorityState)
     for item in fields(ExecutionAuthorityState):
         object.__setattr__(result, item.name, values[item.name])
-    return result
+    return _validate_authority_state(result)
 
 
 def _state_with(
@@ -962,16 +1001,19 @@ def _claim_query(
     retained = state._query_by_id.get(_query_key(item.query_claim_id))
     if retained is not None:
         return _result(state, AuthorityDisposition.CONFLICT)
-    if state.phase not in (EnginePhase.RECONCILING, EnginePhase.SERVING):
+    if (
+        state.phase is not EnginePhase.RECONCILING
+        and state.phase is not EnginePhase.SERVING
+    ):
         return _result(
             state,
             AuthorityDisposition.REFUSED,
             AuthorityReason.PHASE_BLOCKED,
         )
-    if state.supervisor_fence not in {
-        SupervisorFence.RECONCILIATION_ONLY,
-        SupervisorFence.PAPER_MUTATION_ELIGIBLE,
-    }:
+    if (
+        state.supervisor_fence is not SupervisorFence.RECONCILIATION_ONLY
+        and state.supervisor_fence is not SupervisorFence.PAPER_MUTATION_ELIGIBLE
+    ):
         return _result(
             state,
             AuthorityDisposition.REFUSED,
@@ -1233,7 +1275,7 @@ def apply_execution_authority_input(
 ) -> ExecutionAuthorityTransition:
     """Apply one exact authority input without I/O or caller-minted authority."""
 
-    _require("state", state, ExecutionAuthorityState)
+    state = _validate_authority_state(state)
     _require("execution", execution, ExecutionSnapshot)
     if type(item) not in _COMMAND_TYPES:
         raise TypeError("authority input must be an exact admitted command type")

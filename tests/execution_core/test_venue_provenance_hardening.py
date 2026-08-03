@@ -205,6 +205,72 @@ def test_audit_hydration_rejects_caller_authored_external_closure(
         )
 
 
+def test_audit_hydration_rejects_coordinated_checkpoint_omission() -> None:
+    """A self-consistent empty replacement cannot erase unresolved authority."""
+
+    execution = recovery_fixtures._apply_broker(
+        ExecutionSnapshot.flat(recovery_fixtures.POSITION_SCOPE),
+        recovery_fixtures._broker_fill(
+            "coordinated-omission-position",
+            "coordinated-omission-root",
+            quantity=5,
+        ),
+    )
+    book, execution = recovery_fixtures._seed_needs_review(
+        leg_keys=(),
+        execution=execution,
+    )
+    before_view = venue_module._venue_authority_view(
+        book,
+        execution,
+        recovery_fixtures.POSITION_SCOPE,
+        None,
+    )
+    assert before_view.blocking_effect_count == 1
+    assert before_view.blocking_buy_effect_count == 1
+
+    authority = authority_fixtures._authority_module()
+    authority_state = authority_fixtures._forge_positive_predecessor(
+        authority,
+        remaining=4,
+        reserve=1,
+    )
+    authority_state = authority_fixtures._forge_venue_predecessor(
+        authority_state,
+        book,
+    )
+    control = authority_fixtures._create_effect(
+        authority,
+        authority_state,
+        execution,
+        label="coordinated-omission-control",
+        side=ExecutionSide.SELL,
+    )
+    assert control.disposition is authority.AuthorityDisposition.REFUSED
+    assert control.reason is authority.AuthorityReason.VENUE_UNCERTAIN
+    assert control.state == authority_state
+
+    with pytest.raises(ValueError, match="exact|checkpoint|continuity|replacement"):
+        _audit_hydrate_book(
+            book,
+            execution,
+            effects=(),
+            claims=(),
+            owners=(),
+            active_attempts=(),
+            closure_heads=(),
+            execution_bindings=(),
+            closure_history=(),
+            input_records=(),
+            human_coverages=(),
+            broker_coverages=(),
+            reconciliations=(),
+            execution_reconciliations=(),
+            execution_registry_count=None,
+            execution_registry_commitment=None,
+        )
+
+
 @pytest.mark.parametrize(
     "proof_kind",
     [

@@ -1315,6 +1315,138 @@ def test_authority_state_has_no_normal_constructor_replace_or_subclass() -> None
         type("ForgedAuthorityState", (state_type,), {})
 
 
+@pytest.mark.parametrize(
+    ("field_name", "invalid_value"),
+    [
+        ("phase", "RECONCILING"),
+        ("mode", "HALTED"),
+        ("supervisor_fence", "RECONCILIATION_ONLY"),
+        ("kill_engaged", 0),
+        ("session_id", "session-1"),
+        ("budget", (2, 1)),
+        ("venue", None),
+        ("_input_by_id", ()),
+        ("_effect_authority_by_id", ()),
+        ("_claim_by_effect", ()),
+        ("_claim_by_occurrence", ()),
+        ("_query_by_id", ()),
+        ("_manual_by_id", ()),
+        ("_consumed_grant_ids", ()),
+        ("_emergency_grant", object()),
+    ],
+    ids=(
+        "phase-string",
+        "mode-string",
+        "fence-string",
+        "kill-integer",
+        "session-string",
+        "budget-tuple",
+        "venue-none",
+        "input-index-tuple",
+        "effect-index-tuple",
+        "claim-effect-index-tuple",
+        "claim-occurrence-index-tuple",
+        "query-index-tuple",
+        "manual-index-tuple",
+        "consumed-grant-index-tuple",
+        "grant-object",
+    ),
+)
+def test_authority_reducer_rejects_malformed_top_level_state_before_replay(
+    field_name: str,
+    invalid_value: object,
+) -> None:
+    module = _authority_module()
+    state = _forge_positive_predecessor(
+        module,
+        phase="RECONCILING",
+        mode="HALTED",
+        fence="RECONCILIATION_ONLY",
+        kill_engaged=True,
+        remaining=2,
+        reserve=1,
+    )
+    query = module.ClaimBrokerQuery(
+        input_id=module.AuthorityInputId(f"malformed-{field_name}-input"),
+        query_claim_id=module.QueryClaimId(f"malformed-{field_name}-query"),
+        symbol_id=SYMBOL,
+        kind=module.AuthorityQueryKind.RECONCILE,
+    )
+    malformed = copy(state)
+    object.__setattr__(malformed, field_name, invalid_value)
+
+    with pytest.raises(TypeError, match=field_name):
+        module.apply_execution_authority_input(malformed, EXECUTION, query)
+
+    assert state.budget.remaining == 2
+    assert state.venue.effects == ()
+    assert state._input_by_id.size == 0
+    assert state._query_by_id.size == 0
+
+
+def test_authority_reducer_validates_state_before_exact_replay() -> None:
+    module = _authority_module()
+    state = _forge_positive_predecessor(
+        module,
+        phase="RECONCILING",
+        mode="HALTED",
+        fence="RECONCILIATION_ONLY",
+        kill_engaged=True,
+        remaining=2,
+        reserve=1,
+    )
+    query = module.ClaimBrokerQuery(
+        input_id=module.AuthorityInputId("malformed-replay-input"),
+        query_claim_id=module.QueryClaimId("malformed-replay-query"),
+        symbol_id=SYMBOL,
+        kind=module.AuthorityQueryKind.RECONCILE,
+    )
+    applied = module.apply_execution_authority_input(state, EXECUTION, query)
+    assert applied.disposition is module.AuthorityDisposition.APPLIED
+    assert applied.state.budget.remaining == 1
+
+    malformed = copy(applied.state)
+    object.__setattr__(malformed, "phase", "RECONCILING")
+
+    with pytest.raises(TypeError, match="phase"):
+        module.apply_execution_authority_input(malformed, EXECUTION, query)
+
+    assert applied.state.budget.remaining == 1
+    assert applied.state._input_by_id.size == 1
+    assert applied.state._query_by_id.size == 1
+
+
+def test_manual_flatten_rejects_integer_kill_state_before_mutation() -> None:
+    module = _authority_module()
+    state = _forge_positive_predecessor(
+        module,
+        mode="REDUCING",
+        kill_engaged=False,
+        remaining=4,
+        reserve=1,
+    )
+    malformed = copy(state)
+    object.__setattr__(malformed, "kill_engaged", 0)
+    begin = module.BeginManualFlatten(
+        input_id=module.AuthorityInputId("malformed-kill-flatten-input"),
+        flatten_id=module.ManualFlattenId("malformed-kill-flatten"),
+        session_id=state.session_id,
+        symbol_id=SYMBOL,
+        actor=ActorId("malformed-kill-operator"),
+        reason="verify exact kill-state type",
+        evidence_reference=EvidenceReference("malformed-kill-evidence"),
+        emergency_grant_id=None,
+    )
+
+    with pytest.raises(TypeError, match="kill_engaged"):
+        module.apply_execution_authority_input(malformed, EXECUTION, begin)
+
+    assert state.budget.remaining == 4
+    assert state.venue.effects == ()
+    assert state._input_by_id.size == 0
+    assert state._manual_by_id.size == 0
+
+
 def test_public_api_has_no_promotion_or_positive_authority_mint() -> None:
     module = _authority_module()
     forbidden = (

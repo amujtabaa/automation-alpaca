@@ -726,6 +726,117 @@ Python 3.11/3.12 CI remain mandatory before WO-0148 activation.
 fable_done:
   status: UNVERIFIED
   evidence:
-    - "Re-gate 5 RED, focused GREEN, zero-survivor mutations, hostile pre-flight, full repository coverage, static gates, and exact artifact hashes are recorded above."
+    - "Re-gate 6 RED, focused GREEN, failure-capability checks, full repository coverage, static gates, and exact artifact hashes are recorded below."
   remaining:
-    - "Immutable freeze, independent review addendum, disposition, final push, and exact-head Python 3.11/3.12 CI."
+    - "Immutable freeze, fresh independent review addendum, disposition, final push, and exact-head Python 3.11/3.12 CI."
+
+## Independent-review interruption and author re-gate 6 (2026-08-02)
+
+Two fresh independent Sol review contexts inspected the immutable re-gate-5 target
+`41c7e956d1c49b450615a03374bd0ef7ee730357`. Both were interrupted by platform content
+classification before either could write the designated `result-addendum-01.md`; no independent
+verdict artifact exists, and none will be reconstructed by the implementation seat. The original
+request and addendum remain unchanged historical evidence. Both contexts restored the exact tracked
+baseline, and the branch remained clean apart from retained untracked evidence.
+
+Before interruption, two independently reproduced findings were reported to the implementation
+seat and then re-derived locally with pure in-memory transitions:
+
+- **P0 - coordinated audit-checkpoint omission.** `_audit_hydrate_book` accepts a replacement in
+  which an unresolved claimed BUY and every correlated effect, claim, identity, input, binding, and
+  registry tuple are omitted together. The internally consistent empty result changes the bounded
+  venue view from one blocking BUY to zero blockers. A control SELL is `VENUE_UNCERTAIN`; installing
+  the accepted empty reconstruction changes creation and final claim to `APPLIED` and debits budget.
+- **Blocking malformed-authority-state finding.** Reducer entry checks the exact outer state type
+  but not its fields. Raw strings equal the string-valued phase/fence enums, and integer zero is
+  false in the manual-kill guard. Fresh local cases admitted a query for raw phase/fence values and
+  began manual flatten for `kill_engaged=0`. Exact severity remains for the next independent seat to
+  adjudicate, but the finding blocks acceptance as at least P1.
+
+Standing in-flight-remediation authority reopens only the existing WO-0147 allowed source, test,
+review, and governance paths. RED must first pin coordinated total omission plus shallow exact types
+for every top-level authority field. The bounded FIX is: M1 audit hydration verifies only an exact
+semantic reconstruction of the supplied opaque checkpoint, while loading a distinct authenticated
+persisted snapshot remains M2; and one constant-work state-shape validator runs before authority
+replay, policy, property access, or mutation. No retained-history scan, caller approval value,
+persistence, adapter, runtime, credential, broker, or database work is needed or permitted.
+
+All re-gate-5 tests, coverage, and static results remain evidence for that frozen predecessor only.
+Any production repair invalidates them for acceptance. The repaired target requires fresh focused,
+execution-core, R2, repository-coverage, static/import/scope/AI-OS, failure-capability, Sol-led
+failure-oriented pre-flight, and independent-review evidence before closeout or WO-0148 activation.
+
+### Re-gate 6 RED, repair, and failure-capability checkpoint
+
+The initial focused checkpoint exercised one coordinated omission case plus exact shallow
+validation of all 15 top-level authority fields and the manual-flatten kill boundary. Before
+production changed, all 17 cases failed: the empty-but-internally-consistent hydration replacement was accepted; raw
+enum strings and integer-false kill state reached authority decisions; and malformed retained
+state either passed or failed later through incidental attribute access instead of the reducer
+entry boundary.
+
+The bounded repair adds two private controls only. `_audit_hydrate_book` now compares the complete
+semantic projection of its reconstructed result to the supplied opaque checkpoint and rejects any
+replacement that omits correlated authority history. `_validate_authority_state` performs exact,
+constant-work shallow validation before replay or decision logic, including exact enum/value
+objects, exact Boolean kill state, non-negative integer budget fields, every retained index, and
+the optional emergency grant. It does not scan history, create a public capability, accept caller
+certification, or implement the deferred persisted-snapshot loader. The focused checkpoint then
+passed 17/17, and the complete execution-core suite passed 709/709. Author pre-flight then found
+that those tests did not distinguish validation before exact replay return from validation after
+it. With that weakened ordering active, a new exact-replay case failed RED; restoring the entry
+ordering made the expanded checkpoint pass 18/18 and the complete execution-core suite 710/710.
+
+Five reversible failure-capability checks proved the new controls are causal rather than
+decorative:
+
+- removing the exact hydration projection comparison made the coordinated-omission test fail;
+- removing reducer-entry state validation made 6 of 16 malformed-state cases fail decisively;
+- weakening exact Boolean validation to equality-based membership made both integer-kill cases
+  fail; and
+- omitting `_query_by_id` from retained-index validation made its exact targeted case fail; and
+- moving validation past the exact replay return made the dedicated replay-order case fail.
+
+Every temporary edit was restored before continuing. Restored SHA-256 values are:
+
+- `app/execution_core/authority.py`:
+  `2ff53c9d790615c3594d13e3c08710c15d31c5ebebf661faf8e8bb50f13b8a6e`;
+- `app/execution_core/venue.py`:
+  `32d7d56a218a5ae35eefbe484723548778bb2fb9ef497a7bb4a3ec9ed560b276`;
+- `tests/execution_core/test_authority.py`:
+  `3bb281e30e9014926c7a2e2f1ef442cc3240cd47e80cf88d5180092ed0d6b79d`;
+- `tests/execution_core/test_venue_provenance_hardening.py`:
+  `0ebbe68d354d95ac8a0b3c619b5321963ebf2fd9767d8a633fdc56426bba19eb`.
+
+Fresh exact-tree verification under `BROKER_ADAPTER=mock` passed:
+
+- 18/18 focused re-gate tests and 710/710 complete `tests/execution_core` tests;
+- 61/61 R2 conformance-oracle tests in the verified-new disposable
+  `.pytest_tmp_wo0147_regate6_r2_2` workspace;
+- Ruff check and format-check over all 20 execution-core source/test files, mypy over all 8
+  execution-core modules, and all 6 import contracts;
+- AI-OS install, version (`v0.9.1`), ledger, PKL, disposition, Fable, and exact
+  activation-to-worktree scope checks; and
+- `git diff --check`.
+
+The first re-gate-6 repository run and its `_full_1` artifacts are retained but superseded because
+the replay-order pre-flight added one failure-capable test afterward. The definitive exact-tree
+repository run collected 5,298 tests and completed with 5,286 passed, 11 skipped, 1 expected
+xfail, zero failures, and zero errors in 1,182.3 seconds (JUnit test time 1,176.538 seconds). Raw
+combined branch coverage is `93.02945093976616%`: 18,621/19,640 statements and 6,523/7,388
+branches, or 25,144/27,028 combined opportunities. The unchanged
+literal 93% floor passed. JUnit records the expected xfail inside its 12 skipped outcomes. Fresh
+retained artifacts are:
+
+- `.coverage_wo0147_regate6_full_2` (1,867,776 bytes), SHA-256
+  `0e293a1e089f05c1cf8b7cb1e7b3ef8bac769d34a9b8160e52d9503ce1349643`;
+- `.wo0147_regate6_full_2.coverage.json` (1,851,366 bytes), SHA-256
+  `7598598d565a1ca531a0ac7d0b6d49e52ad76fb7438b6dd629d2f020a5fcc424`;
+- `.pytest_wo0147_regate6_full_2.xml` (841,048 bytes), SHA-256
+  `90944e250030aaa1e72c2500170533cda577aec7769cc01828212c9b5582bab9`.
+
+The full run used only authorized mock configuration and existing disposable test-only fixtures.
+It made no broker connection, used no credentials, and changed no persistent application database.
+The author-side candidate is green but not accepted. Freeze, a new neutrally worded independent
+review request/result pair, zero unresolved P0/P1, closeout reconciliation, final push, and exact-
+head Python 3.11/3.12 CI remain mandatory; WO-0148 remains inactive.

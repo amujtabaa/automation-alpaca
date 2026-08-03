@@ -5778,6 +5778,28 @@ def _append_closure_proof(
     return next_ledger, next_by_id, next_heads
 
 
+def _audit_checkpoint_projection(book: VenueRecoveryBook) -> tuple[object, ...]:
+    """Materialize one complete slow-path checkpoint for exact M1 reconstruction."""
+
+    return (
+        book.scope,
+        book.execution_registry_count,
+        book.execution_registry_commitment,
+        book.effects,
+        book.claims,
+        book.owners,
+        book.active_attempts,
+        book.closure_heads,
+        book.execution_bindings,
+        book.closure_history,
+        book.input_records,
+        book.human_coverages,
+        book.broker_coverages,
+        book.reconciliations,
+        book.execution_reconciliations,
+    )
+
+
 def _audit_hydrate_book(
     book: VenueRecoveryBook,
     execution: ExecutionSnapshot,
@@ -6635,6 +6657,11 @@ def _audit_hydrate_book(
                 raise ValueError(
                     "owned broker observation lacks one exact external source origin"
                 )
+    if _audit_checkpoint_projection(result) != _audit_checkpoint_projection(book):
+        raise ValueError(
+            "M1 audit hydration requires an exact reconstruction of the supplied "
+            "opaque checkpoint; replacement loading remains deferred"
+        )
     return result
 
 
