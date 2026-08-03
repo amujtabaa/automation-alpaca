@@ -9,6 +9,7 @@ code exists.  No clock, database, broker, adapter, or runtime fixture is used.
 from __future__ import annotations
 
 import ast
+from collections.abc import Callable
 from copy import copy
 from dataclasses import FrozenInstanceError, fields, is_dataclass, replace
 from decimal import Decimal
@@ -16,6 +17,7 @@ from enum import Enum
 from fractions import Fraction
 import importlib
 import inspect
+import textwrap
 from types import ModuleType
 
 import pytest
@@ -111,9 +113,14 @@ SCALE = PriceScale(Decimal("1"))
 TICK = TickMetadata(tick_units=PriceUnits(1), scale=SCALE)
 
 
-def _price(units: int, *, tick_units: int = 1) -> ReportedPrice:
-    tick = TickMetadata(tick_units=PriceUnits(tick_units), scale=SCALE)
-    return ReportedPrice(units=PriceUnits(units), scale=SCALE, tick=tick)
+def _price(
+    units: int,
+    *,
+    tick_units: int = 1,
+    scale: PriceScale = SCALE,
+) -> ReportedPrice:
+    tick = TickMetadata(tick_units=PriceUnits(tick_units), scale=scale)
+    return ReportedPrice(units=PriceUnits(units), scale=scale, tick=tick)
 
 
 def _protection_module() -> ModuleType:
@@ -197,6 +204,7 @@ def _owned_fill_fixture(
     units: int = 100,
     capacity: int = 20,
     tick_units: int = 1,
+    scale: PriceScale = SCALE,
 ):
     book, execution = venue_fixtures._seed_needs_review(capacity=capacity)
     fact = venue_fixtures._broker_fill(
@@ -205,8 +213,11 @@ def _owned_fill_fixture(
         quantity=quantity,
         units=units,
     )
-    if tick_units != 1:
-        fact = replace(fact, price=_price(units, tick_units=tick_units))
+    if tick_units != 1 or scale != SCALE:
+        fact = replace(
+            fact,
+            price=_price(units, tick_units=tick_units, scale=scale),
+        )
     command = RecordBrokerFillEvidence(
         input_id=VenueInputId(f"{label}-input"),
         effect_id=BASE_EFFECT,
@@ -233,6 +244,7 @@ def _owned_fill_transition(
     units: int = 100,
     capacity: int = 20,
     tick_units: int = 1,
+    scale: PriceScale = SCALE,
 ):
     return _owned_fill_fixture(
         label=label,
@@ -240,6 +252,7 @@ def _owned_fill_transition(
         units=units,
         capacity=capacity,
         tick_units=tick_units,
+        scale=scale,
     )[-1]
 
 
@@ -420,6 +433,7 @@ def _occurrence(
     atr_distance: int | None = None,
     structure_trail: int | None = None,
     tick_units: int = 1,
+    scale: PriceScale = SCALE,
     halted: bool = False,
     source_id: object | None = None,
     position_scope: PositionScope = POSITION_SCOPE,
@@ -446,18 +460,24 @@ def _occurrence(
         source_time=source_time,
         evaluation_time=evaluation_time,
         kind=getattr(market_kind, kind),
-        best_bid=None if bid is None else _price(bid, tick_units=tick_units),
-        best_ask=None if ask is None else _price(ask, tick_units=tick_units),
-        trade_price=(None if trade is None else _price(trade, tick_units=tick_units)),
+        best_bid=(
+            None if bid is None else _price(bid, tick_units=tick_units, scale=scale)
+        ),
+        best_ask=(
+            None if ask is None else _price(ask, tick_units=tick_units, scale=scale)
+        ),
+        trade_price=(
+            None if trade is None else _price(trade, tick_units=tick_units, scale=scale)
+        ),
         atr_distance=(
             None
             if atr_distance is None
-            else _price(atr_distance, tick_units=tick_units)
+            else _price(atr_distance, tick_units=tick_units, scale=scale)
         ),
         structure_trail=(
             None
             if structure_trail is None
-            else _price(structure_trail, tick_units=tick_units)
+            else _price(structure_trail, tick_units=tick_units, scale=scale)
         ),
         halted=halted,
     )
@@ -660,6 +680,160 @@ def _different_value(value: object) -> object:
     return object()
 
 
+def _public_behavior_names(value_type: type[object]) -> set[str]:
+    """Return every public class-level member inherited through the exact MRO."""
+    public_names: set[str] = set()
+    for base in inspect.getmro(value_type):
+        if base is object:
+            continue
+        for name in vars(base):
+            if name.startswith("_"):
+                continue
+            inspect.getattr_static(value_type, name)
+            public_names.add(name)
+    return public_names
+
+
+_CONSTANT_WORK_ALLOWED_EXTERNAL_CALLS = frozenset(
+    {
+        "TypeError",
+        "ValueError",
+        "_commit_parts",
+        "_encode_text",
+        "bool",
+        "bytes",
+        "cast",
+        "int",
+        "isinstance",
+        "len",
+        "str",
+        "type",
+    }
+)
+
+
+def _constant_work_call_graph(
+    root: Callable[..., object],
+    owner_module: ModuleType,
+) -> tuple[dict[str, ast.AST], dict[str, set[str]], set[str]]:
+    """Resolve every direct/global helper and reject unresolved callable aliases."""
+    pending = [root]
+    scanned: dict[str, ast.AST] = {}
+    call_graph: dict[str, set[str]] = {}
+    unresolved: set[str] = set()
+    while pending:
+        current = pending.pop()
+        current_name = current.__name__
+        if current_name in scanned:
+            continue
+        tree = ast.parse(textwrap.dedent(inspect.getsource(current)))
+        scanned[current_name] = tree
+        call_graph[current_name] = set()
+        function_node = next(
+            node
+            for node in tree.body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        )
+        local_bindings = {
+            argument.arg
+            for argument in (
+                *function_node.args.posonlyargs,
+                *function_node.args.args,
+                *function_node.args.kwonlyargs,
+            )
+        }
+        if function_node.args.vararg is not None:
+            local_bindings.add(function_node.args.vararg.arg)
+        if function_node.args.kwarg is not None:
+            local_bindings.add(function_node.args.kwarg.arg)
+        local_bindings.update(
+            node.id
+            for node in ast.walk(function_node)
+            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store)
+        )
+        local_bindings.update(
+            node.name
+            for node in ast.walk(function_node)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+            and node is not function_node
+        )
+        free_bindings = set(current.__code__.co_freevars)
+        local_calls = {
+            node.func.id
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        }
+        for called_name in local_calls:
+            candidate = vars(owner_module).get(called_name)
+            if called_name in local_bindings or called_name in free_bindings:
+                unresolved.add(called_name)
+            elif (
+                inspect.isfunction(candidate)
+                and candidate.__module__ == owner_module.__name__
+            ):
+                candidate_name = candidate.__name__
+                call_graph[current_name].add(candidate_name)
+                pending.append(candidate)
+            elif called_name in _CONSTANT_WORK_ALLOWED_EXTERNAL_CALLS and (
+                candidate is None
+                or (
+                    inspect.isfunction(candidate)
+                    and candidate.__module__ in {"app.execution_core.fills", "typing"}
+                )
+            ):
+                continue
+            else:
+                unresolved.add(called_name)
+    return scanned, call_graph, unresolved
+
+
+def _raw_ledger_scan_mutant(book: object) -> object:
+    return tuple(book._input_ledger)
+
+
+def _local_alias_scan_mutant(book: object) -> object:
+    scan = _raw_ledger_scan_mutant
+    return scan(book)
+
+
+def _default_alias_scan_mutant(
+    book: object,
+    scan: Callable[[object], object] = _raw_ledger_scan_mutant,
+) -> object:
+    return scan(book)
+
+
+class _CallableScanMutant:
+    def __call__(self, book: object) -> object:
+        return tuple(book._input_ledger)
+
+
+_CALLABLE_SCAN_MUTANT = _CallableScanMutant()
+
+
+def _callable_object_scan_mutant(book: object) -> object:
+    return _CALLABLE_SCAN_MUTANT(book)
+
+
+_GLOBAL_ALIAS_SCAN_MUTANT = _raw_ledger_scan_mutant
+
+
+def _global_alias_scan_mutant(book: object) -> object:
+    return _GLOBAL_ALIAS_SCAN_MUTANT(book)
+
+
+def _make_closure_scan_mutant() -> Callable[[object], object]:
+    scan = _raw_ledger_scan_mutant
+
+    def closure_scan_mutant(book: object) -> object:
+        return scan(book)
+
+    return closure_scan_mutant
+
+
+_CLOSURE_SCAN_MUTANT = _make_closure_scan_mutant()
+
+
 def _assert_stale_unchanged(
     module: ModuleType,
     state: object,
@@ -689,6 +863,109 @@ def _sync_transitions(
     return state, projection, result
 
 
+def _owned_fill_transition_for_scope(
+    *,
+    label: str,
+    position_scope: PositionScope,
+    quantity: int = 4,
+    units: int = 100,
+    tick_units: int = 1,
+    scale: PriceScale = SCALE,
+) -> tuple[object, EffectId, VenueLegKey]:
+    book = VenueRecoveryBook.empty(VENUE_SCOPE)
+    execution = ExecutionSnapshot.flat(position_scope)
+    effect_id = EffectId(f"{label}-effect")
+    leg_key = VenueLegKey(
+        broker=position_scope.broker,
+        environment=position_scope.environment,
+        account=position_scope.account,
+        order_id=OrderId(f"{label}-leg"),
+    )
+    commands = (
+        RequestedEffect(
+            input_id=VenueInputId(f"{label}-request-input"),
+            effect_id=effect_id,
+            request_occurrence_id=RequestOccurrenceId(f"{label}-request"),
+            mandate_id=MANDATE_ID,
+            kind=EffectKind.SUBMIT,
+            client_order_id=ClientOrderId(f"{label}-client"),
+            symbol_id=position_scope.symbol_id,
+            side=ExecutionSide.BUY,
+            quantity=Quantity(max(20, quantity)),
+            economic_scope=f"{label}|fixed-capacity".encode(),
+        ),
+        RecordDispatchClaim(
+            input_id=VenueInputId(f"{label}-claim-input"),
+            effect_id=effect_id,
+            claim_occurrence_id=ClaimOccurrenceId(f"{label}-claim"),
+        ),
+        RecordTransportOutcome(
+            input_id=VenueInputId(f"{label}-unknown-input"),
+            effect_id=effect_id,
+            state=BrokerEffectState.OUTCOME_UNKNOWN,
+        ),
+        DiscoverVenueLeg(
+            input_id=VenueInputId(f"{label}-discover-input"),
+            effect_id=effect_id,
+            leg_key=leg_key,
+            observation_id=VenueObservationId(f"{label}-discover-observation"),
+        ),
+        ObserveVenueStatus(
+            input_id=VenueInputId(f"{label}-review-input"),
+            leg_key=leg_key,
+            status=VenueAttemptState.NEEDS_REVIEW,
+            observation_id=VenueObservationId(f"{label}-review-observation"),
+            cumulative_quantity=Quantity(0),
+        ),
+        RecordTransportOutcome(
+            input_id=VenueInputId(f"{label}-review-outcome-input"),
+            effect_id=effect_id,
+            state=BrokerEffectState.NEEDS_REVIEW,
+        ),
+    )
+    for command in commands:
+        transition = venue_fixtures.apply_venue_recovery_input(
+            book,
+            execution,
+            command,
+        )
+        assert transition.disposition is VenueRecoveryDisposition.APPLIED
+        book = transition.book
+        execution = transition.execution
+
+    fact = venue_fixtures._broker_fill(
+        f"{label}-source",
+        f"{label}-root",
+        leg_key=leg_key,
+        quantity=quantity,
+        units=units,
+    )
+    fact = replace(
+        fact,
+        scope=venue_fixtures._execution_scope(
+            leg_key=leg_key,
+            symbol=position_scope.symbol_id,
+        ),
+        price=_price(units, tick_units=tick_units, scale=scale),
+    )
+    filled = venue_fixtures.apply_venue_recovery_input(
+        book,
+        execution,
+        RecordBrokerFillEvidence(
+            input_id=VenueInputId(f"{label}-fill-input"),
+            effect_id=effect_id,
+            leg_key=leg_key,
+            prior_cumulative_quantity=Quantity(0),
+            resulting_cumulative_quantity=Quantity(quantity),
+            fact=fact,
+            evidence_digest=b"\xa8" * 32,
+        ),
+    )
+    assert filled.disposition is VenueRecoveryDisposition.APPLIED
+    assert filled.quantity_delta == quantity
+    return filled, effect_id, leg_key
+
+
 def _emergency_goal_fixture(
     module: ModuleType,
     *,
@@ -698,19 +975,50 @@ def _emergency_goal_fixture(
     fill_quantity: int = 4,
     fill_units: int = 100,
     tick_units: int = 1,
+    scale: PriceScale = SCALE,
+    position_scope: PositionScope = POSITION_SCOPE,
     first_bid: int = 92,
     second_bid: int = 91,
 ) -> tuple[object, object, object, object]:
     occurrence_label = market_label or label
-    fill = _owned_fill_transition(
-        label=f"{label}-fill",
-        quantity=fill_quantity,
-        units=fill_units,
-        capacity=max(20, fill_quantity),
-        tick_units=tick_units,
+    if position_scope == POSITION_SCOPE:
+        fill = _owned_fill_transition(
+            label=f"{label}-fill",
+            quantity=fill_quantity,
+            units=fill_units,
+            capacity=max(20, fill_quantity),
+            tick_units=tick_units,
+            scale=scale,
+        )
+        effect_id = BASE_EFFECT
+        leg_key = BASE_LEG
+    else:
+        fill, effect_id, leg_key = _owned_fill_transition_for_scope(
+            label=f"{label}-fill",
+            position_scope=position_scope,
+            quantity=fill_quantity,
+            units=fill_units,
+            tick_units=tick_units,
+            scale=scale,
+        )
+    current_mandate = (
+        mandate
+        if mandate is not None
+        else _mandate(module, position_scope=position_scope)
     )
-    current_mandate, _, state = _start(module, fill, mandate)
-    terminal, closed = _close_base_parent(fill)
+    _, _, state = _start(module, fill, current_mandate)
+    _, terminal = _terminal_fixture(
+        fill,
+        effect_id=effect_id,
+        leg_key=leg_key,
+        label=f"{label}-fill",
+        cumulative_quantity=fill_quantity,
+    )
+    _, closed = _close_parent_fixture(
+        terminal,
+        effect_id=effect_id,
+        label=f"{label}-fill",
+    )
     state, projection, _ = _sync_transitions(
         module,
         state,
@@ -728,7 +1036,9 @@ def _emergency_goal_fixture(
             ask=first_bid + tick_units,
             sequence=1,
             tick_units=tick_units,
+            scale=scale,
             source_id=current_mandate.evidence_policy.source_id,
+            position_scope=position_scope,
             session_id=current_mandate.session_id,
         ),
     )
@@ -745,7 +1055,9 @@ def _emergency_goal_fixture(
             source_time=106,
             evaluation_time=110,
             tick_units=tick_units,
+            scale=scale,
             source_id=current_mandate.evidence_policy.source_id,
+            position_scope=position_scope,
             session_id=current_mandate.session_id,
         ),
     )
@@ -925,12 +1237,25 @@ def test_public_value_shapes_and_enum_members_are_exact() -> None:
             )
             == expected
         )
-        assert {
-            member_name
-            for member_name, member in vars(value_type).items()
-            if not member_name.startswith("_")
-            and (callable(member) or isinstance(member, property))
-        } == set()
+        assert _public_behavior_names(value_type) == set()
+
+
+def test_public_behavior_seal_detects_inherited_capability_mutant() -> None:
+    class _HiddenCapabilityMixin:
+        def submit_order(self) -> None:
+            raise AssertionError("mutant capability must never run")
+
+        @property
+        def broker_client(self) -> object:
+            raise AssertionError("mutant capability must never run")
+
+    class _ApparentlySafeValue(_HiddenCapabilityMixin):
+        pass
+
+    assert _public_behavior_names(_ApparentlySafeValue) == {
+        "broker_client",
+        "submit_order",
+    }
 
 
 def test_mandate_is_frozen_exact_and_rejects_subclasses() -> None:
@@ -1365,6 +1690,22 @@ def test_exact_venue_replay_never_advances_cursor_or_policy() -> None:
     assert replayed.goal is None
     assert replayed.critical_alert is None
 
+    _, closed = _close_parent_fixture(
+        terminal,
+        effect_id=BASE_EFFECT,
+        label="protection-terminal-replay-later-advance",
+    )
+    closed_projection = _projection(module, closed, mandate)
+    assert closed_projection.cursor_ordinal > replay_projection.cursor_ordinal
+    assert closed_projection.cursor_head != replay_projection.cursor_head
+    advanced = _reduce(
+        module,
+        replayed.state,
+        closed_projection,
+    )
+    assert advanced.state != replayed.state
+    _assert_stale_unchanged(module, advanced.state, replay_projection)
+
 
 def test_protection_cursor_and_blocking_summaries_are_per_position_scope() -> None:
     module = _protection_module()
@@ -1536,6 +1877,11 @@ def test_nonmutating_reconciliation_does_not_advance_protection_cursor() -> None
         state,
         contradicted_projection,
     )
+    (disposition,) = _required(module, "ProtectionDisposition")
+    assert synced.disposition is disposition.EXACT_REPLAY
+    assert synced.state == state
+    assert synced.goal is None
+    assert synced.critical_alert is None
     release = venue_fixtures.apply_venue_recovery_input(
         contradicted.book,
         contradicted.execution,
@@ -1563,11 +1909,27 @@ def test_nonmutating_reconciliation_does_not_advance_protection_cursor() -> None
     assert projection.cursor_ordinal == contradicted_projection.cursor_ordinal
     assert projection.cursor_head == contradicted_projection.cursor_head
     result = _reduce(module, synced.state, projection)
-    (disposition,) = _required(module, "ProtectionDisposition")
     assert result.disposition is disposition.EXACT_REPLAY
     assert result.state == synced.state
     assert result.goal is None
     assert result.critical_alert is None
+
+    advance_chain, _, _, _ = _append_needs_review_effect(
+        release,
+        prefix="protection-nonmutating-later-advance",
+        side=ExecutionSide.SELL,
+        quantity=1,
+    )
+    advanced_projection = _projection(module, advance_chain[0], mandate)
+    assert advanced_projection.cursor_ordinal > projection.cursor_ordinal
+    assert advanced_projection.cursor_head != projection.cursor_head
+    advanced = _reduce(
+        module,
+        result.state,
+        advanced_projection,
+    )
+    assert advanced.state != result.state
+    _assert_stale_unchanged(module, advanced.state, projection)
 
 
 def test_replayed_parent_close_cannot_release_a_preclose_state() -> None:
@@ -2137,29 +2499,10 @@ def test_protection_projection_never_materializes_slow_venue_histories(
         "_binding_order",
     }
     forbidden.update({"_root", "__dict__"})
-    pending = [extractor]
-    scanned: dict[str, ast.AST] = {}
-    call_graph: dict[str, set[str]] = {}
-    while pending:
-        current = pending.pop()
-        if current.__name__ in scanned:
-            continue
-        tree = ast.parse(inspect.getsource(current))
-        scanned[current.__name__] = tree
-        local_calls = {
-            node.func.id
-            for node in ast.walk(tree)
-            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-        }
-        call_graph[current.__name__] = set()
-        for called_name in local_calls:
-            candidate = vars(venue_module).get(called_name)
-            if (
-                inspect.isfunction(candidate)
-                and candidate.__module__ == venue_module.__name__
-            ):
-                call_graph[current.__name__].add(called_name)
-                pending.append(candidate)
+    scanned, call_graph, unresolved_calls = _constant_work_call_graph(
+        extractor,
+        venue_module,
+    )
 
     accessed = {
         node.attr
@@ -2203,6 +2546,13 @@ def test_protection_projection_never_materializes_slow_venue_histories(
         and isinstance(node.func, ast.Attribute)
         and node.func.attr != "get"
     }
+    opaque_call_targets = {
+        ast.dump(node.func, include_attributes=False)
+        for tree in scanned.values()
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and not isinstance(node.func, (ast.Name, ast.Attribute))
+    }
     iterative_nodes = {
         type(node).__name__
         for tree in scanned.values()
@@ -2233,12 +2583,48 @@ def test_protection_projection_never_materializes_slow_venue_histories(
     assert not dynamic_calls, (
         f"protection extractor uses dynamic traversal: {dynamic_calls!r}"
     )
+    assert not unresolved_calls, (
+        f"protection extractor uses unresolved callable aliases: {unresolved_calls!r}"
+    )
     assert not indirect_calls, (
         f"protection extractor hides work behind method calls: {indirect_calls!r}"
+    )
+    assert not opaque_call_targets, (
+        f"protection extractor uses opaque callable targets: {opaque_call_targets!r}"
     )
     assert not iterative_nodes, (
         f"protection extractor uses history-shaped iteration: {iterative_nodes!r}"
     )
+
+
+@pytest.mark.parametrize(
+    ("mutant", "unresolved_name", "raw_attribute"),
+    [
+        (_local_alias_scan_mutant, "scan", None),
+        (_default_alias_scan_mutant, "scan", None),
+        (_callable_object_scan_mutant, "_CALLABLE_SCAN_MUTANT", None),
+        (_CLOSURE_SCAN_MUTANT, "scan", None),
+        (_global_alias_scan_mutant, None, "_input_ledger"),
+    ],
+)
+def test_constant_work_oracle_rejects_alias_and_callable_mutants(
+    mutant: Callable[..., object],
+    unresolved_name: str | None,
+    raw_attribute: str | None,
+) -> None:
+    owner_module = inspect.getmodule(mutant)
+    assert owner_module is not None
+    scanned, _, unresolved = _constant_work_call_graph(mutant, owner_module)
+    accessed = {
+        node.attr
+        for tree in scanned.values()
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Attribute)
+    }
+    if unresolved_name is not None:
+        assert unresolved_name in unresolved
+    if raw_attribute is not None:
+        assert raw_attribute in accessed
 
 
 def test_first_owned_fill_arms_only_its_exact_mandate_after_economics() -> None:
@@ -2498,6 +2884,130 @@ def test_residual_above_mandate_quantity_is_never_truncated_or_emitted(
         assert result.goal is None
     assert state.raw_quantity == 5
     assert state.policy is policy.HARD_BAIL
+
+
+@pytest.mark.parametrize("crossing", ["mandate-cap", "broker-overfill"])
+@pytest.mark.parametrize("bids", [(120, 110, 109), (92, 91)])
+def test_later_owned_buy_crossing_a_serving_boundary_is_never_goal_authority(
+    crossing: str,
+    bids: tuple[int, ...],
+) -> None:
+    module = _protection_module()
+    label = f"later-{crossing}-{len(bids)}"
+    fill = _owned_fill_transition(
+        label=f"{label}-root",
+        quantity=4,
+        capacity=4,
+    )
+    maximum_quantity = 4 if crossing == "mandate-cap" else 20
+    mandate, _, state = _start(
+        module,
+        fill,
+        _mandate(module, maximum_quantity=maximum_quantity),
+    )
+    terminal, closed = _close_base_parent(fill)
+    state, _, _ = _sync_transitions(
+        module,
+        state,
+        mandate,
+        (terminal, closed),
+    )
+    (policy,) = _required(module, "ProtectionPolicy")
+    assert state.policy is policy.FLOOR_ONLY
+    assert state.formula_available is True
+
+    buy_chain, buy_effect, buy_leg, _ = _append_needs_review_effect(
+        closed,
+        prefix=f"{label}-buy",
+        side=ExecutionSide.BUY,
+        quantity=1,
+    )
+    state, _, _ = _sync_transitions(
+        module,
+        state,
+        mandate,
+        buy_chain,
+    )
+    fill_quantity = 1 if crossing == "mandate-cap" else 2
+    later_fill = venue_fixtures.apply_venue_recovery_input(
+        buy_chain[-1].book,
+        buy_chain[-1].execution,
+        RecordBrokerFillEvidence(
+            input_id=VenueInputId(f"{label}-buy-fill"),
+            effect_id=buy_effect,
+            leg_key=buy_leg,
+            prior_cumulative_quantity=Quantity(0),
+            resulting_cumulative_quantity=Quantity(fill_quantity),
+            fact=venue_fixtures._broker_fill(
+                f"{label}-buy-source",
+                f"{label}-buy-root",
+                leg_key=buy_leg,
+                quantity=fill_quantity,
+                units=110,
+            ),
+            evidence_digest=b"\xa7" * 32,
+        ),
+    )
+    assert later_fill.disposition is VenueRecoveryDisposition.APPLIED
+    assert later_fill.quantity_delta == fill_quantity
+    assert later_fill.execution.position.raw_quantity == 4 + fill_quantity
+    crossed = _reduce(
+        module,
+        state,
+        _projection(module, later_fill, mandate),
+    )
+    assert crossed.state.raw_quantity == 4 + fill_quantity
+    assert crossed.state.policy is policy.HARD_BAIL
+    assert crossed.goal is None
+    if crossing == "mandate-cap":
+        assert not (
+            later_fill.execution.integrity & PositionIntegrity.OVERFILL_QUARANTINE
+        )
+        assert crossed.state.formula_available is True
+    else:
+        assert later_fill.execution.integrity & PositionIntegrity.OVERFILL_QUARANTINE
+        assert crossed.state.formula_available is False
+
+    _, buy_terminal = _terminal_fixture(
+        later_fill,
+        effect_id=buy_effect,
+        leg_key=buy_leg,
+        label=f"{label}-buy",
+        cumulative_quantity=fill_quantity,
+    )
+    _, buy_closed = _close_parent_fixture(
+        buy_terminal,
+        effect_id=buy_effect,
+        label=f"{label}-buy",
+    )
+    state, projection, closed_result = _sync_transitions(
+        module,
+        crossed.state,
+        mandate,
+        (buy_terminal, buy_closed),
+    )
+    assert projection.blocking_effect_count == 0
+    assert projection.blocking_buy_effect_count == 0
+    assert closed_result.goal is None
+    for index, bid in enumerate(bids, start=1):
+        result = _reduce(
+            module,
+            state,
+            projection,
+            _occurrence(
+                module,
+                f"{label}-market-{index}",
+                bid=bid,
+                ask=bid + 1,
+                sequence=index,
+                source_time=94 + index * 6,
+                evaluation_time=98 + index * 6,
+            ),
+        )
+        state = result.state
+        assert state.raw_quantity == 4 + fill_quantity
+        assert state.policy is policy.HARD_BAIL
+        assert result.goal is None
 
 
 def test_pending_basis_advances_quantity_but_withholds_stale_formula() -> None:
@@ -3115,6 +3625,105 @@ def test_evaluation_time_is_monotone_nondecreasing_per_market_stream(
     assert (second.goal is not None) is triggers
     if not triggers:
         assert second.state == first.state
+
+
+def test_new_market_epoch_owns_a_fresh_evaluation_time_watermark() -> None:
+    module = _protection_module()
+    fill = _owned_fill_transition(label="evaluation-epoch-reset")
+    mandate, _, state = _start(module, fill)
+    terminal, closed = _close_base_parent(fill)
+    state, projection, _ = _sync_transitions(
+        module,
+        state,
+        mandate,
+        (terminal, closed),
+    )
+    epoch_zero = _reduce(
+        module,
+        state,
+        projection,
+        _occurrence(
+            module,
+            "evaluation-epoch-zero",
+            bid=100,
+            ask=101,
+            sequence=1,
+            source_time=100,
+            evaluation_time=105,
+        ),
+    )
+    halted = _reduce(
+        module,
+        epoch_zero.state,
+        projection,
+        _occurrence(
+            module,
+            "evaluation-epoch-halt",
+            bid=100,
+            ask=101,
+            sequence=2,
+            source_time=106,
+            evaluation_time=110,
+            halted=True,
+        ),
+    )
+    reopened = _reduce(
+        module,
+        halted.state,
+        projection,
+        _occurrence(
+            module,
+            "evaluation-epoch-one-first",
+            bid=92,
+            ask=93,
+            sequence=1,
+            source_time=1,
+            evaluation_time=5,
+            market_epoch=1,
+        ),
+    )
+    (policy,) = _required(module, "ProtectionPolicy")
+    assert reopened.state.policy is policy.FLOOR_ONLY
+    assert reopened.state != halted.state
+    assert reopened.goal is None
+
+    regressed = _reduce(
+        module,
+        reopened.state,
+        projection,
+        _occurrence(
+            module,
+            "evaluation-epoch-one-regressed",
+            bid=91,
+            ask=92,
+            sequence=2,
+            source_time=2,
+            evaluation_time=4,
+            market_epoch=1,
+        ),
+    )
+    assert regressed.state == reopened.state
+    assert regressed.goal is None
+
+    valid_second = _reduce(
+        module,
+        regressed.state,
+        projection,
+        _occurrence(
+            module,
+            "evaluation-epoch-one-second",
+            bid=91,
+            ask=92,
+            sequence=2,
+            source_time=3,
+            evaluation_time=6,
+            market_epoch=1,
+        ),
+    )
+    (urgency,) = _required(module, "ProtectionUrgency")
+    assert valid_second.state.policy is policy.HARD_BAIL
+    assert valid_second.goal is not None
+    assert valid_second.goal.urgency is urgency.EMERGENCY
 
 
 @pytest.mark.parametrize(
@@ -4332,6 +4941,44 @@ def test_any_live_sell_effect_suppresses_goal_until_leg_and_parent_close(
     assert released.goal.urgency is expected_urgency
     assert released.goal.guard == expected_guard
 
+    late_leg = VenueLegKey(
+        broker=BROKER,
+        environment=ENVIRONMENT,
+        account=ACCOUNT,
+        order_id=OrderId(f"all-effect-{exit_kind}-late-sell-leg"),
+    )
+    invalidated_sell = venue_fixtures.apply_venue_recovery_input(
+        sell_closed.book,
+        sell_closed.execution,
+        DiscoverVenueLeg(
+            input_id=VenueInputId(f"all-effect-{exit_kind}-late-sell-input"),
+            effect_id=sell_effect,
+            leg_key=late_leg,
+            observation_id=VenueObservationId(
+                f"all-effect-{exit_kind}-late-sell-observation"
+            ),
+        ),
+    )
+    assert (
+        invalidated_sell.disposition is VenueRecoveryDisposition.RECONCILIATION_REQUIRED
+    )
+    assert (
+        invalidated_sell.book.effect(sell_effect).acceptance_set_state
+        is AcceptanceSetState.INVALIDATED
+    )
+    invalidated_projection = _projection(module, invalidated_sell, mandate)
+    assert invalidated_projection.blocking_effect_count == 1
+    assert invalidated_projection.blocking_buy_effect_count == 0
+    blocked_again = _reduce(
+        module,
+        released.state,
+        invalidated_projection,
+    )
+    assert blocked_again.state.policy is expected_policy
+    assert blocked_again.state.waiting_buy_resolution is False
+    assert blocked_again.goal is None
+    assert blocked_again.critical_alert is None
+
 
 def test_buy_wait_is_orthogonal_and_parent_close_not_leg_terminal_releases() -> None:
     module = _protection_module()
@@ -4551,15 +5198,17 @@ def test_goal_carries_complete_current_policy_binding() -> None:
     "binding",
     [
         "mandate_id",
+        "position_scope",
         "session_id",
         "configuration_version",
         "loss_fraction",
         "approved_gain",
         "percent_trail_fraction",
         "atr_multiple",
-        "tick",
-        "normal_guard",
-        "emergency_guard",
+        "normal_guard_id",
+        "normal_guard_policy_commitment",
+        "emergency_guard_id",
+        "emergency_guard_policy_commitment",
         "evidence_source",
         "evidence_max_age",
         "evidence_window",
@@ -4587,6 +5236,15 @@ def test_protection_commitment_binds_each_retained_authority_independently(
     market_label: str | None = None
     if binding == "mandate_id":
         mandate_kwargs["mandate_id"] = MandateId("protection-mandate-v2")
+    elif binding == "position_scope":
+        changed_scope = PositionScope(
+            broker=BROKER,
+            environment=ENVIRONMENT,
+            account=ACCOUNT,
+            symbol_id=type(SYMBOL)("MSFT"),
+        )
+        mandate_kwargs["position_scope"] = changed_scope
+        fixture_kwargs["position_scope"] = changed_scope
     elif binding == "session_id":
         mandate_kwargs["session_id"] = execution_core.SessionId("session-rth-2")
     elif binding == "configuration_version":
@@ -4599,16 +5257,40 @@ def test_protection_commitment_binds_each_retained_authority_independently(
         mandate_kwargs["percent_trail_fraction"] = Fraction(1, 10)
     elif binding == "atr_multiple":
         mandate_kwargs["atr_multiple"] = Fraction(3)
-    elif binding == "tick":
-        mandate_kwargs["tick"] = TickMetadata(
-            tick_units=PriceUnits(2),
-            scale=SCALE,
+    elif binding == "normal_guard_id":
+        changed_guard = replace(
+            baseline_mandate.normal_guard,
+            guard_id="normal-guard-v2",
         )
-        fixture_kwargs.update(tick_units=2, first_bid=92, second_bid=90)
-    elif binding == "normal_guard":
-        mandate_kwargs["normal_guard"] = _guard(module, "normal-guard-v2")
-    elif binding == "emergency_guard":
-        mandate_kwargs["emergency_guard"] = _guard(module, "emergency-guard-v2")
+        assert (
+            changed_guard.policy_commitment
+            == baseline_mandate.normal_guard.policy_commitment
+        )
+        mandate_kwargs["normal_guard"] = changed_guard
+    elif binding == "normal_guard_policy_commitment":
+        changed_guard = replace(
+            baseline_mandate.normal_guard,
+            policy_commitment=b"N" * 32,
+        )
+        assert changed_guard.guard_id == baseline_mandate.normal_guard.guard_id
+        mandate_kwargs["normal_guard"] = changed_guard
+    elif binding == "emergency_guard_id":
+        changed_guard = replace(
+            baseline_mandate.emergency_guard,
+            guard_id="emergency-guard-v2",
+        )
+        assert (
+            changed_guard.policy_commitment
+            == baseline_mandate.emergency_guard.policy_commitment
+        )
+        mandate_kwargs["emergency_guard"] = changed_guard
+    elif binding == "emergency_guard_policy_commitment":
+        changed_guard = replace(
+            baseline_mandate.emergency_guard,
+            policy_commitment=b"E" * 32,
+        )
+        assert changed_guard.guard_id == baseline_mandate.emergency_guard.guard_id
+        mandate_kwargs["emergency_guard"] = changed_guard
     elif binding == "evidence_source":
         mandate_kwargs["source_id"] = execution_core.MarketDataSourceId("sip-backup")
     elif binding == "evidence_max_age":
@@ -4641,6 +5323,10 @@ def test_protection_commitment_binds_each_retained_authority_independently(
     assert baseline_goal.execution_commitment == baseline_closed.execution.commitment
     assert baseline_goal.protection_commitment == baseline_state.commitment
     assert changed_goal.execution_commitment == changed_closed.execution.commitment
+    if binding in {"execution_quantity", "execution_price", "position_scope"}:
+        assert changed_goal.execution_commitment != baseline_goal.execution_commitment
+    else:
+        assert changed_goal.execution_commitment == baseline_goal.execution_commitment
     assert changed_goal.protection_commitment == changed_state.commitment
     assert changed_goal.protection_commitment != baseline_goal.protection_commitment
     assert changed_goal.side is ExecutionSide.SELL
@@ -4650,6 +5336,62 @@ def test_protection_commitment_binds_each_retained_authority_independently(
     assert changed_goal.session_id == changed_mandate.session_id
     assert changed_goal.mandate_id == changed_mandate.mandate_id
     assert changed_goal.maximum_goal_rate == changed_mandate.maximum_goal_rate
+
+
+@pytest.mark.parametrize("tick_leaf", ["tick_units", "scale"])
+def test_protection_commitment_binds_each_nested_tick_authority_leaf(
+    tick_leaf: str,
+) -> None:
+    module = _protection_module()
+    overfill = _owned_fill_transition(
+        label=f"goal-binding-{tick_leaf}-overfill",
+        quantity=5,
+        capacity=4,
+    )
+    assert overfill.execution.integrity & PositionIntegrity.OVERFILL_QUARANTINE
+    baseline_mandate = _mandate(module)
+    if tick_leaf == "tick_units":
+        changed_tick = TickMetadata(tick_units=PriceUnits(2), scale=SCALE)
+        assert changed_tick.scale == baseline_mandate.tick.scale
+        assert changed_tick.tick_units != baseline_mandate.tick.tick_units
+    else:
+        changed_scale = PriceScale(Decimal("0.01"))
+        changed_tick = TickMetadata(tick_units=PriceUnits(1), scale=changed_scale)
+        assert changed_tick.tick_units == baseline_mandate.tick.tick_units
+        assert changed_tick.scale != baseline_mandate.tick.scale
+    changed_mandate = _mandate(module, tick=changed_tick)
+    for retained in fields(baseline_mandate):
+        if retained.name != "tick":
+            assert getattr(changed_mandate, retained.name) == getattr(
+                baseline_mandate,
+                retained.name,
+            )
+
+    _, baseline_projection, baseline_state = _start(
+        module,
+        overfill,
+        baseline_mandate,
+    )
+    _, changed_projection, changed_state = _start(
+        module,
+        overfill,
+        changed_mandate,
+    )
+    (policy,) = _required(module, "ProtectionPolicy")
+    assert baseline_projection.execution_commitment == overfill.execution.commitment
+    assert changed_projection.execution_commitment == overfill.execution.commitment
+    assert baseline_state.execution_commitment == changed_state.execution_commitment
+    assert baseline_state.raw_quantity == changed_state.raw_quantity == 5
+    assert baseline_state.policy is changed_state.policy is policy.HARD_BAIL
+    assert baseline_state.formula_available is changed_state.formula_available is False
+    for retained in fields(baseline_state):
+        if retained.name.startswith("_") or retained.name in {"mandate", "commitment"}:
+            continue
+        assert getattr(changed_state, retained.name) == getattr(
+            baseline_state,
+            retained.name,
+        )
+    assert changed_state.commitment != baseline_state.commitment
 
 
 def test_execution_goal_rejects_every_malformed_authority_binding() -> None:

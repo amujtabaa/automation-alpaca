@@ -8,8 +8,8 @@ predecessor to prove determinism and input immutability.
 
 from __future__ import annotations
 
-import inspect
 from fractions import Fraction
+from typing import Any
 
 from hypothesis import settings, strategies as st
 from hypothesis.stateful import RuleBasedStateMachine, invariant, precondition, rule
@@ -69,6 +69,7 @@ class ProtectionEconomicsMachine(RuleBasedStateMachine):
         self.late_correction_recovered = False
         self.next_identity = 0
         self.projection_history = [self.projection]
+        self.last_result: object | None = None
 
     def _sync(self, transition: object) -> object:
         projection = protection_fixtures._projection(
@@ -85,6 +86,7 @@ class ProtectionEconomicsMachine(RuleBasedStateMachine):
         self.projection = projection
         self.current = transition
         self.projection_history.append(projection)
+        self.last_result = result
         return result
 
     def _sync_many(self, transitions: tuple[object, ...]) -> object:
@@ -383,9 +385,9 @@ class ProtectionEconomicsMachine(RuleBasedStateMachine):
     @precondition(
         lambda self: (
             not self.closed
-            and self.next_identity == 0
             and self.root_quantity > 0
             and self.formula_expected
+            and self.total_cost == Fraction(self.root_quantity * self.root_units)
         )
     )
     @rule(units=st.integers(min_value=40, max_value=65).map(lambda value: value * 2))
@@ -539,6 +541,7 @@ class ProtectionMarketMachine(RuleBasedStateMachine):
         self.buy_effect = None
         self.buy_leg = None
         self.buy_stage = "NONE"
+        self.last_result: object | None = None
 
     def _sync(self, transition: object) -> object:
         projection = protection_fixtures._projection(
@@ -554,15 +557,18 @@ class ProtectionMarketMachine(RuleBasedStateMachine):
         self.state = result.state
         self.projection = projection
         self.current = transition
+        self.last_result = result
         return result
 
     def _deliver(self, occurrence: object) -> object:
-        return protection_fixtures._reduce(
+        result = protection_fixtures._reduce(
             self.module,
             self.state,
             self.projection,
             occurrence,
         )
+        self.last_result = result
+        return result
 
     @precondition(lambda self: self.policy in {"FLOOR_ONLY", "TRAIL_ACTIVE"})
     @rule(bid=st.integers(min_value=90, max_value=130))
@@ -744,13 +750,7 @@ class ProtectionMarketMachine(RuleBasedStateMachine):
         assert result.state.trail.exact_value == self.trail
         assert result.goal is None
 
-    @precondition(
-        lambda self: (
-            self.policy == "FLOOR_ONLY"
-            and self.hard_count == 0
-            and self.buy_stage == "NONE"
-        )
-    )
+    @precondition(lambda self: self.policy == "FLOOR_ONLY" and self.hard_count == 0)
     @rule()
     def interruption_reopen_epoch_requires_fresh_corroboration(self) -> None:
         """A halt and new epoch reset corroboration in this shared history."""
@@ -826,8 +826,13 @@ class ProtectionMarketMachine(RuleBasedStateMachine):
         self.last_accepted_source_time = self.source_time
         self.last_accepted_sequence = self.sequence
         self.last_bid = 92
+        self.waiting = self.buy_stage in {"OPEN", "TERMINAL"}
         assert bailed.state.policy is policy.HARD_BAIL
-        assert bailed.goal is not None
+        assert bailed.state.waiting_buy_resolution is self.waiting
+        if self.waiting:
+            assert bailed.goal is None
+        else:
+            assert bailed.goal is not None
 
     @precondition(
         lambda self: (
@@ -908,20 +913,107 @@ class ProtectionMarketMachine(RuleBasedStateMachine):
         assert self.state.execution_commitment == self.current.execution.commitment
 
 
-def test_high_risk_stateful_rules_advance_one_machine_history() -> None:
-    """Keep composition controls from regressing into isolated mini-scenarios."""
-    shared_rules = (
-        ProtectionEconomicsMachine.correction_bust_and_authentic_restore_compose_with_later_history,
-        ProtectionEconomicsMachine.incompatible_tick_loss_and_restore_advance_shared_history,
-        ProtectionMarketMachine.interruption_reopen_epoch_requires_fresh_corroboration,
-        ProtectionMarketMachine.introduce_unresolved_buy_into_shared_history,
-        ProtectionMarketMachine.terminalize_unresolved_buy_in_shared_history,
-        ProtectionMarketMachine.close_unresolved_buy_parent_in_shared_history,
+def _registered_rule(
+    machine_type: type[RuleBasedStateMachine],
+    name: str,
+) -> Any:
+    matches = [
+        registered
+        for registered in machine_type.setup_state().rules
+        if registered.function.__name__ == name
+    ]
+    assert len(matches) == 1, f"expected one registered Hypothesis rule named {name!r}"
+    registered = matches[0]
+    assert registered.preconditions, (
+        f"high-risk rule {name!r} lost its reachability gate"
     )
-    for shared_rule in shared_rules:
-        source = inspect.getsource(shared_rule)
-        assert "._start(" not in source
-        assert "self.state" in source or "self._sync(" in source
+    return registered
+
+
+def _execute_registered(
+    machine: RuleBasedStateMachine,
+    name: str,
+    **kwargs: object,
+) -> object:
+    registered = _registered_rule(type(machine), name)
+    assert all(predicate(machine) for predicate in registered.preconditions), (
+        f"registered high-risk rule {name!r} is unreachable in the directed history"
+    )
+    registered.function(machine, **kwargs)
+    result = machine.last_result
+    assert result is not None
+    return result
+
+
+def test_high_risk_stateful_rules_are_registered_with_preconditions() -> None:
+    """A removed decorator or precondition cannot silently erase generated coverage."""
+    expected = {
+        ProtectionEconomicsMachine: {
+            "correction_bust_and_authentic_restore_compose_with_later_history",
+            "incompatible_tick_loss_and_restore_advance_shared_history",
+        },
+        ProtectionMarketMachine: {
+            "interruption_reopen_epoch_requires_fresh_corroboration",
+            "introduce_unresolved_buy_into_shared_history",
+            "terminalize_unresolved_buy_in_shared_history",
+            "close_unresolved_buy_parent_in_shared_history",
+        },
+    }
+    for machine_type, names in expected.items():
+        for name in names:
+            _registered_rule(machine_type, name)
+
+
+def test_high_risk_stateful_rules_advance_one_machine_history() -> None:
+    """Drive registered rules through the exact risky compositions they must cover."""
+    economics = ProtectionEconomicsMachine()
+    _execute_registered(
+        economics,
+        "correction_bust_and_authentic_restore_compose_with_later_history",
+        resulting_quantity=3,
+        units=101,
+    )
+    assert economics.next_identity == 1
+    assert economics.root_quantity == economics.raw_quantity == 3
+    _execute_registered(
+        economics,
+        "incompatible_tick_loss_and_restore_advance_shared_history",
+        units=120,
+    )
+    assert economics.next_identity == 2
+    assert economics.formula_expected is True
+    assert economics.expected_policy == "HARD_BAIL"
+
+    market = ProtectionMarketMachine()
+    _execute_registered(
+        market,
+        "introduce_unresolved_buy_into_shared_history",
+    )
+    assert market.buy_stage == "OPEN"
+    interrupted = _execute_registered(
+        market,
+        "interruption_reopen_epoch_requires_fresh_corroboration",
+    )
+    assert market.policy == "HARD_BAIL"
+    assert market.waiting is True
+    assert interrupted.state.waiting_buy_resolution is True
+    assert interrupted.goal is None
+    terminal = _execute_registered(
+        market,
+        "terminalize_unresolved_buy_in_shared_history",
+    )
+    assert market.buy_stage == "TERMINAL"
+    assert terminal.state.waiting_buy_resolution is True
+    assert terminal.goal is None
+    released = _execute_registered(
+        market,
+        "close_unresolved_buy_parent_in_shared_history",
+    )
+    assert market.buy_stage == "CLOSED"
+    assert market.waiting is False
+    assert released.state.waiting_buy_resolution is False
+    assert released.goal is not None
+    assert released.goal.guard == market.mandate.emergency_guard
 
 
 TestProtectionEconomicsMachine = ProtectionEconomicsMachine.TestCase

@@ -391,6 +391,67 @@ execution-kernel tests outside the deliberately RED import/protection files pass
 remains barred until a new independent review accepts the exact third-freeze commit with zero
 unresolved P0/P1.
 
+### Independent third-freeze review and fourth freeze
+
+A third fresh Sol review independently re-derived the exact RED commit
+`235fe9ffb64304b82f52672118a1eac3559072d8`. It found no P0 and returned `BLOCK` with eight P1
+test-strength findings. Production remained absent and barred. The findings were that inherited
+public capability could escape the value-object seal; saved replay and non-mutating projections
+were not proven stale after a genuine later advance; callable aliases could escape the
+constant-work call graph; later BUY economics did not cross the mandate-cap and broker-overfill
+boundaries; evaluation-time authority was not proven to reset and then remain monotone inside a
+new market epoch; an `INVALIDATED` SELL was not pinned as an all-effect blocker; commitment
+sensitivity omitted position scope and independently varied guard/tick leaves; and the generated
+history pin did not prove Hypothesis rule registration, reachability, or execution.
+
+The fourth freeze closes each finding through a failure-capable owning-boundary control:
+
+1. The public-value seal walks the complete static MRO and detects inherited methods and
+   descriptors, including a dedicated inherited broker-capability mutant.
+2. Exact replay and non-mutating reconciliation projections first reduce as current
+   `EXACT_REPLAY`; a verified same-position cursor/head advance then makes the saved projection
+   `STALE` without changing current protection state.
+3. The constant-work oracle resolves the transitive venue-local call graph and defaults unresolved
+   local, default-argument, closure, callable-object, and opaque targets to failure. Five synthetic
+   bypass forms prove the oracle is failure-capable while the runtime bounded-map access comparison
+   remains intact.
+4. A real later owned BUY crosses both boundaries from an initially serving state: aggregate
+   quantity above the mandate cap remains exact and non-serving, and broker-authoritative quantity
+   above the effect capacity retains `OVERFILL_QUARANTINE`. Favorable and emergency-shaped market
+   histories cannot emit a goal after exact parent closure.
+5. A halt/new-epoch history accepts a lower first evaluation watermark for the new epoch, rejects
+   an evaluation-time regression inside that epoch, and accepts a later monotone occurrence as the
+   second fresh corroborator.
+6. Both normal and emergency SELL-blocking histories now continue after apparent release into a
+   late discovered leg and `INVALIDATED` parent. The all-effect summary blocks the goal without
+   rewriting the retained exit policy.
+7. Commitment sensitivity now varies `PositionScope`, each normal/emergency guard identity and
+   policy-commitment leaf, every evidence-policy leaf, and all other retained mandate/execution/
+   exit inputs. Separate same-execution non-serving controls independently vary tick units and
+   scale so nested tick authority cannot hide behind an execution-commitment change.
+8. The generated-history control discovers actual Hypothesis `Rule` registrations, requires live
+   preconditions, and invokes the registered functions. One economics history composes
+   correction/bust/restore with incompatible-tick loss/restore; one market history composes an
+   unresolved BUY with halt/reopen hard bail, leg terminality, and exact parent-close release.
+
+Fresh fourth-freeze evidence before any production implementation:
+
+- focused collection succeeds for 229 tests: 212 deterministic examples, two registration/
+  directed-composition controls, two bounded state machines, and 13 import/public-boundary tests;
+- exact RED execution yields 213 expected failures and 16 passes. The only failure classes are the
+  deliberately absent `app.execution_core.protection` module and the required protection export,
+  module-inventory, and import-boundary deltas; the seven new pre-production meta controls pass;
+- Ruff check and format-check pass for both protection test files, `git diff --check` passes, and
+  the activation-base work-order scope check reports `SCOPE CHECK PASSED`;
+- direct pure venue probes pass for the alternate-position fixture and both later-BUY cap/overfill
+  histories through exact parent closure; and
+- the hostile preservation pre-flight remains green: all 698 predecessor execution-kernel tests
+  outside the deliberately RED protection/import files pass in 179.60 seconds.
+
+The fourth freeze adds no production code or runtime authority. Production remains barred until a
+fresh independent reviewer accepts the exact immutable fourth-freeze commit with zero unresolved
+P0/P1.
+
 ## Stop conditions
 
 Stop rather than widen scope if the contract requires an ADR change, a new dependency, persistence,
@@ -409,5 +470,5 @@ and a running external CI gate are progress states, not goal blockers.
   retained untracked WO-0145/0146/0147 evidence remains untouched.
 - Pre-build clause map: one new protection reducer plus narrow identity, venue projection, exports,
   and two test suites; existing position/authority reducers stay unchanged.
-- Next action: commit this third RED freeze, obtain fresh independent exact-commit acceptance with
+- Next action: commit this fourth RED freeze, obtain fresh independent exact-commit acceptance with
   zero unresolved P0/P1, and only then begin production code from the accepted immutable checkpoint.
