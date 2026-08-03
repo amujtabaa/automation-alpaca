@@ -120,12 +120,15 @@ _PUBLIC_SURFACE = {
     "EngageKill",
     "EnginePhase",
     "EnvironmentId",
+    "EvidencePolicy",
     "EvidenceReference",
     "ExactBasis",
     "ExecutionAuthority",
     "ExecutionAuthorityState",
     "ExecutionAuthorityTransition",
     "ExecutionFactKey",
+    "ExecutionGoal",
+    "ExecutionGuard",
     "ExecutionReconciliationCursor",
     "ExecutionRegistryReconciliationRecord",
     "ExecutionScope",
@@ -139,15 +142,27 @@ _PUBLIC_SURFACE = {
     "HumanCoverage",
     "IngestHumanAttestedFill",
     "MandateId",
+    "MarketDataSourceId",
+    "MarketKind",
+    "MarketOccurrence",
+    "MarketOccurrenceId",
     "ManualFlattenId",
     "ObserveVenueStatus",
     "OrderId",
     "PendingVenueOperation",
     "PositionIntegrity",
+    "PositionProtectionState",
     "PositionScope",
     "PositionState",
     "PriceScale",
     "PriceUnits",
+    "ProtectionAlert",
+    "ProtectionDisposition",
+    "ProtectionMandate",
+    "ProtectionPolicy",
+    "ProtectionTransition",
+    "ProtectionUrgency",
+    "ProtectionVenueProjection",
     "Quantity",
     "QueryClaimId",
     "ReconciliationRecord",
@@ -193,6 +208,9 @@ _PUBLIC_SURFACE = {
     "bind_venue_execution_snapshot",
     "derive_ordered_basis_candidate",
     "initial_execution_authority_state",
+    "initialize_position_protection",
+    "project_protection_venue",
+    "reduce_position_protection",
 }
 
 _FORBIDDEN_PUBLIC_ACCEPTANCE_CLOSURE_CAPABILITIES = {
@@ -244,11 +262,63 @@ def _python_files() -> list[Path]:
         "fills.py",
         "identity.py",
         "position.py",
+        "protection.py",
         "recovery.py",
         "values.py",
         "venue.py",
     }
     return files
+
+
+def test_protection_has_one_public_reducer_and_no_operational_or_raw_venue_seam() -> (
+    None
+):
+    """Protection stays pure policy data behind one authenticated venue extractor."""
+
+    path = _PACKAGE_ROOT / "protection.py"
+    assert path.is_file(), "WO-0148 protection semantic center is missing"
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    public_functions = {
+        node.name
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and not node.name.startswith("_")
+    }
+    assert public_functions == {
+        "initialize_position_protection",
+        "project_protection_venue",
+        "reduce_position_protection",
+    }
+    forbidden = {
+        "BrokerEffectRequest",
+        "ClaimEffect",
+        "CloseAcceptanceSet",
+        "CreateBrokerEffect",
+        "RecordDispatchClaim",
+        "RequestedEffect",
+        "VenueRecoveryBook",
+        "_apply_venue_input",
+        "apply_execution_authority_input",
+        "apply_venue_recovery_input",
+    }
+    violations: list[str] = []
+    extractor_imports = 0
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            if node.module == "venue" and node.level == 1:
+                extractor_imports += sum(
+                    alias.name == "_extract_protection_transition"
+                    for alias in node.names
+                )
+            for alias in node.names:
+                if alias.name in forbidden:
+                    violations.append(f"{_display(path, node)}:{alias.name}")
+        elif isinstance(node, ast.Name) and node.id in forbidden:
+            violations.append(f"{_display(path, node)}:{node.id}")
+        elif isinstance(node, ast.Attribute) and node.attr in forbidden:
+            violations.append(f"{_display(path, node)}:{node.attr}")
+    assert extractor_imports == 1
+    assert not violations, sorted(set(violations))
 
 
 def _display(path: Path, node: ast.AST) -> str:

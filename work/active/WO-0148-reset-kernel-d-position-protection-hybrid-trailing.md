@@ -228,6 +228,43 @@ restoration, and restored hash for each group.
    evidence-only successor after external success. Push the immutable closeout and require unchanged
    exact-head Python 3.11/3.12 CI before `WO-0149` activation.
 
+## RED contract freeze
+
+The failure-first contract is frozen from activation SHA
+`d75806b1a79d1769db25ae962c0977cd9388a886`. The public vocabulary selected for this bounded slice
+is explicit rather than inferred: `MarketDataSourceId`, `MarketOccurrenceId`, `EvidencePolicy`,
+`ExecutionGuard`, `ProtectionMandate`, `MarketOccurrence`, the five protection-policy values, typed
+disposition/urgency/alert values, opaque `PositionProtectionState` and
+`ProtectionVenueProjection`, immutable `ExecutionGoal` and `ProtectionTransition`, and exactly
+three public entry points: `project_protection_venue`, `initialize_position_protection`, and
+`reduce_position_protection`. Times/deadlines are non-negative exact integers; guard policy
+commitments and all retained commitments are exactly 32 bytes. These choices are now the M1.4
+interface that WO-0149 may consume; they do not authenticate an operator or grant execution.
+
+The venue seam is likewise frozen before production code. Every reducer-constructed
+`VenueRecoveryTransition` must retain a private domain-separated proof over exact predecessor and
+resulting execution checkpoints, bounded all-effect and BUY-effect authority summaries, command
+and disposition, reducer-derived quantity delta, and a per-position-scope monotone cursor. A
+state-mutating `APPLIED` or `RECONCILIATION_REQUIRED` transition advances that scoped cursor;
+`EXACT_REPLAY`, refusal, conflict, or a non-mutating reconciliation result does not. Protection
+accepts only a projection extracted from this proof, requires its predecessor to match the state
+it already retained, and recomputes the seal before use. Counts without the cursor are
+inadmissible because sibling forks and equal-count ABA histories can otherwise look current.
+
+Fresh RED evidence before any production implementation:
+
+- `python -m pytest --collect-only -q` over the deterministic, stateful, and import-boundary files
+  collected 76 tests: 61 deterministic examples, two bounded generated-history machines, and 13
+  import/public-boundary tests.
+- The same focused run produced exactly 67 expected failures and nine existing boundary passes.
+  Every failure traced to the deliberately absent `app.execution_core.protection` semantic center
+  or the boundary inventory/export delta caused by that absence; there was no collection error.
+- Ruff check and format-check passed for all three changed test files; `git diff --check` passed.
+- Hostile pre-build review added direct proof forgery, sibling-fork, exact-replay, equal-count ABA,
+  rollback/substitution, all-effect flatness, correction/bust, pending-basis, overfill, trigger
+  reset, optional-component, emergency-wait, and late-positive recovery controls. Production work
+  remains barred until an independent reviewer accepts the frozen RED commit with zero P0/P1.
+
 ## Stop conditions
 
 Stop rather than widen scope if the contract requires an ADR change, a new dependency, persistence,
