@@ -355,7 +355,11 @@ def _venue_apply_twice(
     *,
     internal: bool = False,
 ) -> object:
-    reducer = _private_venue_apply if internal else apply_venue_recovery_input
+    reducer = (
+        _private_venue_apply
+        if internal or type(item) is CloseAcceptanceSet
+        else apply_venue_recovery_input
+    )
     before = (book, execution, item)
     first = reducer(book, execution, item)
     second = reducer(book, execution, item)
@@ -1025,7 +1029,11 @@ class SymbolGateMachine(RuleBasedStateMachine):
         internal: bool = False,
         expected: VenueRecoveryDisposition = VenueRecoveryDisposition.APPLIED,
     ) -> None:
-        reducer = _private_venue_apply if internal else apply_venue_recovery_input
+        reducer = (
+            _private_venue_apply
+            if internal or type(item) is CloseAcceptanceSet
+            else apply_venue_recovery_input
+        )
         before = (self.book, self.execution, item)
         first = reducer(self.book, self.execution, item)
         second = reducer(self.book, self.execution, item)
@@ -1337,9 +1345,14 @@ class ManualFlattenMachine(RuleBasedStateMachine):
         *,
         expected: VenueRecoveryDisposition = VenueRecoveryDisposition.APPLIED,
     ) -> object:
+        reducer = (
+            _private_venue_apply
+            if type(item) is CloseAcceptanceSet
+            else apply_venue_recovery_input
+        )
         before = (self.state.venue, self.execution, item)
-        first = apply_venue_recovery_input(self.state.venue, self.execution, item)
-        second = apply_venue_recovery_input(self.state.venue, self.execution, item)
+        first = reducer(self.state.venue, self.execution, item)
+        second = reducer(self.state.venue, self.execution, item)
         assert second == first
         assert before == (self.state.venue, self.execution, item)
         assert first.disposition is expected
@@ -1380,6 +1393,30 @@ class ManualFlattenMachine(RuleBasedStateMachine):
             remaining=self.state.budget.remaining,
             reserve=self.state.budget.safety_reserve,
         )
+
+    @rule()
+    def audit_current_stage_without_mutation(self) -> None:
+        """Keep every generated stage observable without filtering rule selection."""
+
+        assert self.stage in {
+            "empty",
+            "local-requested",
+            "claimed-no-leg",
+            "working-buy",
+            "cancel-requested",
+            "cancel-claimed",
+            "cancel-acknowledged",
+            "cancel-ack-checked",
+            "target-terminal-parent-open",
+            "parents-closed",
+            "late-fill-applied",
+            "ready",
+            "sell-requested",
+            "done",
+        }
+        assert self.state.budget.remaining >= 0
+        assert self.state.budget.safety_reserve >= 0
+        assert self.execution.position.raw_quantity >= 5
 
     def _seed_buy(self, label: str, *, claim: bool, discover: bool) -> None:
         created = _create_effect(
@@ -2541,6 +2578,7 @@ def test_manual_flatten_late_residual_retry_retires_and_replaces_exactly_once() 
         authority_input_type,
         claim_type,
         manual_key,
+        effect_key,
         flatten_phase_type,
     ) = _required(
         module,
@@ -2549,6 +2587,7 @@ def test_manual_flatten_late_residual_retry_retires_and_replaces_exactly_once() 
         "AuthorityInputId",
         "ClaimEffect",
         "_manual_key",
+        "_effect_key",
         "_FlattenPhase",
     )
     predecessor, execution, flatten_id = _manual_advance_predecessor(
@@ -2597,6 +2636,10 @@ def test_manual_flatten_late_residual_retry_retires_and_replaces_exactly_once() 
     )
     drifted = _forge_venue(stale.state, drifted_book)
     budget_before_retry = drifted.budget
+    authorization_before_retry = drifted._effect_authority_by_id.get(
+        effect_key(stale_effect_id)
+    )
+    assert authorization_before_retry is not None
     stale_claim = claim_type(  # type: ignore[operator]
         input_id=authority_input_type("manual-residual-retry-stale-claim-input"),
         effect_id=stale_effect_id,
@@ -2627,6 +2670,10 @@ def test_manual_flatten_late_residual_retry_retires_and_replaces_exactly_once() 
     )
     assert retried.disposition is disposition_type.APPLIED
     assert retried.state.budget == budget_before_retry
+    assert (
+        retried.state._effect_authority_by_id.get(effect_key(stale_effect_id))
+        == authorization_before_retry
+    )
     assert retried.created_effect_ids == ()
     assert retried.fresh_claim is None
     retired = retried.state.venue.effect(stale_effect_id)
@@ -2774,6 +2821,68 @@ def test_manual_flatten_retry_never_retires_a_claimed_sell() -> None:
     assert refused.state == drifted
     assert refused.state.venue.effect(sell_effect_id) == effect_before
     assert refused.state.budget == budget_before
+    assert refused.created_effect_ids == ()
+    assert refused.fresh_claim is None
+
+
+def test_manual_flatten_retry_refuses_unresolved_sibling_uncertainty() -> None:
+    module = _authority_module()
+    disposition_type, reason_type = _required(
+        module,
+        "AuthorityDisposition",
+        "AuthorityReason",
+    )
+    predecessor, execution, flatten_id = _manual_advance_predecessor(
+        module,
+        "manual-sibling-retry",
+    )
+    ready = _authority_apply_twice(
+        module,
+        predecessor,
+        execution,
+        _manual_advance(module, flatten_id, "manual-sibling-retry-ready"),
+    )
+    assert ready.disposition is disposition_type.APPLIED
+    stale = _create_effect(
+        module,
+        ready.state,
+        execution,
+        "manual-sibling-retry-sell",
+        side=ExecutionSide.SELL,
+        quantity=execution.position.authorized_residual_sell.value,
+        manual_flatten_id=flatten_id,
+    )
+    assert stale.disposition is disposition_type.APPLIED
+    stale_effect_id = EffectId("manual-sibling-retry-sell-effect")
+    drifted_book, drifted_execution = _apply_closed_sell_fill(
+        stale.state.venue,
+        execution,
+        "manual-sibling-retry-shrink",
+        SHRINK_LEG,
+    )
+    uncertain_book, uncertain_execution, _ = _seed_raw_effect(
+        drifted_book,
+        drifted_execution,
+        "manual-sibling-retry-unknown-buy",
+        claim=True,
+        leg_key=None,
+        side=ExecutionSide.BUY,
+    )
+    uncertain = _forge_venue(stale.state, uncertain_book)
+    stale_before = uncertain.venue.effect(stale_effect_id)
+
+    refused = _authority_apply_twice(
+        module,
+        uncertain,
+        uncertain_execution,
+        _manual_advance(module, flatten_id, "manual-sibling-retry-refresh"),
+    )
+
+    assert refused.disposition is disposition_type.REFUSED
+    assert refused.reason is reason_type.VENUE_UNCERTAIN
+    assert refused.state == uncertain
+    assert refused.state.venue.effect(stale_effect_id) == stale_before
+    assert refused.state.budget == uncertain.budget
     assert refused.created_effect_ids == ()
     assert refused.fresh_claim is None
 

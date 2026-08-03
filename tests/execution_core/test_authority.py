@@ -156,9 +156,14 @@ def _public_venue_apply_twice(
     execution: ExecutionSnapshot,
     item: object,
 ) -> object:
+    reducer = (
+        _private_venue_apply
+        if type(item) is CloseAcceptanceSet
+        else apply_venue_recovery_input
+    )
     before = (book, execution, item)
-    first = apply_venue_recovery_input(book, execution, item)
-    second = apply_venue_recovery_input(book, execution, item)
+    first = reducer(book, execution, item)
+    second = reducer(book, execution, item)
     assert second == first
     assert before == (book, execution, item)
     return first

@@ -46,6 +46,7 @@ from .venue import (
     _authority_effect_identity_conflicts,
     _authority_request_effect,
     _authority_stand_down_account_requested_effects,
+    _authority_stand_down_requested_effect,
     _authority_symbol_flatten_ready,
     _venue_authority_view,
 )
@@ -961,6 +962,12 @@ def _claim_query(
     retained = state._query_by_id.get(_query_key(item.query_claim_id))
     if retained is not None:
         return _result(state, AuthorityDisposition.CONFLICT)
+    if state.phase not in (EnginePhase.RECONCILING, EnginePhase.SERVING):
+        return _result(
+            state,
+            AuthorityDisposition.REFUSED,
+            AuthorityReason.PHASE_BLOCKED,
+        )
     if state.supervisor_fence not in {
         SupervisorFence.RECONCILIATION_ONLY,
         SupervisorFence.PAPER_MUTATION_ELIGIBLE,
@@ -1098,7 +1105,84 @@ def _advance_manual_flatten(
     item: AdvanceManualFlatten,
 ) -> ExecutionAuthorityTransition:
     manual = state._manual_by_id.get(_manual_key(item.flatten_id))
-    if manual is None or manual.phase is not _FlattenPhase.WAITING:
+    if manual is None:
+        return _result(
+            state,
+            AuthorityDisposition.REFUSED,
+            AuthorityReason.MANUAL_FLATTEN_INVALID,
+        )
+    if manual.phase is _FlattenPhase.SELL_CREATED:
+        sell_effect_id = manual.sell_effect_id
+        authorization = (
+            None
+            if sell_effect_id is None
+            else state._effect_authority_by_id.get(_effect_key(sell_effect_id))
+        )
+        request = None if authorization is None else authorization.request
+        effect = (
+            None
+            if sell_effect_id is None
+            else state.venue._current_effect(sell_effect_id)
+        )
+        if (
+            sell_effect_id is None
+            or authorization is None
+            or request is None
+            or effect is None
+            or manual.command.flatten_id != item.flatten_id
+            or authorization.manual_flatten_id != item.flatten_id
+            or authorization.session_id != manual.command.session_id
+            or authorization.emergency_grant_id is not None
+            or request.effect_id != sell_effect_id
+            or request.kind is not EffectKind.SUBMIT
+            or request.side is not ExecutionSide.SELL
+            or request.symbol_id != manual.command.symbol_id
+            or effect.scope != _scope_from_request(state, request)
+            or request.quantity == execution.position.authorized_residual_sell
+        ):
+            return _result(
+                state,
+                AuthorityDisposition.REFUSED,
+                AuthorityReason.MANUAL_FLATTEN_INVALID,
+            )
+        reason = _venue_reason(
+            state,
+            execution,
+            request.symbol_id,
+            sell_effect_id,
+            require_clear=True,
+        )
+        if reason is not None:
+            return _result(state, AuthorityDisposition.REFUSED, reason)
+        venue = _authority_stand_down_requested_effect(
+            state.venue,
+            execution,
+            sell_effect_id,
+            f"manual-flatten-retry:{item.input_id.value}",
+        )
+        if venue is None:
+            return _result(
+                state,
+                AuthorityDisposition.REFUSED,
+                AuthorityReason.VENUE_UNCERTAIN,
+            )
+        ready = _ManualFlatten(
+            manual.command,
+            _FlattenPhase.READY,
+            manual.cancel_effect_ids,
+        )
+        next_state = _state_with(
+            state,
+            venue=venue,
+            _manual_by_id=_replaced(
+                state._manual_by_id,
+                _manual_key(item.flatten_id),
+                ready,
+            ),
+        )
+        next_state = _record_input(next_state, item)
+        return _result(next_state, AuthorityDisposition.APPLIED)
+    if manual.phase is not _FlattenPhase.WAITING:
         return _result(
             state,
             AuthorityDisposition.REFUSED,

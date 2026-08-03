@@ -72,13 +72,10 @@ from .values import (
     TickMetadata,
 )
 from app.execution_core.venue import (
-    AcceptanceProof,
-    AcceptanceProofKind,
     AcceptanceSetState,
     BrokerEffect,
     BrokerEffectState,
     CatchUpExecutionRegistry,
-    CloseAcceptanceSet,
     DiscoverVenueLeg,
     EffectKind,
     ExecutionRegistryReconciliationRecord,
@@ -127,8 +124,6 @@ from .authority import (
 
 __all__ = [
     "AccountId",
-    "AcceptanceProof",
-    "AcceptanceProofKind",
     "AcceptanceSetState",
     "AdvanceManualFlatten",
     "ActorId",
@@ -153,7 +148,6 @@ __all__ = [
     "ClaimEffect",
     "ClaimOccurrenceId",
     "ClientOrderId",
-    "CloseAcceptanceSet",
     "ClosureId",
     "CreateBrokerEffect",
     "DiscoverVenueLeg",

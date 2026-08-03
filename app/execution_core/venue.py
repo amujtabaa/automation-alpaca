@@ -445,7 +445,7 @@ class AcceptanceSetState(str, Enum):
 
 
 class AcceptanceProofKind(str, Enum):
-    """Externally established ways an acceptance set can be closed."""
+    """Retained closure-evidence kinds; construction never authenticates a producer."""
 
     NEVER_DISPATCHED = "NEVER_DISPATCHED"
     CONTRACT_COMPLETE_RESPONSE = "CONTRACT_COMPLETE_RESPONSE"
@@ -753,6 +753,8 @@ class ObserveVenueStatus:
 
 @dataclass(frozen=True, slots=True)
 class AcceptanceProof:
+    """Internal replay representation of independently certified closure evidence."""
+
     kind: AcceptanceProofKind
     effect_scope: VenueEffectScope
     claim_occurrence_id: ClaimOccurrenceId | None
@@ -775,6 +777,8 @@ class AcceptanceProof:
 
 @dataclass(frozen=True, slots=True)
 class CloseAcceptanceSet:
+    """Internal replay input; the public reducer never admits this capability."""
+
     input_id: VenueInputId
     effect_id: EffectId
     proof: AcceptanceProof
@@ -8716,9 +8720,10 @@ def apply_venue_recovery_input(
         RecordDispatchClaim,
         CancelBeforeDispatch,
         RecordPendingVenueOperation,
+        CloseAcceptanceSet,
     }:
         raise TypeError(
-            "raw authority capability is internal and not admitted publicly"
+            "authority-changing capability is internal and not admitted publicly"
         )
     return _apply_venue_input(book, execution, item)
 
@@ -8987,13 +8992,10 @@ def _authority_symbol_flatten_ready(
 
 
 __all__ = [
-    "AcceptanceProof",
-    "AcceptanceProofKind",
     "AcceptanceSetState",
     "BrokerEffectState",
     "CatchUpExecutionRegistry",
     "ClientIdentityBinding",
-    "CloseAcceptanceSet",
     "DiscoverVenueLeg",
     "EffectKind",
     "ExecutionRegistryReconciliationRecord",

@@ -18,11 +18,9 @@ import app.execution_core as execution_core
 import app.execution_core.venue as venue_module
 from app.execution_core import (
     AccountId,
-    AcceptanceProofKind,
     BrokerEffectState,
     ClaimOccurrenceId,
     ClientOrderId,
-    CloseAcceptanceSet,
     EffectId,
     EffectKind,
     EvidenceReference,
@@ -49,6 +47,8 @@ from app.execution_core import (
 )
 from tests.execution_core import test_venue_recovery as recovery_fixtures
 from app.execution_core.venue import (
+    AcceptanceProofKind,
+    CloseAcceptanceSet,
     RecordDispatchClaim,
     RequestedEffect,
     _apply_venue_input,
@@ -63,7 +63,7 @@ def apply_venue_recovery_input(
 ):
     reducer = (
         _apply_venue_input
-        if type(item) in {RequestedEffect, RecordDispatchClaim}
+        if type(item) in {RequestedEffect, RecordDispatchClaim, CloseAcceptanceSet}
         else _public_apply_venue_recovery_input
     )
     return reducer(book, execution, item)

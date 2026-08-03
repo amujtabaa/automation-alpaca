@@ -12,7 +12,7 @@ from dataclasses import replace
 import pytest
 
 import app.execution_core.venue as venue_module
-from app.execution_core.fills import BrokerTradeCorrectFact
+from app.execution_core.fills import BrokerTradeCorrectFact, ExecutionSide
 from app.execution_core.identity import (
     AccountId,
     ClosureId,
@@ -43,6 +43,7 @@ from app.execution_core.venue import (
     _audit_hydrate_book,
     apply_venue_recovery_input,
 )
+from tests.execution_core import test_authority as authority_fixtures
 from tests.execution_core import test_venue_recovery as recovery_fixtures
 
 
@@ -59,7 +60,18 @@ def test_public_reducer_refuses_caller_authored_acceptance_closure(
 ) -> None:
     """Well-shaped caller metadata cannot release one unresolved claimed BUY."""
 
-    book, execution = recovery_fixtures._seed_needs_review(leg_keys=())
+    execution = recovery_fixtures._apply_broker(
+        ExecutionSnapshot.flat(recovery_fixtures.POSITION_SCOPE),
+        recovery_fixtures._broker_fill(
+            f"caller-close-position-{proof_kind.value.casefold()}",
+            f"caller-close-root-{proof_kind.value.casefold()}",
+            quantity=5,
+        ),
+    )
+    book, execution = recovery_fixtures._seed_needs_review(
+        leg_keys=(),
+        execution=execution,
+    )
     effect = book.effect(recovery_fixtures.EFFECT)
     assert effect is not None
     assert effect.state is BrokerEffectState.NEEDS_REVIEW
@@ -72,6 +84,27 @@ def test_public_reducer_refuses_caller_authored_acceptance_closure(
     )
     assert before_view.blocking_effect_count == 1
     assert before_view.blocking_buy_effect_count == 1
+
+    authority = authority_fixtures._authority_module()
+    authority_state = authority_fixtures._forge_positive_predecessor(
+        authority,
+        remaining=4,
+        reserve=1,
+    )
+    authority_state = authority_fixtures._forge_venue_predecessor(
+        authority_state,
+        book,
+    )
+    control = authority_fixtures._create_effect(
+        authority,
+        authority_state,
+        execution,
+        label=f"caller-close-control-{proof_kind.value.casefold()}",
+        side=ExecutionSide.SELL,
+    )
+    assert control.disposition is authority.AuthorityDisposition.REFUSED
+    assert control.reason is authority.AuthorityReason.VENUE_UNCERTAIN
+    assert control.state == authority_state
 
     caller_close = CloseAcceptanceSet(
         input_id=VenueInputId(f"caller-close-{proof_kind.value.casefold()}"),
@@ -98,11 +131,21 @@ def test_public_reducer_refuses_caller_authored_acceptance_closure(
     assert after_view == before_view
     assert after_view.blocking_effect_count == 1
     assert after_view.blocking_buy_effect_count == 1
+    still_blocked = authority_fixtures._create_effect(
+        authority,
+        authority_state,
+        execution,
+        label=f"caller-close-still-blocked-{proof_kind.value.casefold()}",
+        side=ExecutionSide.SELL,
+    )
+    assert still_blocked.disposition is authority.AuthorityDisposition.REFUSED
+    assert still_blocked.reason is authority.AuthorityReason.VENUE_UNCERTAIN
+    assert still_blocked.state == authority_state
 
 
 def _finalized_human_effect():
     book, execution, _ = recovery_fixtures._released_state()
-    finalized = apply_venue_recovery_input(
+    finalized = _apply_venue_input(
         book,
         execution,
         CloseAcceptanceSet(
@@ -271,7 +314,7 @@ def _post_final_unresolved_mapping():
             evidence_digest=b"\xd5" * 32,
         ),
     )
-    finalized = apply_venue_recovery_input(
+    finalized = _apply_venue_input(
         released.book,
         released.execution,
         CloseAcceptanceSet(

@@ -91,6 +91,7 @@ def apply_venue_recovery_input(
             RecordDispatchClaim,
             CancelBeforeDispatch,
             RecordPendingVenueOperation,
+            CloseAcceptanceSet,
         }
         else _public_apply_venue_recovery_input
     )

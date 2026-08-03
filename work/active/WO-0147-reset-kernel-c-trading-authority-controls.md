@@ -503,3 +503,73 @@ pre-existing cases in the four files. Each isolated test pass and the combined r
 database, broker, network, credential, runtime, or persistence action. Ruff check/format-check and
 `git diff --check` pass for the RED files. This checkpoint proves missing behavior only; it makes no
 repair or completion claim.
+
+### Re-gate 4 FIX and GREEN checkpoint
+
+FIX-P0 removes the unauthenticated public closure capability rather than trying to make a shaped
+proof object trustworthy. `apply_venue_recovery_input` now refuses `CloseAcceptanceSet` together
+with every other authority-changing internal capability, and `AcceptanceProof`,
+`AcceptanceProofKind`, and `CloseAcceptanceSet` are absent from both package and venue export lists.
+The internal representation remains available only to audit hydration/replay and reducer-owned
+`NEVER_DISPATCHED` proof. The end-to-end regression first proves that the unresolved claimed BUY
+blocks a control final SELL claim, then proves that each former public proof kind raises without
+changing the book or authority view, and finally proves that another final SELL remains refused.
+
+FIX-P1-query places an explicit phase allowlist after permanent query-identity replay/conflict and
+before mutable query, venue, budget, or claim state. Only `RECONCILING` and `SERVING` may admit a
+new query; `BOOTSTRAPPING` refuses with `PHASE_BLOCKED`. FIX-P1-flatten reuses
+`AdvanceManualFlatten` at `SELL_CREATED`: only an exact residual-stale, unclaimed, ownerless,
+reconciliation-clean local SELL can be stood down, and the same workflow returns to `READY` with
+all permanent identity and authorization tombstones intact. A claimed SELL or any unresolved
+sibling venue uncertainty remains non-retirable. The replacement must use fresh identities and
+passes the ordinary create and final-claim gates exactly once.
+
+The first post-FIX full state-machine run exposed a Hypothesis health-check failure at seed
+`107785317444399141024773401385808604381`: only 9 generated examples satisfied a narrow manual
+flatten precondition while 50 were filtered. This was a test-harness defect, not a production
+failure. Adding an always-valid, non-mutating stage-audit rule made the exact seed pass without a
+health-check suppression or weakened assertion. The final complete execution-core run passed
+681/681 tests.
+
+The exact-current mutation campaign killed 15/15 isolated mutants with zero survivor. Five P0
+mutants removed the public close refusal or restored each forbidden root/module export. Ten P1
+mutants removed or reordered the query phase gate, excluded a permitted phase, disabled residual
+retry, removed its exact-residual or target-only clearance proof, discarded the returned venue,
+broke `READY` restoration, retained the stale SELL identity, or erased authority tombstones. Every
+mutant failed a focused control and every production file was restored byte-for-byte in `finally`.
+The resulting production hashes are:
+
+- `authority.py`: `e54ac1fe5ccdc74fceee096fc6cc506f0d3ddb4c5b4329860c4afcfc2247bd65`
+- `venue.py`: `497af6f962f5a9f946da746385fc549631a41f69f896d7f859e0b289232eeffe`
+- `identity.py`: `029beb0bf22af76c262aa707e90357633fb65336784e53ac5979518908ef9338`
+- `__init__.py`: `51662457b0844331030821bbc1dcf1bd93bf0ea489425c021488766c316d125b`
+
+Fresh exact-tree verification under `BROKER_ADAPTER=mock` passed:
+
+- 152/152 focused re-gate tests and 420/420 affected authority/venue tests;
+- 681/681 complete `tests/execution_core` tests;
+- 61/61 R2 conformance-oracle tests;
+- 5,269 collected repository tests: 5,257 passed, 11 skipped, 1 expected xfail, zero failures and
+  zero errors in 1,336.922 seconds;
+- raw combined coverage `93.02179069077972%`: 18,595/19,612 statements and 6,506/7,372 branches
+  covered;
+- Ruff check and format-check, mypy over all 8 execution-core modules, all 6 import contracts,
+  `git diff --check`, and AI-OS install/version (`v0.9.1`)/ledger/PKL/disposition checks.
+
+The repository-wide run exercised existing disposable test-only SQLite fixtures under the standing
+authorized validation gate. It made no broker connection, used no credentials, changed no
+persistent application database, and is not relied upon to prove the pure reducer semantics; the
+failure-capable focused and mutation controls above supply that proof. Retained exact full-run
+artifacts are:
+
+- `.coverage_wo0147_rev0049_fix_full_1` (1,867,776 bytes), SHA-256
+  `3cd154b7959e1965ec4113a8e43a1d0035fed7d79d95e8c9cf4f93ab08c474f3`;
+- `.coverage_wo0147_rev0049_fix_full_1.json` (1,848,548 bytes), SHA-256
+  `140da42695e891a025509d12a9cd80eaed357290b1449e618a052b26e26700c4`;
+- `.pytest_wo0147_rev0049_fix_full_1.xml` (839,713 bytes), SHA-256
+  `35de775e94f5b7440b0b859486e3ab304708aa36e450a7c7e43a3c56b37ba5d9`.
+
+This checkpoint closes the author's three disclosed repair obligations but does not supersede the
+reviewer's `BLOCK`. A new immutable implementation freeze and independent
+`REV-0049/result-addendum-01.md` remain mandatory before any WO-0147 acceptance, disposition,
+closeout, push, or WO-0148 activation.

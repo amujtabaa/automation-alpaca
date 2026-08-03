@@ -123,7 +123,12 @@ def apply_venue_recovery_input(
     reducer = (
         _apply_venue_input
         if type(item)
-        in {RequestedEffect, RecordDispatchClaim, RecordPendingVenueOperation}
+        in {
+            RequestedEffect,
+            RecordDispatchClaim,
+            RecordPendingVenueOperation,
+            CloseAcceptanceSet,
+        }
         else _public_apply_venue_recovery_input
     )
     return reducer(book, execution, item)

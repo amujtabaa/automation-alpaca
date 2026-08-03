@@ -124,6 +124,7 @@ def _apply(
             RecordDispatchClaim,
             CancelBeforeDispatch,
             RecordPendingVenueOperation,
+            CloseAcceptanceSet,
         }
         else apply_venue_recovery_input
     )
