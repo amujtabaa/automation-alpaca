@@ -6,9 +6,10 @@
 > [`ADR-021`](docs/adr/ADR-021-position-protection-liquidity-execution.md), and
 > [`ADR-022`](docs/adr/ADR-022-reset-beta-scope-cutover-governance.md), with acceptance recorded in
 > the [ratification index](docs/adr/ARCH-RESET-2026-07-RATIFICATION.md). M0 changes no runtime
-> behavior. The first two pure reset slices, `WO-0145` and `WO-0146`, are closed after independent
-> review and exact-head dual-version CI. Pure execution-authority slice `WO-0147` is active; it is
-> deny-by-default, I/O-free, and unwired. None of these slices runs the frozen application.
+> behavior. The first three pure reset slices, `WO-0145` through `WO-0147`, are closed after
+> independent review and exact-head dual-version CI. Pure position-protection slice `WO-0148` is
+> active; it is deterministic, I/O-free, and unwired. None of these slices runs the frozen
+> application.
 
 A browser-operated, **paper-first** automated trading cockpit: a FastAPI backend
 (the durable engine that owns and persists all truth) + a thin Streamlit cockpit

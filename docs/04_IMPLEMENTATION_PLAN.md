@@ -4,9 +4,9 @@
 > [`work/queue/ARCH-RESET-2026-07/06-roadmap.md`](../work/queue/ARCH-RESET-2026-07/06-roadmap.md).
 > The immutable staged `RESET-WO-01` was canonicalized and separately activated as pure-kernel
 > `WO-0145` after accepted M0 review, explicit human authority, and dual-version CI. `WO-0145` is
-> closed. After `WO-0146` passed independent review and exact-head Python 3.11/3.12 CI, the pure
-> execution-authority slice was separately activated as `WO-0147`. RESET-WO-04 and later slices
-> remain inactive.
+> closed. `WO-0146` and `WO-0147` also passed their independent-review and exact-head Python
+> 3.11/3.12 gates. The pure position-protection/hybrid-trailing slice is separately active as
+> `WO-0148`; `WO-0149` and M2 remain inactive.
 
 The build sequence, with persistence promoted into the foundation rather than
 deferred. Each phase ends with passing tests and preserved safety invariants

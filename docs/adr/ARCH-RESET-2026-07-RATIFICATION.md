@@ -85,6 +85,10 @@ schema execution remains a separately authorized future M2 gate.
 6. Repaired immutable `WO-0146` closeout `7d1c9e5babe5f60bcbbe9e54c6d6dd0bfecf5551`
    passed GitHub Actions run `30752961917` (#685): Python 3.11 job `91510146946` and Python 3.12
    job `91510146979` both succeeded. The separately authorized pure, deny-by-default execution-
-   authority slice is active as `WO-0147`; RESET-WO-04 and later slices remain inactive. This
-   activation grants no broker, credential, database, persistence, runtime, merge, or cleanup
-   authority.
+   authority slice was activated as `WO-0147` without broker, credential, database, persistence,
+   runtime, merge, or cleanup authority.
+7. Immutable `WO-0147` closeout `3e39ee6a857ae61d850da1b841e85008b9a59fbb` passed GitHub
+   Actions run `30794934357` (#687): Python 3.11 job `91626251701` and Python 3.12 job
+   `91626251758` both succeeded. The separately authorized pure position-protection and hybrid-
+   trailing slice is active as `WO-0148`; `WO-0149`, M2, broker/credential/database/persistence/
+   runtime work, merge, deletion, and cleanup remain inactive.

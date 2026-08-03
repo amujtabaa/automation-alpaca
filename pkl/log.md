@@ -110,3 +110,10 @@
   P0/P1. The proposed `CLOSED` disposition remains effective `REVIEW` until the immutable closeout
   SHA passes unchanged Python 3.11/3.12 CI. WO-0148 and all broker, credential, persistence,
   runtime, merge, deletion, and cleanup work remain inactive.
+
+- 2026-08-02: Immutable WO-0147 closeout `3e39ee6` passed GitHub Actions run #687 on Python 3.11
+  job `91626251701` and Python 3.12 job `91626251758`. Closed the exact predecessor gate and
+  separately activated pure `WO-0148` for formula-bound position protection and hybrid trailing.
+  Its RED-first contract refuses caller-authored execution/venue-clear booleans, preserves the
+  trigger/guard split and BUY-wait policy, and emits no broker effect. `WO-0149`, M2, credentials,
+  broker/Paper, database/persistence, runtime, merge, deletion, and cleanup remain inactive.

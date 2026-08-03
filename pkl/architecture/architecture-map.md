@@ -22,14 +22,14 @@ and terminal closures carry narrow durable authority; audit/replay explains and 
 does not replace current state on the live path.
 
 The checked-in Spine v2 application remains the as-built legacy generation and read-only evidence.
-The first three reset M1 semantic centers are implemented, independently accepted, and unwired:
-effective-closed `WO-0145` owns immutable execution facts and position truth; effective-closed
+The first three reset M1 semantic centers are implemented, independently accepted, exact-head
+dual-version green, and unwired: `WO-0145` owns immutable execution facts and position truth;
 `WO-0146` owns venue effects, concrete acceptances, closure, ambiguity, and ADR-012 recovery; and
-proposed-closed `WO-0147` owns deny-by-default trading mode, manual controls, shared request
-budgets, symbol-wide execution authority, and atomic final claim. WO-0147 remains effective
-`REVIEW` until its immutable closeout SHA passes unchanged Python 3.11/3.12 CI. It cannot
-authenticate an operational supervisor fence. No reset slice changes runtime behavior or
-persistence; protection and later M1 policy slices remain inactive until separately gated.
+`WO-0147` owns deny-by-default trading mode, manual controls, shared request budgets, symbol-wide
+execution authority, and atomic final claim. Pure `WO-0148` is active to add a separate position-
+protection and hybrid-trailing semantic center against those frozen interfaces. No reset slice
+changes runtime behavior or persistence, and no slice authenticates an operational supervisor
+fence; acquisition integration and later work remain inactive until separately gated.
 
 ## Rules / facts
 
@@ -99,3 +99,7 @@ Seam discipline is what makes the safety invariants structurally enforceable rat
   REV-0049 result-addendum-02 `ACCEPT` with every P0/P1 closed. Effective lifecycle remains
   `REVIEW` until immutable exact-head Python 3.11/3.12 CI succeeds; WO-0148 and all runtime,
   persistence, protection, and acquisition integration remain inactive.
+- 2026-08-02: Exact WO-0147 closeout `3e39ee6` passed GitHub Actions run #687 on Python 3.11 and
+  3.12. Closed its external gate and activated only pure `WO-0148`. The new slice may add one
+  opaque protection reducer and a narrow venue-owned bounded proof/projection, but no runtime,
+  persistence, broker effect, positive supervisor authority, acquisition integration, or M2 work.
