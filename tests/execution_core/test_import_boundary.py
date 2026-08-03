@@ -201,6 +201,15 @@ _FORBIDDEN_PUBLIC_ACCEPTANCE_CLOSURE_CAPABILITIES = {
     "CloseAcceptanceSet",
 }
 
+_FORBIDDEN_PRODUCTION_VENUE_INTERNAL_NAMES = {
+    "AcceptanceProof",
+    "AcceptanceProofKind",
+    "CloseAcceptanceSet",
+    "_apply_venue_input",
+    "_audit_hydrate_book",
+    "_external_acceptance_closure_is_certified",
+}
+
 
 def _python_files() -> list[Path]:
     assert _PACKAGE_ROOT.is_dir(), "the isolated app.execution_core package is missing"
@@ -408,3 +417,31 @@ def test_caller_authored_acceptance_closure_is_not_a_public_capability() -> None
     )
 
     assert not exposures, sorted(exposures)
+
+
+def test_production_modules_cannot_reach_private_acceptance_closure_seams() -> None:
+    """Only venue.py may name raw closure, generic reducer, or audit-hydration seams."""
+
+    app_root = _REPO_ROOT / "app"
+    venue_path = _PACKAGE_ROOT / "venue.py"
+    violations: list[str] = []
+    for path in sorted(app_root.rglob("*.py")):
+        if path == venue_path:
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            forbidden_name: str | None = None
+            if isinstance(node, ast.Name):
+                forbidden_name = node.id
+            elif isinstance(node, ast.Attribute):
+                forbidden_name = node.attr
+            elif isinstance(node, (ast.Import, ast.ImportFrom)):
+                for alias in node.names:
+                    if alias.name in _FORBIDDEN_PRODUCTION_VENUE_INTERNAL_NAMES:
+                        violations.append(f"{_display(path, node)}:{alias.name}")
+            elif isinstance(node, ast.Constant) and type(node.value) is str:
+                forbidden_name = node.value
+            if forbidden_name in _FORBIDDEN_PRODUCTION_VENUE_INTERNAL_NAMES:
+                violations.append(f"{_display(path, node)}:{forbidden_name}")
+
+    assert not violations, sorted(set(violations))

@@ -573,3 +573,71 @@ This checkpoint closes the author's three disclosed repair obligations but does 
 reviewer's `BLOCK`. A new immutable implementation freeze and independent
 `REV-0049/result-addendum-01.md` remain mandatory before any WO-0147 acceptance, disposition,
 closeout, push, or WO-0148 activation.
+
+## Author-side re-gate 5 - private closure and hydration certification
+
+The first repaired freeze `98855655a5a51f04b7be95ba65c0c58fbef44b39` is preserved as negative
+evidence and is not submitted for independent addendum acceptance. A hostile read-only preflight
+disproved its P0 closure through two fresh pure probes. Direct explicit import of the module-private
+proof/close types plus `_apply_venue_input` accepted caller-shaped external completeness metadata,
+closed a claimed unresolved BUY, and changed a control final SELL from `VENUE_UNCERTAIN` refusal to
+a fresh claimed dispatch effect with budget debit. Separately, `_audit_hydrate_book` accepted a
+caller-replaced closed effect plus matching forged close input record and rebuilt the canonical
+blocking projection from one to zero. The public wrapper and export lists remained sealed, but
+underscore/`__all__` convention alone was not an execution barrier.
+
+Both probes ran only pure in-memory Python against the exact freeze. No database, SQL, broker,
+credential, network, persistence, runtime wiring, cleanup, or deletion occurred. The draft
+`request-addendum-01.md` was not committed or delivered to a reviewer, and no reviewer verdict is
+claimed. WO-0148's repaired-interface fit separately returned PASS with no new predecessor seam,
+but its activation hold remains unchanged.
+
+The standing authority to resolve in-flight M1 findings re-gates this exact P0 inside the existing
+allowed paths and exclusions. External `CONTRACT_COMPLETE_RESPONSE` and
+`COVERED_RECONCILIATION` proof values remain representable for exhaustive schema/state validation,
+but they are inert authority in M1:
+
+- fresh live closure through every reducer seam refuses unless the proof is exact reducer-derived
+  `NEVER_DISPATCHED` with local cancel, no immutable claim, no claim record, and no active leg;
+- full audit hydration rejects introducing or retaining an externally closed effect/proof/input
+  because M1 has no adapter-certified complete-response or exact-query/coverage producer;
+- future M2 must add a dedicated certified input derived from concrete adapter/query coverage
+  facts and must never treat raw `AcceptanceProof` as the capability;
+- positive tests of future post-certification lifecycle behavior may use a narrowly scoped test-only
+  monkeypatch of one private default-deny certification predicate, but no shipping caller-mintable
+  token or allow switch is permitted; and
+- an AST/name boundary scans all production `app/**/*.py` outside `venue.py` and fails if code
+  imports or references `_apply_venue_input`, `_audit_hydrate_book`, the close/proof representations,
+  or the default-deny external-certification predicate. This is defense in depth; default reducer
+  and hydration refusal are the primary control.
+
+Before production changes, RED must independently reproduce both external proof kinds through the
+private reducer, reproduce matching forged hydration, and prove the resulting closed parent releases
+final claim authority on the failed freeze. It must also pin that no production module currently
+references the forbidden internals. GREEN must leave the book/view unchanged and the final SELL
+blocked, retain exact replay only for already canonical inputs, preserve reducer-owned
+`NEVER_DISPATCHED` closure and hydration, and preserve future closed/invalidated lifecycle tests only
+under the explicit scoped simulation.
+
+Mutation controls must kill removal of live default-deny certification, admission of either
+external kind, hydration validation removal, effect-only or input-only hydration checks, movement of
+the gate after mutation, loss of exact replay, loss of `NEVER_DISPATCHED`, and weakening of the
+production AST/name boundary. If complete hydration rejection cannot be proven without accepting a
+caller boolean/token, or if M1 must parse/claim adapter evidence to pass, stop and leave the external
+closure claim deferred to M2. No addendum review, acceptance, disposition, closeout, push, or later
+work-order activation may begin until a new immutable freeze passes this re-gate.
+
+### Re-gate 5 RED checkpoint
+
+Production remained byte-identical to failed freeze
+`98855655a5a51f04b7be95ba65c0c58fbef44b39`. The exact pure focused run under
+`BROKER_ADAPTER=mock` collected 31 tests and produced 27 passes plus four intended failures. Each
+external proof kind separately fails because `_apply_venue_input` returns `APPLIED` instead of
+`REFUSED`, and each matching forged effect/input-ledger hydration fails with `DID NOT RAISE`.
+
+Positive controls prove the public reducer and export lists remain sealed, the unresolved claimed
+BUY begins with one blocking effect, and the new AST/name scan finds no production module outside
+`venue.py` that references the private close/proof, generic reducer, hydration, or certification
+names. The failure is therefore the missing default-deny semantic gate itself, not an already wired
+runtime import. Ruff check/format-check and `git diff --check` pass. The RED run used no database,
+SQL, broker, credential, network, persistence, or runtime action and makes no repair claim.

@@ -119,6 +119,12 @@ def test_public_reducer_refuses_caller_authored_acceptance_closure(
     with pytest.raises(TypeError, match="authority|internal|admitted"):
         venue_module.apply_venue_recovery_input(book, execution, caller_close)
 
+    private_attempt = _apply_venue_input(book, execution, caller_close)
+    assert private_attempt.disposition is VenueRecoveryDisposition.REFUSED
+    assert private_attempt.book == book
+    assert private_attempt.execution == execution
+    assert private_attempt.quantity_delta == 0
+
     retained = book.effect(recovery_fixtures.EFFECT)
     assert retained == effect
     assert retained.acceptance_set_state is venue_module.AcceptanceSetState.OPEN
@@ -141,6 +147,62 @@ def test_public_reducer_refuses_caller_authored_acceptance_closure(
     assert still_blocked.disposition is authority.AuthorityDisposition.REFUSED
     assert still_blocked.reason is authority.AuthorityReason.VENUE_UNCERTAIN
     assert still_blocked.state == authority_state
+
+
+@pytest.mark.parametrize(
+    "proof_kind",
+    [
+        AcceptanceProofKind.CONTRACT_COMPLETE_RESPONSE,
+        AcceptanceProofKind.COVERED_RECONCILIATION,
+    ],
+    ids=("contract-complete-response", "covered-reconciliation"),
+)
+def test_audit_hydration_rejects_caller_authored_external_closure(
+    proof_kind: AcceptanceProofKind,
+) -> None:
+    """A matching forged effect and input ledger cannot become M1 authority."""
+
+    book, execution = recovery_fixtures._seed_needs_review(leg_keys=())
+    effect = book.effect(recovery_fixtures.EFFECT)
+    assert effect is not None
+    assert effect.acceptance_set_state is venue_module.AcceptanceSetState.OPEN
+    before_view = venue_module._venue_authority_view(
+        book,
+        execution,
+        recovery_fixtures.POSITION_SCOPE,
+        None,
+    )
+    assert before_view.blocking_effect_count == 1
+
+    proof = recovery_fixtures._acceptance_proof(
+        book,
+        proof_kind,
+        f"caller-hydration-{proof_kind.value.casefold()}",
+    )
+    close = CloseAcceptanceSet(
+        input_id=VenueInputId(f"caller-hydration-close-{proof_kind.value.casefold()}"),
+        effect_id=recovery_fixtures.EFFECT,
+        proof=proof,
+    )
+    forged_effect = replace(
+        effect,
+        acceptance_set_state=venue_module.AcceptanceSetState.CLOSED,
+        acceptance_proof=proof,
+    )
+    forged_records = book.input_records + (
+        venue_module.VenueInputRecord(
+            input_id=close.input_id,
+            item=close,
+        ),
+    )
+
+    with pytest.raises(ValueError, match="external|certif|coverage|M2"):
+        _audit_hydrate_book(
+            book,
+            execution,
+            effects=(forged_effect,),
+            input_records=forged_records,
+        )
 
 
 def _finalized_human_effect():
