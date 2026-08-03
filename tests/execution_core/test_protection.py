@@ -142,6 +142,23 @@ def _synthetic_public_entrypoint(
     return transition
 
 
+def _synthetic_dependency_helper(value: object) -> object:
+    return value
+
+
+def _synthetic_dependency_root(value: object) -> object:
+    return _synthetic_dependency_helper(value)
+
+
+def _synthetic_imported_dependency_root(value: object) -> object:
+    return copy(value)
+
+
+def _dependency_source_swap_payload(value: object) -> object:
+    _PUBLIC_ENTRYPOINT_PAYLOAD_CALLS.append("dependency-executed")
+    return value
+
+
 def _no_access_lookalike(events: list[str]) -> object:
     """Create an object whose every observable protocol is a test failure."""
 
@@ -198,6 +215,146 @@ def _no_access_lookalike(events: list[str]) -> object:
         def __ne__(self, other: object) -> bool:
             del other
             return record("ne")
+
+        def __lt__(self, other: object) -> bool:
+            del other
+            return record("lt")
+
+        def __le__(self, other: object) -> bool:
+            del other
+            return record("le")
+
+        def __gt__(self, other: object) -> bool:
+            del other
+            return record("gt")
+
+        def __ge__(self, other: object) -> bool:
+            del other
+            return record("ge")
+
+        def __add__(self, other: object) -> object:
+            del other
+            return record("add")
+
+        def __radd__(self, other: object) -> object:
+            del other
+            return record("radd")
+
+        def __sub__(self, other: object) -> object:
+            del other
+            return record("sub")
+
+        def __rsub__(self, other: object) -> object:
+            del other
+            return record("rsub")
+
+        def __mul__(self, other: object) -> object:
+            del other
+            return record("mul")
+
+        def __rmul__(self, other: object) -> object:
+            del other
+            return record("rmul")
+
+        def __truediv__(self, other: object) -> object:
+            del other
+            return record("truediv")
+
+        def __rtruediv__(self, other: object) -> object:
+            del other
+            return record("rtruediv")
+
+        def __floordiv__(self, other: object) -> object:
+            del other
+            return record("floordiv")
+
+        def __rfloordiv__(self, other: object) -> object:
+            del other
+            return record("rfloordiv")
+
+        def __mod__(self, other: object) -> object:
+            del other
+            return record("mod")
+
+        def __rmod__(self, other: object) -> object:
+            del other
+            return record("rmod")
+
+        def __divmod__(self, other: object) -> object:
+            del other
+            return record("divmod")
+
+        def __rdivmod__(self, other: object) -> object:
+            del other
+            return record("rdivmod")
+
+        def __pow__(self, other: object, modulo: object = None) -> object:
+            del other, modulo
+            return record("pow")
+
+        def __rpow__(self, other: object, modulo: object = None) -> object:
+            del other, modulo
+            return record("rpow")
+
+        def __matmul__(self, other: object) -> object:
+            del other
+            return record("matmul")
+
+        def __rmatmul__(self, other: object) -> object:
+            del other
+            return record("rmatmul")
+
+        def __and__(self, other: object) -> object:
+            del other
+            return record("and")
+
+        def __rand__(self, other: object) -> object:
+            del other
+            return record("rand")
+
+        def __or__(self, other: object) -> object:
+            del other
+            return record("or")
+
+        def __ror__(self, other: object) -> object:
+            del other
+            return record("ror")
+
+        def __xor__(self, other: object) -> object:
+            del other
+            return record("xor")
+
+        def __rxor__(self, other: object) -> object:
+            del other
+            return record("rxor")
+
+        def __lshift__(self, other: object) -> object:
+            del other
+            return record("lshift")
+
+        def __rlshift__(self, other: object) -> object:
+            del other
+            return record("rlshift")
+
+        def __rshift__(self, other: object) -> object:
+            del other
+            return record("rshift")
+
+        def __rrshift__(self, other: object) -> object:
+            del other
+            return record("rrshift")
+
+        def __neg__(self) -> object:
+            return record("neg")
+
+        def __pos__(self) -> object:
+            return record("pos")
+
+        def __abs__(self) -> object:
+            return record("abs")
+
+        def __invert__(self) -> object:
+            return record("invert")
 
         def __hash__(self) -> int:
             return record("hash")
@@ -825,8 +982,6 @@ def _leaf_mutation_candidates(value: object) -> tuple[object, ...]:
     if isinstance(value, Enum):
         alternatives = tuple(member for member in type(value) if member is not value)
         return alternatives + (_LEAF_MUTATION_SENTINEL,)
-    if value is None:
-        return (_LEAF_MUTATION_SENTINEL,)
     raise AssertionError(f"unsupported retained leaf: {type(value).__name__}")
 
 
@@ -882,19 +1037,199 @@ def _leaf_sort_key(value: object) -> tuple[object, ...]:
     raise AssertionError(f"unsupported retained value: {type(value).__name__}")
 
 
+_DECLARED_REPLACEMENT_TYPES: dict[str, type[object]] = {
+    "bool": bool,
+    "bytes": bytes,
+    "Decimal": Decimal,
+    "Fraction": Fraction,
+    "int": int,
+    "ReportedPrice": ReportedPrice,
+    "str": str,
+}
+
+
+def _declared_annotation_expression(retained: object) -> ast.AST:
+    annotation = object.__getattribute__(retained, "type")
+    assert type(annotation) is str, "retained annotation is not inert text"
+    return ast.parse(annotation, mode="eval", feature_version=(3, 11)).body
+
+
+def _collection_element_annotation(
+    annotation: ast.AST,
+    collection_type: type[object],
+    index: int,
+) -> ast.AST:
+    assert isinstance(annotation, ast.Subscript), (
+        "indexed retained value lacks a collection annotation"
+    )
+    owner = annotation.value
+    owner_name = (
+        owner.id
+        if isinstance(owner, ast.Name)
+        else owner.attr
+        if isinstance(owner, ast.Attribute)
+        else ""
+    )
+    assert owner_name == collection_type.__name__, (
+        "retained collection annotation does not match its exact type"
+    )
+    element = annotation.slice
+    if collection_type is frozenset:
+        return element
+    assert collection_type is tuple and isinstance(element, ast.Tuple)
+    if (
+        len(element.elts) == 2
+        and isinstance(element.elts[1], ast.Constant)
+        and element.elts[1].value is Ellipsis
+    ):
+        return element.elts[0]
+    assert index < len(element.elts), "retained tuple annotation is incomplete"
+    return element.elts[index]
+
+
+def _retained_value_and_annotation_at_path(
+    root: object,
+    path: tuple[object, ...],
+) -> tuple[object, ast.AST]:
+    """Resolve a retained value and inert annotation through the passive grammar."""
+
+    assert path, "replacement path cannot be the root"
+    current = root
+    annotation: ast.AST | None = None
+    for component in path:
+        if isinstance(component, str):
+            assert is_dataclass(current) and not isinstance(current, type)
+            retained = next(
+                (field for field in fields(current) if field.name == component),
+                None,
+            )
+            assert retained is not None, f"unknown retained field path: {path!r}"
+            annotation = _declared_annotation_expression(retained)
+            current = object.__getattribute__(current, component)
+            continue
+        assert type(component) is int
+        assert annotation is not None
+        collection_type = type(current)
+        assert collection_type in {tuple, frozenset}
+        annotation = _collection_element_annotation(
+            annotation,
+            collection_type,
+            component,
+        )
+        if type(current) is tuple:
+            current = current[component]
+            continue
+        current = tuple(sorted(current, key=_leaf_sort_key))[component]
+    assert annotation is not None
+    return current, annotation
+
+
+def _annotation_member_names(node: ast.AST) -> frozenset[str]:
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+        return _annotation_member_names(node.left) | _annotation_member_names(
+            node.right
+        )
+    if isinstance(node, ast.Name):
+        return frozenset({node.id})
+    if isinstance(node, ast.Attribute):
+        return frozenset({node.attr})
+    if isinstance(node, ast.Constant) and node.value is None:
+        return frozenset({"None"})
+    raise AssertionError(f"unsupported retained annotation member: {ast.dump(node)}")
+
+
+def _validate_union_replacement(
+    root: object,
+    path: tuple[object, ...],
+    replacement: object,
+) -> None:
+    current, annotation = _retained_value_and_annotation_at_path(root, path)
+    assert current is None, f"union replacement path is not None: {path!r}"
+    names = _annotation_member_names(annotation)
+    assert "None" in names, f"replacement path is not an optional union: {path!r}"
+    allowed = tuple(
+        _DECLARED_REPLACEMENT_TYPES[name]
+        for name in names - {"None"}
+        if name in _DECLARED_REPLACEMENT_TYPES
+    )
+    assert len(allowed) == len(names - {"None"}) and allowed, (
+        f"optional union has no authenticated replacement type: {path!r}"
+    )
+    assert any(type(replacement) is expected for expected in allowed), (
+        f"replacement is outside the declared optional union: {path!r}"
+    )
+
+
+def _validate_empty_collection_replacement(
+    root: object,
+    path: tuple[object, ...],
+    replacement: object,
+) -> None:
+    current, annotation = _retained_value_and_annotation_at_path(root, path)
+    assert type(current) in {tuple, frozenset} and not current
+    assert type(replacement) is type(current) and replacement, (
+        f"empty collection replacement changed shape or stayed empty: {path!r}"
+    )
+    assert isinstance(annotation, ast.Subscript) and isinstance(
+        annotation.value, ast.Name
+    )
+    assert annotation.value.id == type(current).__name__
+    element_annotation = annotation.slice
+    if type(current) is tuple:
+        assert (
+            isinstance(element_annotation, ast.Tuple)
+            and len(element_annotation.elts) == 2
+            and isinstance(element_annotation.elts[1], ast.Constant)
+            and element_annotation.elts[1].value is Ellipsis
+        ), f"empty tuple replacement lacks a homogeneous declaration: {path!r}"
+        element_annotation = element_annotation.elts[0]
+    names = _annotation_member_names(element_annotation)
+    allowed = tuple(
+        _DECLARED_REPLACEMENT_TYPES[name]
+        for name in names
+        if name in _DECLARED_REPLACEMENT_TYPES
+    )
+    assert len(allowed) == len(names) and allowed, (
+        f"empty collection has no authenticated element type: {path!r}"
+    )
+    assert all(
+        any(type(item) is expected for expected in allowed) for item in replacement
+    ), f"empty collection replacement has an undeclared element: {path!r}"
+
+
 def _walk_single_leaf_mutations(
     value: object,
     path: tuple[object, ...],
     ancestors: frozenset[int],
+    union_replacements: dict[tuple[object, ...], object],
+    empty_collection_replacements: dict[tuple[object, ...], object],
 ) -> tuple[_LeafMutation, ...]:
-    if _is_retained_leaf(value):
-        replacement = _leaf_mutation_candidates(value)[0]
-        assert replacement != value
+    if value is None:
+        assert path in union_replacements, (
+            f"missing valid union replacement for optional leaf: {path!r}"
+        )
+        replacement = union_replacements[path]
+        assert replacement is not None and replacement is not _LEAF_MUTATION_SENTINEL
         return (_LeafMutation(path=path, forged=replacement),)
+    if _is_retained_leaf(value):
+        candidates = tuple(
+            replacement
+            for replacement in _leaf_mutation_candidates(value)
+            if type(replacement) is type(value) and replacement != value
+        )
+        assert candidates, f"retained leaf has no same-type alternative: {path!r}"
+        return tuple(
+            _LeafMutation(path=path, forged=candidate) for candidate in candidates
+        )
 
     if type(value) is tuple:
         if not value:
-            return (_LeafMutation(path=path, forged=(_LEAF_MUTATION_SENTINEL,)),)
+            assert path in empty_collection_replacements, (
+                f"missing valid empty-tuple replacement: {path!r}"
+            )
+            return (
+                _LeafMutation(path=path, forged=empty_collection_replacements[path]),
+            )
         assert id(value) not in ancestors, "cyclic retained tuple"
         nested_ancestors = ancestors | {id(value)}
         mutations: list[_LeafMutation] = []
@@ -903,6 +1238,8 @@ def _walk_single_leaf_mutations(
                 item,
                 path + (index,),
                 nested_ancestors,
+                union_replacements,
+                empty_collection_replacements,
             ):
                 forged = value[:index] + (mutation.forged,) + value[index + 1 :]
                 assert len(forged) == len(value)
@@ -911,10 +1248,13 @@ def _walk_single_leaf_mutations(
 
     if type(value) is frozenset:
         if not value:
+            assert path in empty_collection_replacements, (
+                f"missing valid empty-frozenset replacement: {path!r}"
+            )
             return (
                 _LeafMutation(
                     path=path,
-                    forged=frozenset({_LEAF_MUTATION_SENTINEL}),
+                    forged=empty_collection_replacements[path],
                 ),
             )
         assert id(value) not in ancestors, "cyclic retained frozenset"
@@ -924,21 +1264,19 @@ def _walk_single_leaf_mutations(
         for index, item in enumerate(members):
             siblings = members[:index] + members[index + 1 :]
             item_path = path + (index,)
-            if _is_retained_leaf(item):
-                candidates = (
-                    _LeafMutation(item_path, candidate)
-                    for candidate in _leaf_mutation_candidates(item)
-                )
-            else:
-                candidates = iter(
-                    _walk_single_leaf_mutations(
-                        item,
-                        item_path,
-                        nested_ancestors,
-                    )
-                )
             emitted_paths: set[tuple[object, ...]] = set()
+            candidates = _walk_single_leaf_mutations(
+                item,
+                item_path,
+                nested_ancestors,
+                union_replacements,
+                empty_collection_replacements,
+            )
+            candidate_paths = {mutation.path for mutation in candidates}
             for mutation in candidates:
+                valid_union_swap = item is None and mutation.path in union_replacements
+                if type(mutation.forged) is not type(item) and not valid_union_swap:
+                    continue
                 if mutation.path in emitted_paths:
                     continue
                 forged = frozenset((*siblings, mutation.forged))
@@ -946,6 +1284,11 @@ def _walk_single_leaf_mutations(
                     continue
                 mutations.append(_LeafMutation(mutation.path, forged))
                 emitted_paths.add(mutation.path)
+            missing_paths = candidate_paths - emitted_paths
+            assert not missing_paths, (
+                f"frozenset leaf has no non-colliding same-type mutation: "
+                f"{sorted(missing_paths)!r}"
+            )
         return tuple(mutations)
 
     assert is_dataclass(value) and not isinstance(value, type), (
@@ -965,6 +1308,8 @@ def _walk_single_leaf_mutations(
             current,
             path + (retained.name,),
             nested_ancestors,
+            union_replacements,
+            empty_collection_replacements,
         ):
             mutations.append(
                 _LeafMutation(
@@ -979,14 +1324,31 @@ def _single_leaf_mutations(
     root: object,
     *,
     allowed_root_types: tuple[type[object], ...],
+    union_replacements: dict[tuple[object, ...], object] | None = None,
+    empty_collection_replacements: dict[tuple[object, ...], object] | None = None,
 ) -> tuple[_LeafMutation, ...]:
     assert any(type(root) is allowed for allowed in allowed_root_types), (
         f"leaf mutation root is out of scope: {type(root).__name__}"
     )
-    mutations = _walk_single_leaf_mutations(root, (), frozenset())
-    paths = tuple(mutation.path for mutation in mutations)
-    assert len(paths) == len(set(paths)), "duplicate retained leaf mutation path"
-    return mutations
+    replacements = {} if union_replacements is None else union_replacements
+    for path, replacement in replacements.items():
+        _validate_union_replacement(root, path, replacement)
+    empty_replacements = (
+        {} if empty_collection_replacements is None else empty_collection_replacements
+    )
+    for path, replacement in empty_replacements.items():
+        _validate_empty_collection_replacement(root, path, replacement)
+    candidates = _walk_single_leaf_mutations(
+        root,
+        (),
+        frozenset(),
+        replacements,
+        empty_replacements,
+    )
+    selected: dict[tuple[object, ...], _LeafMutation] = {}
+    for mutation in candidates:
+        selected.setdefault(mutation.path, mutation)
+    return tuple(selected.values())
 
 
 def _retained_leaf_paths(
@@ -1602,6 +1964,103 @@ def _assert_public_entrypoint_provenance(
     )
 
 
+def _assert_local_function_dependency_provenance(
+    owner_module: ModuleType,
+    root_names: tuple[str, ...],
+) -> None:
+    """Seal every source-reachable module helper without executing production."""
+
+    module_path = Path(owner_module.__file__).resolve()
+    source = module_path.read_text(encoding="utf-8")
+    tree = ast.parse(source, filename=str(module_path))
+    declarations = {
+        node.name: node for node in tree.body if isinstance(node, ast.FunctionDef)
+    }
+    assert set(root_names) <= set(declarations)
+
+    pending = list(root_names)
+    reachable: set[str] = set()
+    while pending:
+        name = pending.pop()
+        if name in reachable:
+            continue
+        reachable.add(name)
+        pending.extend(
+            call.func.id
+            for call in ast.walk(declarations[name])
+            if isinstance(call, ast.Call)
+            and isinstance(call.func, ast.Name)
+            and call.func.id in declarations
+            and call.func.id not in reachable
+        )
+
+    imported_origins: dict[str, tuple[str, str]] = {}
+    package_parts = owner_module.__package__.split(".")
+    for statement in tree.body:
+        if not isinstance(statement, ast.ImportFrom) or statement.module is None:
+            continue
+        if statement.level:
+            retained_parts = package_parts[: len(package_parts) - statement.level + 1]
+            origin_module = ".".join((*retained_parts, statement.module))
+        else:
+            origin_module = statement.module
+        for alias in statement.names:
+            if alias.name != "*":
+                imported_origins[alias.asname or alias.name] = (
+                    origin_module,
+                    alias.name,
+                )
+
+    referenced_names = {
+        node.id
+        for name in reachable
+        for node in ast.walk(declarations[name])
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
+    }
+    for retained_name in sorted(referenced_names & set(imported_origins)):
+        origin_module_name, origin_name = imported_origins[retained_name]
+        origin_module = importlib.import_module(origin_module_name)
+        assert vars(owner_module).get(retained_name) is vars(origin_module).get(
+            origin_name
+        ), f"imported dependency binding changed: {retained_name}"
+
+    for name in sorted(reachable):
+        function_node = declarations[name]
+        assert _module_scope_binding_kinds(source, name) == ("function",), (
+            f"module helper was rebound: {name}"
+        )
+        assert not function_node.decorator_list
+        assert not function_node.args.defaults
+        assert not any(
+            default is not None for default in function_node.args.kw_defaults
+        )
+
+        candidate = vars(owner_module).get(name)
+        assert type(candidate) is FunctionType, (
+            f"module helper is not an exact function: {name}"
+        )
+        assert candidate.__globals__ is vars(owner_module)
+        assert candidate.__module__ == owner_module.__name__
+        assert candidate.__name__ == name and candidate.__qualname__ == name
+        assert Path(candidate.__code__.co_filename).resolve() == module_path
+        assert candidate.__code__.co_name == name
+        assert candidate.__code__.co_qualname == name
+        assert candidate.__code__.co_firstlineno == function_node.lineno
+        assert candidate.__defaults__ is None
+        assert candidate.__kwdefaults__ is None
+        assert candidate.__closure__ is None and not candidate.__code__.co_freevars
+        assert type(candidate.__dict__) is dict and not candidate.__dict__
+        assert candidate.__doc__ is None or type(candidate.__doc__) is str
+        assert type(candidate.__annotations__) is dict
+        assert all(type(key) is str for key in candidate.__annotations__)
+        assert all(type(value) is str for value in candidate.__annotations__.values())
+        _assert_function_matches_inspected_source(
+            candidate,
+            _canonical_function_source(owner_module, name),
+            message=f"module helper bytecode does not match canonical source: {name}",
+        )
+
+
 def _clone_entrypoint_function(
     function: Callable[..., object],
     *,
@@ -1855,12 +2314,12 @@ def _assert_passive_dataclass_metadata(
     }
     assert all(type(value) is bool for value in parameter_values.values())
     assert parameter_values["frozen"] is True
-    assert parameter_values["slots"] is True
     for name, expected in {
         "repr": True,
         "eq": True,
         "order": False,
         "unsafe_hash": False,
+        "slots": True,
         "match_args": True,
         "kw_only": False,
         "weakref_slot": False,
@@ -2037,15 +2496,15 @@ def _lifecycle_global_type(
 ) -> type[object]:
     candidate = _resolve_lifecycle_name(lifecycle, name)
     assert inspect.isclass(candidate), f"lifecycle type target is not a class: {name}"
-    assert type(candidate) is type or type(candidate) is type(Enum), (
-        f"lifecycle type target has a custom metaclass: {name}"
-    )
+    assert any(
+        type(candidate) is allowed for allowed in (type, type(Enum), type(Fraction))
+    ), f"lifecycle type target has a custom metaclass: {name}"
+    _assert_guarded_lifecycle_type_is_passive(candidate)
     module_name = candidate.__module__
     assert type(module_name) is str, "lifecycle type module is not exact text"
     assert module_name in {"builtins", "decimal", "enum", "fractions"} or (
         module_name.startswith("app.execution_core")
     ), f"unapproved lifecycle type target: {name}"
-    _assert_guarded_lifecycle_type_is_passive(candidate)
     return candidate
 
 
@@ -2478,6 +2937,7 @@ def _assert_passive_value_graph(
         ):
             continue
         if any(current_type is trusted for trusted in trusted_leaf_types):
+            _assert_guarded_lifecycle_type_is_passive(current_type)
             continue
         enum_shape = (
             None
@@ -3469,6 +3929,18 @@ def test_public_entrypoints_have_exact_runtime_provenance(
     )
 
 
+def test_public_entrypoint_dependency_closure_has_exact_runtime_provenance() -> None:
+    module = _protection_module()
+    _assert_local_function_dependency_provenance(
+        module,
+        (
+            "project_protection_venue",
+            "initialize_position_protection",
+            "reduce_position_protection",
+        ),
+    )
+
+
 def test_public_entrypoint_provenance_oracle_rejects_rebinding_and_capabilities(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3614,12 +4086,84 @@ _synthetic_public_entrypoint = wrapper
     )
 
 
+def test_dependency_provenance_oracle_rejects_helper_rebinding_and_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = inspect.getmodule(_synthetic_dependency_root)
+    assert module is not None
+    roots = (
+        "_synthetic_dependency_root",
+        "_synthetic_imported_dependency_root",
+    )
+    _assert_local_function_dependency_provenance(module, roots)
+
+    helper = _synthetic_dependency_helper
+    exact_clone = _clone_entrypoint_function(helper)
+    with monkeypatch.context() as patch:
+        patch.setattr(module, helper.__name__, exact_clone)
+        _assert_local_function_dependency_provenance(module, roots)
+
+    canonical_code = helper.__code__
+    payload_code = _dependency_source_swap_payload.__code__.replace(
+        co_filename=canonical_code.co_filename,
+        co_name=helper.__name__,
+        co_qualname=helper.__name__,
+        co_firstlineno=canonical_code.co_firstlineno,
+    )
+    payload_mutant = _clone_entrypoint_function(helper, code=payload_code)
+    default_mutant = _clone_entrypoint_function(helper, defaults=(object(),))
+    attribute_mutant = _clone_entrypoint_function(helper)
+    attribute_mutant.broker_client = object()
+
+    _PUBLIC_ENTRYPOINT_PAYLOAD_CALLS.clear()
+    for mutant in (payload_mutant, default_mutant, attribute_mutant):
+        with monkeypatch.context() as patch:
+            patch.setattr(module, helper.__name__, mutant)
+            with pytest.raises(AssertionError):
+                _assert_local_function_dependency_provenance(module, roots)
+    with monkeypatch.context() as patch:
+        patch.setattr(module, "copy", _dependency_source_swap_payload)
+        with pytest.raises(AssertionError, match="imported dependency binding changed"):
+            _assert_local_function_dependency_provenance(module, roots)
+    assert _PUBLIC_ENTRYPOINT_PAYLOAD_CALLS == []
+
+
 def test_no_access_lookalike_proves_identity_checks_are_protocol_free() -> None:
     negative_events: list[str] = []
     negative = _no_access_lookalike(negative_events)
     assert type(negative) is not object
     assert negative is not None
     assert negative_events == []
+
+    format_events: list[str] = []
+    with pytest.raises(AssertionError, match="protocol executed: format"):
+        format(_no_access_lookalike(format_events), "")
+    assert format_events == ["format"]
+
+    truth_events: list[str] = []
+    with pytest.raises(AssertionError, match="protocol executed: bool"):
+        bool(_no_access_lookalike(truth_events))
+    assert truth_events == ["bool"]
+
+    arithmetic_events: list[str] = []
+    with pytest.raises(AssertionError, match="protocol executed: radd"):
+        1 + _no_access_lookalike(arithmetic_events)  # type: ignore[operator]
+    assert arithmetic_events == ["radd"]
+
+    floor_events: list[str] = []
+    with pytest.raises(AssertionError, match="protocol executed: rfloordiv"):
+        1 // _no_access_lookalike(floor_events)  # type: ignore[operator]
+    assert floor_events == ["rfloordiv"]
+
+    comparison_events: list[str] = []
+    with pytest.raises(AssertionError, match="protocol executed: lt"):
+        _no_access_lookalike(comparison_events) < 1  # type: ignore[operator]
+    assert comparison_events == ["lt"]
+
+    iteration_events: list[str] = []
+    with pytest.raises(AssertionError, match="protocol executed: iter"):
+        iter(_no_access_lookalike(iteration_events))  # type: ignore[arg-type]
+    assert iteration_events == ["iter"]
 
     def unsafe_field_read(value: object) -> None:
         value.authority  # type: ignore[attr-defined]
@@ -4041,6 +4585,25 @@ def test_passive_value_graph_rejects_metaclass_and_descriptor_spoofs() -> None:
         )
     assert metaclass_calls == []
 
+    trusted_dispatch_calls: list[str] = []
+
+    class _TrustedDispatchMutant:
+        __slots__ = ("value",)
+
+        def __getattribute__(self, name: str) -> object:
+            trusted_dispatch_calls.append(name)
+            return object.__getattribute__(self, name)
+
+    trusted_mutant = object.__new__(_TrustedDispatchMutant)
+    object.__setattr__(trusted_mutant, "value", 1)
+    with pytest.raises(AssertionError, match="custom attribute access"):
+        _assert_passive_value_graph(
+            trusted_mutant,
+            allowed_shapes={},
+            trusted_leaf_types=frozenset({_TrustedDispatchMutant}),
+        )
+    assert trusted_dispatch_calls == []
+
     @dataclass(frozen=True, slots=True)
     class _DescriptorReplacementMutant:
         value: int
@@ -4148,6 +4711,7 @@ def test_passive_lifecycle_accepts_exact_sequential_validation() -> None:
     class _SequentialValidationProbe:
         label: str
         commitment: bytes
+        fraction: Fraction
         source_time: int
         evaluation_time: int
         optional_time: int | None
@@ -4163,6 +4727,8 @@ def test_passive_lifecycle_accepts_exact_sequential_validation() -> None:
                 raise TypeError("commitment")
             if len(self.commitment) != 32:
                 raise ValueError("commitment")
+            if type(self.fraction) is not Fraction:
+                raise TypeError("fraction")
             if type(self.source_time) is not int:
                 raise TypeError("source_time")
             if self.source_time < 0:
@@ -4189,6 +4755,7 @@ def test_passive_lifecycle_accepts_exact_sequential_validation() -> None:
     valid = _SequentialValidationProbe(
         label="exact",
         commitment=b"x" * 32,
+        fraction=Fraction(1, 4),
         source_time=10,
         evaluation_time=10,
         optional_time=11,
@@ -4200,6 +4767,8 @@ def test_passive_lifecycle_accepts_exact_sequential_validation() -> None:
         replace(valid, label=" ")
     with pytest.raises(ValueError, match="commitment"):
         replace(valid, commitment=b"x" * 31)
+    with pytest.raises(TypeError, match="fraction"):
+        replace(valid, fraction=True)
     with pytest.raises(ValueError, match="evaluation_time"):
         replace(valid, evaluation_time=9)
 
@@ -4642,12 +5211,22 @@ def test_single_leaf_mutation_walker_is_complete_local_and_shape_bounded() -> No
         decimal: Decimal
         ratio: Fraction
         kind: _PassiveEnumProbe
-        optional: None
+        optional: int | None
         nested: _NestedLeafProbe
         items: tuple[object, ...]
         members: frozenset[int]
-        empty_items: tuple[()]
-        empty_members: frozenset[object]
+        optional_items: tuple[int | None, ...]
+        optional_members: frozenset[int | None]
+        empty_items: tuple[int, ...]
+        empty_members: frozenset[int]
+
+    @dataclass(frozen=True, slots=True)
+    class _DenseSetProbe:
+        values: frozenset[PriceUnits]
+
+    @dataclass(frozen=True, slots=True)
+    class _UnmutableDenseSetProbe:
+        values: frozenset[bool]
 
     probe = _LeafGraphProbe(
         scalar=7,
@@ -4661,12 +5240,23 @@ def test_single_leaf_mutation_walker_is_complete_local_and_shape_bounded() -> No
         nested=_NestedLeafProbe(value=11),
         items=(b"first", "second"),
         members=frozenset({10, 30}),
+        optional_items=(None,),
+        optional_members=frozenset({None}),
         empty_items=(),
         empty_members=frozenset(),
     )
     mutations = _single_leaf_mutations(
         probe,
         allowed_root_types=(type(probe),),
+        union_replacements={
+            ("optional",): 13,
+            ("optional_items", 0): 23,
+            ("optional_members", 0): 29,
+        },
+        empty_collection_replacements={
+            ("empty_items",): (17,),
+            ("empty_members",): frozenset({19}),
+        },
     )
     expected_paths = frozenset(
         {
@@ -4683,6 +5273,8 @@ def test_single_leaf_mutation_walker_is_complete_local_and_shape_bounded() -> No
             ("items", 1),
             ("members", 0),
             ("members", 1),
+            ("optional_items", 0),
+            ("optional_members", 0),
             ("empty_items",),
             ("empty_members",),
         }
@@ -4693,6 +5285,15 @@ def test_single_leaf_mutation_walker_is_complete_local_and_shape_bounded() -> No
         for mutation in _single_leaf_mutations(
             probe,
             allowed_root_types=(type(probe),),
+            union_replacements={
+                ("optional",): 13,
+                ("optional_items", 0): 23,
+                ("optional_members", 0): 29,
+            },
+            empty_collection_replacements={
+                ("empty_items",): (17,),
+                ("empty_members",): frozenset({19}),
+            },
         )
     )
     assert frozenset(mutation.path for mutation in mutations) == expected_paths
@@ -4701,6 +5302,90 @@ def test_single_leaf_mutation_walker_is_complete_local_and_shape_bounded() -> No
     for mutation in mutations:
         assert type(mutation.forged) is type(probe)
         assert _changed_leaf_paths(probe, mutation.forged) == frozenset({mutation.path})
+    optional = next(
+        mutation for mutation in mutations if mutation.path == ("optional",)
+    )
+    assert type(optional.forged.optional) is int
+    assert optional.forged.optional == 13
+    optional_item = next(
+        mutation for mutation in mutations if mutation.path == ("optional_items", 0)
+    )
+    assert optional_item.forged.optional_items == (23,)
+    optional_member = next(
+        mutation for mutation in mutations if mutation.path == ("optional_members", 0)
+    )
+    assert optional_member.forged.optional_members == frozenset({29})
+
+    with pytest.raises(AssertionError, match="outside the declared optional union"):
+        _single_leaf_mutations(
+            probe,
+            allowed_root_types=(type(probe),),
+            union_replacements={
+                ("optional",): object(),
+                ("optional_items", 0): 23,
+                ("optional_members", 0): 29,
+            },
+            empty_collection_replacements={
+                ("empty_items",): (17,),
+                ("empty_members",): frozenset({19}),
+            },
+        )
+
+    dense = _DenseSetProbe(values=frozenset({PriceUnits(1), PriceUnits(2)}))
+    dense_mutations = _single_leaf_mutations(
+        dense,
+        allowed_root_types=(type(dense),),
+    )
+    assert frozenset(mutation.path for mutation in dense_mutations) == frozenset(
+        {("values", 0, "value"), ("values", 1, "value")}
+    )
+    for mutation in dense_mutations:
+        assert type(mutation.forged) is type(dense)
+        assert all(type(member) is PriceUnits for member in mutation.forged.values)
+        assert _changed_leaf_paths(dense, mutation.forged) == frozenset({mutation.path})
+
+    unmutable = _UnmutableDenseSetProbe(values=frozenset({False, True}))
+    with pytest.raises(
+        AssertionError,
+        match="frozenset leaf has no non-colliding same-type mutation",
+    ):
+        _single_leaf_mutations(
+            unmutable,
+            allowed_root_types=(type(unmutable),),
+        )
+
+    _, _, _, transition = _owned_fill_fixture(label="real-mutation-primitive")
+    real_kernel_values = (
+        MandateId("real-mutation-primitive"),
+        PriceUnits(7),
+        _price(101),
+        transition,
+    )
+    for current in real_kernel_values:
+        replacement = _different_value(current)
+        assert type(replacement) is type(current)
+        assert replacement != current
+
+    reported = _price(101)
+    reported_mutations = _single_leaf_mutations(
+        reported,
+        allowed_root_types=(ReportedPrice,),
+    )
+    reported_paths = frozenset(
+        {
+            ("units", "value"),
+            ("scale", "value"),
+            ("tick", "tick_units", "value"),
+            ("tick", "scale", "value"),
+        }
+    )
+    assert _retained_leaf_paths(reported) == reported_paths
+    assert frozenset(mutation.path for mutation in reported_mutations) == reported_paths
+    for mutation in reported_mutations:
+        assert type(mutation.forged) is ReportedPrice
+        assert _changed_leaf_paths(reported, mutation.forged) == frozenset(
+            {mutation.path}
+        )
 
 
 def test_every_reducer_owned_state_field_is_authenticated_before_advancement() -> None:
@@ -4716,21 +5401,81 @@ def test_every_reducer_owned_state_field_is_authenticated_before_advancement() -
         cumulative_quantity=4,
     )
     successor = _projection(module, terminal, mandate)
-    (disposition,) = _required(module, "ProtectionDisposition")
-    mutations = _single_leaf_mutations(
-        state,
-        allowed_root_types=(state_type,),
+    unavailable_fill = _owned_fill_transition(
+        label="protection-state-seal-unavailable",
+        quantity=1,
+        units=100,
     )
-    expected_paths = _retained_leaf_paths(state)
-    assert frozenset(mutation.path for mutation in mutations) == expected_paths
-    assert len(mutations) == len(expected_paths)
-    for mutation in mutations:
-        assert _changed_leaf_paths(state, mutation.forged) == frozenset({mutation.path})
-        result = _reduce(module, mutation.forged, successor)
-        assert result.disposition is disposition.REFUSED, mutation.path
-        assert result.state == mutation.forged, mutation.path
-        assert result.goal is None, mutation.path
-        assert result.critical_alert is None, mutation.path
+    unavailable_mandate = _mandate(
+        module,
+        loss_fraction=Fraction(1, 100),
+        tick=TickMetadata(tick_units=PriceUnits(100), scale=SCALE),
+    )
+    _, _, unavailable_state = _start(
+        module,
+        unavailable_fill,
+        unavailable_mandate,
+    )
+    _, unavailable_terminal = _terminal_fixture(
+        unavailable_fill,
+        effect_id=BASE_EFFECT,
+        leg_key=BASE_LEG,
+        label="protection-state-seal-unavailable",
+        cumulative_quantity=1,
+    )
+    unavailable_successor = _projection(
+        module,
+        unavailable_terminal,
+        unavailable_mandate,
+    )
+    (disposition,) = _required(module, "ProtectionDisposition")
+    assert state.high_watermark is None
+    assert state.trail is None
+    assert unavailable_state.formula_available is False
+    assert unavailable_state.armed_hard_bail_trigger is None
+    assert unavailable_state.high_watermark is None
+    assert unavailable_state.trail is None
+    scenarios = (
+        (
+            state,
+            successor,
+            {
+                ("high_watermark",): _price(101),
+                ("trail",): _price(99),
+            },
+        ),
+        (
+            unavailable_state,
+            unavailable_successor,
+            {
+                ("armed_hard_bail_trigger",): _price(93),
+                ("high_watermark",): _price(101),
+                ("trail",): _price(99),
+            },
+        ),
+    )
+    for sealed_state, sealed_successor, union_replacements in scenarios:
+        assert all(
+            type(value) is ReportedPrice for value in union_replacements.values()
+        )
+        mutations = _single_leaf_mutations(
+            sealed_state,
+            allowed_root_types=(state_type,),
+            union_replacements=union_replacements,
+        )
+        expected_paths = _retained_leaf_paths(sealed_state)
+        assert frozenset(mutation.path for mutation in mutations) == expected_paths
+        assert len(mutations) == len(expected_paths)
+        for mutation in mutations:
+            assert _changed_leaf_paths(
+                sealed_state,
+                mutation.forged,
+            ) == frozenset({mutation.path})
+            result = _reduce(module, mutation.forged, sealed_successor)
+            assert result.disposition is disposition.REFUSED, mutation.path
+            assert result.state == mutation.forged, mutation.path
+            assert result.goal is None, mutation.path
+            assert result.critical_alert is None, mutation.path
 
 
 def test_every_projection_field_is_sealed_against_single_field_forgery() -> None:
@@ -6827,20 +7572,78 @@ def test_trade_plus_distinct_bid_within_window_triggers_hard_bail() -> None:
     assert bid.goal is not None
 
 
-def test_duplicate_restart_and_nonadvancing_sequence_do_not_corroborate() -> None:
+@pytest.mark.parametrize("source_sequence", [7, None])
+@pytest.mark.parametrize("first_kind", ["BEST_BID", "TRADE"])
+def test_changed_delivery_context_replay_is_exact_for_every_occurrence_form(
+    first_kind: str,
+    source_sequence: int | None,
+) -> None:
     module = _protection_module()
-    fill = _owned_fill_transition()
+    fill = _owned_fill_transition(
+        label=f"changed-context-{first_kind.lower()}-{source_sequence}"
+    )
     mandate, _, state = _start(module, fill)
     terminal, closed = _close_base_parent(fill)
     state, projection, _ = _sync_transitions(module, state, mandate, (terminal, closed))
-    occurrence = _occurrence(module, "duplicate-bid", bid=92, ask=93, sequence=7)
+    occurrence = _occurrence(
+        module,
+        f"changed-context-{first_kind.lower()}-{source_sequence}",
+        kind=first_kind,
+        bid=92 if first_kind == "BEST_BID" else None,
+        ask=93 if first_kind == "BEST_BID" else None,
+        trade=92 if first_kind == "TRADE" else None,
+        sequence=source_sequence,
+    )
     first = _reduce(module, state, projection, occurrence)
+    retained_before_replay = _leaf_sort_key(first.state)
     replay = _reduce(
         module, first.state, projection, replace(occurrence, evaluation_time=109)
     )
-    equal_sequence = _reduce(
+    valid_after_replay = _reduce(
         module,
         replay.state,
+        projection,
+        _occurrence(
+            module,
+            f"valid-after-{first_kind.lower()}-{source_sequence}-replay",
+            bid=91,
+            ask=92,
+            sequence=8 if source_sequence is not None else None,
+            source_time=106,
+            evaluation_time=107,
+        ),
+    )
+    disposition, policy = _required(
+        module,
+        "ProtectionDisposition",
+        "ProtectionPolicy",
+    )
+    assert replay.disposition is disposition.EXACT_REPLAY
+    assert _leaf_sort_key(replay.state) == retained_before_replay
+    assert replay.state == first.state
+    assert replay.state.commitment == first.state.commitment
+    assert replay.state.policy is policy.FLOOR_ONLY
+    assert replay.goal is None
+    assert replay.critical_alert is None
+    assert valid_after_replay.state.policy is policy.HARD_BAIL
+    assert valid_after_replay.goal is not None
+
+
+def test_nonadvancing_sequence_does_not_corroborate() -> None:
+    module = _protection_module()
+    fill = _owned_fill_transition(label="nonadvancing-sequence")
+    mandate, _, state = _start(module, fill)
+    terminal, closed = _close_base_parent(fill)
+    state, projection, _ = _sync_transitions(module, state, mandate, (terminal, closed))
+    first = _reduce(
+        module,
+        state,
+        projection,
+        _occurrence(module, "advancing-sequence", bid=92, ask=93, sequence=7),
+    )
+    equal_sequence = _reduce(
+        module,
+        first.state,
         projection,
         _occurrence(
             module,
@@ -6852,34 +7655,12 @@ def test_duplicate_restart_and_nonadvancing_sequence_do_not_corroborate() -> Non
             evaluation_time=110,
         ),
     )
-    valid_after_replay = _reduce(
-        module,
-        replay.state,
-        projection,
-        _occurrence(
-            module,
-            "valid-after-duplicate-replay",
-            bid=91,
-            ask=92,
-            sequence=8,
-            source_time=106,
-            evaluation_time=107,
-        ),
-    )
-    disposition, policy = _required(
-        module,
-        "ProtectionDisposition",
-        "ProtectionPolicy",
-    )
-    assert replay.disposition is disposition.EXACT_REPLAY
-    assert replay.state == first.state
-    assert replay.state.commitment == first.state.commitment
-    assert replay.state.policy is policy.FLOOR_ONLY
+    (policy,) = _required(module, "ProtectionPolicy")
+    assert equal_sequence.state == first.state
+    assert equal_sequence.state.commitment == first.state.commitment
     assert equal_sequence.state.policy is policy.FLOOR_ONLY
-    assert replay.goal is None and equal_sequence.goal is None
-    assert replay.critical_alert is None
-    assert valid_after_replay.state.policy is policy.HARD_BAIL
-    assert valid_after_replay.goal is not None
+    assert equal_sequence.goal is None
+    assert equal_sequence.critical_alert is None
 
 
 @pytest.mark.parametrize("second_sequence", [2, None])

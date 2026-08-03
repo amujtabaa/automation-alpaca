@@ -8,6 +8,7 @@ predecessor to prove determinism and input immutability.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from fractions import Fraction
 from typing import Any
 
@@ -625,11 +626,111 @@ class ProtectionMarketMachine(RuleBasedStateMachine):
 
     @precondition(lambda self: self.last_occurrence is not None)
     @rule()
-    def duplicate_occurrence_is_an_evidence_noop(self) -> None:
+    def changed_delivery_context_replay_is_an_exact_evidence_noop(self) -> None:
         before = self.state
-        result = self._deliver(self.last_occurrence)
+        before_snapshot = protection_fixtures._leaf_sort_key(before)
+        replay = replace(
+            self.last_occurrence,
+            evaluation_time=self.last_occurrence.evaluation_time + 1,
+        )
+        result = self._deliver(replay)
+        (disposition,) = protection_fixtures._required(
+            self.module,
+            "ProtectionDisposition",
+        )
+        assert result.disposition is disposition.EXACT_REPLAY
+        assert protection_fixtures._leaf_sort_key(result.state) == before_snapshot
         assert result.state == before
+        assert result.state.commitment == before.commitment
         assert result.goal is None
+        assert result.critical_alert is None
+
+    @precondition(
+        lambda self: (
+            self.policy == "FLOOR_ONLY"
+            and self.hard_count == 0
+            and self.buy_stage == "NONE"
+        )
+    )
+    @rule(
+        first_kind=st.sampled_from(("BEST_BID", "TRADE")),
+        has_sequence=st.booleans(),
+    )
+    def changed_context_replay_preserves_between_time_successor(
+        self,
+        first_kind: str,
+        has_sequence: bool,
+    ) -> None:
+        """A redelivered fact cannot consume later delivery time or corroboration."""
+        self.sequence += 1
+        self.source_time += 6
+        first_sequence = self.sequence if has_sequence else None
+        first_evaluation_time = self.source_time + 5
+        first = protection_fixtures._occurrence(
+            self.module,
+            f"stateful-replay-first-{first_kind.lower()}-{self.sequence}",
+            kind=first_kind,
+            bid=92 if first_kind == "BEST_BID" else None,
+            ask=93 if first_kind == "BEST_BID" else None,
+            trade=92 if first_kind == "TRADE" else None,
+            sequence=first_sequence,
+            source_time=self.source_time,
+            evaluation_time=first_evaluation_time,
+            market_epoch=self.market_epoch,
+        )
+        first_result = self._deliver(first)
+        self.state = first_result.state
+        self.hard_count = 1
+        before_replay = self.state
+        before_replay_snapshot = protection_fixtures._leaf_sort_key(before_replay)
+
+        replay_evaluation_time = first_evaluation_time + 4
+        replay = replace(first, evaluation_time=replay_evaluation_time)
+        replay_result = self._deliver(replay)
+        (disposition, policy) = protection_fixtures._required(
+            self.module,
+            "ProtectionDisposition",
+            "ProtectionPolicy",
+        )
+        assert replay_result.disposition is disposition.EXACT_REPLAY
+        assert (
+            protection_fixtures._leaf_sort_key(replay_result.state)
+            == before_replay_snapshot
+        )
+        assert replay_result.state == before_replay
+        assert replay_result.state.commitment == before_replay.commitment
+        assert replay_result.goal is None
+        assert replay_result.critical_alert is None
+
+        self.sequence += 1
+        self.source_time += 6
+        successor_evaluation_time = first_evaluation_time + 2
+        assert (
+            first_evaluation_time < successor_evaluation_time < replay_evaluation_time
+        )
+        successor = protection_fixtures._occurrence(
+            self.module,
+            f"stateful-replay-successor-{first_kind.lower()}-{self.sequence}",
+            bid=91,
+            ask=92,
+            sequence=self.sequence if has_sequence else None,
+            source_time=self.source_time,
+            evaluation_time=successor_evaluation_time,
+            market_epoch=self.market_epoch,
+        )
+        successor_result = self._deliver(successor)
+        self.state = successor_result.state
+        self.policy = "HARD_BAIL"
+        self.hard_count = 2
+        self.last_occurrence = successor
+        self.last_accepted_source_time = self.source_time
+        if has_sequence:
+            self.last_accepted_sequence = self.sequence
+        self.last_bid = 91
+        self.waiting = False
+        assert successor_result.state.policy is policy.HARD_BAIL
+        assert successor_result.goal is not None
+        assert successor_result.critical_alert is None
 
     @rule()
     def crossed_quote_is_ineligible(self) -> None:
@@ -953,6 +1054,7 @@ def test_high_risk_stateful_rules_are_registered_with_preconditions() -> None:
             "incompatible_tick_loss_and_restore_advance_shared_history",
         },
         ProtectionMarketMachine: {
+            "changed_context_replay_preserves_between_time_successor",
             "interruption_reopen_epoch_requires_fresh_corroboration",
             "introduce_unresolved_buy_into_shared_history",
             "terminalize_unresolved_buy_in_shared_history",
@@ -983,6 +1085,16 @@ def test_high_risk_stateful_rules_advance_one_machine_history() -> None:
     assert economics.next_identity == 2
     assert economics.formula_expected is True
     assert economics.expected_policy == "HARD_BAIL"
+
+    replay_market = ProtectionMarketMachine()
+    replay_successor = _execute_registered(
+        replay_market,
+        "changed_context_replay_preserves_between_time_successor",
+        first_kind="TRADE",
+        has_sequence=False,
+    )
+    assert replay_market.policy == "HARD_BAIL"
+    assert replay_successor.goal is not None
 
     market = ProtectionMarketMachine()
     _execute_registered(

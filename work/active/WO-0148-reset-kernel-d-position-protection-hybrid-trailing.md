@@ -710,3 +710,113 @@ and a running external CI gate are progress states, not goal blockers.
   `ACCEPT` with zero P0/P1. Production remains absent and barred.
 - Next action: freeze the ninth RED candidate and obtain fresh independent exact-commit acceptance
   with zero unresolved P0/P1 before production begins.
+
+### Independent ninth-freeze review and successor re-gate
+
+A fresh Sol seat independently reviewed exact ninth RED commit
+`706ed536790179fcb673aaedf96b3b728ee33d3c` against activation base
+`d75806b1a79d1769db25ae962c0977cd9388a886`. It reproduced the complete focused RED
+classification, all 698 predecessor tests, static/format/grammar/diff/scope gates, accepted ADR
+digests, and production absence. It returned `BLOCK` with no P0 and three P1 contract gaps:
+
+1. changed-delivery replay exactness covered only sequenced `BEST_BID`, not both market kinds with
+   source sequence present and absent or the full generated between-time-successor composition;
+2. pattern-capture names were absent from the binding inventory, permitting a match-capture chain
+   to launder runtime output through an approved import; and
+3. the purity model did not reject ambient/subscript writes, retained default or closure state, or
+   `object.__setattr__` against caller-owned inputs.
+
+All findings are accepted. The successor contract adds the four-cell replay matrix and a registered
+generated-history generalization; exhaustive Python 3.11 capture-name inventory; a conservative
+write/persistence grammar; and a bounded fresh-allocation proof for straight-line construction of
+the two opaque result types. `object.__getattribute__` is removed from the protection allowlist.
+Exact reviewer mutants and positive construction skeletons are pinned. A hostile Terra pre-flight
+then found and drove closure of one further implicit `with`/context-manager dispatch path, after
+which it returned `ACCEPT` with zero P0/P1.
+
+Fresh successor evidence on local Python 3.12.13 is 288 focused tests with 232 expected RED
+failures / 56 passes, comprising 229 protection-module-absence failures plus the three required
+inventory/AST/export deltas; no helper fails. The unchanged predecessor corpus passes 698/698.
+Ruff, format, Python 3.11 grammar, diff, activation-base scope, accepted ADR digest, production-
+absence, and eight-file current-source effect gates pass. The exact ninth result remains unchanged;
+its accepted disposition is recorded separately in `RED-NINTH-DISPOSITION.md`.
+
+Production remains absent and barred. Next action is to freeze this successor RED candidate and
+obtain a fresh independent exact-commit acceptance with zero P0/P1 before production begins.
+
+### Claude clean-room comparator adjudication before successor freeze
+
+The comparator at remote commit `b56ce60043e0609bd73989f8429b573539cedd93` was read with
+`git show` and not merged. Its claims were re-derived against current authority and tests. Three
+current P1 gaps were accepted:
+
+1. the lifecycle grammar still rejected the exact `Fraction` guard required by clauses 1 and 8
+   because `Fraction` has `ABCMeta`;
+2. the passive metadata seal still indexed the Python-3.12-only `_DataclassParams.slots` member
+   unconditionally, so the declared Python 3.11 CI target could not execute the controls; and
+3. optional `None` leaves still mutated only to a wrong-type sentinel, permitting a free exact-type
+   rejection rather than proving the declared union/value boundary.
+
+The lifecycle type gate now admits only the exact standard metaclass identities used by ordinary
+classes, enums, and `Fraction`, and runs the no-user-attribute-dispatch seal before class metadata
+reads. A real `Fraction` sequential guard is an executable RED meta control. Dataclass `slots`
+metadata is version-optional while the version-independent exact `__slots__` inventory remains
+mandatory. The leaf walker now requires an explicit valid union member for every `None` leaf;
+`high_watermark` and `trail` use real `ReportedPrice` alternatives, and missing private optional
+coverage fails closed.
+
+The old seventh-freeze `value`-argument collision was reproduced from exact commit `433a5fb` and is
+already closed by the current clone receiver name. The executable RED meta control now exercises
+same-root-type mutation on real `MandateId`, `PriceUnits`, `ReportedPrice`, and
+`VenueRecoveryTransition` values and pins all four nested `ReportedPrice` leaf paths. Current C1
+guarded-dispatch and C2 public-entrypoint-provenance repairs were independently rechecked. The
+comparator's C3 downgrade is stale against this amended WO's explicit protocol-free rejection
+obligation; PEP-562, universal subclass sealing, and proof-removal suggestions remain non-blocking
+advisories and do not weaken this re-freeze.
+
+Local execution is Python 3.12.13 and no local Python 3.11 interpreter is installed. Actual 3.11
+restoration is therefore not claimed and remains routed to unchanged exact-head CI. Full
+adjudication and command evidence are in `CLAUDE-COMPARATOR-DISPOSITION.md`. The complete focus
+remains 288 collected / 232 expected RED failures / 56 passes, selected executable meta controls
+pass, and predecessor preservation remains 698/698. Production remains absent and barred pending a
+fresh immutable successor freeze and independent zero-P0/P1 exact-commit acceptance.
+
+### Bounded successor purity redesign and tenth RED freeze candidate
+
+Three hostile post-comparator passes found a related family of static-oracle gaps: mutable
+class/function metadata and defaults; local-helper, callback, or venue-extractor donation; an
+opaque-factory right-hand side that could throw after allocation; recursive, looping, or
+process-exit control flow; and insufficiently exact opaque class decorators. Because these repeated
+at the same purity edge, review gate 2 triggered one bounded redesign rather than another local
+exception list. Production remained absent throughout.
+
+The replacement grammar now admits only direct deterministic imports, inert retained literals,
+passive enums/dataclasses, finite straight-line/branching functions, and authenticated calls. It
+rejects module hooks, mutable containers, defaults/callbacks, callable-as-data aliases, static
+metadata reads, dynamic calls/attributes, loops/recursion, suspension, context/try/match machinery,
+implicit iteration/unpacking/subscription/membership, and unsupported arithmetic operators. The
+venue extractor has one direct call edge owned by `project_protection_venue`; public roles cannot
+call one another. Every source-reachable private helper and referenced imported binding is tied to
+its canonical source/runtime identity without executing production.
+
+`PositionProtectionState` and `ProtectionVenueProjection` must each be an exact field-only
+`@dataclass(frozen=True, slots=True, init=False)` and have exactly one straight-line factory. All
+validation/computation occurs before allocation; after allocation, each declared field is written
+once from its already-validated same-named parameter and the fully populated local is returned
+directly. Exact mutable-class, metadata/default, extractor-role, helper-donation/rebinding,
+throwing-RHS, partial-factory, recursion, loop, `SystemExit`, implicit-iteration, dynamic-surface,
+and positive-construction controls are executable.
+
+A final Terra attack exposed missing reflected numeric tripwires in the wrong-type sentinel. The
+sentinel now covers format, truth, ordering, forward/reflected arithmetic, conversion, indexing,
+membership, and iteration. Together with the seven-position public wrong-type matrix and recursive
+passive exact-type seals, it proves rejection precedes user protocol dispatch; the Terra recheck
+returned `ACCEPT` with zero P0/P1 against the complete two-layer contract.
+
+Fresh local Python 3.12.13 evidence is 290 focused tests with 233 expected RED failures / 57 passes:
+230 failures are caused by deliberate protection-module absence and three by the required module-
+inventory, AST/import, and package-export deltas; no helper or meta-control fails. The correctly
+excluded predecessor corpus passes 698/698. Production `app/execution_core/protection.py` remains
+absent. Actual Python 3.11 execution remains deferred to unchanged exact-head CI; no local 3.11 pass
+is claimed. The next action is an immutable successor commit and fresh independent tenth RED review
+with zero unresolved P0/P1 before any production edit.
