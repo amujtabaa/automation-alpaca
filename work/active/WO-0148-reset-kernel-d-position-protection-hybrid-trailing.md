@@ -557,6 +557,92 @@ The seventh freeze adds no production code, database/broker/runtime activity, or
 authority. Production remains barred until a fresh independent reviewer accepts its exact immutable
 commit with zero unresolved P0/P1.
 
+### Independent seventh-freeze review and eighth re-gate
+
+A fresh Sol seat independently reviewed exact seventh-freeze commit
+`83b0a3ae4c3bb4ab32239b03e41e40b6bb4d6ce9` over `d75806b..83b0a3a`. It confirmed that
+production remained absent, found no P0, and returned `BLOCK` with nine P1 test-contract gaps:
+
+1. The canonical bounded-map getter was tied to its own source and bytecode but not to the exact
+   identity and executable provenance of transitive globals such as `_child_at`.
+2. The lifecycle grammar allowed a nested exact-slotted execution-core class without proving that
+   class's own attribute-access behavior passive.
+3. The three public protection entry points were pinned by source syntax but not by exact runtime
+   identity, inert function metadata, source/bytecode correspondence, or post-definition rebinding.
+4. No-access lookalikes did not yet prove exact argument-type rejection before every public-boundary
+   field read.
+5. Reducer-authenticity mutation changed only one representative nested leaf rather than every
+   independently retained dataclass/tuple authority leaf.
+6. A stable market-occurrence identity could be reused with changed payload and an advancing or
+   absent source sequence without a direct equivocation control.
+7. Corroboration-window controls advanced source and evaluation clocks together, leaving the owning
+   time authority ambiguous.
+8. No control proved that a trail tightened by an occurrence governs that same occurrence before
+   trigger evaluation.
+9. No composed normal/emergency exit history proved exact residual rebinding after partial SELL
+   economics and final venue-parent closure.
+
+The review also raised two P2 record/design cautions. The recorded `245 collected / 207 failed /
+38 passed` command covers `test_protection.py` alone; the complete three-file focused contract
+collects 262 and yields 214 expected failures / 48 passes while production is absent. The exact
+two-statement extractor remains a deliberately temporary implementation freeze and is not promoted
+to an ADR-level representation rule.
+
+These are oracle findings, not production findings and not a goal-level blocker. Production remains
+barred. The implementation seat will repair all nine P1s at their owning test/provenance boundaries,
+record both narrow and complete-focus evidence precisely, freeze a new exact commit, and obtain a
+new independent zero-P0/P1 review before any production edit.
+
+### Eighth RED repairs and hostile pre-flight
+
+The implementation seat closed all nine seventh-freeze P1s at their owning test boundaries without
+adding production code:
+
+1. The bounded-map oracle now authenticates the exact identity, inert metadata, inspected source,
+   and bytecode correspondence of every executable transitive global used by `get`, while admitting
+   only an explicit exact set of inert external constants.
+2. Lifecycle validation now rejects a nested guarded type with custom `__getattribute__` or
+   `__getattr__` before any payload access; exact passive nested values remain accepted.
+3. Each public entry point now has one exact canonical runtime function binding, inert metadata,
+   exact annotations/signature, no wrapper/rebinding/closure/defaults/function attributes, and
+   matching inspected source and bytecode.
+4. Every non-`None` accepted public argument type must retain an unconditional, source/bytecode-
+   authenticated terminal `TypeError` subclass seal, `NoneType` is pinned independently, and every
+   argument position rejects a hostile unrelated lookalike before any instance or type protocol.
+5. State and projection authenticity now mutate every independently retained scalar, enum,
+   dataclass, tuple, frozenset, and empty-container leaf exactly once with deterministic collision
+   fallback, while independently proving one changed path and preserving the opaque venue book.
+6. Reusing one occurrence identity with changed payload is refused for advancing and absent source
+   sequences across bid and trade kinds.
+7. Bid/trade corroboration is proven to use source time, not evaluation time, in both arrival orders
+   and on both sides of the inclusive window boundary.
+8. A newly tightened ATR- or structure-owned trail governs the same occurrence that tightened it.
+9. Normal and emergency exit histories prove that partial SELL economics rebind the next goal to the
+   exact residual only after exact leg and parent closure.
+
+The bounded simplification pass removed redundant sibling/container assertions from the exhaustive
+leaf-walker meta-test. Its independent expected-path inventory, exact cardinality, stable-order pin,
+exact root-type pin, and `changed_leaf_paths == {path}` oracle retain the same completeness and
+one-leaf locality proof.
+
+Fresh eighth-candidate evidence on local Python 3.12.13:
+
+- the complete focused contract collects 282 tests: 265 deterministic protection, 4 stateful, and
+  13 import-boundary tests;
+- exact RED execution yields 227 expected failures and 55 passes: 224 failures are caused solely by
+  deliberate absence of `app.execution_core.protection`, and 3 are the required module-inventory,
+  AST-import, and public-export deltas; no oracle helper fails;
+- eight selected provenance, no-access, lifecycle, exhaustive-leaf, and bounded-map meta controls
+  pass independently;
+- the unchanged execution-core predecessor corpus passes all 698 tests with the three new protection
+  files excluded; and
+- a fresh hostile Sol pre-flight first reproduced one subclass bypass in the unrelated-lookalike
+  matrix, then accepted the unconditional all-argument-type seal repair with no remaining P0/P1.
+
+Actual Python 3.11 execution remains an exact-head CI obligation. This pre-flight is not the required
+independent exact-commit RED acceptance. Production remains absent and barred until the eighth
+candidate is frozen and a fresh independent seat accepts that immutable commit with zero P0/P1.
+
 ## Stop conditions
 
 Stop rather than widen scope if the contract requires an ADR change, a new dependency, persistence,
@@ -575,5 +661,9 @@ and a running external CI gate are progress states, not goal blockers.
   retained untracked WO-0145/0146/0147 evidence remains untouched.
 - Pre-build clause map: one new protection reducer plus narrow identity, venue projection, exports,
   and two test suites; existing position/authority reducers stay unchanged.
-- Next action: commit the seventh RED freeze, obtain fresh independent exact-commit acceptance with
-  zero unresolved P0/P1, and only then begin production code from the accepted immutable checkpoint.
+- Current RED state: all nine seventh-freeze P1 oracle gaps are repaired; complete focus is 282
+  collected / 227 expected RED / 55 pass, predecessor preservation is 698 pass, and hostile
+  pre-flight reports zero P0/P1. Production remains absent and barred.
+- Next action: pass final static/format/grammar/diff/scope gates, freeze the eighth RED candidate,
+  and obtain fresh independent exact-commit acceptance with zero unresolved P0/P1 before production
+  begins.

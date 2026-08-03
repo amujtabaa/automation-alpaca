@@ -22,13 +22,15 @@ from dataclasses import (
     replace,
 )
 from decimal import Decimal
+import dis
 from enum import Enum
 from fractions import Fraction
 import importlib
 import inspect
 from pathlib import Path
 import textwrap
-from types import CodeType, ModuleType
+from types import CodeType, FunctionType, ModuleType
+import typing
 
 import pytest
 
@@ -121,6 +123,129 @@ BASE_LEG = venue_fixtures.LEG_A
 BASE_CLAIM = venue_fixtures.CLAIM
 SCALE = PriceScale(Decimal("1"))
 TICK = TickMetadata(tick_units=PriceUnits(1), scale=SCALE)
+_PUBLIC_ENTRYPOINT_PAYLOAD_CALLS: list[str] = []
+
+
+def _public_entrypoint_source_swap_payload(
+    transition: object,
+    mandate: object,
+) -> None:
+    del transition, mandate
+    _PUBLIC_ENTRYPOINT_PAYLOAD_CALLS.append("executed")
+
+
+def _synthetic_public_entrypoint(
+    transition: object,
+    mandate: object,
+) -> object:
+    del mandate
+    return transition
+
+
+def _no_access_lookalike(events: list[str]) -> object:
+    """Create an object whose every observable protocol is a test failure."""
+
+    def record(event: str) -> typing.NoReturn:
+        events.append(event)
+        raise AssertionError(f"no-access lookalike protocol executed: {event}")
+
+    class _NoAccessMeta(type):
+        def __getattribute__(cls, name: str) -> object:
+            return record(f"type-attribute:{name}")
+
+        def __bool__(cls) -> bool:
+            return record("type-bool")
+
+        def __eq__(cls, other: object) -> bool:
+            del other
+            return record("type-eq")
+
+        def __ne__(cls, other: object) -> bool:
+            del other
+            return record("type-ne")
+
+        def __hash__(cls) -> int:
+            return record("type-hash")
+
+        def __iter__(cls) -> object:
+            return record("type-iter")
+
+        def __call__(cls, *args: object, **kwargs: object) -> object:
+            del args, kwargs
+            return record("type-call")
+
+        def __str__(cls) -> str:
+            return record("type-str")
+
+        def __repr__(cls) -> str:
+            return record("type-repr")
+
+        def __format__(cls, specification: str) -> str:
+            del specification
+            return record("type-format")
+
+    class _NoAccessDuck(metaclass=_NoAccessMeta):
+        def __getattribute__(self, name: str) -> object:
+            return record(f"attribute:{name}")
+
+        def __bool__(self) -> bool:
+            return record("bool")
+
+        def __eq__(self, other: object) -> bool:
+            del other
+            return record("eq")
+
+        def __ne__(self, other: object) -> bool:
+            del other
+            return record("ne")
+
+        def __hash__(self) -> int:
+            return record("hash")
+
+        def __iter__(self) -> object:
+            return record("iter")
+
+        def __next__(self) -> object:
+            return record("next")
+
+        def __len__(self) -> int:
+            return record("len")
+
+        def __contains__(self, item: object) -> bool:
+            del item
+            return record("contains")
+
+        def __getitem__(self, item: object) -> object:
+            del item
+            return record("getitem")
+
+        def __call__(self, *args: object, **kwargs: object) -> object:
+            del args, kwargs
+            return record("call")
+
+        def __str__(self) -> str:
+            return record("str")
+
+        def __repr__(self) -> str:
+            return record("repr")
+
+        def __format__(self, specification: str) -> str:
+            del specification
+            return record("format")
+
+        def __bytes__(self) -> bytes:
+            return record("bytes")
+
+        def __int__(self) -> int:
+            return record("int")
+
+        def __index__(self) -> int:
+            return record("index")
+
+        def __float__(self) -> float:
+            return record("float")
+
+    return object.__new__(_NoAccessDuck)
 
 
 def _price(
@@ -639,13 +764,17 @@ def _append_needs_review_effect(
     return tuple(transitions), effect_id, leg_key, claim_id
 
 
-def _clone_opaque(value: object, **overrides: object) -> object:
-    clone = object.__new__(type(value))
-    for retained in fields(value):
+def _clone_opaque(original: object, **overrides: object) -> object:
+    clone = object.__new__(type(original))
+    for retained in fields(original):
         object.__setattr__(
             clone,
             retained.name,
-            overrides.get(retained.name, getattr(value, retained.name)),
+            (
+                overrides[retained.name]
+                if retained.name in overrides
+                else object.__getattribute__(original, retained.name)
+            ),
         )
     return clone
 
@@ -654,8 +783,296 @@ def _flip_digest(value: bytes) -> bytes:
     return bytes((value[0] ^ 1,)) + value[1:]
 
 
+_LEAF_MUTATION_SENTINEL = object()
+
+
+@dataclass(frozen=True, slots=True)
+class _LeafMutation:
+    path: tuple[object, ...]
+    forged: object
+
+
+def _is_retained_leaf(value: object) -> bool:
+    return (
+        value is None
+        or any(
+            type(value) is allowed
+            for allowed in (bool, bytes, int, str, Decimal, Fraction)
+        )
+        or isinstance(value, Enum)
+    )
+
+
+def _leaf_mutation_candidates(value: object) -> tuple[object, ...]:
+    """Return deterministic unequal candidates without traversing arbitrary values."""
+    if type(value) is bool:
+        return (not value, _LEAF_MUTATION_SENTINEL)
+    if type(value) is int:
+        return (value + 1, value - 1, value + 2, _LEAF_MUTATION_SENTINEL)
+    if type(value) is bytes:
+        changed = _flip_digest(value) if value else b"\x00"
+        return (changed, value + b"\x00", _LEAF_MUTATION_SENTINEL)
+    if type(value) is str:
+        return (
+            f"{value}-forged",
+            f"forged-{value}",
+            _LEAF_MUTATION_SENTINEL,
+        )
+    if type(value) is Decimal:
+        return (value + 1, value - 1, value + 2, _LEAF_MUTATION_SENTINEL)
+    if type(value) is Fraction:
+        return (value + 1, value - 1, value + 2, _LEAF_MUTATION_SENTINEL)
+    if isinstance(value, Enum):
+        alternatives = tuple(member for member in type(value) if member is not value)
+        return alternatives + (_LEAF_MUTATION_SENTINEL,)
+    if value is None:
+        return (_LEAF_MUTATION_SENTINEL,)
+    raise AssertionError(f"unsupported retained leaf: {type(value).__name__}")
+
+
+def _leaf_sort_key(value: object) -> tuple[object, ...]:
+    """Canonicalize only the bounded passive grammar used by leaf mutations."""
+    if value is None:
+        return ("none",)
+    if type(value) is bool:
+        return ("bool", int(value))
+    if type(value) is int:
+        return ("int", value)
+    if type(value) is bytes:
+        return ("bytes", value.hex())
+    if type(value) is str:
+        return ("str", value)
+    if type(value) is Decimal:
+        decimal = value.as_tuple()
+        return ("decimal", decimal.sign, decimal.digits, decimal.exponent)
+    if type(value) is Fraction:
+        return ("fraction", value.numerator, value.denominator)
+    if isinstance(value, Enum):
+        value_type = type(value)
+        return (
+            "enum",
+            value_type.__module__,
+            value_type.__qualname__,
+            object.__getattribute__(value, "_name_"),
+        )
+    if type(value) is tuple:
+        return ("tuple", tuple(_leaf_sort_key(item) for item in value))
+    if type(value) is frozenset:
+        return (
+            "frozenset",
+            tuple(sorted(_leaf_sort_key(item) for item in value)),
+        )
+    if is_dataclass(value) and not isinstance(value, type):
+        value_type = type(value)
+        assert value_type is not VenueRecoveryBook, (
+            "leaf mutation cannot traverse VenueRecoveryBook"
+        )
+        return (
+            "dataclass",
+            value_type.__module__,
+            value_type.__qualname__,
+            tuple(
+                (
+                    retained.name,
+                    _leaf_sort_key(object.__getattribute__(value, retained.name)),
+                )
+                for retained in fields(value)
+            ),
+        )
+    raise AssertionError(f"unsupported retained value: {type(value).__name__}")
+
+
+def _walk_single_leaf_mutations(
+    value: object,
+    path: tuple[object, ...],
+    ancestors: frozenset[int],
+) -> tuple[_LeafMutation, ...]:
+    if _is_retained_leaf(value):
+        replacement = _leaf_mutation_candidates(value)[0]
+        assert replacement != value
+        return (_LeafMutation(path=path, forged=replacement),)
+
+    if type(value) is tuple:
+        if not value:
+            return (_LeafMutation(path=path, forged=(_LEAF_MUTATION_SENTINEL,)),)
+        assert id(value) not in ancestors, "cyclic retained tuple"
+        nested_ancestors = ancestors | {id(value)}
+        mutations: list[_LeafMutation] = []
+        for index, item in enumerate(value):
+            for mutation in _walk_single_leaf_mutations(
+                item,
+                path + (index,),
+                nested_ancestors,
+            ):
+                forged = value[:index] + (mutation.forged,) + value[index + 1 :]
+                assert len(forged) == len(value)
+                mutations.append(_LeafMutation(mutation.path, forged))
+        return tuple(mutations)
+
+    if type(value) is frozenset:
+        if not value:
+            return (
+                _LeafMutation(
+                    path=path,
+                    forged=frozenset({_LEAF_MUTATION_SENTINEL}),
+                ),
+            )
+        assert id(value) not in ancestors, "cyclic retained frozenset"
+        nested_ancestors = ancestors | {id(value)}
+        members = tuple(sorted(value, key=_leaf_sort_key))
+        mutations = []
+        for index, item in enumerate(members):
+            siblings = members[:index] + members[index + 1 :]
+            item_path = path + (index,)
+            if _is_retained_leaf(item):
+                candidates = (
+                    _LeafMutation(item_path, candidate)
+                    for candidate in _leaf_mutation_candidates(item)
+                )
+            else:
+                candidates = iter(
+                    _walk_single_leaf_mutations(
+                        item,
+                        item_path,
+                        nested_ancestors,
+                    )
+                )
+            emitted_paths: set[tuple[object, ...]] = set()
+            for mutation in candidates:
+                if mutation.path in emitted_paths:
+                    continue
+                forged = frozenset((*siblings, mutation.forged))
+                if len(forged) != len(value) or forged == value:
+                    continue
+                mutations.append(_LeafMutation(mutation.path, forged))
+                emitted_paths.add(mutation.path)
+        return tuple(mutations)
+
+    assert is_dataclass(value) and not isinstance(value, type), (
+        f"unsupported retained value: {type(value).__name__}"
+    )
+    assert type(value) is not VenueRecoveryBook, (
+        "leaf mutation cannot traverse VenueRecoveryBook"
+    )
+    assert id(value) not in ancestors, "cyclic retained dataclass"
+    retained_fields = fields(value)
+    assert retained_fields, "empty retained dataclass has no independent leaf"
+    nested_ancestors = ancestors | {id(value)}
+    mutations = []
+    for retained in retained_fields:
+        current = object.__getattribute__(value, retained.name)
+        for mutation in _walk_single_leaf_mutations(
+            current,
+            path + (retained.name,),
+            nested_ancestors,
+        ):
+            mutations.append(
+                _LeafMutation(
+                    mutation.path,
+                    _clone_opaque(value, **{retained.name: mutation.forged}),
+                )
+            )
+    return tuple(mutations)
+
+
+def _single_leaf_mutations(
+    root: object,
+    *,
+    allowed_root_types: tuple[type[object], ...],
+) -> tuple[_LeafMutation, ...]:
+    assert any(type(root) is allowed for allowed in allowed_root_types), (
+        f"leaf mutation root is out of scope: {type(root).__name__}"
+    )
+    mutations = _walk_single_leaf_mutations(root, (), frozenset())
+    paths = tuple(mutation.path for mutation in mutations)
+    assert len(paths) == len(set(paths)), "duplicate retained leaf mutation path"
+    return mutations
+
+
+def _retained_leaf_paths(
+    value: object,
+    path: tuple[object, ...] = (),
+) -> frozenset[tuple[object, ...]]:
+    """Independently enumerate retained leaves without rebuilding mutations."""
+    if _is_retained_leaf(value):
+        return frozenset({path})
+    if type(value) is tuple:
+        if not value:
+            return frozenset({path})
+        return frozenset(
+            nested
+            for index, item in enumerate(value)
+            for nested in _retained_leaf_paths(item, path + (index,))
+        )
+    if type(value) is frozenset:
+        if not value:
+            return frozenset({path})
+        members = tuple(sorted(value, key=_leaf_sort_key))
+        return frozenset(
+            nested
+            for index, item in enumerate(members)
+            for nested in _retained_leaf_paths(item, path + (index,))
+        )
+    assert is_dataclass(value) and not isinstance(value, type)
+    assert type(value) is not VenueRecoveryBook
+    return frozenset(
+        nested
+        for retained in fields(value)
+        for nested in _retained_leaf_paths(
+            object.__getattribute__(value, retained.name),
+            path + (retained.name,),
+        )
+    )
+
+
+def _changed_leaf_paths(
+    before: object,
+    after: object,
+    path: tuple[object, ...] = (),
+) -> frozenset[tuple[object, ...]]:
+    """Independently prove a rebuilt graph changed exactly one original leaf."""
+    if _is_retained_leaf(before):
+        return (
+            frozenset()
+            if type(after) is type(before) and after == before
+            else frozenset({path})
+        )
+    if type(before) is tuple:
+        if type(after) is not tuple or len(after) != len(before):
+            return frozenset({path})
+        return frozenset(
+            nested
+            for index, (left, right) in enumerate(zip(before, after, strict=True))
+            for nested in _changed_leaf_paths(left, right, path + (index,))
+        )
+    if type(before) is frozenset:
+        if type(after) is not frozenset or len(after) != len(before):
+            return frozenset({path})
+        if after == before:
+            return frozenset()
+        removed = tuple(before - after)
+        added = tuple(after - before)
+        assert len(removed) == len(added) == 1
+        members = tuple(sorted(before, key=_leaf_sort_key))
+        index = members.index(removed[0])
+        return _changed_leaf_paths(removed[0], added[0], path + (index,))
+    if type(after) is not type(before):
+        return frozenset({path})
+    assert is_dataclass(before) and not isinstance(before, type)
+    assert type(before) is not VenueRecoveryBook
+    return frozenset(
+        nested
+        for retained in fields(before)
+        for nested in _changed_leaf_paths(
+            object.__getattribute__(before, retained.name),
+            object.__getattribute__(after, retained.name),
+            path + (retained.name,),
+        )
+    )
+
+
 def _different_value(value: object) -> object:
-    """Return a deterministic unequal value for exhaustive seal mutation pins."""
+    """Return one deterministic unequal value for top-level envelope pins."""
     if type(value) is bool:
         return not value
     if type(value) is int:
@@ -712,6 +1129,30 @@ _PASSIVE_FIELD_METADATA_MAPPING_TYPE = type(
     vars(_PassiveDataclassProbe)["__dataclass_fields__"]["value"].metadata
 )
 _LIFECYCLE_SOURCE_SWAP_CALLS: list[str] = []
+_LIFECYCLE_ATTRIBUTE_ACCESS_CALLS: list[str] = []
+
+
+class _ActiveGuardedGetattribute:
+    __slots__ = ("value",)
+    __module__ = "app.execution_core.synthetic"
+
+    def __init__(self, value: int) -> None:
+        object.__setattr__(self, "value", value)
+
+    def __getattribute__(self, name: str) -> object:
+        _LIFECYCLE_ATTRIBUTE_ACCESS_CALLS.append(f"getattribute:{name}")
+        return object.__getattribute__(self, name)
+
+
+class _ActiveGuardedGetattr:
+    __slots__ = ("value",)
+    __module__ = "app.execution_core.synthetic"
+
+    def __getattr__(self, name: str) -> object:
+        _LIFECYCLE_ATTRIBUTE_ACCESS_CALLS.append(f"getattr:{name}")
+        if name == "value":
+            return -1
+        raise AttributeError(name)
 
 
 def _lifecycle_source_swap_payload(_self: object) -> None:
@@ -866,7 +1307,11 @@ _PASSIVE_RUNTIME_CODE_FLAGS = sum(
 )
 
 
-def _passive_constant_signature(value: object) -> tuple[object, ...]:
+def _passive_constant_signature(
+    value: object,
+    *,
+    include_code_location: bool,
+) -> tuple[object, ...]:
     """Describe code constants without invoking attacker-controlled protocols."""
     if value is None or value is Ellipsis or value is NotImplemented:
         return ("singleton", value)
@@ -877,15 +1322,33 @@ def _passive_constant_signature(value: object) -> tuple[object, ...]:
     if type(value) is tuple:
         return (
             "tuple",
-            tuple(_passive_constant_signature(item) for item in value),
+            tuple(
+                _passive_constant_signature(
+                    item,
+                    include_code_location=include_code_location,
+                )
+                for item in value
+            ),
         )
     if type(value) is frozenset:
         return (
             "frozenset",
-            frozenset(_passive_constant_signature(item) for item in value),
+            frozenset(
+                _passive_constant_signature(
+                    item,
+                    include_code_location=include_code_location,
+                )
+                for item in value
+            ),
         )
     if type(value) is CodeType:
-        return ("code", _passive_code_signature(value, include_location=True))
+        return (
+            "code",
+            _passive_code_signature(
+                value,
+                include_location=include_code_location,
+            ),
+        )
     raise AssertionError(
         f"generated or lifecycle code retains a capability constant: {type(value).__name__}"
     )
@@ -899,7 +1362,13 @@ def _passive_code_signature(
     """Return exact executable semantics, optionally including source location metadata."""
     signature: tuple[object, ...] = (
         code.co_code,
-        tuple(_passive_constant_signature(item) for item in code.co_consts),
+        tuple(
+            _passive_constant_signature(
+                item,
+                include_code_location=include_location,
+            )
+            for item in code.co_consts
+        ),
         code.co_names,
         code.co_varnames,
         code.co_freevars,
@@ -945,6 +1414,290 @@ def _assert_function_matches_inspected_source(
     assert _passive_code_signature(
         function.__code__, include_location=False
     ) == _passive_code_signature(source_codes[0], include_location=False), message
+
+
+def _canonical_function_source(
+    owner_module: ModuleType,
+    qualified_name: str,
+) -> str:
+    """Read one exact function body from its canonical module file."""
+    module_path = Path(owner_module.__file__).resolve()
+    source = module_path.read_text(encoding="utf-8")
+    scope: list[ast.stmt] = ast.parse(source, filename=str(module_path)).body
+    target: ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef | None = None
+    for part in qualified_name.split("."):
+        matches = [
+            node
+            for node in scope
+            if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name == part
+        ]
+        assert len(matches) == 1, (
+            f"canonical function source is ambiguous: {qualified_name}"
+        )
+        target = matches[0]
+        scope = target.body
+    assert isinstance(target, (ast.FunctionDef, ast.AsyncFunctionDef))
+    segment = ast.get_source_segment(source, target)
+    assert type(segment) is str
+    return textwrap.dedent(segment)
+
+
+def _target_binds_name(target: ast.AST, name: str) -> bool:
+    if isinstance(target, ast.Name):
+        return target.id == name
+    if isinstance(target, (ast.List, ast.Tuple)):
+        return any(_target_binds_name(item, name) for item in target.elts)
+    if isinstance(target, ast.Starred):
+        return _target_binds_name(target.value, name)
+    return False
+
+
+def _module_scope_binding_kinds(source: str, name: str) -> tuple[str, ...]:
+    """Inventory one module name without descending into local scopes."""
+    bindings: list[str] = []
+
+    class _BindingVisitor(ast.NodeVisitor):
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            if node.name == name:
+                bindings.append("function")
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+            if node.name == name:
+                bindings.append("async-function")
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            if node.name == name:
+                bindings.append("class")
+
+        def visit_Assign(self, node: ast.Assign) -> None:
+            if any(_target_binds_name(target, name) for target in node.targets):
+                bindings.append("assignment")
+            self.visit(node.value)
+
+        def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+            if _target_binds_name(node.target, name):
+                bindings.append("annotated-assignment")
+            if node.value is not None:
+                self.visit(node.value)
+
+        def visit_AugAssign(self, node: ast.AugAssign) -> None:
+            if _target_binds_name(node.target, name):
+                bindings.append("augmented-assignment")
+            self.visit(node.value)
+
+        def visit_NamedExpr(self, node: ast.NamedExpr) -> None:
+            if _target_binds_name(node.target, name):
+                bindings.append("named-expression")
+            self.visit(node.value)
+
+        def visit_Import(self, node: ast.Import) -> None:
+            for alias in node.names:
+                retained = alias.asname or alias.name.split(".", 1)[0]
+                if retained == name:
+                    bindings.append("import")
+
+        def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+            for alias in node.names:
+                retained = alias.asname or alias.name
+                if retained == name or retained == "*":
+                    bindings.append("import")
+
+        def visit_For(self, node: ast.For) -> None:
+            if _target_binds_name(node.target, name):
+                bindings.append("for-target")
+            self.generic_visit(node)
+
+        visit_AsyncFor = visit_For
+
+        def visit_With(self, node: ast.With) -> None:
+            if any(
+                item.optional_vars is not None
+                and _target_binds_name(item.optional_vars, name)
+                for item in node.items
+            ):
+                bindings.append("with-target")
+            self.generic_visit(node)
+
+        visit_AsyncWith = visit_With
+
+        def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
+            if node.name == name:
+                bindings.append("except-target")
+            self.generic_visit(node)
+
+        def visit_Delete(self, node: ast.Delete) -> None:
+            if any(_target_binds_name(target, name) for target in node.targets):
+                bindings.append("deletion")
+
+    _BindingVisitor().visit(ast.parse(source))
+    return tuple(bindings)
+
+
+def _assert_public_entrypoint_provenance(
+    owner_module: ModuleType,
+    name: str,
+    parameter_names: tuple[str, ...],
+    expected_annotations: dict[str, str],
+) -> None:
+    """Seal one public binding to canonical source and inert runtime metadata."""
+    module_path = Path(owner_module.__file__).resolve()
+    source = module_path.read_text(encoding="utf-8")
+    tree = ast.parse(source, filename=str(module_path))
+    matches = [
+        node
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name == name
+    ]
+    assert len(matches) == 1 and isinstance(matches[0], ast.FunctionDef)
+    function_node = matches[0]
+    assert _module_scope_binding_kinds(source, name) == ("function",), (
+        f"public entrypoint was rebound: {name}"
+    )
+    assert not function_node.decorator_list
+    assert not function_node.args.posonlyargs
+    assert not function_node.args.kwonlyargs
+    assert function_node.args.vararg is None and function_node.args.kwarg is None
+    assert not function_node.args.defaults and not function_node.args.kw_defaults
+    assert (
+        tuple(argument.arg for argument in function_node.args.args) == parameter_names
+    )
+
+    candidate = vars(owner_module).get(name)
+    assert type(candidate) is FunctionType, (
+        f"public entrypoint is not an exact function: {name}"
+    )
+    assert vars(execution_core).get(name) is candidate, (
+        f"public entrypoint package binding changed: {name}"
+    )
+    assert candidate.__globals__ is vars(owner_module)
+    assert candidate.__module__ == owner_module.__name__
+    assert candidate.__name__ == name and candidate.__qualname__ == name
+    assert Path(candidate.__code__.co_filename).resolve() == module_path
+    assert candidate.__code__.co_name == name
+    assert candidate.__code__.co_qualname == name
+    assert candidate.__code__.co_firstlineno == function_node.lineno
+    assert candidate.__defaults__ is None
+    assert candidate.__kwdefaults__ is None
+    assert candidate.__closure__ is None and not candidate.__code__.co_freevars
+    assert type(candidate.__dict__) is dict and not candidate.__dict__
+    assert candidate.__doc__ is None or type(candidate.__doc__) is str
+    annotations = candidate.__annotations__
+    assert type(annotations) is dict
+    assert all(type(key) is str for key in annotations)
+    assert all(type(value) is str for value in annotations.values())
+    assert annotations == expected_annotations
+    signature = inspect.signature(candidate, eval_str=False)
+    assert tuple(signature.parameters) == parameter_names
+    assert all(
+        parameter.kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
+        and parameter.default is inspect.Parameter.empty
+        for parameter in signature.parameters.values()
+    )
+    _assert_function_matches_inspected_source(
+        candidate,
+        _canonical_function_source(owner_module, name),
+        message=f"public entrypoint bytecode does not match canonical source: {name}",
+    )
+
+
+def _clone_entrypoint_function(
+    function: Callable[..., object],
+    *,
+    code: CodeType | None = None,
+    defaults: tuple[object, ...] | None = None,
+    closure: tuple[object, ...] | None = None,
+) -> Callable[..., object]:
+    retained_closure = function.__closure__ if closure is None else closure
+    clone = FunctionType(
+        function.__code__ if code is None else code,
+        function.__globals__,
+        function.__name__,
+        defaults,
+        retained_closure,
+    )
+    clone.__qualname__ = function.__qualname__
+    clone.__module__ = function.__module__
+    clone.__doc__ = function.__doc__
+    clone.__kwdefaults__ = function.__kwdefaults__
+    clone.__annotations__ = dict(function.__annotations__)
+    return clone
+
+
+def _resolved_exact_global(function: Callable[..., object], name: str) -> object:
+    globals_map = function.__globals__
+    if name in globals_map:
+        return globals_map[name]
+    retained_builtins = globals_map.get("__builtins__", builtins)
+    if retained_builtins is builtins:
+        return vars(builtins)[name]
+    assert type(retained_builtins) is dict, "function builtins source changed"
+    return retained_builtins[name]
+
+
+def _assert_exact_function_dependency_closure(
+    function: Callable[..., object],
+    owner_module: ModuleType,
+    *,
+    qualified_name: str,
+    exact_externals: dict[str, object],
+    seen: set[int] | None = None,
+) -> None:
+    """Seal executable globals recursively before a bounded map method runs."""
+    visited = set() if seen is None else seen
+    if id(function) in visited:
+        return
+    visited.add(id(function))
+
+    assert inspect.isfunction(function)
+    assert function.__globals__ is vars(owner_module), (
+        f"{qualified_name} dependency globals changed"
+    )
+    assert function.__module__ == owner_module.__name__
+    assert function.__name__ == qualified_name.rsplit(".", 1)[-1]
+    assert function.__qualname__ == qualified_name
+    module_path = Path(owner_module.__file__).resolve()
+    assert Path(function.__code__.co_filename).resolve() == module_path
+    assert function.__defaults__ is None
+    assert function.__kwdefaults__ is None
+    assert function.__closure__ is None and not function.__code__.co_freevars
+    assert type(function.__dict__) is dict and not function.__dict__
+    assert function.__doc__ is None or type(function.__doc__) is str
+    assert type(function.__annotations__) is dict
+    assert all(type(name) is str for name in function.__annotations__)
+    assert all(type(value) is str for value in function.__annotations__.values())
+    _assert_function_matches_inspected_source(
+        function,
+        _canonical_function_source(owner_module, qualified_name),
+        message=f"{qualified_name} bytecode does not match canonical source",
+    )
+
+    dependencies = {
+        instruction.argval
+        for instruction in dis.get_instructions(function)
+        if instruction.opname == "LOAD_GLOBAL" and type(instruction.argval) is str
+    }
+    for name in dependencies:
+        candidate = _resolved_exact_global(function, name)
+        if name in exact_externals:
+            assert candidate is exact_externals[name], (
+                f"{qualified_name} global identity changed: {name}"
+            )
+            continue
+        assert inspect.isfunction(candidate), (
+            f"{qualified_name} has an unsealed executable global: {name}"
+        )
+        assert candidate is vars(owner_module).get(name), (
+            f"{qualified_name} same-module dependency was rebound: {name}"
+        )
+        _assert_exact_function_dependency_closure(
+            candidate,
+            owner_module,
+            qualified_name=name,
+            exact_externals=exact_externals,
+            seen=visited,
+        )
 
 
 def _assert_generated_function_metadata(function: Callable[..., object]) -> None:
@@ -1261,6 +2014,23 @@ def _assert_lifecycle_builtin(
     )
 
 
+def _assert_guarded_lifecycle_type_is_passive(
+    value_type: type[object],
+) -> None:
+    """Reject nested exact-type guards whose attribute reads can execute code."""
+    trusted_bases = (object, bool, bytes, int, str, Decimal, Fraction, type(None), Enum)
+    for base in inspect.getmro(value_type):
+        if any(base is trusted for trusted in trusted_bases):
+            continue
+        namespace = vars(base)
+        assert namespace.get("__getattribute__", object.__getattribute__) is (
+            object.__getattribute__
+        ), f"guarded lifecycle type has custom attribute access: {value_type.__name__}"
+        assert "__getattr__" not in namespace, (
+            f"guarded lifecycle type has custom attribute access: {value_type.__name__}"
+        )
+
+
 def _lifecycle_global_type(
     lifecycle: Callable[..., object],
     name: str,
@@ -1275,6 +2045,7 @@ def _lifecycle_global_type(
     assert module_name in {"builtins", "decimal", "enum", "fractions"} or (
         module_name.startswith("app.execution_core")
     ), f"unapproved lifecycle type target: {name}"
+    _assert_guarded_lifecycle_type_is_passive(candidate)
     return candidate
 
 
@@ -2194,16 +2965,35 @@ def _persistent_map_provenance_violations(tree: ast.AST) -> set[str]:
             violations.add("persistent-map-import-provenance")
 
     for candidate in ast.walk(tree):
+        if isinstance(candidate, ast.Import):
+            for imported in candidate.names:
+                if (
+                    imported.name == "app.execution_core.fills"
+                    or imported.name.endswith(".fills")
+                ):
+                    violations.add("persistent-map-owner-module-import")
+        if isinstance(candidate, ast.ImportFrom):
+            if candidate.level == 1 and candidate.module is None:
+                if any(imported.name == "fills" for imported in candidate.names):
+                    violations.add("persistent-map-owner-module-import")
+            if any(imported.name == "_child_at" for imported in candidate.names):
+                violations.add("persistent-map-dependency-import")
         if (
             isinstance(candidate, ast.Attribute)
             and candidate.attr == "_PersistentKeyMap"
         ):
             violations.add("qualified-persistent-map-access")
+        if isinstance(candidate, ast.Attribute) and candidate.attr == "_child_at":
+            violations.add("qualified-persistent-map-dependency-access")
         if (
             isinstance(candidate, ast.Constant)
             and candidate.value == "_PersistentKeyMap"
         ):
             violations.add("dynamic-persistent-map-name")
+        if isinstance(candidate, ast.Constant) and candidate.value == "_child_at":
+            violations.add("dynamic-persistent-map-dependency-name")
+        if isinstance(candidate, ast.Name) and candidate.id == "_child_at":
+            violations.add("persistent-map-dependency-capability-escape")
         if not isinstance(candidate, ast.Name) or candidate.id != "_PersistentKeyMap":
             continue
         if not isinstance(candidate.ctx, ast.Load):
@@ -2630,6 +3420,286 @@ def test_public_protection_contract_is_exported_and_has_one_reducer() -> None:
         for name in dir(module)
         if name.startswith(("create_", "claim_", "dispatch_", "grant_", "submit_"))
     } == set()
+
+
+@pytest.mark.parametrize(
+    ("name", "parameter_names", "annotations"),
+    [
+        (
+            "project_protection_venue",
+            ("transition", "mandate"),
+            {
+                "transition": "VenueRecoveryTransition",
+                "mandate": "ProtectionMandate",
+                "return": "ProtectionVenueProjection",
+            },
+        ),
+        (
+            "initialize_position_protection",
+            ("mandate", "projection"),
+            {
+                "mandate": "ProtectionMandate",
+                "projection": "ProtectionVenueProjection",
+                "return": "PositionProtectionState",
+            },
+        ),
+        (
+            "reduce_position_protection",
+            ("state", "projection", "occurrence"),
+            {
+                "state": "PositionProtectionState",
+                "projection": "ProtectionVenueProjection",
+                "occurrence": "MarketOccurrence | None",
+                "return": "ProtectionTransition",
+            },
+        ),
+    ],
+)
+def test_public_entrypoints_have_exact_runtime_provenance(
+    name: str,
+    parameter_names: tuple[str, ...],
+    annotations: dict[str, str],
+) -> None:
+    module = _protection_module()
+    _assert_public_entrypoint_provenance(
+        module,
+        name,
+        parameter_names,
+        annotations,
+    )
+
+
+def test_public_entrypoint_provenance_oracle_rejects_rebinding_and_capabilities(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = inspect.getmodule(_synthetic_public_entrypoint)
+    assert module is not None
+    name = "_synthetic_public_entrypoint"
+    parameter_names = ("transition", "mandate")
+    annotations = {
+        "transition": "object",
+        "mandate": "object",
+        "return": "object",
+    }
+    (original,) = _required(module, name)
+    assert type(original) is FunctionType
+    monkeypatch.setattr(execution_core, name, original, raising=False)
+    _assert_public_entrypoint_provenance(
+        module,
+        name,
+        parameter_names,
+        annotations,
+    )
+
+    exact_clone = _clone_entrypoint_function(original)
+    with monkeypatch.context() as patch:
+        patch.setattr(module, name, exact_clone)
+        patch.setattr(execution_core, name, exact_clone)
+        _assert_public_entrypoint_provenance(
+            module,
+            name,
+            parameter_names,
+            annotations,
+        )
+
+    _PUBLIC_ENTRYPOINT_PAYLOAD_CALLS.clear()
+    payload_calls = _PUBLIC_ENTRYPOINT_PAYLOAD_CALLS
+    canonical_code = original.__code__
+    payload_code = _public_entrypoint_source_swap_payload.__code__.replace(
+        co_filename=canonical_code.co_filename,
+        co_name=name,
+        co_qualname=name,
+        co_firstlineno=canonical_code.co_firstlineno,
+    )
+    source_swap = _clone_entrypoint_function(original, code=payload_code)
+    with monkeypatch.context() as patch:
+        patch.setattr(module, name, source_swap)
+        patch.setattr(execution_core, name, source_swap)
+        with pytest.raises(AssertionError, match="bytecode does not match"):
+            _assert_public_entrypoint_provenance(
+                module,
+                name,
+                parameter_names,
+                annotations,
+            )
+        assert payload_calls == []
+        source_swap(object(), object())
+        assert payload_calls == ["executed"]
+        payload_calls.clear()
+
+    default_mutant = _clone_entrypoint_function(
+        original,
+        defaults=(object(),),
+    )
+    attribute_mutant = _clone_entrypoint_function(original)
+    attribute_mutant.broker_client = object()
+    annotation_mutant = _clone_entrypoint_function(original)
+    annotation_mutant.__annotations__["return"] = lambda: None
+
+    retained_capability = object()
+
+    def make_closure_mutant() -> Callable[..., object]:
+        capability = retained_capability
+
+        def closure_mutant(transition: object, mandate: object) -> object:
+            del transition, mandate
+            return capability
+
+        return closure_mutant
+
+    closure_source = make_closure_mutant()
+    closure_code = closure_source.__code__.replace(
+        co_filename=canonical_code.co_filename,
+        co_name=name,
+        co_qualname=name,
+        co_firstlineno=canonical_code.co_firstlineno,
+    )
+    closure_mutant = _clone_entrypoint_function(
+        original,
+        code=closure_code,
+        closure=closure_source.__closure__,
+    )
+    for mutant in (
+        default_mutant,
+        attribute_mutant,
+        annotation_mutant,
+        closure_mutant,
+    ):
+        with monkeypatch.context() as patch:
+            patch.setattr(module, name, mutant)
+            patch.setattr(execution_core, name, mutant)
+            with pytest.raises(AssertionError):
+                _assert_public_entrypoint_provenance(
+                    module,
+                    name,
+                    parameter_names,
+                    annotations,
+                )
+
+    class _CallableMutant:
+        def __call__(self, *_args: object, **_kwargs: object) -> None:
+            payload_calls.append("callable-executed")
+
+    callable_mutant = _CallableMutant()
+    with monkeypatch.context() as patch:
+        patch.setattr(module, name, callable_mutant)
+        patch.setattr(execution_core, name, callable_mutant)
+        with pytest.raises(AssertionError, match="not an exact function"):
+            _assert_public_entrypoint_provenance(
+                module,
+                name,
+                parameter_names,
+                annotations,
+            )
+    assert payload_calls == []
+
+    with monkeypatch.context() as patch:
+        patch.setattr(execution_core, name, exact_clone)
+        with pytest.raises(AssertionError, match="package binding changed"):
+            _assert_public_entrypoint_provenance(
+                module,
+                name,
+                parameter_names,
+                annotations,
+            )
+
+    synthetic_rebind = """
+def _synthetic_public_entrypoint(transition, mandate):
+    return transition, mandate
+_synthetic_public_entrypoint = wrapper
+"""
+    assert _module_scope_binding_kinds(synthetic_rebind, name) == (
+        "function",
+        "assignment",
+    )
+
+
+def test_no_access_lookalike_proves_identity_checks_are_protocol_free() -> None:
+    negative_events: list[str] = []
+    negative = _no_access_lookalike(negative_events)
+    assert type(negative) is not object
+    assert negative is not None
+    assert negative_events == []
+
+    def unsafe_field_read(value: object) -> None:
+        value.authority  # type: ignore[attr-defined]
+        raise TypeError("value")
+
+    with pytest.raises(AssertionError, match="attribute:authority"):
+        unsafe_field_read(negative)
+    assert negative_events == ["attribute:authority"]
+
+    type_events: list[str] = []
+    type_probe = _no_access_lookalike(type_events)
+    with pytest.raises(AssertionError, match="type-attribute:__name__"):
+        type(type_probe).__name__
+    assert type_events == ["type-attribute:__name__"]
+
+
+def test_public_entrypoint_argument_types_are_unconditionally_sealed() -> None:
+    module = _protection_module()
+    fill = _owned_fill_transition(label="public-entrypoint-sealed-types")
+    mandate, projection, state = _start(module, fill)
+    occurrence = _occurrence(
+        module,
+        "public-entrypoint-sealed-types",
+        bid=100,
+        ask=101,
+    )
+    accepted_values = (
+        ("transition", fill),
+        ("mandate", mandate),
+        ("projection", projection),
+        ("state", state),
+        ("occurrence", occurrence),
+    )
+    for label, value in accepted_values:
+        value_type = type(value)
+        owner_module = inspect.getmodule(value_type)
+        assert owner_module is not None, label
+        assert "__init_subclass__" in _retained_behavior_names(value_type), label
+        _assert_passive_lifecycle(value_type, owner_module)
+        with pytest.raises(TypeError):
+            type(f"Forged{label.title()}", (value_type,), {"__slots__": ()})
+
+    with pytest.raises(TypeError):
+        type("ForgedNone", (type(None),), {"__slots__": ()})
+
+
+def test_public_entrypoints_reject_every_wrong_exact_type_before_protocol_access() -> (
+    None
+):
+    module = _protection_module()
+    fill = _owned_fill_transition(label="public-entrypoint-no-access")
+    mandate, projection, state = _start(module, fill)
+    occurrence = _occurrence(
+        module,
+        "public-entrypoint-no-access",
+        bid=100,
+        ask=101,
+    )
+    project, initialize, reduce = _required(
+        module,
+        "project_protection_venue",
+        "initialize_position_protection",
+        "reduce_position_protection",
+    )
+    matrix = (
+        ("project.transition", project, (fill, mandate), 0),
+        ("project.mandate", project, (fill, mandate), 1),
+        ("initialize.mandate", initialize, (mandate, projection), 0),
+        ("initialize.projection", initialize, (mandate, projection), 1),
+        ("reduce.state", reduce, (state, projection, occurrence), 0),
+        ("reduce.projection", reduce, (state, projection, occurrence), 1),
+        ("reduce.occurrence", reduce, (state, projection, occurrence), 2),
+    )
+    for label, entrypoint, valid_arguments, attacked_index in matrix:
+        events: list[str] = []
+        arguments = list(valid_arguments)
+        arguments[attacked_index] = _no_access_lookalike(events)
+        with pytest.raises(TypeError):
+            entrypoint(*arguments)
+        assert events == [], label
 
 
 def test_public_value_shapes_and_enum_members_are_exact() -> None:
@@ -3104,6 +4174,60 @@ def test_passive_lifecycle_accepts_exact_sequential_validation() -> None:
         replace(valid, evaluation_time=9)
 
 
+def test_passive_lifecycle_rejects_active_nested_attribute_access_before_payload() -> (
+    None
+):
+    @dataclass(frozen=True, slots=True)
+    class _PassiveNestedValueProbe:
+        tick: object
+
+        def __post_init__(self) -> None:
+            if type(self.tick) is not TickMetadata:
+                raise TypeError("tick")
+            if type(self.tick.tick_units) is not PriceUnits:
+                raise TypeError("tick_units")
+
+    @dataclass(frozen=True, slots=True)
+    class _GetattributeLifecycleMutant:
+        nested: object
+
+        def __post_init__(self) -> None:
+            if type(self.nested) is not _ActiveGuardedGetattribute:
+                raise TypeError("nested")
+            if self.nested.value < 0:
+                raise ValueError("value")
+
+    @dataclass(frozen=True, slots=True)
+    class _GetattrLifecycleMutant:
+        nested: object
+
+        def __post_init__(self) -> None:
+            if type(self.nested) is not _ActiveGuardedGetattr:
+                raise TypeError("nested")
+            if self.nested.value < 0:
+                raise ValueError("value")
+
+    owner_module = inspect.getmodule(_PassiveNestedValueProbe)
+    assert owner_module is not None
+    _assert_passive_lifecycle(_PassiveNestedValueProbe, owner_module)
+    _PassiveNestedValueProbe(tick=TICK)
+
+    _LIFECYCLE_ATTRIBUTE_ACCESS_CALLS.clear()
+    for mutant in (_GetattributeLifecycleMutant, _GetattrLifecycleMutant):
+        with pytest.raises(AssertionError, match="custom attribute access"):
+            _assert_passive_lifecycle(mutant, owner_module)
+    assert _LIFECYCLE_ATTRIBUTE_ACCESS_CALLS == []
+
+    _GetattributeLifecycleMutant(nested=_ActiveGuardedGetattribute(1))
+    with pytest.raises(ValueError, match="value"):
+        _GetattrLifecycleMutant(nested=object.__new__(_ActiveGuardedGetattr))
+    assert _LIFECYCLE_ATTRIBUTE_ACCESS_CALLS == [
+        "getattribute:value",
+        "getattr:value",
+    ]
+    _LIFECYCLE_ATTRIBUTE_ACCESS_CALLS.clear()
+
+
 def test_passive_lifecycle_rejects_capability_and_metadata_mutants() -> None:
     @dataclass(frozen=True, slots=True, init=False)
     class _PassiveOpaqueProbe:
@@ -3474,8 +4598,84 @@ def test_state_projection_and_transition_are_opaque_and_sealed() -> None:
             type("ForgedProtectionCapability", (opaque,), {})
 
 
+def test_single_leaf_mutation_walker_is_complete_local_and_shape_bounded() -> None:
+    @dataclass(frozen=True, slots=True)
+    class _NestedLeafProbe:
+        value: int
+
+    @dataclass(frozen=True, slots=True)
+    class _LeafGraphProbe:
+        scalar: int
+        flag: bool
+        payload: bytes
+        label: str
+        decimal: Decimal
+        ratio: Fraction
+        kind: _PassiveEnumProbe
+        optional: None
+        nested: _NestedLeafProbe
+        items: tuple[object, ...]
+        members: frozenset[int]
+        empty_items: tuple[()]
+        empty_members: frozenset[object]
+
+    probe = _LeafGraphProbe(
+        scalar=7,
+        flag=True,
+        payload=b"payload",
+        label="label",
+        decimal=Decimal("1.25"),
+        ratio=Fraction(3, 5),
+        kind=_PassiveEnumProbe.FIRST,
+        optional=None,
+        nested=_NestedLeafProbe(value=11),
+        items=(b"first", "second"),
+        members=frozenset({10, 30}),
+        empty_items=(),
+        empty_members=frozenset(),
+    )
+    mutations = _single_leaf_mutations(
+        probe,
+        allowed_root_types=(type(probe),),
+    )
+    expected_paths = frozenset(
+        {
+            ("scalar",),
+            ("flag",),
+            ("payload",),
+            ("label",),
+            ("decimal",),
+            ("ratio",),
+            ("kind",),
+            ("optional",),
+            ("nested", "value"),
+            ("items", 0),
+            ("items", 1),
+            ("members", 0),
+            ("members", 1),
+            ("empty_items",),
+            ("empty_members",),
+        }
+    )
+    assert _retained_leaf_paths(probe) == expected_paths
+    assert tuple(mutation.path for mutation in mutations) == tuple(
+        mutation.path
+        for mutation in _single_leaf_mutations(
+            probe,
+            allowed_root_types=(type(probe),),
+        )
+    )
+    assert frozenset(mutation.path for mutation in mutations) == expected_paths
+    assert len(mutations) == len(expected_paths)
+
+    for mutation in mutations:
+        assert type(mutation.forged) is type(probe)
+        assert _changed_leaf_paths(probe, mutation.forged) == frozenset({mutation.path})
+
+
 def test_every_reducer_owned_state_field_is_authenticated_before_advancement() -> None:
     module = _protection_module()
+    (state_type,) = _required(module, "PositionProtectionState")
     fill = _owned_fill_transition(label="protection-state-seal")
     mandate, _, state = _start(module, fill)
     _, terminal = _terminal_fixture(
@@ -3487,23 +4687,25 @@ def test_every_reducer_owned_state_field_is_authenticated_before_advancement() -
     )
     successor = _projection(module, terminal, mandate)
     (disposition,) = _required(module, "ProtectionDisposition")
-    tested = set()
-    for retained in fields(state):
-        current = getattr(state, retained.name)
-        replacement = _different_value(current)
-        assert replacement != current
-        forged = _clone_opaque(state, **{retained.name: replacement})
-        result = _reduce(module, forged, successor)
-        assert result.disposition is disposition.REFUSED, retained.name
-        assert result.state == forged, retained.name
-        assert result.goal is None, retained.name
-        assert result.critical_alert is None, retained.name
-        tested.add(retained.name)
-    assert tested == {retained.name for retained in fields(state)}
+    mutations = _single_leaf_mutations(
+        state,
+        allowed_root_types=(state_type,),
+    )
+    expected_paths = _retained_leaf_paths(state)
+    assert frozenset(mutation.path for mutation in mutations) == expected_paths
+    assert len(mutations) == len(expected_paths)
+    for mutation in mutations:
+        assert _changed_leaf_paths(state, mutation.forged) == frozenset({mutation.path})
+        result = _reduce(module, mutation.forged, successor)
+        assert result.disposition is disposition.REFUSED, mutation.path
+        assert result.state == mutation.forged, mutation.path
+        assert result.goal is None, mutation.path
+        assert result.critical_alert is None, mutation.path
 
 
 def test_every_projection_field_is_sealed_against_single_field_forgery() -> None:
     module = _protection_module()
+    (projection_type,) = _required(module, "ProtectionVenueProjection")
     fill = _owned_fill_transition(label="protection-projection-seal")
     mandate, _, state = _start(module, fill)
     _, terminal = _terminal_fixture(
@@ -3515,19 +4717,22 @@ def test_every_projection_field_is_sealed_against_single_field_forgery() -> None
     )
     projection = _projection(module, terminal, mandate)
     (disposition,) = _required(module, "ProtectionDisposition")
-    tested = set()
-    for retained in fields(projection):
-        current = getattr(projection, retained.name)
-        replacement = _different_value(current)
-        assert replacement != current
-        forged = _clone_opaque(projection, **{retained.name: replacement})
-        result = _reduce(module, state, forged)
-        assert result.disposition is disposition.REFUSED, retained.name
-        assert result.state == state, retained.name
-        assert result.goal is None, retained.name
-        assert result.critical_alert is None, retained.name
-        tested.add(retained.name)
-    assert tested == {retained.name for retained in fields(projection)}
+    mutations = _single_leaf_mutations(
+        projection,
+        allowed_root_types=(projection_type,),
+    )
+    expected_paths = _retained_leaf_paths(projection)
+    assert frozenset(mutation.path for mutation in mutations) == expected_paths
+    assert len(mutations) == len(expected_paths)
+    for mutation in mutations:
+        assert _changed_leaf_paths(projection, mutation.forged) == frozenset(
+            {mutation.path}
+        )
+        result = _reduce(module, state, mutation.forged)
+        assert result.disposition is disposition.REFUSED, mutation.path
+        assert result.state == state, mutation.path
+        assert result.goal is None, mutation.path
+        assert result.critical_alert is None, mutation.path
 
 
 def test_every_venue_transition_field_is_bound_into_the_protection_proof() -> None:
@@ -4462,21 +5667,18 @@ def test_protection_projection_never_materializes_slow_venue_histories(
     map_type = getattr(venue_module, "_PersistentKeyMap")
     assert map_type is getattr(fills_module, "_PersistentKeyMap")
     original_map_get = inspect.getattr_static(map_type, "get")
-    assert inspect.isfunction(original_map_get)
-    assert original_map_get.__module__ == fills_module.__name__
-    assert original_map_get.__qualname__ == "_PersistentKeyMap.get"
-    assert (
-        Path(original_map_get.__code__.co_filename).resolve()
-        == Path(fills_module.__file__).resolve()
-    )
-    assert original_map_get.__defaults__ is None
-    assert original_map_get.__kwdefaults__ is None
-    assert original_map_get.__closure__ is None
-    assert type(original_map_get.__dict__) is dict and not original_map_get.__dict__
-    _assert_function_matches_inspected_source(
+    _assert_exact_function_dependency_closure(
         original_map_get,
-        textwrap.dedent(inspect.getsource(original_map_get)),
-        message="bounded-map get bytecode does not match its trusted source",
+        fills_module,
+        qualified_name="_PersistentKeyMap.get",
+        exact_externals={
+            "ValueError": builtins.ValueError,
+            "_ValueT": vars(fills_module)["_ValueT"],
+            "bytes": builtins.bytes,
+            "cast": typing.cast,
+            "isinstance": builtins.isinstance,
+            "len": builtins.len,
+        },
     )
     for name in _BOUNDED_PROTECTION_MAP_FIELD_ORDER:
         descriptor = inspect.getattr_static(VenueRecoveryBook, name)
@@ -4669,6 +5871,39 @@ def fresh() -> _PersistentKeyMap[int]:
     assert not _persistent_map_provenance_violations(ast.parse(safe_source))
 
 
+def test_bounded_map_provenance_rejects_transitive_global_rebind(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fills_module = importlib.import_module("app.execution_core.fills")
+    map_type = getattr(fills_module, "_PersistentKeyMap")
+    map_get = inspect.getattr_static(map_type, "get")
+    child_at = getattr(fills_module, "_child_at")
+    payload_calls: list[str] = []
+
+    def replacement(*args: object, **kwargs: object) -> object:
+        payload_calls.append("executed")
+        return child_at(*args, **kwargs)
+
+    monkeypatch.setattr(fills_module, "_child_at", replacement)
+    with pytest.raises(AssertionError, match="dependency globals changed"):
+        _assert_exact_function_dependency_closure(
+            map_get,
+            fills_module,
+            qualified_name="_PersistentKeyMap.get",
+            exact_externals={
+                "ValueError": builtins.ValueError,
+                "_ValueT": vars(fills_module)["_ValueT"],
+                "bytes": builtins.bytes,
+                "cast": typing.cast,
+                "isinstance": builtins.isinstance,
+                "len": builtins.len,
+            },
+        )
+    assert payload_calls == []
+    assert map_get(map_type.empty(), b"key") is None
+    assert payload_calls == ["executed"]
+
+
 @pytest.mark.parametrize(
     ("mutation", "expected_violation"),
     [
@@ -4700,6 +5935,14 @@ def fresh() -> _PersistentKeyMap[int]:
             "import app.execution_core.fills as fills\n"
             "fills._PersistentKeyMap.get = slow_get",
             "qualified-persistent-map-access",
+        ),
+        (
+            "from . import fills\nfills._child_at = slow_get",
+            "persistent-map-owner-module-import",
+        ),
+        (
+            "from .fills import _child_at\n_child_at = slow_get",
+            "persistent-map-dependency-import",
         ),
     ],
 )
@@ -5585,6 +6828,85 @@ def test_duplicate_restart_and_nonadvancing_sequence_do_not_corroborate() -> Non
     assert replay.goal is None and equal_sequence.goal is None
 
 
+@pytest.mark.parametrize("second_sequence", [2, None])
+@pytest.mark.parametrize("first_kind", ["BEST_BID", "TRADE"])
+def test_occurrence_identity_equivocation_is_refused_before_corroboration(
+    first_kind: str,
+    second_sequence: int | None,
+) -> None:
+    module = _protection_module()
+    fill = _owned_fill_transition(
+        label=f"equivocation-{first_kind.lower()}-{second_sequence}"
+    )
+    mandate, _, state = _start(module, fill)
+    terminal, closed = _close_base_parent(fill)
+    state, projection, _ = _sync_transitions(
+        module,
+        state,
+        mandate,
+        (terminal, closed),
+    )
+    shared_id = "equivocated-source-occurrence"
+    first = _reduce(
+        module,
+        state,
+        projection,
+        _occurrence(
+            module,
+            shared_id,
+            kind=first_kind,
+            bid=92 if first_kind == "BEST_BID" else None,
+            ask=93 if first_kind == "BEST_BID" else None,
+            trade=92 if first_kind == "TRADE" else None,
+            sequence=1 if second_sequence is not None else None,
+            source_time=100,
+            evaluation_time=104,
+        ),
+    )
+    equivocated = _reduce(
+        module,
+        first.state,
+        projection,
+        _occurrence(
+            module,
+            shared_id,
+            kind="BEST_BID",
+            bid=91,
+            ask=92,
+            sequence=second_sequence,
+            source_time=106,
+            evaluation_time=110,
+        ),
+    )
+    disposition, policy = _required(
+        module,
+        "ProtectionDisposition",
+        "ProtectionPolicy",
+    )
+    assert equivocated.disposition is disposition.REFUSED
+    assert equivocated.state == first.state
+    assert equivocated.state.policy is policy.FLOOR_ONLY
+    assert equivocated.goal is None
+    assert equivocated.critical_alert is None
+
+    distinct = _reduce(
+        module,
+        equivocated.state,
+        projection,
+        _occurrence(
+            module,
+            "equivocation-distinct-successor",
+            bid=91,
+            ask=92,
+            sequence=3 if second_sequence is not None else None,
+            source_time=112,
+            evaluation_time=116,
+        ),
+    )
+    assert distinct.state.policy is policy.HARD_BAIL
+    assert distinct.goal is not None
+
+
 def test_above_trigger_interruption_resets_bid_corroboration() -> None:
     module = _protection_module()
     fill = _owned_fill_transition()
@@ -6318,17 +7640,18 @@ def test_market_epoch_regression_cannot_reuse_reopen_evidence() -> None:
 
 
 @pytest.mark.parametrize(
-    ("order", "gap", "triggers"),
+    ("order", "second_source_time", "second_evaluation_time", "triggers"),
     [
-        ("trade-bid", 10, True),
-        ("trade-bid", 11, False),
-        ("bid-trade", 10, True),
-        ("bid-trade", 11, False),
+        ("trade-bid", 110, 204, True),
+        ("trade-bid", 111, 111, False),
+        ("bid-trade", 110, 204, True),
+        ("bid-trade", 111, 111, False),
     ],
 )
-def test_trade_bid_corroboration_honors_both_orders_and_window_boundary(
+def test_trade_bid_window_is_owned_by_source_time_not_evaluation_time(
     order: str,
-    gap: int,
+    second_source_time: int,
+    second_evaluation_time: int,
     triggers: bool,
 ) -> None:
     module = _protection_module()
@@ -6347,7 +7670,7 @@ def test_trade_bid_corroboration_honors_both_orders_and_window_boundary(
         projection,
         _occurrence(
             module,
-            f"window-{order}-first-{gap}",
+            f"window-{order}-first-{second_source_time}-{second_evaluation_time}",
             kind=first_kind.upper().replace("BID", "BEST_BID"),
             bid=92 if first_kind == "bid" else None,
             ask=93 if first_kind == "bid" else None,
@@ -6363,14 +7686,14 @@ def test_trade_bid_corroboration_honors_both_orders_and_window_boundary(
         projection,
         _occurrence(
             module,
-            f"window-{order}-second-{gap}",
+            f"window-{order}-second-{second_source_time}-{second_evaluation_time}",
             kind=second_kind.upper().replace("BID", "BEST_BID"),
             bid=91 if second_kind == "bid" else None,
             ask=92 if second_kind == "bid" else None,
             trade=91 if second_kind == "trade" else None,
             sequence=2,
-            source_time=100 + gap,
-            evaluation_time=104 + gap,
+            source_time=second_source_time,
+            evaluation_time=second_evaluation_time,
         ),
     )
     (policy,) = _required(module, "ProtectionPolicy")
@@ -6609,6 +7932,77 @@ def test_activation_and_hybrid_trail_ratchet_use_available_components_only() -> 
     )
     assert without_components.state.high_watermark.exact_value == Fraction(125)
     assert without_components.state.trail.exact_value == Fraction(115)
+
+
+@pytest.mark.parametrize("candidate_kind", ["atr", "structure"])
+def test_new_trail_governs_the_same_occurrence_that_tightens_it(
+    candidate_kind: str,
+) -> None:
+    module = _protection_module()
+    fill = _owned_fill_transition(label=f"same-occurrence-trail-{candidate_kind}")
+    mandate, _, state = _start(module, fill)
+    terminal, closed = _close_base_parent(fill)
+    state, projection, _ = _sync_transitions(
+        module,
+        state,
+        mandate,
+        (terminal, closed),
+    )
+    activated = _reduce(
+        module,
+        state,
+        projection,
+        _occurrence(
+            module,
+            f"same-occurrence-trail-{candidate_kind}-activation",
+            bid=120,
+            ask=121,
+            sequence=1,
+        ),
+    )
+    assert activated.state.trail.exact_value == Fraction(111)
+
+    tightened = _reduce(
+        module,
+        activated.state,
+        projection,
+        _occurrence(
+            module,
+            f"same-occurrence-trail-{candidate_kind}-tighten",
+            bid=115,
+            ask=116,
+            sequence=2,
+            source_time=106,
+            evaluation_time=110,
+            atr_distance=1 if candidate_kind == "atr" else None,
+            structure_trail=118 if candidate_kind == "structure" else None,
+        ),
+    )
+    (policy,) = _required(module, "ProtectionPolicy")
+    assert tightened.state.policy is policy.TRAIL_ACTIVE
+    assert tightened.state.high_watermark.exact_value == Fraction(120)
+    assert tightened.state.trail.exact_value == Fraction(118)
+    assert tightened.goal is None
+
+    exited = _reduce(
+        module,
+        tightened.state,
+        projection,
+        _occurrence(
+            module,
+            f"same-occurrence-trail-{candidate_kind}-second-below",
+            bid=114,
+            ask=115,
+            sequence=3,
+            source_time=112,
+            evaluation_time=116,
+        ),
+    )
+    (urgency,) = _required(module, "ProtectionUrgency")
+    assert exited.state.policy is policy.EXIT_NORMAL
+    assert exited.goal is not None
+    assert exited.goal.urgency is urgency.NORMAL
+    assert exited.goal.guard == mandate.normal_guard
 
 
 def test_structure_can_be_the_exact_dominant_trail_candidate() -> None:
@@ -7229,6 +8623,184 @@ def test_any_live_sell_effect_suppresses_goal_until_leg_and_parent_close(
     assert blocked_again.state.waiting_buy_resolution is False
     assert blocked_again.goal is None
     assert blocked_again.critical_alert is None
+
+
+@pytest.mark.parametrize("exit_kind", ["normal", "emergency"])
+def test_partial_sell_economics_rebind_each_successor_goal_to_exact_residual(
+    exit_kind: str,
+) -> None:
+    module = _protection_module()
+    label = f"exact-sell-residual-{exit_kind}"
+    fill = _owned_fill_transition(label=label)
+    mandate, _, state = _start(module, fill)
+    terminal, closed = _close_base_parent(fill)
+    state, projection, _ = _sync_transitions(
+        module,
+        state,
+        mandate,
+        (terminal, closed),
+    )
+    bids = (120, 110, 109) if exit_kind == "normal" else (92, 91)
+    exited = None
+    for index, bid in enumerate(bids, start=1):
+        exited = _reduce(
+            module,
+            state,
+            projection,
+            _occurrence(
+                module,
+                f"{label}-exit-{index}",
+                bid=bid,
+                ask=bid + 1,
+                sequence=index,
+                source_time=94 + index * 6,
+                evaluation_time=98 + index * 6,
+            ),
+        )
+        state = exited.state
+    assert exited is not None and exited.goal is not None
+    policy, urgency = _required(module, "ProtectionPolicy", "ProtectionUrgency")
+    expected_policy = policy.EXIT_NORMAL if exit_kind == "normal" else policy.HARD_BAIL
+    expected_urgency = urgency.NORMAL if exit_kind == "normal" else urgency.EMERGENCY
+    expected_guard = (
+        mandate.normal_guard if exit_kind == "normal" else mandate.emergency_guard
+    )
+    assert exited.state.policy is expected_policy
+    assert exited.goal.residual == Quantity(4)
+    assert exited.goal.urgency is expected_urgency
+    assert exited.goal.guard == expected_guard
+
+    sell_chain, sell_effect, sell_leg, _ = _append_needs_review_effect(
+        closed,
+        prefix=f"{label}-effect",
+        side=ExecutionSide.SELL,
+        quantity=4,
+    )
+    state, _, blocked = _sync_transitions(
+        module,
+        state,
+        mandate,
+        sell_chain,
+    )
+    assert blocked.goal is None
+
+    sell_fact = venue_fixtures._broker_fill(
+        f"{label}-fill-source",
+        f"{label}-fill-root",
+        leg_key=sell_leg,
+        side=ExecutionSide.SELL,
+        quantity=1,
+        units=110,
+    )
+    partial_fill = venue_fixtures.apply_venue_recovery_input(
+        sell_chain[-1].book,
+        sell_chain[-1].execution,
+        RecordBrokerFillEvidence(
+            input_id=VenueInputId(f"{label}-fill-input"),
+            effect_id=sell_effect,
+            leg_key=sell_leg,
+            prior_cumulative_quantity=Quantity(0),
+            resulting_cumulative_quantity=Quantity(1),
+            fact=sell_fact,
+            evidence_digest=b"\xa1" * 32,
+        ),
+    )
+    assert partial_fill.quantity_delta == -1
+    assert partial_fill.execution.position.raw_quantity == 3
+    partial = _reduce(
+        module,
+        state,
+        _projection(module, partial_fill, mandate),
+    )
+    assert partial.state.policy is expected_policy
+    assert partial.state.raw_quantity == 3
+    assert partial.goal is None
+
+    _, sell_terminal = _terminal_fixture(
+        partial_fill,
+        effect_id=sell_effect,
+        leg_key=sell_leg,
+        label=f"{label}-effect",
+        cumulative_quantity=1,
+    )
+    terminal_result = _reduce(
+        module,
+        partial.state,
+        _projection(module, sell_terminal, mandate),
+    )
+    assert terminal_result.goal is None
+    _, sell_closed = _close_parent_fixture(
+        sell_terminal,
+        effect_id=sell_effect,
+        label=f"{label}-effect",
+    )
+    released = _reduce(
+        module,
+        terminal_result.state,
+        _projection(module, sell_closed, mandate),
+    )
+    assert released.state.policy is expected_policy
+    assert released.goal is not None
+    assert released.goal.residual == Quantity(3)
+    assert released.goal.urgency is expected_urgency
+    assert released.goal.guard == expected_guard
+    assert released.goal.execution_commitment == sell_closed.execution.commitment
+
+    correction, corrected = _correct_owned_root(
+        sell_closed,
+        label=f"{label}-correction",
+        root_fill_id=sell_fact.root_fill_id,
+        predecessor_source_event_id=sell_fact.key.source_event_id,
+        prior_root_quantity=1,
+        resulting_quantity=2,
+        units=110,
+        prior_venue_cumulative=1,
+        effect_id=sell_effect,
+        leg_key=sell_leg,
+        scope=sell_fact.scope,
+        closure_id=ClosureId(f"{label}-correction-closure"),
+        evidence_reference=EvidenceReference(f"{label}-correction-evidence"),
+    )
+    assert corrected.quantity_delta == -1
+    assert corrected.execution.position.raw_quantity == 2
+    corrected_result = _reduce(
+        module,
+        released.state,
+        _projection(module, corrected, mandate),
+    )
+    assert corrected_result.state.policy is expected_policy
+    assert corrected_result.goal is not None
+    assert corrected_result.goal.residual == Quantity(2)
+    assert corrected_result.goal.urgency is expected_urgency
+    assert corrected_result.goal.guard == expected_guard
+    assert corrected_result.goal.execution_commitment == corrected.execution.commitment
+
+    _, busted = _bust_owned_root(
+        corrected,
+        label=f"{label}-bust",
+        root_fill_id=sell_fact.root_fill_id,
+        predecessor_source_event_id=correction.fact.key.source_event_id,
+        prior_root_quantity=2,
+        prior_venue_cumulative=2,
+        effect_id=sell_effect,
+        leg_key=sell_leg,
+        scope=sell_fact.scope,
+        closure_id=ClosureId(f"{label}-bust-closure"),
+        evidence_reference=EvidenceReference(f"{label}-bust-evidence"),
+    )
+    assert busted.quantity_delta == 2
+    assert busted.execution.position.raw_quantity == 4
+    busted_result = _reduce(
+        module,
+        corrected_result.state,
+        _projection(module, busted, mandate),
+    )
+    assert busted_result.state.policy is expected_policy
+    assert busted_result.goal is not None
+    assert busted_result.goal.residual == Quantity(4)
+    assert busted_result.goal.urgency is expected_urgency
+    assert busted_result.goal.guard == expected_guard
+    assert busted_result.goal.execution_commitment == busted.execution.commitment
 
 
 def test_buy_wait_is_orthogonal_and_parent_close_not_leg_terminal_releases() -> None:
