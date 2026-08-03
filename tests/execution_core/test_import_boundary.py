@@ -211,6 +211,30 @@ _FORBIDDEN_PRODUCTION_VENUE_INTERNAL_NAMES = {
 }
 
 
+def _private_acceptance_closure_seam_violations(
+    tree: ast.AST,
+    path: Path,
+) -> list[str]:
+    """Report raw closure and reducer seams named by one production syntax tree."""
+
+    violations: list[str] = []
+    for node in ast.walk(tree):
+        forbidden_name: str | None = None
+        if isinstance(node, ast.Name):
+            forbidden_name = node.id
+        elif isinstance(node, ast.Attribute):
+            forbidden_name = node.attr
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                if alias.name in _FORBIDDEN_PRODUCTION_VENUE_INTERNAL_NAMES:
+                    violations.append(f"{_display(path, node)}:{alias.name}")
+        elif isinstance(node, ast.Constant) and type(node.value) is str:
+            forbidden_name = node.value
+        if forbidden_name in _FORBIDDEN_PRODUCTION_VENUE_INTERNAL_NAMES:
+            violations.append(f"{_display(path, node)}:{forbidden_name}")
+    return violations
+
+
 def _python_files() -> list[Path]:
     assert _PACKAGE_ROOT.is_dir(), "the isolated app.execution_core package is missing"
     files = sorted(_PACKAGE_ROOT.glob("*.py"))
@@ -422,6 +446,14 @@ def test_caller_authored_acceptance_closure_is_not_a_public_capability() -> None
 def test_production_modules_cannot_reach_private_acceptance_closure_seams() -> None:
     """Only venue.py may name raw closure, generic reducer, or audit-hydration seams."""
 
+    assert _FORBIDDEN_PRODUCTION_VENUE_INTERNAL_NAMES == {
+        "AcceptanceProof",
+        "AcceptanceProofKind",
+        "CloseAcceptanceSet",
+        "_apply_venue_input",
+        "_audit_hydrate_book",
+        "_external_acceptance_closure_is_certified",
+    }
     app_root = _REPO_ROOT / "app"
     venue_path = _PACKAGE_ROOT / "venue.py"
     violations: list[str] = []
@@ -429,19 +461,38 @@ def test_production_modules_cannot_reach_private_acceptance_closure_seams() -> N
         if path == venue_path:
             continue
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        for node in ast.walk(tree):
-            forbidden_name: str | None = None
-            if isinstance(node, ast.Name):
-                forbidden_name = node.id
-            elif isinstance(node, ast.Attribute):
-                forbidden_name = node.attr
-            elif isinstance(node, (ast.Import, ast.ImportFrom)):
-                for alias in node.names:
-                    if alias.name in _FORBIDDEN_PRODUCTION_VENUE_INTERNAL_NAMES:
-                        violations.append(f"{_display(path, node)}:{alias.name}")
-            elif isinstance(node, ast.Constant) and type(node.value) is str:
-                forbidden_name = node.value
-            if forbidden_name in _FORBIDDEN_PRODUCTION_VENUE_INTERNAL_NAMES:
-                violations.append(f"{_display(path, node)}:{forbidden_name}")
+        violations.extend(_private_acceptance_closure_seam_violations(tree, path))
 
     assert not violations, sorted(set(violations))
+
+
+@pytest.mark.parametrize(
+    "forbidden_name",
+    [
+        "AcceptanceProof",
+        "AcceptanceProofKind",
+        "CloseAcceptanceSet",
+        "_apply_venue_input",
+        "_audit_hydrate_book",
+        "_external_acceptance_closure_is_certified",
+    ],
+)
+def test_private_acceptance_closure_ast_guard_is_failure_capable(
+    forbidden_name: str,
+) -> None:
+    """Every protected spelling is caught as a name, attribute, import, and string."""
+
+    synthetic_path = _REPO_ROOT / "tests" / "synthetic_private_venue_seam.py"
+    snippets = (
+        forbidden_name,
+        f"venue.{forbidden_name}",
+        f"from app.execution_core.venue import {forbidden_name}",
+        repr(forbidden_name),
+    )
+    for snippet in snippets:
+        tree = ast.parse(snippet, filename=str(synthetic_path))
+        violations = _private_acceptance_closure_seam_violations(
+            tree,
+            synthetic_path,
+        )
+        assert any(item.endswith(f":{forbidden_name}") for item in violations), snippet

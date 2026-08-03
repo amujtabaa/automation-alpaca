@@ -8,13 +8,17 @@ RED gate.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import replace
 from decimal import Decimal
 from fractions import Fraction
+from typing import Iterator
+from unittest.mock import patch
 
 import pytest
 
 import app.execution_core.recovery as recovery_module
+import app.execution_core.venue as venue_module
 from app.execution_core.fills import (
     BrokerFillFact,
     BrokerTradeBustFact,
@@ -91,7 +95,7 @@ from app.execution_core.venue import (
     VenueRecoveryDisposition,
     VenueScope,
     _apply_venue_input,
-    _audit_hydrate_book,
+    _audit_hydrate_book as _private_audit_hydrate_book,
     apply_venue_recovery_input as _public_apply_venue_recovery_input,
 )
 
@@ -115,6 +119,30 @@ POSITION_SCOPE = PositionScope(
 )
 
 
+@contextmanager
+def _test_certified_external_closure() -> Iterator[None]:
+    """Model future M2 certification without adding a shipping mint capability."""
+
+    with patch.object(
+        venue_module,
+        "_external_acceptance_closure_is_certified",
+        autospec=True,
+        return_value=True,
+    ):
+        yield
+
+
+def _audit_hydrate_book(
+    book: VenueRecoveryBook,
+    execution: ExecutionSnapshot,
+    **changes: object,
+) -> VenueRecoveryBook:
+    """Audit a test-modeled future certified checkpoint under the same scope."""
+
+    with _test_certified_external_closure():
+        return _private_audit_hydrate_book(book, execution, **changes)
+
+
 def apply_venue_recovery_input(
     book: VenueRecoveryBook,
     execution: ExecutionSnapshot,
@@ -131,6 +159,12 @@ def apply_venue_recovery_input(
         }
         else _public_apply_venue_recovery_input
     )
+    if (
+        type(item) is CloseAcceptanceSet
+        and item.proof.kind is not AcceptanceProofKind.NEVER_DISPATCHED
+    ):
+        with _test_certified_external_closure():
+            return reducer(book, execution, item)
     return reducer(book, execution, item)
 
 

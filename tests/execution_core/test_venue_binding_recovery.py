@@ -52,7 +52,7 @@ from app.execution_core.venue import (
     RecordDispatchClaim,
     RequestedEffect,
     _apply_venue_input,
-    _audit_hydrate_book,
+    _audit_hydrate_book as _private_audit_hydrate_book,
 )
 
 
@@ -66,7 +66,22 @@ def apply_venue_recovery_input(
         if type(item) in {RequestedEffect, RecordDispatchClaim, CloseAcceptanceSet}
         else _public_apply_venue_recovery_input
     )
+    if (
+        type(item) is CloseAcceptanceSet
+        and item.proof.kind is not AcceptanceProofKind.NEVER_DISPATCHED
+    ):
+        with recovery_fixtures._test_certified_external_closure():
+            return reducer(book, execution, item)
     return reducer(book, execution, item)
+
+
+def _audit_hydrate_book(
+    book: VenueRecoveryBook,
+    execution: ExecutionSnapshot,
+    **changes: object,
+) -> VenueRecoveryBook:
+    with recovery_fixtures._test_certified_external_closure():
+        return _private_audit_hydrate_book(book, execution, **changes)
 
 
 def _required_api(name: str) -> object:

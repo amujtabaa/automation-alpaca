@@ -641,3 +641,91 @@ BUY begins with one blocking effect, and the new AST/name scan finds no producti
 names. The failure is therefore the missing default-deny semantic gate itself, not an already wired
 runtime import. Ruff check/format-check and `git diff --check` pass. The RED run used no database,
 SQL, broker, credential, network, persistence, or runtime action and makes no repair claim.
+
+### Re-gate 5 FIX/GREEN and Sol hostile pre-flight
+
+The repair keeps both external proof kinds representable but makes them inert authority in M1. One
+private predicate returns `False` unconditionally for external closure. The live reducer refuses a
+fresh non-`NEVER_DISPATCHED` close unless that predicate certifies it, and constructor/audit
+hydration rejects any retained external proof under the same default-deny rule. Positive tests of
+future M2 lifecycle behavior patch that predicate only inside a scoped test context. Shipping code
+contains no caller token, boolean, public export, or allow switch. Reducer-owned
+`NEVER_DISPATCHED` still requires `CANCELED_BEFORE_DISPATCH`, no occurrence claim, no immutable
+claim record, and no active leg.
+
+Replay identity remains prior to fresh authority evaluation. A close first applied inside the
+test-only certified simulation replays outside that simulation as `EXACT_REPLAY`; a changed command
+with the same input identity returns `CONFLICT`. Neither outcome changes the book, execution
+snapshot, or quantity. The production-name boundary now pins the exact six protected spellings and
+proves each is detected independently as a name, attribute, import, and literal string in synthetic
+production syntax.
+
+The first hostile mutation pass against the exact current production hash killed seven of eight
+semantic mutants but exposed the missing replay-order pin; independent removal of each of the six
+AST denylist members also survived. After adding the two controls above, the former replay survivor
+failed both external-kind cases, and every individual denylist-member removal failed both the exact-
+set assertion and its matching synthetic negative control. Reconciled re-gate-5 mutation evidence is
+therefore 8/8 semantic mutants plus 6/6 boundary mutants killed, with zero survivor. Every temporary
+edit was restored exactly. Relevant restored SHA-256 values are:
+
+- `app/execution_core/venue.py`:
+  `8a8a99161f0a0e5299d57700b97fe0c1739be948d93ca314c2e7b00936fb582c`;
+- `tests/execution_core/test_import_boundary.py`:
+  `8fb6a0d2920380bcdf8d83842293739e5296834d2fabbfda9564c5dff49d3cca`;
+- `tests/execution_core/test_venue_provenance_hardening.py`:
+  `4f427eab31a76de7c7be36648fce7fcb3fb56032274c942f968c159725ad9412`.
+
+The Sol-led hostile read then re-derived the controls rather than relying on green output. Raw
+external proof cannot close through the private reducer or constructor; exact replay cannot mint or
+transfer authority; malformed same-ID input conflicts; no protected name occurs in production
+outside `venue.py`; and the AST guard is only defense in depth, not the semantic boundary. No new
+P0/P1 was found. This author-side conclusion is not independent acceptance.
+
+Fresh exact-tree verification under `BROKER_ADAPTER=mock` passed:
+
+- 39/39 focused provenance/import-boundary tests;
+- 692/692 complete `tests/execution_core` tests;
+- 61/61 R2 conformance-oracle tests using the verified-new disposable
+  `.pytest_tmp_wo0147_regate5_r2_1` workspace after the restricted default temp root failed before
+  fixture execution;
+- Ruff check and format-check, mypy over all 8 execution-core modules, and all 6 import contracts;
+- AI-OS install, version (`v0.9.1`), ledger, PKL, disposition, and exact activation-to-worktree
+  scope checks; and
+- `git diff --check`.
+
+The definitive fresh full-repository run collected 5,280 tests and completed with 5,268 passed, 11
+skipped, 1 expected xfail, zero failures, and zero errors in 1,257.711 seconds. Raw combined branch
+coverage is `93.03101033677892%`: 18,601/19,617 statements and 6,509/7,374 branches, or
+25,110/26,991 combined opportunities. The unchanged literal 93% floor passed. JUnit records the
+expected xfail inside its 12 skipped outcomes. Retained artifacts are:
+
+- `.coverage_wo0147_regate5_full_1` (1,867,776 bytes), SHA-256
+  `6b0630f1a3714b041d3026ce68cdc3723e5fe5945e36841d82de2be4b4503455`;
+- `.coverage_wo0147_regate5_full_1.json` (1,849,293 bytes), SHA-256
+  `0939088464d2a1aba6fe913510ab6ac70cf5b501bcb12884c3282dce615c1545`;
+- `.pytest_wo0147_regate5_full_1.xml` (838,295 bytes), SHA-256
+  `628594ce31149d5c46f8b4ea67c6ff5c96d9c1b688fa8fd73b48a207144f4d5b`.
+
+The repository-wide run used only existing disposable test-only SQLite fixtures under the standing
+authorized validation gate. It made no broker connection, used no credentials, changed no
+persistent application database, and is not relied upon to prove the pure reducer semantics. The
+focused RED/GREEN, mutation, and hostile-preflight controls above carry that proof.
+
+A bounded Terra read-only successor fit returned advisory PASS, and Sol independently re-derived
+it: roadmap item 4 protection/trailing can continue through the public `CreateBrokerEffect`,
+`ClaimEffect`, and authority reducer path without raw acceptance closure or private venue access.
+Roadmap item 5 owns cross-side integration. WO-0149 activation must explicitly forbid scanning the
+audit-only `VenueRecoveryBook.effects` collection and use authority-led handling or an approved
+bounded projection instead. This does not activate WO-0148 or WO-0149.
+
+The implementation is author-green but not accepted. A new immutable implementation freeze, an
+updated `REV-0049/request-addendum-01.md`, a fresh independent `result-addendum-01.md` with no
+unresolved P0/P1, closeout disposition, one final immutable SHA, push, and unchanged exact-head
+Python 3.11/3.12 CI remain mandatory before WO-0148 activation.
+
+fable_done:
+  status: UNVERIFIED
+  evidence:
+    - "Re-gate 5 RED, focused GREEN, zero-survivor mutations, hostile pre-flight, full repository coverage, static gates, and exact artifact hashes are recorded above."
+  remaining:
+    - "Immutable freeze, independent review addendum, disposition, final push, and exact-head Python 3.11/3.12 CI."

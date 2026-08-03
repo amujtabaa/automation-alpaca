@@ -57,6 +57,7 @@ from app.execution_core.venue import (
     _apply_venue_input,
     apply_venue_recovery_input as _public_apply_venue_recovery_input,
 )
+from tests.execution_core import test_venue_recovery as recovery_fixtures
 
 
 _BROKER = BrokerId("alpaca")
@@ -95,6 +96,12 @@ def apply_venue_recovery_input(
         }
         else _public_apply_venue_recovery_input
     )
+    if (
+        type(item) is CloseAcceptanceSet
+        and item.proof.kind is not AcceptanceProofKind.NEVER_DISPATCHED
+    ):
+        with recovery_fixtures._test_certified_external_closure():
+            return reducer(book, execution, item)
     return reducer(book, execution, item)
 
 

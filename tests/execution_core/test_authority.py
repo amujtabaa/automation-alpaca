@@ -82,6 +82,7 @@ from app.execution_core.venue import (
     VenueScope,
     apply_venue_recovery_input,
 )
+from tests.execution_core import test_venue_recovery as recovery_fixtures
 
 
 BROKER = BrokerId("alpaca")
@@ -391,8 +392,16 @@ def _private_venue_apply(
 
     assert hasattr(venue, "_apply_venue_input")
     before = (book, execution, item)
-    first = venue._apply_venue_input(book, execution, item)
-    second = venue._apply_venue_input(book, execution, item)
+    if (
+        type(item) is CloseAcceptanceSet
+        and item.proof.kind is not AcceptanceProofKind.NEVER_DISPATCHED
+    ):
+        with recovery_fixtures._test_certified_external_closure():
+            first = venue._apply_venue_input(book, execution, item)
+            second = venue._apply_venue_input(book, execution, item)
+    else:
+        first = venue._apply_venue_input(book, execution, item)
+        second = venue._apply_venue_input(book, execution, item)
     assert second == first
     assert before == (book, execution, item)
     return first

@@ -57,9 +57,10 @@ from app.execution_core.venue import (
     VenueRecoveryDisposition,
     VenueScope,
     _apply_venue_input,
-    _audit_hydrate_book,
+    _audit_hydrate_book as _private_audit_hydrate_book,
     apply_venue_recovery_input,
 )
+from tests.execution_core import test_venue_recovery as recovery_fixtures
 
 
 BROKER = BrokerId("alpaca")
@@ -128,7 +129,22 @@ def _apply(
         }
         else apply_venue_recovery_input
     )
+    if (
+        type(item) is CloseAcceptanceSet
+        and item.proof.kind is not AcceptanceProofKind.NEVER_DISPATCHED
+    ):
+        with recovery_fixtures._test_certified_external_closure():
+            return reducer(book, execution, item)
     return reducer(book, execution, item)
+
+
+def _audit_hydrate_book(
+    book: VenueRecoveryBook,
+    execution: ExecutionSnapshot,
+    **changes: object,
+) -> VenueRecoveryBook:
+    with recovery_fixtures._test_certified_external_closure():
+        return _private_audit_hydrate_book(book, execution, **changes)
 
 
 def _requested(tag: str = "submit-1") -> tuple[VenueRecoveryBook, RequestedEffect]:

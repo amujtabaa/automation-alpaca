@@ -205,21 +205,71 @@ def test_audit_hydration_rejects_caller_authored_external_closure(
         )
 
 
-def _finalized_human_effect():
-    book, execution, _ = recovery_fixtures._released_state()
-    finalized = _apply_venue_input(
-        book,
-        execution,
-        CloseAcceptanceSet(
-            input_id=VenueInputId("provenance-close-human-effect"),
-            effect_id=recovery_fixtures.EFFECT,
-            proof=recovery_fixtures._acceptance_proof(
-                book,
-                AcceptanceProofKind.COVERED_RECONCILIATION,
-                "provenance-human-parent-proof",
+@pytest.mark.parametrize(
+    "proof_kind",
+    [
+        AcceptanceProofKind.CONTRACT_COMPLETE_RESPONSE,
+        AcceptanceProofKind.COVERED_RECONCILIATION,
+    ],
+    ids=("contract-complete-response", "covered-reconciliation"),
+)
+def test_certified_external_close_replays_before_live_certification_gate(
+    proof_kind: AcceptanceProofKind,
+) -> None:
+    """Canonical identity decides replay/conflict without re-minting authority."""
+
+    book, execution = recovery_fixtures._seed_needs_review(leg_keys=())
+    close = CloseAcceptanceSet(
+        input_id=VenueInputId(f"certified-replay-{proof_kind.value.casefold()}"),
+        effect_id=recovery_fixtures.EFFECT,
+        proof=recovery_fixtures._acceptance_proof(
+            book,
+            proof_kind,
+            f"certified-replay-proof-{proof_kind.value.casefold()}",
+        ),
+    )
+    with recovery_fixtures._test_certified_external_closure():
+        applied = _apply_venue_input(book, execution, close)
+    assert applied.disposition is VenueRecoveryDisposition.APPLIED
+
+    replayed = _apply_venue_input(applied.book, applied.execution, close)
+    assert replayed.disposition is VenueRecoveryDisposition.EXACT_REPLAY
+    assert replayed.book == applied.book
+    assert replayed.execution == applied.execution
+    assert replayed.quantity_delta == 0
+
+    changed = replace(
+        close,
+        proof=replace(
+            close.proof,
+            evidence_reference=EvidenceReference(
+                f"changed-replay-proof-{proof_kind.value.casefold()}"
             ),
         ),
     )
+    conflicted = _apply_venue_input(applied.book, applied.execution, changed)
+    assert conflicted.disposition is VenueRecoveryDisposition.CONFLICT
+    assert conflicted.book == applied.book
+    assert conflicted.execution == applied.execution
+    assert conflicted.quantity_delta == 0
+
+
+def _finalized_human_effect():
+    book, execution, _ = recovery_fixtures._released_state()
+    with recovery_fixtures._test_certified_external_closure():
+        finalized = _apply_venue_input(
+            book,
+            execution,
+            CloseAcceptanceSet(
+                input_id=VenueInputId("provenance-close-human-effect"),
+                effect_id=recovery_fixtures.EFFECT,
+                proof=recovery_fixtures._acceptance_proof(
+                    book,
+                    AcceptanceProofKind.COVERED_RECONCILIATION,
+                    "provenance-human-parent-proof",
+                ),
+            ),
+        )
     assert finalized.disposition is VenueRecoveryDisposition.APPLIED
     assert (
         finalized.book.effect(recovery_fixtures.EFFECT).state
@@ -376,19 +426,20 @@ def _post_final_unresolved_mapping():
             evidence_digest=b"\xd5" * 32,
         ),
     )
-    finalized = _apply_venue_input(
-        released.book,
-        released.execution,
-        CloseAcceptanceSet(
-            input_id=VenueInputId("provenance-mapping-parent-close"),
-            effect_id=recovery_fixtures.EFFECT,
-            proof=recovery_fixtures._acceptance_proof(
-                released.book,
-                AcceptanceProofKind.COVERED_RECONCILIATION,
-                "provenance-mapping-parent-proof",
+    with recovery_fixtures._test_certified_external_closure():
+        finalized = _apply_venue_input(
+            released.book,
+            released.execution,
+            CloseAcceptanceSet(
+                input_id=VenueInputId("provenance-mapping-parent-close"),
+                effect_id=recovery_fixtures.EFFECT,
+                proof=recovery_fixtures._acceptance_proof(
+                    released.book,
+                    AcceptanceProofKind.COVERED_RECONCILIATION,
+                    "provenance-mapping-parent-proof",
+                ),
             ),
-        ),
-    )
+        )
     assert (
         finalized.book.effect(recovery_fixtures.EFFECT).state
         is BrokerEffectState.OPERATOR_RECONCILED
@@ -648,7 +699,10 @@ def test_checkpoint_rejects_human_input_after_coverage_is_stripped() -> None:
     attempt = attested.book.active_attempt(recovery_fixtures.LEG_A)
     assert attempt is not None
 
-    with pytest.raises(ValueError, match="outcome|provenance|recovery input"):
+    with (
+        recovery_fixtures._test_certified_external_closure(),
+        pytest.raises(ValueError, match="outcome|provenance|recovery input"),
+    ):
         _audit_hydrate_book(
             attested.book,
             attested.execution,
@@ -775,7 +829,10 @@ def test_checkpoint_rejects_changed_fill_input_after_reconciliation_is_stripped(
 def test_checkpoint_rejects_catch_up_input_after_registry_outcome_is_stripped() -> None:
     caught_up = _post_final_registry_reconciliation()
 
-    with pytest.raises(ValueError, match="outcome|provenance|recovery input"):
+    with (
+        recovery_fixtures._test_certified_external_closure(),
+        pytest.raises(ValueError, match="outcome|provenance|recovery input"),
+    ):
         _audit_hydrate_book(
             caught_up.book,
             caught_up.execution,
@@ -797,7 +854,10 @@ def test_later_conflicting_evidence_cannot_remain_currently_operator_reconciled(
 def test_constructor_rejects_operator_state_with_unresolved_recovery_record() -> None:
     reconciled = _post_final_fill_conflict()
 
-    with pytest.raises(ValueError, match="operator|reconcil|unresolved"):
+    with (
+        recovery_fixtures._test_certified_external_closure(),
+        pytest.raises(ValueError, match="operator|reconcil|unresolved"),
+    ):
         _audit_hydrate_book(
             reconciled.book,
             reconciled.execution,
@@ -808,7 +868,10 @@ def test_constructor_rejects_operator_state_with_unresolved_recovery_record() ->
 def test_constructor_rejects_operator_state_with_unresolved_registry_record() -> None:
     caught_up = _post_final_registry_reconciliation()
 
-    with pytest.raises(ValueError, match="operator|reconcil|unresolved"):
+    with (
+        recovery_fixtures._test_certified_external_closure(),
+        pytest.raises(ValueError, match="operator|reconcil|unresolved"),
+    ):
         _audit_hydrate_book(
             caught_up.book,
             caught_up.execution,
@@ -835,7 +898,10 @@ def test_constructor_rejects_operator_state_with_unresolved_binding_bits(
         integrity_bits=binding.integrity_bits | integrity_bit.value,
     )
 
-    with pytest.raises(ValueError, match="operator|integrity|conflict|reconcil"):
+    with (
+        recovery_fixtures._test_certified_external_closure(),
+        pytest.raises(ValueError, match="operator|integrity|conflict|reconcil"),
+    ):
         _audit_hydrate_book(
             finalized.book,
             finalized.execution,
@@ -846,7 +912,10 @@ def test_constructor_rejects_operator_state_with_unresolved_binding_bits(
 def test_constructor_rejects_operator_state_with_unresolved_mapping() -> None:
     unresolved = _post_final_unresolved_mapping()
 
-    with pytest.raises(ValueError, match="operator|mapping|reconcil|unresolved"):
+    with (
+        recovery_fixtures._test_certified_external_closure(),
+        pytest.raises(ValueError, match="operator|mapping|reconcil|unresolved"),
+    ):
         _audit_hydrate_book(
             unresolved.book,
             unresolved.execution,

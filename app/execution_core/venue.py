@@ -2199,6 +2199,19 @@ class VenueRecoveryBook:
                 _require(
                     "proof.kind", effect.acceptance_proof.kind, AcceptanceProofKind
                 )
+                if (
+                    effect.acceptance_proof.kind
+                    is not AcceptanceProofKind.NEVER_DISPATCHED
+                    and not _external_acceptance_closure_is_certified(
+                        self,
+                        effect,
+                        effect.acceptance_proof,
+                    )
+                ):
+                    raise ValueError(
+                        "external acceptance closure requires M2 adapter-certified "
+                        "coverage"
+                    )
                 _require(
                     "proof.effect_scope",
                     effect.acceptance_proof.effect_scope,
@@ -7231,6 +7244,17 @@ def _maybe_finalize_effect(
     )
 
 
+def _external_acceptance_closure_is_certified(
+    book: VenueRecoveryBook,
+    effect: BrokerEffect,
+    proof: AcceptanceProof,
+) -> bool:
+    """Default-deny external closure until M2 supplies concrete coverage facts."""
+
+    del book, effect, proof
+    return False
+
+
 def _close_acceptance_set(
     evolve: _BookEvolver,
     book: VenueRecoveryBook,
@@ -7255,7 +7279,9 @@ def _close_acceptance_set(
             or book._claim_for_effect(item.effect_id) is not None
         ):
             return None
-    elif effect.claim_occurrence_id is None:
+    elif effect.claim_occurrence_id is None or not (
+        _external_acceptance_closure_is_certified(book, effect, proof)
+    ):
         return None
     closed = replace(
         effect,
