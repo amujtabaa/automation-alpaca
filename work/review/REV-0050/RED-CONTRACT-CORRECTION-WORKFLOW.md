@@ -1,6 +1,6 @@
 # WO-0148 RED contract correction workflow
 
-Status: **ELEVENTH FINDING REMEDIATED — NEW EXACT-COMMIT REVIEW REQUIRED**
+Status: **COMPLETE — TWELFTH EXACT RED CONTRACT ACCEPTED**
 
 Exact starting candidate: `5c5bee9543b78fc2fa8f612c61d75d4fdbf52bae`
 
@@ -169,6 +169,17 @@ unchanged, and a new immutable successor requires a fresh independent exact-comm
 Final post-eleventh current-worktree pre-flight is **ACCEPT, P0=0/P1=0/P2=0**. A live expression
 matrix passes 6 accepted and 8 refused forms, and independent in-memory restorations prove both
 one-item tuple controls can fail. This is re-freeze evidence only.
+
+## Twelfth exact acceptance
+
+Fresh independent review of exact commit `0b87a8756d999d81989bb5de1bb895a0ca0d44eb` returned
+**ACCEPT, P0=0/P1=0**. The review independently reproduced the 292-test focused classification,
+698/698 predecessor preservation, 6/6 accepted and 8/8 refused annotation matrix, both independent
+tuple-control restorations, all static/scope/digest/effect/worktree gates, and production absence.
+
+The corrected RED contract is accepted only for permission to begin WO-0148 production
+implementation. Actual Python 3.11 execution remains an unchanged exact-head CI obligation.
+Production behavior, implementation review, WO closeout, and later slices remain separate gates.
 
 ## Continuity checkpoint
 

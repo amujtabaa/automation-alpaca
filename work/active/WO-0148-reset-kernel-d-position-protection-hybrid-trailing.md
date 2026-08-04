@@ -883,3 +883,18 @@ Final post-eleventh current-worktree pre-flight is `ACCEPT`, P0=0/P1=0/P2=0; its
 matrix passes 6 accepted and 8 refused forms, and independent in-memory restorations prove both
 one-item tuple controls can fail. Production remains barred pending a new immutable successor and
 fresh independent exact-commit `ACCEPT` with zero unresolved P0/P1.
+
+### Twelfth exact RED acceptance
+
+A fresh independent Sol seat reviewed exact candidate
+`0b87a8756d999d81989bb5de1bb895a0ca0d44eb` and returned **ACCEPT, P0=0/P1=0**. It independently
+reproduced 292 collected / 233 expected RED failures / 59 passes; 698/698 predecessor tests; the
+6/6 accepted and 8/8 refused annotation-expression matrix; separate failure-capable restorations
+for both one-element tuple spellings; Ruff, Python 3.11 grammar, diff/scope, accepted-ADR digests,
+the eight-file current-source effect scan, all nine auxiliary worktrees clean, and production
+absence.
+
+The exact result is `RED-TWELFTH-RESULT.md`. Actual Python 3.11 execution remains deferred to
+unchanged exact-head CI. This acceptance authorizes only the next WO-0148 production-implementation
+gate; it does not accept production, close WO-0148, activate WO-0149, or authorize runtime,
+persistence, broker, credential, database, merge, deletion, or cleanup activity.
