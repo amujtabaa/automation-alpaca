@@ -41,7 +41,8 @@ Build one broker-neutral protection semantic center that derives and retains pos
 from exact accepted execution truth, exact venue ownership, immutable human-approved formula
 authority, and validated market occurrences. It owns the trigger/guard split, monotone floor and
 trail policy, orthogonal BUY-resolution waiting, flat finalization, late-fill re-protection, and a
-typed SELL execution goal. It creates no venue effect and cannot bypass M1C admission/final claim.
+typed SELL execution goal. It creates no venue effect and remains subject to M1C admission and
+final-claim rules.
 
 ## Fable gate
 
@@ -58,7 +59,7 @@ fable_gate:
     - claim: "A caller-authored may_execute, waiting, formula_valid, or protection-ready flag would be unsafe."
       status: VERIFIED
       evidence: "Flat and wait release depend on exact effect-parent closure, symbol uncertainty, and execution binding; M1B already owns those facts."
-  approach: "Freeze activation; write RED examples and bounded state machines; independently refute the test contract; implement one opaque reducer and one narrow venue-owned projection; kill named mutants; refactor; freeze for blind review."
+  approach: "Freeze activation; write RED examples and bounded state machines; independently check the test contract; implement one opaque reducer and one narrow venue-owned projection; exercise named counterexamples; refactor; freeze for independent review."
   alternatives_considered:
     - "Extend legacy app/protection.py - rejected because the incumbent runtime is frozen evidence."
     - "Embed protection fields in PositionState - rejected because execution economics and protection policy have different authority and replay lifecycles."
@@ -209,7 +210,7 @@ trail; let activation/trail outrank hard bail; count a duplicate occurrence twic
 non-advancing sequence; reuse observations after trigger change; trust a caller closure flag;
 release `OPEN`/`INVALIDATED`; erase `EXIT_NORMAL` while waiting; mark quantity zero flat with a live
 attempt; leave late positive quantity flat; reuse stale formula authority; emit an overfill goal;
-or bypass M1C kill/fence/final-claim gates. Record exact command, expected failure, actual failure,
+or omit M1C kill/fence/final-claim gates. Record exact command, expected failure, actual failure,
 restoration, and restored hash for each group.
 
 ## Review and completion gates
@@ -260,7 +261,7 @@ Fresh RED evidence before any production implementation:
   Every failure traced to the deliberately absent `app.execution_core.protection` semantic center
   or the boundary inventory/export delta caused by that absence; there was no collection error.
 - Ruff check and format-check passed for all three changed test files; `git diff --check` passed.
-- Hostile pre-build review added direct proof forgery, sibling-fork, exact-replay, equal-count ABA,
+- Critical pre-build review added direct proof substitution, sibling-fork, exact-replay, equal-count ABA,
   rollback/substitution, all-effect flatness, correction/bust, pending-basis, overfill, trigger
   reset, optional-component, emergency-wait, and late-positive recovery controls. Production work
   remains barred until an independent reviewer accepts the frozen RED commit with zero P0/P1.
@@ -308,7 +309,7 @@ P0/P1.
 
 A second fresh Sol review re-derived the RED contract at
 `9ceae2aa5cbf0cc69af2a082ec6598e86bcbae65`. It found no P0 and fourteen P1 test-strength gaps.
-The gaps concerned exact public shape, state/projection authenticity, cursor anchoring, bypassable
+The gaps concerned exact public shape, state/projection authenticity, cursor anchoring, incomplete
 constant-work inspection, positive overfill and mandate caps, formula loss/restoration, sticky
 post-activation economics, market-kind ownership, evaluation-time monotonicity, optional trail
 validity, all-effect SELL uncertainty, complete commitment sensitivity, and isolated rather than
@@ -386,7 +387,7 @@ state machines, one composition-strength pin, and 13 import/public-boundary test
 execution yields 203 expected failures and ten passes; all failures are the deliberately absent
 protection module or its required export/import-boundary delta, with no collection or unrelated
 failure. Ruff check and format-check pass, `git diff --check` passes, and the activation-base scope
-check reports `SCOPE CHECK PASSED`. As a hostile preservation pre-flight, all 698 pre-existing
+check reports `SCOPE CHECK PASSED`. As a critical preservation pre-flight, all 698 pre-existing
 execution-kernel tests outside the deliberately RED import/protection files pass. Production
 remains barred until a new independent review accepts the exact third-freeze commit with zero
 unresolved P0/P1.
@@ -413,7 +414,7 @@ The fourth freeze closes each finding through a failure-capable owning-boundary 
    `STALE` without changing current protection state.
 3. The constant-work oracle resolves the transitive venue-local call graph and defaults unresolved
    local, default-argument, closure, callable-object, and opaque targets to failure. Five synthetic
-   bypass forms prove the oracle is failure-capable while the runtime bounded-map access comparison
+   alternative forms prove the oracle is failure-capable while the runtime bounded-map access comparison
    remains intact.
 4. A real later owned BUY crosses both boundaries from an initially serving state: aggregate
    quantity above the mandate cap remains exact and non-serving, and broker-authoritative quantity
@@ -445,7 +446,7 @@ Fresh fourth-freeze evidence before any production implementation:
   the activation-base work-order scope check reports `SCOPE CHECK PASSED`;
 - direct pure venue probes pass for the alternate-position fixture and both later-BUY cap/overfill
   histories through exact parent closure; and
-- the hostile preservation pre-flight remains green: all 698 predecessor execution-kernel tests
+- the critical preservation pre-flight remains green: all 698 predecessor execution-kernel tests
   outside the deliberately RED protection/import files pass in 179.60 seconds.
 
 The fourth freeze adds no production code or runtime authority. Production remains barred until a
@@ -487,7 +488,7 @@ Fresh fifth-freeze evidence before any production implementation:
 - Ruff check and format-check pass, `git diff --check` passes, both changed protection test files
   parse at the Python 3.11 grammar target, and the activation-base scope checker reports
   `SCOPE CHECK PASSED`;
-- the hostile preservation pre-flight remains green: all 698 predecessor execution-kernel tests
+- the critical preservation pre-flight remains green: all 698 predecessor execution-kernel tests
   outside the deliberately RED protection/import files pass in 186.84 seconds; and
 - no Python 3.11 interpreter is installed locally, so actual 3.11 execution remains an exact-head
   CI obligation rather than a local acceptance claim.
@@ -497,14 +498,14 @@ until a fresh independent reviewer accepts its exact immutable commit with zero 
 
 ### Independent fifth-freeze review and seventh freeze
 
-A fresh Sol review independently attacked exact fifth-freeze commit
-`4daf322e67b5cf433be5552976c63209a8d873d2`. It found no P0 and six P1 oracle-bypass classes:
+A fresh Sol review independently evaluated exact fifth-freeze commit
+`4daf322e67b5cf433be5552976c63209a8d873d2`. It found no P0 and six P1 oracle-gap classes:
 unsafe type truth/equality and hidden function metadata in lifecycle validation; custom-metaclass
 equality/hash spoofing; replaced dataclass slot descriptors; enum-member capability payloads;
 extractor helper/wrapper/aggregate/descriptor escapes; and private-field/enum-representation
 overfitting. Production remained absent and barred while each class was repaired.
 
-Two fresh read-only audits then attacked the repaired worktree before it was frozen. They found no
+Two fresh read-only checks then evaluated the repaired worktree before it was frozen. They found no
 P0 and four further P1 classes: venue-local rebinding of the trusted bounded-map `get`; arbitrary
 `<string>` code impersonating dataclass-generated freeze methods; source-location forgery causing
 the lifecycle AST oracle to inspect benign text while different bytecode executed; and executable
@@ -593,7 +594,7 @@ barred. The implementation seat will repair all nine P1s at their owning test/pr
 record both narrow and complete-focus evidence precisely, freeze a new exact commit, and obtain a
 new independent zero-P0/P1 review before any production edit.
 
-### Eighth RED repairs and hostile pre-flight
+### Eighth RED repairs and critical pre-flight
 
 The implementation seat closed all nine seventh-freeze P1s at their owning test boundaries without
 adding production code:
@@ -608,7 +609,7 @@ adding production code:
    matching inspected source and bytecode.
 4. Every non-`None` accepted public argument type must retain an unconditional, source/bytecode-
    authenticated terminal `TypeError` subclass seal, `NoneType` is pinned independently, and every
-   argument position rejects a hostile unrelated lookalike before any instance or type protocol.
+   argument position rejects a caller-defined unrelated lookalike before any instance or type protocol.
 5. State and projection authenticity now mutate every independently retained scalar, enum,
    dataclass, tuple, frozenset, and empty-container leaf exactly once with deterministic collision
    fallback, while independently proving one changed path and preserving the opaque venue book.
@@ -636,7 +637,7 @@ Fresh eighth-candidate evidence on local Python 3.12.13:
   pass independently;
 - the unchanged execution-core predecessor corpus passes all 698 tests with the three new protection
   files excluded; and
-- a fresh hostile Sol pre-flight first reproduced one subclass bypass in the unrelated-lookalike
+- a fresh critical Sol pre-flight first reproduced one subclass-sealing gap in the unrelated-lookalike
   matrix, then accepted the unconditional all-argument-type seal repair with no remaining P0/P1.
 
 Actual Python 3.11 execution remains an exact-head CI obligation. This pre-flight is not the required
@@ -678,7 +679,7 @@ The remediated complete focus collects 284 tests and yields 228 expected RED fai
 225 failures are caused solely by deliberate absence of the protection module and 3 are its required
 inventory/AST/export deltas. The structural mutant matrix and positive skeleton pass; all current
 execution-core sources have zero effect-call violations. Ruff check/format-check, Python 3.11
-grammar, diff, activation-base scope, and production-absence gates pass. Iterative hostile re-review
+grammar, diff, activation-base scope, and production-absence gates pass. Iterative critical re-review
 found and drove closure of callback donation, fake approved roots, arbitrary relative callables,
 conditional import binding, and relative module implicit-protocol paths. Its final current-worktree
 verdict is `ACCEPT` with zero P0/P1. The original reviewer result remains unchanged in
@@ -706,7 +707,7 @@ and a running external CI gate are progress states, not goal blockers.
 - Current RED state: eighth freeze `7beda3f61e4d44f035143e883d7efa35a424f661` received
   independent `BLOCK` with no P0 and two P1 oracle gaps. Both are repaired at their owning
   invariants. Complete focus is 284 collected / 228 expected RED / 56 pass, predecessor
-  preservation is 698 pass, all final static gates pass, and hostile current-worktree re-review is
+  preservation is 698 pass, all final static gates pass, and critical current-worktree re-review is
   `ACCEPT` with zero P0/P1. Production remains absent and barred.
 - Next action: freeze the ninth RED candidate and obtain fresh independent exact-commit acceptance
   with zero unresolved P0/P1 before production begins.
@@ -722,7 +723,7 @@ digests, and production absence. It returned `BLOCK` with no P0 and three P1 con
 1. changed-delivery replay exactness covered only sequenced `BEST_BID`, not both market kinds with
    source sequence present and absent or the full generated between-time-successor composition;
 2. pattern-capture names were absent from the binding inventory, permitting a match-capture chain
-   to launder runtime output through an approved import; and
+   to route runtime output indirectly through an approved import; and
 3. the purity model did not reject ambient/subscript writes, retained default or closure state, or
    `object.__setattr__` against caller-owned inputs.
 
@@ -730,7 +731,7 @@ All findings are accepted. The successor contract adds the four-cell replay matr
 generated-history generalization; exhaustive Python 3.11 capture-name inventory; a conservative
 write/persistence grammar; and a bounded fresh-allocation proof for straight-line construction of
 the two opaque result types. `object.__getattribute__` is removed from the protection allowlist.
-Exact reviewer mutants and positive construction skeletons are pinned. A hostile Terra pre-flight
+Exact reviewer counterexamples and positive construction skeletons are pinned. A critical Terra pre-flight
 then found and drove closure of one further implicit `with`/context-manager dispatch path, after
 which it returned `ACCEPT` with zero P0/P1.
 
@@ -783,7 +784,7 @@ fresh immutable successor freeze and independent zero-P0/P1 exact-commit accepta
 
 ### Bounded successor purity redesign and tenth RED freeze candidate
 
-Three hostile post-comparator passes found a related family of static-oracle gaps: mutable
+Three critical post-comparator passes found a related family of static-oracle gaps: mutable
 class/function metadata and defaults; local-helper, callback, or venue-extractor donation; an
 opaque-factory right-hand side that could throw after allocation; recursive, looping, or
 process-exit control flow; and insufficiently exact opaque class decorators. Because these repeated
@@ -799,15 +800,25 @@ venue extractor has one direct call edge owned by `project_protection_venue`; pu
 call one another. Every source-reachable private helper and referenced imported binding is tied to
 its canonical source/runtime identity without executing production.
 
-`PositionProtectionState` and `ProtectionVenueProjection` must each be an exact field-only
-`@dataclass(frozen=True, slots=True, init=False)` and have exactly one straight-line factory. All
-validation/computation occurs before allocation; after allocation, each declared field is written
-once from its already-validated same-named parameter and the fully populated local is returned
-directly. Exact mutable-class, metadata/default, extractor-role, helper-donation/rebinding,
-throwing-RHS, partial-factory, recursion, loop, `SystemExit`, implicit-iteration, dynamic-surface,
-and positive-construction controls are executable.
+Exact dataclass validation additionally admits only two guarded scalar operations:
+`self.<field>.strip()` immediately after an exact `str` guard, and `len(self.<field>)` immediately
+after an exact `str` or `bytes` guard. Both must occur in a direct, exact `__post_init__` validation
+pair with a terminal literal error. The builtins and receiver must be unshadowed, and use before a
+guard, against another field, with extra arguments, in another method, or through a renamed binding
+remains refused. This is a source-context exception, not a global call allowance.
 
-A final Terra attack exposed missing reflected numeric tripwires in the wrong-type sentinel. The
+`PositionProtectionState` and `ProtectionVenueProjection` must each be an exact
+`@dataclass(frozen=True, slots=True, init=False)` containing only declared fields plus two sealed
+lifecycle methods. `__init__(self, *args: object, **kwargs: object) -> None` and
+`__init_subclass__(cls, **kwargs: object) -> None` each terminate with a direct literal
+`TypeError`; direct construction and subclass creation therefore fail. Each type has exactly one
+straight-line factory. All validation/computation occurs before allocation; after allocation, each
+declared field is written once from its already-validated same-named parameter and the fully
+populated local is returned directly. Exact mutable-class, metadata/default, extractor-role,
+helper-donation/rebinding, throwing-RHS, partial-factory, recursion, loop, `SystemExit`,
+implicit-iteration, dynamic-surface, and positive-construction controls are executable.
+
+A final Terra pre-flight exposed missing reflected numeric tripwires in the wrong-type sentinel. The
 sentinel now covers format, truth, ordering, forward/reflected arithmetic, conversion, indexing,
 membership, and iteration. Together with the seven-position public wrong-type matrix and recursive
 passive exact-type seals, it proves rejection precedes user protocol dispatch; the Terra recheck
@@ -898,3 +909,37 @@ The exact result is `RED-TWELFTH-RESULT.md`. Actual Python 3.11 execution remain
 unchanged exact-head CI. This acceptance authorizes only the next WO-0148 production-implementation
 gate; it does not accept production, close WO-0148, activate WO-0149, or authorize runtime,
 persistence, broker, credential, database, merge, deletion, or cleanup activity.
+
+### Production pre-flight feasibility re-gate
+
+The first production pre-flight after twelfth acceptance found two P1 contradictions in the
+accepted source contract. First, a field-only `dataclass(..., init=False)` permits an uninitialized
+direct instance and subclass creation, while the runtime contract requires both operations to fail.
+Second, exact commitment length and nonblank text validation require guarded `len` and `strip`, but
+the static call grammar rejected both even though the independent runtime lifecycle checker already
+requires and authenticates them after exact type guards.
+
+Production support edits made before this discovery were reverted completely; the tracked
+production tree matches the accepted starting state and `app/execution_core/protection.py` remains
+absent. `RED-TWELFTH-RESULT.md` remains unchanged as the exact verdict it was, but its permission to
+begin production is superseded by this later feasibility evidence. Production is barred until a
+successor RED candidate is frozen and independently accepted with zero unresolved P0/P1.
+
+The bounded root correction requires both opaque types to declare exact terminal-`TypeError`
+`__init__` and `__init_subclass__` methods while retaining their two exact write-once factories. It
+also authenticates only production-shaped, immediately guarded `len(self.<field>)` and
+`self.<field>.strip()` calls in exact dataclass `__post_init__` methods. Independent controls pin
+each missing seal separately, malformed signatures and bodies, extra behavior, pre-guard use,
+wrong receiver/field/type, added arguments, wrong method, and shadowed builtins. Runtime controls
+separately prove direct construction and subclass creation fail and that unguarded length or strip
+operations are refused before caller-defined behavior can run.
+
+Current focused collection is 294 tests. The expected RED classification is 233 failures and 61
+passes: 230 failures are deliberate module-absence outcomes and three are the required
+inventory/AST/export deltas. The new source-context and lifecycle controls pass, as do Ruff check
+and format-check. The 698-test predecessor corpus, Python 3.11 grammar, scope, authority digests,
+current-source effect scan, application typecheck, auxiliary-worktree hygiene, and production
+absence have been refreshed and pass. Final current-worktree functional-conformance review is
+`ACCEPT`, P0=0/P1=0/P2=0. A new immutable candidate and fresh independent exact-commit acceptance
+are still required before production resumes. The controlling workflow is
+`work/review/REV-0050/PRODUCTION-PREFLIGHT-FEASIBILITY-REGATE.md`.

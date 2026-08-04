@@ -4430,7 +4430,10 @@ def test_public_value_shapes_and_enum_members_are_exact() -> None:
             assert actual_fields == expected
         _assert_passive_slot_descriptors(value_type, actual_fields)
         behavior = _retained_behavior_names(value_type)
-        assert behavior <= _DATACLASS_LIFECYCLE_SPECIALS
+        if name in {"PositionProtectionState", "ProtectionVenueProjection"}:
+            assert behavior == {"__init__", "__init_subclass__"}
+        else:
+            assert behavior <= _DATACLASS_LIFECYCLE_SPECIALS
         _assert_passive_lifecycle(value_type, module)
 
 
@@ -4890,6 +4893,14 @@ def test_passive_lifecycle_rejects_capability_and_metadata_mutants() -> None:
             if self.value.strip():
                 raise ValueError("fake strip")
 
+    @dataclass(frozen=True, slots=True)
+    class _FakeLenMutant:
+        value: object
+
+        def __post_init__(self) -> None:
+            if len(self.value) != 32:  # type: ignore[arg-type]
+                raise ValueError("fake len")
+
     type_protocol_calls: list[str] = []
 
     class _TypeProbeMeta(type):
@@ -4987,6 +4998,8 @@ def test_passive_lifecycle_rejects_capability_and_metadata_mutants() -> None:
         _assert_passive_lifecycle(_GlobalSubscriptMutationMutant, owner_module)
     with pytest.raises(AssertionError, match="prior exact str guard"):
         _assert_passive_lifecycle(_FakeStripMutant, owner_module)
+    with pytest.raises(AssertionError, match="prior exact bytes or str guard"):
+        _assert_passive_lifecycle(_FakeLenMutant, owner_module)
     with pytest.raises(AssertionError, match="unapproved lifecycle call"):
         _assert_passive_lifecycle(_UnsafeTypeTruthMutant, owner_module)
     with pytest.raises(AssertionError, match="unapproved lifecycle call"):
@@ -5210,7 +5223,7 @@ def test_market_kind_owns_one_exact_payload_shape() -> None:
             replace(occurrence, **overrides)
 
 
-def test_state_projection_and_transition_are_opaque_and_sealed() -> None:
+def test_state_and_projection_are_opaque_and_sealed() -> None:
     module = _protection_module()
     state_type, projection_type = _required(
         module,

@@ -9,6 +9,7 @@ the focused gate red even when that dependency is never exercised by an example.
 from __future__ import annotations
 
 import ast
+from dataclasses import dataclass
 import json
 from pathlib import Path
 import subprocess
@@ -773,6 +774,74 @@ def _protection_write_effect_violations(
                     f"{_display(path, statement)} unapproved retained-scope statement"
                 )
 
+    def sealed_lifecycle_is_exact(
+        function: ast.FunctionDef | ast.AsyncFunctionDef,
+        owner: ast.ClassDef,
+    ) -> bool:
+        admitted_name = function.name == "__init_subclass__" or (
+            owner.name in _PROTECTION_OPAQUE_VALUE_TYPES and function.name == "__init__"
+        )
+        positional = function.args.args[0] if len(function.args.args) == 1 else None
+        vararg = function.args.vararg
+        kwarg = function.args.kwarg
+        exact_signature = bool(
+            admitted_name
+            and isinstance(function, ast.FunctionDef)
+            and not function.decorator_list
+            and function.type_comment is None
+            and not function.args.posonlyargs
+            and not function.args.kwonlyargs
+            and positional is not None
+            and positional.annotation is None
+            and not function.args.defaults
+            and not function.args.kw_defaults
+            and kwarg is not None
+            and kwarg.arg == "kwargs"
+            and isinstance(kwarg.annotation, ast.Name)
+            and kwarg.annotation.id == "object"
+            and isinstance(function.returns, ast.Constant)
+            and function.returns.value is None
+            and (
+                (
+                    function.name == "__init__"
+                    and positional.arg == "self"
+                    and vararg is not None
+                    and vararg.arg == "args"
+                    and isinstance(vararg.annotation, ast.Name)
+                    and vararg.annotation.id == "object"
+                )
+                or (
+                    function.name == "__init_subclass__"
+                    and positional.arg == "cls"
+                    and vararg is None
+                )
+            )
+        )
+        statements = function.body
+        if (
+            statements
+            and isinstance(statements[0], ast.Expr)
+            and (
+                isinstance(statements[0].value, ast.Constant)
+                and type(statements[0].value.value) is str
+            )
+        ):
+            statements = statements[1:]
+        terminal = statements[0] if len(statements) == 1 else None
+        exception = terminal.exc if isinstance(terminal, ast.Raise) else None
+        return bool(
+            exact_signature
+            and isinstance(terminal, ast.Raise)
+            and terminal.cause is None
+            and isinstance(exception, ast.Call)
+            and isinstance(exception.func, ast.Name)
+            and exception.func.id == "TypeError"
+            and len(exception.args) == 1
+            and not exception.keywords
+            and isinstance(exception.args[0], ast.Constant)
+            and type(exception.args[0].value) is str
+        )
+
     for node in ast.walk(tree):
         if isinstance(node, (ast.Global, ast.Nonlocal)):
             violations.append(f"{_display(path, node)} ambient binding mutation")
@@ -868,7 +937,23 @@ def _protection_write_effect_violations(
                 violations.append(
                     f"{_display(path, node)} nested or conditional function binding"
                 )
-            if (
+            class_lifecycle = isinstance(parent, ast.ClassDef) and (
+                node.name == "__init_subclass__"
+                or (
+                    parent.name in _PROTECTION_OPAQUE_VALUE_TYPES
+                    and node.name == "__init__"
+                )
+            )
+            lifecycle_is_exact = bool(
+                class_lifecycle
+                and isinstance(parent, ast.ClassDef)
+                and sealed_lifecycle_is_exact(node, parent)
+            )
+            if class_lifecycle and not lifecycle_is_exact:
+                violations.append(
+                    f"{_display(path, node)} sealed lifecycle is not exact"
+                )
+            elif not class_lifecycle and (
                 node.args.posonlyargs
                 or node.args.kwonlyargs
                 or node.args.vararg is not None
@@ -944,18 +1029,27 @@ def _protection_write_effect_violations(
             )
         ]
         fields: list[str] = []
+        lifecycle_names: list[str] = []
         for statement in retained_body:
-            if not (
+            if (
                 isinstance(statement, ast.AnnAssign)
                 and isinstance(statement.target, ast.Name)
                 and statement.simple == 1
                 and statement.value is None
             ):
-                shape_errors.append("opaque type body is not field-only")
+                fields.append(statement.target.id)
                 continue
-            fields.append(statement.target.id)
+            if isinstance(statement, ast.FunctionDef) and statement.name in {
+                "__init__",
+                "__init_subclass__",
+            }:
+                lifecycle_names.append(statement.name)
+                continue
+            shape_errors.append("opaque type body is not fields plus sealed lifecycle")
         if not fields or len(fields) != len(set(fields)):
             shape_errors.append("opaque type field inventory is invalid")
+        if lifecycle_names != ["__init__", "__init_subclass__"]:
+            shape_errors.append("opaque type sealed lifecycle inventory is not exact")
         if shape_errors:
             violations.extend(
                 f"{_display(path, declaration)} {error}" for error in shape_errors
@@ -1339,6 +1433,200 @@ def _protection_call_binding_violations(
             return None
         return target
 
+    def unshadowed_builtin(name: str) -> bool:
+        return name not in (
+            declared
+            | set(imported)
+            | module_imports
+            | ambiguous_imports
+            | non_module_imports
+            | rebound
+        )
+
+    def exact_error_raise(statement: ast.AST, error_name: str) -> bool:
+        if not isinstance(statement, ast.Raise) or statement.cause is not None:
+            return False
+        exception = statement.exc
+        return bool(
+            isinstance(exception, ast.Call)
+            and isinstance(exception.func, ast.Name)
+            and exception.func.id == error_name
+            and len(exception.args) == 1
+            and not exception.keywords
+            and isinstance(exception.args[0], ast.Constant)
+            and type(exception.args[0].value) is str
+        )
+
+    def exact_self_field(node: ast.AST, fields: frozenset[str]) -> str:
+        if not (
+            isinstance(node, ast.Attribute)
+            and isinstance(node.ctx, ast.Load)
+            and isinstance(node.value, ast.Name)
+            and isinstance(node.value.ctx, ast.Load)
+            and node.value.id == "self"
+            and node.attr in fields
+        ):
+            return ""
+        return node.attr
+
+    def exact_type_guard(
+        statement: ast.AST,
+        fields: frozenset[str],
+    ) -> tuple[str, str] | None:
+        if not (
+            isinstance(statement, ast.If)
+            and not statement.orelse
+            and len(statement.body) == 1
+            and exact_error_raise(statement.body[0], "TypeError")
+            and isinstance(statement.test, ast.Compare)
+            and len(statement.test.ops) == 1
+            and isinstance(statement.test.ops[0], ast.IsNot)
+            and len(statement.test.comparators) == 1
+            and isinstance(statement.test.left, ast.Call)
+            and isinstance(statement.test.left.func, ast.Name)
+            and statement.test.left.func.id == "type"
+            and len(statement.test.left.args) == 1
+            and not statement.test.left.keywords
+            and isinstance(statement.test.comparators[0], ast.Name)
+            and statement.test.comparators[0].id in {"bytes", "str"}
+        ):
+            return None
+        expected_type = statement.test.comparators[0].id
+        if not unshadowed_builtin("type") or not unshadowed_builtin(expected_type):
+            return None
+        field_name = exact_self_field(statement.test.left.args[0], fields)
+        return None if not field_name else (field_name, expected_type)
+
+    def exact_guarded_validation_call(
+        statement: ast.AST,
+        guard: tuple[str, str],
+        fields: frozenset[str],
+    ) -> ast.Call | None:
+        if not (
+            isinstance(statement, ast.If)
+            and not statement.orelse
+            and len(statement.body) == 1
+            and exact_error_raise(statement.body[0], "ValueError")
+        ):
+            return None
+        field_name, expected_type = guard
+        if expected_type == "str" and isinstance(statement.test, ast.UnaryOp):
+            call = statement.test.operand
+            if not (
+                isinstance(statement.test.op, ast.Not)
+                and isinstance(call, ast.Call)
+                and isinstance(call.func, ast.Attribute)
+                and call.func.attr == "strip"
+                and exact_self_field(call.func.value, fields) == field_name
+                and not call.args
+                and not call.keywords
+            ):
+                return None
+            return call
+        if not (
+            isinstance(statement.test, ast.Compare)
+            and len(statement.test.ops) == 1
+            and isinstance(statement.test.ops[0], ast.NotEq)
+            and len(statement.test.comparators) == 1
+            and isinstance(statement.test.comparators[0], ast.Constant)
+            and type(statement.test.comparators[0].value) is int
+            and statement.test.comparators[0].value == 32
+            and isinstance(statement.test.left, ast.Call)
+        ):
+            return None
+        call = statement.test.left
+        if not (
+            isinstance(call.func, ast.Name)
+            and call.func.id == "len"
+            and unshadowed_builtin("len")
+            and len(call.args) == 1
+            and not call.keywords
+            and exact_self_field(call.args[0], fields) == field_name
+        ):
+            return None
+        return call
+
+    guarded_post_init_calls: set[ast.Call] = set()
+    for declaration in (node for node in tree.body if isinstance(node, ast.ClassDef)):
+        decorator = (
+            declaration.decorator_list[0]
+            if len(declaration.decorator_list) == 1
+            else None
+        )
+        expected_keywords = {"frozen": True, "slots": True}
+        decorator_keywords = (
+            {
+                keyword.arg: keyword.value.value
+                for keyword in decorator.keywords
+                if keyword.arg is not None
+                and isinstance(keyword.value, ast.Constant)
+                and type(keyword.value.value) is bool
+            }
+            if isinstance(decorator, ast.Call)
+            else {}
+        )
+        if not (
+            isinstance(decorator, ast.Call)
+            and dataclass_decorator_target(decorator) is not None
+            and not decorator.args
+            and len(decorator.keywords) == len(expected_keywords)
+            and decorator_keywords == expected_keywords
+            and not declaration.bases
+            and not declaration.keywords
+        ):
+            continue
+        fields = frozenset(
+            statement.target.id
+            for statement in declaration.body
+            if isinstance(statement, ast.AnnAssign)
+            and isinstance(statement.target, ast.Name)
+            and statement.simple == 1
+            and statement.value is None
+        )
+        post_init_methods = [
+            statement
+            for statement in declaration.body
+            if isinstance(statement, ast.FunctionDef)
+            and statement.name == "__post_init__"
+        ]
+        if len(post_init_methods) != 1:
+            continue
+        post_init = post_init_methods[0]
+        positional = post_init.args.args
+        if not (
+            not post_init.decorator_list
+            and post_init.type_comment is None
+            and not post_init.args.posonlyargs
+            and len(positional) == 1
+            and positional[0].arg == "self"
+            and positional[0].annotation is None
+            and post_init.args.vararg is None
+            and post_init.args.kwarg is None
+            and not post_init.args.kwonlyargs
+            and not post_init.args.defaults
+            and not post_init.args.kw_defaults
+            and isinstance(post_init.returns, ast.Constant)
+            and post_init.returns.value is None
+        ):
+            continue
+        statements = post_init.body
+        if (
+            statements
+            and isinstance(statements[0], ast.Expr)
+            and (
+                isinstance(statements[0].value, ast.Constant)
+                and type(statements[0].value.value) is str
+            )
+        ):
+            statements = statements[1:]
+        for prior, current in zip(statements, statements[1:], strict=False):
+            guard = exact_type_guard(prior, fields)
+            if guard is None:
+                continue
+            call = exact_guarded_validation_call(current, guard, fields)
+            if call is not None:
+                guarded_post_init_calls.add(call)
+
     local_enum_members: dict[str, frozenset[str]] = {}
     for declaration in (node for node in tree.body if isinstance(node, ast.ClassDef)):
         is_enum = any(
@@ -1588,13 +1876,23 @@ def _protection_call_binding_violations(
                     f"{_display(path, keyword)} callback binding {keyword.arg} is forbidden"
                 )
         if isinstance(node.func, ast.Name):
-            if not callable_name_is_allowed(node.func.id):
+            if node.func.id == "len" and node not in guarded_post_init_calls:
+                violations.append(
+                    f"{_display(path, node)} guarded lifecycle len call is not exact"
+                )
+            elif node.func.id != "len" and not callable_name_is_allowed(node.func.id):
                 violations.append(
                     f"{_display(path, node)} unproven call binding {node.func.id}"
                 )
         elif isinstance(node.func, ast.Attribute):
             attribute_path = _static_attribute_path(node.func)
-            if not attribute_call_is_allowed(attribute_path):
+            if node.func.attr == "strip" and node not in guarded_post_init_calls:
+                violations.append(
+                    f"{_display(path, node)} guarded lifecycle strip call is not exact"
+                )
+            elif node.func.attr == "strip":
+                continue
+            elif not attribute_call_is_allowed(attribute_path):
                 rendered = (
                     ".".join(attribute_path)
                     if attribute_path is not None
@@ -2116,15 +2414,33 @@ def test_effect_call_oracle_rejects_direct_runtime_output() -> None:
         "@_dataclass(frozen=True, slots=True)\n"
         "class Value:\n"
         "    item: int\n"
-        "    def __post_init__(self):\n"
+        "    label: str\n"
+        "    commitment: bytes\n"
+        "    def __post_init__(self) -> None:\n"
         "        if type(self.item) is not int:\n"
         "            raise TypeError('item')\n"
+        "        if type(self.label) is not str:\n"
+        "            raise TypeError('label')\n"
+        "        if not self.label.strip():\n"
+        "            raise ValueError('label')\n"
+        "        if type(self.commitment) is not bytes:\n"
+        "            raise TypeError('commitment')\n"
+        "        if len(self.commitment) != 32:\n"
+        "            raise ValueError('commitment')\n"
         "@_dataclass(frozen=True, slots=True, init=False)\n"
         "class PositionProtectionState:\n"
         "    value: int\n"
+        "    def __init__(self, *args: object, **kwargs: object) -> None:\n"
+        "        raise TypeError('opaque')\n"
+        "    def __init_subclass__(cls, **kwargs: object) -> None:\n"
+        "        raise TypeError('sealed')\n"
         "@_dataclass(frozen=True, slots=True, init=False)\n"
         "class ProtectionVenueProjection:\n"
         "    cursor: int\n"
+        "    def __init__(self, *args: object, **kwargs: object) -> None:\n"
+        "        raise TypeError('opaque')\n"
+        "    def __init_subclass__(cls, **kwargs: object) -> None:\n"
+        "        raise TypeError('sealed')\n"
         "def _helper(value):\n"
         "    return 1 if type(value) is tuple else 0\n"
         "def _new_state(value):\n"
@@ -2146,7 +2462,11 @@ def test_effect_call_oracle_rejects_direct_runtime_output() -> None:
         "    return _new_state(_helper((mandate, projection)))\n"
         "def reduce_position_protection(state, projection, occurrence):\n"
         "    return (\n"
-        "        Value(_helper((state, projection, occurrence))),\n"
+        "        Value(\n"
+        "            _helper((state, projection, occurrence)),\n"
+        "            'label',\n"
+        "            b'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx',\n"
+        "        ),\n"
         "        LocalPolicy.READY,\n"
         "        _ExecutionSide.BUY,\n"
         "    )\n"
@@ -2159,6 +2479,394 @@ def test_effect_call_oracle_rejects_direct_runtime_output() -> None:
         )
         == []
     )
+
+
+def test_opaque_lifecycle_requires_exact_seals() -> None:
+    """Opaque results refuse direct construction, derivation, and extra behavior."""
+
+    path = _PACKAGE_ROOT / "synthetic_protection_opaque_lifecycle.py"
+
+    missing_constructor_seal = ast.parse(
+        "from dataclasses import dataclass as _dataclass\n"
+        "@_dataclass(frozen=True, slots=True, init=False)\n"
+        "class PositionProtectionState:\n"
+        "    value: int\n"
+        "    def __init_subclass__(cls, **kwargs: object) -> None:\n"
+        "        raise TypeError('sealed')\n"
+        "def _new_state(value):\n"
+        "    state = object.__new__(PositionProtectionState)\n"
+        "    object.__setattr__(state, 'value', value)\n"
+        "    return state\n"
+    )
+    missing_constructor_violations = _protection_call_binding_violations(
+        missing_constructor_seal,
+        path,
+    )
+    assert any(
+        "sealed lifecycle inventory is not exact" in item
+        for item in missing_constructor_violations
+    )
+
+    missing_subclass_seal = ast.parse(
+        "from dataclasses import dataclass as _dataclass\n"
+        "@_dataclass(frozen=True, slots=True, init=False)\n"
+        "class PositionProtectionState:\n"
+        "    value: int\n"
+        "    def __init__(self, *args: object, **kwargs: object) -> None:\n"
+        "        raise TypeError('opaque')\n"
+        "def _new_state(value):\n"
+        "    state = object.__new__(PositionProtectionState)\n"
+        "    object.__setattr__(state, 'value', value)\n"
+        "    return state\n"
+    )
+    missing_subclass_violations = _protection_call_binding_violations(
+        missing_subclass_seal,
+        path,
+    )
+    assert any(
+        "sealed lifecycle inventory is not exact" in item
+        for item in missing_subclass_violations
+    )
+
+    capability_opaque = ast.parse(
+        "from dataclasses import dataclass as _dataclass\n"
+        "@_dataclass(frozen=True, slots=True, init=False)\n"
+        "class PositionProtectionState:\n"
+        "    value: int\n"
+        "    def __init__(self, *args: object, **kwargs: object) -> None:\n"
+        "        raise TypeError('opaque')\n"
+        "    def submit_order(self) -> None:\n"
+        "        raise TypeError('capability')\n"
+        "    def __init_subclass__(cls, **kwargs: object) -> None:\n"
+        "        raise TypeError('sealed')\n"
+    )
+    capability_violations = _protection_call_binding_violations(
+        capability_opaque,
+        path,
+    )
+    assert any(
+        "body is not fields plus sealed lifecycle" in item
+        for item in capability_violations
+    )
+
+    def opaque_lifecycle_tree(
+        init_declaration: str,
+        init_body: tuple[str, ...],
+        subclass_declaration: str,
+        subclass_body: tuple[str, ...],
+    ) -> ast.Module:
+        return ast.parse(
+            "from dataclasses import dataclass as _dataclass\n"
+            "@_dataclass(frozen=True, slots=True, init=False)\n"
+            "class PositionProtectionState:\n"
+            "    value: int\n"
+            f"    {init_declaration}:\n"
+            + "".join(f"        {statement}\n" for statement in init_body)
+            + f"    {subclass_declaration}:\n"
+            + "".join(f"        {statement}\n" for statement in subclass_body)
+            + "def _new_state(value):\n"
+            "    state = object.__new__(PositionProtectionState)\n"
+            "    object.__setattr__(state, 'value', value)\n"
+            "    return state\n"
+        )
+
+    exact_init = "def __init__(self, *args: object, **kwargs: object) -> None"
+    exact_subclass = "def __init_subclass__(cls, **kwargs: object) -> None"
+    exact_init_body = ("raise TypeError('opaque')",)
+    exact_subclass_body = ("raise TypeError('sealed')",)
+    lifecycle_cases = (
+        (
+            "constructor signature",
+            opaque_lifecycle_tree(
+                "def __init__(self) -> None",
+                exact_init_body,
+                exact_subclass,
+                exact_subclass_body,
+            ),
+        ),
+        (
+            "subclass signature",
+            opaque_lifecycle_tree(
+                exact_init,
+                exact_init_body,
+                "def __init_subclass__(cls, value: object) -> None",
+                exact_subclass_body,
+            ),
+        ),
+        (
+            "constructor annotations",
+            opaque_lifecycle_tree(
+                "def __init__(self, *args, **kwargs) -> None",
+                exact_init_body,
+                exact_subclass,
+                exact_subclass_body,
+            ),
+        ),
+        (
+            "subclass return annotation",
+            opaque_lifecycle_tree(
+                exact_init,
+                exact_init_body,
+                "def __init_subclass__(cls, **kwargs: object) -> object",
+                exact_subclass_body,
+            ),
+        ),
+        (
+            "constructor error type",
+            opaque_lifecycle_tree(
+                exact_init,
+                ("raise ValueError('opaque')",),
+                exact_subclass,
+                exact_subclass_body,
+            ),
+        ),
+        (
+            "subclass error type",
+            opaque_lifecycle_tree(
+                exact_init,
+                exact_init_body,
+                exact_subclass,
+                ("raise ValueError('sealed')",),
+            ),
+        ),
+        (
+            "constructor extra statement",
+            opaque_lifecycle_tree(
+                exact_init,
+                ("type(self)", "raise TypeError('opaque')"),
+                exact_subclass,
+                exact_subclass_body,
+            ),
+        ),
+        (
+            "subclass extra statement",
+            opaque_lifecycle_tree(
+                exact_init,
+                exact_init_body,
+                exact_subclass,
+                ("type(cls)", "raise TypeError('sealed')"),
+            ),
+        ),
+    )
+    for label, tree in lifecycle_cases:
+        violations = _protection_call_binding_violations(tree, path)
+        lifecycle_violations = [
+            item for item in violations if "sealed lifecycle is not exact" in item
+        ]
+        assert len(lifecycle_violations) == 1, label
+
+    @dataclass(frozen=True, slots=True, init=False)
+    class _OpaqueLifecycleProbe:
+        value: int
+
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            raise TypeError("opaque")
+
+        def __init_subclass__(cls, **kwargs: object) -> None:
+            raise TypeError("sealed")
+
+    with pytest.raises(TypeError, match="opaque"):
+        _OpaqueLifecycleProbe()
+    with pytest.raises(TypeError, match="sealed"):
+        type("DerivedOpaqueProbe", (_OpaqueLifecycleProbe,), {})
+
+
+def test_guarded_lifecycle_calls_require_exact_source_context() -> None:
+    """String and byte validation remain local, typed, and non-dispatching."""
+
+    path = _PACKAGE_ROOT / "synthetic_protection_lifecycle.py"
+
+    def lifecycle_tree(
+        *body_lines: str,
+        method_name: str = "__post_init__",
+        prefix: str = "",
+    ) -> ast.Module:
+        body = "".join(f"        {line}\n" for line in body_lines)
+        return ast.parse(
+            prefix
+            + "from dataclasses import dataclass as _dataclass\n"
+            + "@_dataclass(frozen=True, slots=True)\n"
+            + "class Value:\n"
+            + "    label: str\n"
+            + "    commitment: bytes\n"
+            + "    other: str\n"
+            + f"    def {method_name}(self) -> None:\n"
+            + body
+        )
+
+    guarded = lifecycle_tree(
+        "if type(self.label) is not str:",
+        "    raise TypeError('label')",
+        "if not self.label.strip():",
+        "    raise ValueError('label')",
+        "if type(self.commitment) is not bytes:",
+        "    raise TypeError('commitment')",
+        "if len(self.commitment) != 32:",
+        "    raise ValueError('commitment')",
+    )
+    assert _protection_call_binding_violations(guarded, path) == []
+
+    cases = (
+        (
+            "strip before its guard",
+            lifecycle_tree(
+                "if not self.label.strip():",
+                "    raise ValueError('label')",
+                "if type(self.label) is not str:",
+                "    raise TypeError('label')",
+            ),
+            "guarded lifecycle strip call is not exact",
+        ),
+        (
+            "strip guarded as bytes",
+            lifecycle_tree(
+                "if type(self.label) is not bytes:",
+                "    raise TypeError('label')",
+                "if not self.label.strip():",
+                "    raise ValueError('label')",
+            ),
+            "guarded lifecycle strip call is not exact",
+        ),
+        (
+            "strip targets another field",
+            lifecycle_tree(
+                "if type(self.label) is not str:",
+                "    raise TypeError('label')",
+                "if not self.other.strip():",
+                "    raise ValueError('other')",
+            ),
+            "guarded lifecycle strip call is not exact",
+        ),
+        (
+            "strip receives an argument",
+            lifecycle_tree(
+                "if type(self.label) is not str:",
+                "    raise TypeError('label')",
+                "if not self.label.strip(' '):",
+                "    raise ValueError('label')",
+            ),
+            "guarded lifecycle strip call is not exact",
+        ),
+        (
+            "len is outside post init",
+            lifecycle_tree(
+                "if type(self.commitment) is not bytes:",
+                "    raise TypeError('commitment')",
+                "if len(self.commitment) != 32:",
+                "    raise ValueError('commitment')",
+                method_name="validate",
+            ),
+            "guarded lifecycle len call is not exact",
+        ),
+        (
+            "len before its guard",
+            lifecycle_tree(
+                "if len(self.commitment) != 32:",
+                "    raise ValueError('commitment')",
+                "if type(self.commitment) is not bytes:",
+                "    raise TypeError('commitment')",
+            ),
+            "guarded lifecycle len call is not exact",
+        ),
+        (
+            "len guarded as int",
+            lifecycle_tree(
+                "if type(self.commitment) is not int:",
+                "    raise TypeError('commitment')",
+                "if len(self.commitment) != 32:",
+                "    raise ValueError('commitment')",
+            ),
+            "guarded lifecycle len call is not exact",
+        ),
+        (
+            "len targets another field",
+            lifecycle_tree(
+                "if type(self.commitment) is not bytes:",
+                "    raise TypeError('commitment')",
+                "if len(self.label) != 32:",
+                "    raise ValueError('label')",
+            ),
+            "guarded lifecycle len call is not exact",
+        ),
+        (
+            "len receives an extra argument",
+            lifecycle_tree(
+                "if type(self.commitment) is not bytes:",
+                "    raise TypeError('commitment')",
+                "if len(self.commitment, 0) != 32:",
+                "    raise ValueError('commitment')",
+            ),
+            "guarded lifecycle len call is not exact",
+        ),
+        (
+            "len compares another size",
+            lifecycle_tree(
+                "if type(self.commitment) is not bytes:",
+                "    raise TypeError('commitment')",
+                "if len(self.commitment) != 31:",
+                "    raise ValueError('commitment')",
+            ),
+            "guarded lifecycle len call is not exact",
+        ),
+        (
+            "len receives a keyword",
+            lifecycle_tree(
+                "if type(self.commitment) is not bytes:",
+                "    raise TypeError('commitment')",
+                "if len(obj=self.commitment) != 32:",
+                "    raise ValueError('commitment')",
+            ),
+            "guarded lifecycle len call is not exact",
+        ),
+        (
+            "len is shadowed",
+            lifecycle_tree(
+                "if type(self.commitment) is not bytes:",
+                "    raise TypeError('commitment')",
+                "if len(self.commitment) != 32:",
+                "    raise ValueError('commitment')",
+                prefix="len = 1\n",
+            ),
+            "guarded lifecycle len call is not exact",
+        ),
+        (
+            "str is shadowed",
+            lifecycle_tree(
+                "if type(self.label) is not str:",
+                "    raise TypeError('label')",
+                "if not self.label.strip():",
+                "    raise ValueError('label')",
+                prefix="str = 1\n",
+            ),
+            "guarded lifecycle strip call is not exact",
+        ),
+        (
+            "bytes is shadowed",
+            lifecycle_tree(
+                "if type(self.commitment) is not bytes:",
+                "    raise TypeError('commitment')",
+                "if len(self.commitment) != 32:",
+                "    raise ValueError('commitment')",
+                prefix="bytes = 1\n",
+            ),
+            "guarded lifecycle len call is not exact",
+        ),
+        (
+            "type is shadowed",
+            lifecycle_tree(
+                "if type(self.commitment) is not bytes:",
+                "    raise TypeError('commitment')",
+                "if len(self.commitment) != 32:",
+                "    raise ValueError('commitment')",
+                prefix="type = 1\n",
+            ),
+            "guarded lifecycle len call is not exact",
+        ),
+    )
+    for label, tree, expected in cases:
+        violations = _protection_call_binding_violations(tree, path)
+        matching = [item for item in violations if expected in item]
+        assert len(matching) == 1, label
 
 
 def test_protection_canonical_private_imports_preserve_exact_public_surface() -> None:

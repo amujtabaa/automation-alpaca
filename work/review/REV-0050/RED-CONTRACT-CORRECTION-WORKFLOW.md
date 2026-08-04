@@ -1,6 +1,6 @@
 # WO-0148 RED contract correction workflow
 
-Status: **COMPLETE — TWELFTH EXACT RED CONTRACT ACCEPTED**
+Status: **HISTORICAL COMPLETE - PRODUCTION PERMISSION SUPERSEDED BY PREFLIGHT RE-GATE**
 
 Exact starting candidate: `5c5bee9543b78fc2fa8f612c61d75d4fdbf52bae`
 
@@ -180,6 +180,14 @@ tuple-control restorations, all static/scope/digest/effect/worktree gates, and p
 The corrected RED contract is accepted only for permission to begin WO-0148 production
 implementation. Actual Python 3.11 execution remains an unchanged exact-head CI obligation.
 Production behavior, implementation review, WO closeout, and later slices remain separate gates.
+
+## Later production pre-flight re-gate
+
+The first production pre-flight found two additional feasibility contradictions in the accepted
+source contract before production was created. The twelfth result remains preserved, but its
+permission to begin production is superseded. The controlling current workflow is
+`PRODUCTION-PREFLIGHT-FEASIBILITY-REGATE.md`; production remains barred pending a new immutable
+candidate and fresh independent zero-P0/P1 acceptance.
 
 ## Continuity checkpoint
 
