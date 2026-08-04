@@ -92,3 +92,25 @@ schema execution remains a separately authorized future M2 gate.
    `91626251758` both succeeded. The separately authorized pure position-protection and hybrid-
    trailing slice is active as `WO-0148`; `WO-0149`, M2, broker/credential/database/persistence/
    runtime work, merge, deletion, and cleanup remain inactive.
+
+## ADR-023 bounded-market amendment — accepted 2026-08-04
+
+Ameen approved the exact proposed ADR-023 body at SHA-256
+`898DA71EA959ED8B6F343DA23795E3E52D7DB94D8BAD255FDAC13475CED0F259` together with its
+“Exact WO-0148 re-gate required by ratification” section. The unchanged body is retained as
+[`ADR-023-bounded-market-occurrence-authority.md`](ADR-023-bounded-market-occurrence-authority.md);
+its embedded proposed-status text remains untouched, and this index records its accepted status.
+
+ADR-023 narrowly supersedes ADR-021 lines 120–126 only for occurrence distinctness, aggregate
+source-occurrence retention, and replay/restart classification. All other ADR-021 protection,
+formula, trigger, trail, guard, execution, fill-truth, and safety clauses remain controlling.
+
+The matching WO-0148 re-gate authorizes only this ADR record, this append-only ratification entry,
+the active-WO and matching PKL reconciliation, replacement RED-contract work, and the already
+allowed application/test, review, evidence, branch-push, and exact-head-CI work required to close
+WO-0148. Application edits remain barred until a replacement immutable RED contract receives fresh
+independent exact-commit `ACCEPT` with zero unresolved P0/P1.
+
+No runtime wiring, persistent application-database or direct database work, broker/Alpaca/network
+activity, M2 implementation, master merge, deletion, or cleanup is authorized. ADR-023's runtime
+recovery-fence proof remains a later M2 gate and is inadmissible as an M1 acceptance claim.

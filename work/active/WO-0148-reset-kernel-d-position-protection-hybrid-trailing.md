@@ -170,6 +170,7 @@ allowed_paths:
   - pkl/log.md
   - README.md
   - docs/04_IMPLEMENTATION_PLAN.md
+  - docs/adr/ADR-023-bounded-market-occurrence-authority.md
   - docs/adr/ARCH-RESET-2026-07-RATIFICATION.md
 activation_only_paths:
   - README.md
@@ -1182,3 +1183,62 @@ in `work/review/REV-0050/REPLAY-RETENTION-REGATE.md`,
 This remains pre-freeze successor evidence. A new immutable candidate commit, fresh independent
 exact-candidate review with P0=0/P1=0, closeout reconciliation, and unchanged Python 3.11/3.12
 exact-head CI remain mandatory. WO-0149 remains inactive.
+
+### Ratified ADR-023 bounded-market successor re-gate
+
+On 2026-08-04, Ameen approved proposed ADR-023 at exact SHA-256
+`898DA71EA959ED8B6F343DA23795E3E52D7DB94D8BAD255FDAC13475CED0F259` and its exact
+WO-0148 re-gate. The byte-identical accepted body is
+`docs/adr/ADR-023-bounded-market-occurrence-authority.md`; acceptance is recorded separately in
+`docs/adr/ARCH-RESET-2026-07-RATIFICATION.md` while the body's embedded proposed-status wording is
+preserved.
+
+This section is the controlling prospective WO-0148 market-evidence contract. Every earlier RED
+freeze, review result, receipt-map implementation, and evidence count above remains immutable
+history, not current acceptance. ADR-023 supersedes ADR-021 lines 120–126 only for occurrence
+distinctness, aggregate source-occurrence retention, and replay/restart classification. ADR-021
+remains controlling for hard-bail-before-trail ordering, sticky hard bail, two distinct fresh
+consecutive eligible best bids or the eligible trade-plus-bid window, trigger/trail economics,
+execution guards, suspect/crossed/stale-data denial, fill truth, and every other protection and
+safety rule.
+
+The current public contract adds exactly:
+
+- `MarketStreamGenerationId`;
+- `MarketSequenceMode(SEQUENCED, SOURCE_TIME)`;
+- `ProtectionAlert(LATE_POSITIVE_AFTER_FLAT, MARKET_BASELINE_REQUIRED,
+  MARKET_COORDINATE_EXHAUSTED)`;
+- `EvidencePolicy(source_id, stream_generation, sequence_mode, max_age,
+  corroboration_window, max_step_fraction)`; and
+- `MarketOccurrence(occurrence_id[derived, init=False], source_id, stream_generation,
+  position_scope, session_id, market_epoch, source_sequence, source_time, evaluation_time, kind,
+  best_bid, best_ask, trade_price, atr_distance, structure_trail, halted)`.
+
+The exact public transition surface is now five functions:
+
+1. `project_protection_venue(transition, mandate)`;
+2. `initialize_position_protection(mandate, projection)`;
+3. `reduce_position_protection(state, projection)`;
+4. `reduce_position_protection_market(state, projection, occurrence)`; and
+5. `invalidate_position_protection_market(state, projection)`.
+
+The projection reducer is projection-only; the market reducer accepts only an already-current
+projection; invalidation is a separate monotonically restrictive operation. Market authority is
+generation/mode bound, constructor-derived, generation-global, strict-coordinate ordered, and
+constant-size. The authenticated cursor is exactly ADR-023's 19-part/480-byte preimage. There is no
+lifetime receipt map, variable-cardinality market container, history scan, silent eviction, local
+arrival identity, caller-authored baseline flag, or one-call projection-plus-market transition.
+Epoch admission precedes cursor reservation; every admitted strict advance reserves the cursor
+before contextual eligibility. Invalidation, halt, coordinate conflict, recovery baseline, and u64
+exhaustion use ADR-023's exact latches, dispositions, alerts, and goal-suppression rules.
+
+Application edits remain barred until replacement failure-first controls cover ADR-023's exact
+identity/cursor known answers, mode and epoch matrices, baseline/invalidation/recovery/exhaustion,
+split entry points, constant cardinality and work, restart deferral, and named mutations; the
+immutable RED candidate must then receive fresh independent exact-commit `ACCEPT` with zero
+unresolved P0/P1. Only afterward may the existing allowed application/test paths be edited.
+
+This re-gate grants no runtime wiring, persistent application-database or direct database work,
+broker/Alpaca/network activity, M2 implementation, master merge, deletion, or cleanup. The M2
+source-authoritative recovery-fence obligation remains explicitly deferred and cannot be claimed by
+WO-0148.

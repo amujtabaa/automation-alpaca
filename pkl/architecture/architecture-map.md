@@ -4,9 +4,9 @@ title: Architecture Map (reset target and frozen Spine v2 evidence)
 status: active
 authority: high
 owner: Ameen
-last_verified: 2026-08-02
+last_verified: 2026-08-04
 tags: [architecture, boundaries, layers]
-source_refs: [docs/adr/ADR-020-current-state-execution-kernel.md, docs/adr/ADR-021-position-protection-liquidity-execution.md, docs/adr/ADR-022-reset-beta-scope-cutover-governance.md, docs/adr/ARCH-RESET-2026-07-RATIFICATION.md, docs/01_ARCHITECTURE.md]
+source_refs: [docs/adr/ADR-020-current-state-execution-kernel.md, docs/adr/ADR-021-position-protection-liquidity-execution.md, docs/adr/ADR-022-reset-beta-scope-cutover-governance.md, docs/adr/ADR-023-bounded-market-occurrence-authority.md, docs/adr/ARCH-RESET-2026-07-RATIFICATION.md, docs/01_ARCHITECTURE.md]
 supersedes: []
 superseded_by: null
 ---
@@ -59,6 +59,11 @@ fence; acquisition integration and later work remain inactive until separately g
   check against official docs/PyPI.
 - Signal Seat is disabled and unmounted in reset beta. The R6 branch and legacy stores are evidence,
   not reset dependencies.
+- ADR-023 governs WO-0148 market-occurrence authority: one mandate-bound stream generation and
+  fixed sequence mode, a constructor-derived occurrence identity, and one generation-global strict
+  coordinate retained in a constant-size authenticated cursor. Projection, market, and invalidation
+  transitions are structurally separate. No lifetime receipt collection, history scan, runtime
+  wiring, persistence, adapter fence, or broker authority is part of this pure M1 boundary.
 
 ## Rationale
 
@@ -103,3 +108,8 @@ Seam discipline is what makes the safety invariants structurally enforceable rat
   3.12. Closed its external gate and activated only pure `WO-0148`. The new slice may add one
   opaque protection reducer and a narrow venue-owned bounded proof/projection, but no runtime,
   persistence, broker effect, positive supervisor authority, acquisition integration, or M2 work.
+- 2026-08-04: Ratified exact ADR-023 and re-gated active WO-0148 from the rejected lifetime
+  occurrence-receipt map to one bounded generation-global cursor with exact split reducers,
+  fail-closed invalidation/baseline recovery, and terminal coordinate exhaustion. Implementation
+  remains pure and unwired; adapter normalization and the source-authoritative restart fence remain
+  deferred to M2.

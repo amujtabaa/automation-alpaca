@@ -4,9 +4,9 @@ title: Project Goals and Current Posture
 status: active
 authority: high
 owner: Ameen
-last_verified: 2026-08-02
+last_verified: 2026-08-04
 tags: [goals, posture, roadmap]
-source_refs: [docs/adr/ADR-020-current-state-execution-kernel.md, docs/adr/ADR-021-position-protection-liquidity-execution.md, docs/adr/ADR-022-reset-beta-scope-cutover-governance.md, docs/adr/ARCH-RESET-2026-07-RATIFICATION.md]
+source_refs: [docs/adr/ADR-020-current-state-execution-kernel.md, docs/adr/ADR-021-position-protection-liquidity-execution.md, docs/adr/ADR-022-reset-beta-scope-cutover-governance.md, docs/adr/ADR-023-bounded-market-occurrence-authority.md, docs/adr/ARCH-RESET-2026-07-RATIFICATION.md]
 supersedes: []
 superseded_by: null
 ---
@@ -95,3 +95,10 @@ Roadmapping against an unverified codebase state repeats the failure mode Fable 
   occurrence evidence, hybrid trailing, BUY-resolution wait policy, flat finalization, and late-
   fill re-protection. `WO-0149`, M2, broker, credential, persistence, runtime, merge, deletion,
   and cleanup remain inactive.
+- 2026-08-04: Ameen ratified exact ADR-023 SHA-256
+  `898DA71EA959ED8B6F343DA23795E3E52D7DB94D8BAD255FDAC13475CED0F259` and its WO-0148 re-gate.
+  The rejected lifetime receipt map is superseded by a constant-size generation/mode-bound strict
+  market cursor with split projection, market, and invalidation reducers. Production remains barred
+  until a replacement immutable RED contract receives independent exact-commit `ACCEPT` with zero
+  P0/P1; `WO-0149`, M2, runtime/persistence, broker/network, merge, deletion, and cleanup remain
+  inactive.

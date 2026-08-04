@@ -117,3 +117,10 @@
   Its RED-first contract refuses caller-authored execution/venue-clear booleans, preserves the
   trigger/guard split and BUY-wait policy, and emits no broker effect. `WO-0149`, M2, credentials,
   broker/Paper, database/persistence, runtime, merge, deletion, and cleanup remain inactive.
+
+- 2026-08-04: Ameen approved exact ADR-023 SHA-256
+  `898DA71EA959ED8B6F343DA23795E3E52D7DB94D8BAD255FDAC13475CED0F259` and its named WO-0148
+  re-gate. Recorded the byte-identical ADR, append-only ratification entry, active-WO amendment, and
+  matching PKL reconciliation. The next gate is an independently accepted immutable replacement
+  RED contract before application work. No runtime/persistence/database, broker/Alpaca/network,
+  M2, merge, deletion, or cleanup authority was added.
