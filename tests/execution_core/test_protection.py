@@ -26,6 +26,7 @@ from decimal import Decimal
 import dis
 from enum import Enum
 from fractions import Fraction
+from hashlib import sha256
 import importlib
 import inspect
 from pathlib import Path
@@ -127,6 +128,116 @@ BASE_LEG = venue_fixtures.LEG_A
 BASE_CLAIM = venue_fixtures.CLAIM
 SCALE = PriceScale(Decimal("1"))
 TICK = TickMetadata(tick_units=PriceUnits(1), scale=SCALE)
+_U64_MAX = (1 << 64) - 1
+_ADR023_MARKET_CURSOR_FIELD_ORDER = (
+    "_market_occurrence_epoch",
+    "_market_committed_epoch",
+    "_market_expected_epoch",
+    "_market_source_sequence",
+    "_market_source_time",
+    "_market_evaluation_time",
+    "_market_occurrence_identity",
+    "_market_halted",
+    "_market_baseline_required",
+    "_market_exhausted",
+    "_market_last_primary",
+    "_hard_bid_identity",
+    "_hard_bid_source_time",
+    "_trade_identity",
+    "_trade_source_time",
+    "_trail_bid_identity",
+    "_trail_bid_source_time",
+)
+assert len(_ADR023_MARKET_CURSOR_FIELD_ORDER) == len(
+    set(_ADR023_MARKET_CURSOR_FIELD_ORDER)
+)
+_ADR023_MARKET_CURSOR_FIELDS = frozenset(_ADR023_MARKET_CURSOR_FIELD_ORDER)
+_ADR023_OPTIONAL_MARKET_CURSOR_FIELDS = (
+    "_market_occurrence_epoch",
+    "_market_committed_epoch",
+    "_market_expected_epoch",
+    "_market_source_sequence",
+    "_market_source_time",
+    "_market_evaluation_time",
+    "_market_occurrence_identity",
+    "_market_last_primary",
+    "_hard_bid_identity",
+    "_hard_bid_source_time",
+    "_trade_identity",
+    "_trade_source_time",
+    "_trail_bid_identity",
+    "_trail_bid_source_time",
+)
+_ADR023_STATE_FIELDS = (
+    "policy",
+    "mandate",
+    "raw_quantity",
+    "execution_commitment",
+    "formula_available",
+    "armed_hard_bail_trigger",
+    "activation_price",
+    "high_watermark",
+    "trail",
+    "waiting_buy_resolution",
+    "commitment",
+    "_cursor_ordinal",
+    "_cursor_head",
+    *_ADR023_MARKET_CURSOR_FIELD_ORDER,
+    "_exit_provenance",
+)
+_ADR023_CURSOR_PREIMAGE_PARAMETERS = (
+    "stream_generation",
+    "sequence_mode",
+    "occurrence_epoch",
+    "committed_epoch",
+    "expected_epoch",
+    "source_sequence",
+    "source_time",
+    "evaluation_time",
+    "occurrence_identity",
+    "halted",
+    "baseline_required",
+    "exhausted",
+    "last_primary_commitment",
+    "hard_bid_identity",
+    "hard_bid_source_time",
+    "trade_identity",
+    "trade_source_time",
+    "trail_bid_identity",
+    "trail_bid_source_time",
+)
+_ADR023_STATE_COMMITMENT_PARAMETERS = (
+    "policy",
+    "mandate",
+    "raw_quantity",
+    "execution_commitment",
+    "formula_available",
+    "armed_hard_bail_trigger",
+    "activation_price",
+    "high_watermark",
+    "trail",
+    "waiting_buy_resolution",
+    "cursor_ordinal",
+    "cursor_head",
+    *_ADR023_CURSOR_PREIMAGE_PARAMETERS,
+    "exit_provenance",
+)
+_ADR023_STATE_COMMITMENT_PART_SOURCES = (
+    "_encode_text(policy.value)",
+    "_commit_mandate(mandate)",
+    "_encode_int(raw_quantity)",
+    "execution_commitment",
+    "_encode_int(1 if formula_available else 0)",
+    "_encode_reported_price(armed_hard_bail_trigger)",
+    "_encode_reported_price(activation_price)",
+    "_encode_reported_price(high_watermark)",
+    "_encode_reported_price(trail)",
+    "_encode_int(1 if waiting_buy_resolution else 0)",
+    "_encode_int(cursor_ordinal)",
+    "cursor_head",
+    "<CURSOR_DIGEST>",
+    "exit_provenance",
+)
 _PUBLIC_ENTRYPOINT_PAYLOAD_CALLS: list[str] = []
 
 
@@ -444,6 +555,8 @@ def _mandate(
     position_scope: PositionScope = POSITION_SCOPE,
     session_id: object | None = None,
     source_id: object | None = None,
+    stream_generation: object | None = None,
+    sequence_mode: str = "SEQUENCED",
     loss_fraction: Fraction = Fraction(3, 40),
     approved_gain: Fraction = Fraction(3, 40),
     percent_trail_fraction: Fraction = Fraction(2, 25),
@@ -464,10 +577,21 @@ def _mandate(
         "EvidencePolicy",
         "ProtectionMandate",
     )
-    (source_type,) = _required(execution_core, "MarketDataSourceId")
+    source_type, generation_type = _required(
+        execution_core,
+        "MarketDataSourceId",
+        "MarketStreamGenerationId",
+    )
     (session_type,) = _required(execution_core, "SessionId")
+    (sequence_mode_type,) = _required(module, "MarketSequenceMode")
     evidence = evidence_type(
         source_id=(source_id if source_id is not None else source_type("sip-primary")),
+        stream_generation=(
+            stream_generation
+            if stream_generation is not None
+            else generation_type("11" * 32)
+        ),
+        sequence_mode=getattr(sequence_mode_type, sequence_mode),
         max_age=max_age,
         corroboration_window=corroboration_window,
         max_step_fraction=max_step_fraction,
@@ -749,12 +873,87 @@ def _start(
     module: ModuleType,
     venue_transition: object,
     mandate: object | None = None,
+    *,
+    establish_baseline: bool = True,
 ) -> tuple[object, object, object]:
     current_mandate = mandate or _mandate(module)
     projection = _projection(module, venue_transition, current_mandate)
     (initialize,) = _required(module, "initialize_position_protection")
     state = initialize(current_mandate, projection)
+    if establish_baseline:
+        tick_units = current_mandate.tick.tick_units.value
+        baseline_bid = ((100 + tick_units - 1) // tick_units) * tick_units
+        sequence = (
+            0
+            if current_mandate.evidence_policy.sequence_mode.value == "SEQUENCED"
+            else None
+        )
+        baseline = _occurrence(
+            module,
+            "fixture-initial-baseline",
+            bid=baseline_bid,
+            ask=baseline_bid + tick_units,
+            sequence=sequence,
+            source_time=0,
+            evaluation_time=0,
+            market_epoch=0,
+            tick_units=tick_units,
+            scale=current_mandate.tick.scale,
+            source_id=current_mandate.evidence_policy.source_id,
+            stream_generation=current_mandate.evidence_policy.stream_generation,
+            position_scope=current_mandate.position_scope,
+            session_id=current_mandate.session_id,
+        )
+        applied = _reduce_market(module, state, projection, baseline)
+        (disposition,) = _required(module, "ProtectionDisposition")
+        assert applied.disposition is disposition.APPLIED
+        assert applied.goal is None
+        assert applied.critical_alert is None
+        state = applied.state
     return current_mandate, projection, state
+
+
+def _reduce_projection(
+    module: ModuleType,
+    state: object,
+    projection: object,
+) -> object:
+    (reducer,) = _required(module, "reduce_position_protection")
+    before = (state, projection)
+    first = reducer(state, projection)
+    second = reducer(state, projection)
+    assert first == second
+    assert before == (state, projection)
+    return first
+
+
+def _reduce_market(
+    module: ModuleType,
+    state: object,
+    projection: object,
+    occurrence: object,
+) -> object:
+    (reducer,) = _required(module, "reduce_position_protection_market")
+    before = (state, projection, occurrence)
+    first = reducer(state, projection, occurrence)
+    second = reducer(state, projection, occurrence)
+    assert first == second
+    assert before == (state, projection, occurrence)
+    return first
+
+
+def _invalidate_market(
+    module: ModuleType,
+    state: object,
+    projection: object,
+) -> object:
+    (invalidate,) = _required(module, "invalidate_position_protection_market")
+    before = (state, projection)
+    first = invalidate(state, projection)
+    second = invalidate(state, projection)
+    assert first == second
+    assert before == (state, projection)
+    return first
 
 
 def _reduce(
@@ -763,13 +962,9 @@ def _reduce(
     projection: object,
     occurrence: object | None = None,
 ) -> object:
-    (reducer,) = _required(module, "reduce_position_protection")
-    before = (state, projection, occurrence)
-    first = reducer(state, projection, occurrence)
-    second = reducer(state, projection, occurrence)
-    assert first == second
-    assert before == (state, projection, occurrence)
-    return first
+    if occurrence is None:
+        return _reduce_projection(module, state, projection)
+    return _reduce_market(module, state, projection, occurrence)
 
 
 def _occurrence(
@@ -790,20 +985,26 @@ def _occurrence(
     scale: PriceScale = SCALE,
     halted: bool = False,
     source_id: object | None = None,
+    stream_generation: object | None = None,
     position_scope: PositionScope = POSITION_SCOPE,
     session_id: object | None = None,
 ) -> object:
+    del label
     market_kind, occurrence_type = _required(module, "MarketKind", "MarketOccurrence")
-    occurrence_id_type, source_id_type, session_type = _required(
+    source_id_type, generation_type, session_type = _required(
         execution_core,
-        "MarketOccurrenceId",
         "MarketDataSourceId",
+        "MarketStreamGenerationId",
         "SessionId",
     )
     return occurrence_type(
-        occurrence_id=occurrence_id_type(label),
         source_id=(
             source_id if source_id is not None else source_id_type("sip-primary")
+        ),
+        stream_generation=(
+            stream_generation
+            if stream_generation is not None
+            else generation_type("11" * 32)
         ),
         position_scope=position_scope,
         session_id=(
@@ -834,6 +1035,58 @@ def _occurrence(
             else _price(structure_trail, tick_units=tick_units, scale=scale)
         ),
         halted=halted,
+    )
+
+
+def _routed_occurrence(
+    module: ModuleType,
+    mandate: object,
+    label: str,
+    *,
+    bid: int | None = 100,
+    ask: int | None = 101,
+    sequence: int | None = 1,
+    source_time: int = 1,
+    evaluation_time: int = 1,
+    market_epoch: int = 0,
+    halted: bool = False,
+    kind: str = "BEST_BID",
+    trade: int | None = None,
+    atr_distance: int | None = None,
+    structure_trail: int | None = None,
+    source_id: object | None = None,
+    stream_generation: object | None = None,
+    position_scope: PositionScope | None = None,
+    session_id: object | None = None,
+) -> object:
+    return _occurrence(
+        module,
+        label,
+        kind=kind,
+        bid=None if kind == "TRADE" else bid,
+        ask=None if kind == "TRADE" else ask,
+        trade=trade if kind == "TRADE" else None,
+        sequence=sequence,
+        source_time=source_time,
+        evaluation_time=evaluation_time,
+        market_epoch=market_epoch,
+        atr_distance=atr_distance,
+        structure_trail=structure_trail,
+        tick_units=mandate.tick.tick_units.value,
+        scale=mandate.tick.scale,
+        halted=halted,
+        source_id=(
+            mandate.evidence_policy.source_id if source_id is None else source_id
+        ),
+        stream_generation=(
+            mandate.evidence_policy.stream_generation
+            if stream_generation is None
+            else stream_generation
+        ),
+        position_scope=(
+            mandate.position_scope if position_scope is None else position_scope
+        ),
+        session_id=mandate.session_id if session_id is None else session_id,
     )
 
 
@@ -1125,7 +1378,9 @@ _DECLARED_REPLACEMENT_TYPES: dict[str, type[object]] = {
     "bytes": bytes,
     "_Decimal": Decimal,
     "_Fraction": Fraction,
+    "_MarketOccurrenceId": execution_core.MarketOccurrenceId,
     "_ReportedPrice": ReportedPrice,
+    "MarketOccurrenceId": execution_core.MarketOccurrenceId,
     "int": int,
     "str": str,
 }
@@ -3746,23 +4001,15 @@ def _assert_recorded_market_inert(
     before: object,
     result: object,
 ) -> None:
-    """Prove a well-routed ineligible occurrence adds only its durable receipt."""
+    """Prove a well-routed ineligible occurrence advances only the bounded cursor."""
     after = result.state
     assert type(after) is type(before)
     retained_fields = {field.name for field in fields(before)}
-    assert {"commitment", "_seen_occurrence_receipts"} <= retained_fields
-    for field_name in retained_fields - {
-        "commitment",
-        "_seen_occurrence_receipts",
-    }:
+    market_cursor_fields = {"commitment", *_ADR023_MARKET_CURSOR_FIELDS}
+    assert market_cursor_fields <= retained_fields
+    assert "_seen_occurrence_receipts" not in retained_fields
+    for field_name in retained_fields - market_cursor_fields:
         assert getattr(after, field_name) == getattr(before, field_name), field_name
-
-    before_receipts = before._seen_occurrence_receipts
-    after_receipts = after._seen_occurrence_receipts
-    assert type(before_receipts) is _PersistentKeyMap
-    assert type(after_receipts) is _PersistentKeyMap
-    assert after_receipts.size == before_receipts.size + 1
-    assert after_receipts.commitment != before_receipts.commitment
     assert after.commitment != before.commitment
     assert after != before
 
@@ -3953,6 +4200,7 @@ def _emergency_goal_fixture(
         current_mandate,
         (terminal, closed),
     )
+    sequence_mode = current_mandate.evidence_policy.sequence_mode.value
     first = _reduce(
         module,
         state,
@@ -3962,10 +4210,11 @@ def _emergency_goal_fixture(
             f"{occurrence_label}-first",
             bid=first_bid,
             ask=first_bid + tick_units,
-            sequence=1,
+            sequence=1 if sequence_mode == "SEQUENCED" else None,
             tick_units=tick_units,
             scale=scale,
             source_id=current_mandate.evidence_policy.source_id,
+            stream_generation=current_mandate.evidence_policy.stream_generation,
             position_scope=position_scope,
             session_id=current_mandate.session_id,
         ),
@@ -3979,12 +4228,13 @@ def _emergency_goal_fixture(
             f"{occurrence_label}-second",
             bid=second_bid,
             ask=second_bid + tick_units,
-            sequence=2,
+            sequence=2 if sequence_mode == "SEQUENCED" else None,
             source_time=106,
             evaluation_time=110,
             tick_units=tick_units,
             scale=scale,
             source_id=current_mandate.evidence_policy.source_id,
+            stream_generation=current_mandate.evidence_policy.stream_generation,
             position_scope=position_scope,
             session_id=current_mandate.session_id,
         ),
@@ -4011,7 +4261,7 @@ def _forge_authority_predecessor(
     return state
 
 
-def test_public_protection_contract_is_exported_and_has_one_reducer() -> None:
+def test_public_protection_contract_is_exported_with_five_exact_transitions() -> None:
     module = _protection_module()
     names = {
         "EvidencePolicy",
@@ -4019,6 +4269,7 @@ def test_public_protection_contract_is_exported_and_has_one_reducer() -> None:
         "ExecutionGuard",
         "MarketKind",
         "MarketOccurrence",
+        "MarketSequenceMode",
         "PositionProtectionState",
         "ProtectionAlert",
         "ProtectionDisposition",
@@ -4028,13 +4279,19 @@ def test_public_protection_contract_is_exported_and_has_one_reducer() -> None:
         "ProtectionUrgency",
         "ProtectionVenueProjection",
         "initialize_position_protection",
+        "invalidate_position_protection_market",
         "project_protection_venue",
         "reduce_position_protection",
+        "reduce_position_protection_market",
     }
     _required(module, *sorted(names))
     assert set(module.__all__) == names
     _required(
-        execution_core, *sorted(names), "MarketDataSourceId", "MarketOccurrenceId"
+        execution_core,
+        *sorted(names),
+        "MarketDataSourceId",
+        "MarketOccurrenceId",
+        "MarketStreamGenerationId",
     )
     assert {
         name
@@ -4066,11 +4323,29 @@ def test_public_protection_contract_is_exported_and_has_one_reducer() -> None:
         ),
         (
             "reduce_position_protection",
+            ("state", "projection"),
+            {
+                "state": "PositionProtectionState",
+                "projection": "ProtectionVenueProjection",
+                "return": "ProtectionTransition",
+            },
+        ),
+        (
+            "reduce_position_protection_market",
             ("state", "projection", "occurrence"),
             {
                 "state": "PositionProtectionState",
                 "projection": "ProtectionVenueProjection",
-                "occurrence": "MarketOccurrence | None",
+                "occurrence": "MarketOccurrence",
+                "return": "ProtectionTransition",
+            },
+        ),
+        (
+            "invalidate_position_protection_market",
+            ("state", "projection"),
+            {
+                "state": "PositionProtectionState",
+                "projection": "ProtectionVenueProjection",
                 "return": "ProtectionTransition",
             },
         ),
@@ -4098,6 +4373,8 @@ def test_public_entrypoint_dependency_closure_has_exact_runtime_provenance() -> 
             "project_protection_venue",
             "initialize_position_protection",
             "reduce_position_protection",
+            "reduce_position_protection_market",
+            "invalidate_position_protection_market",
         ),
     )
 
@@ -4383,20 +4660,26 @@ def test_public_entrypoints_reject_every_wrong_exact_type_before_protocol_access
         bid=100,
         ask=101,
     )
-    project, initialize, reduce = _required(
+    project, initialize, reduce, reduce_market, invalidate = _required(
         module,
         "project_protection_venue",
         "initialize_position_protection",
         "reduce_position_protection",
+        "reduce_position_protection_market",
+        "invalidate_position_protection_market",
     )
     matrix = (
         ("project.transition", project, (fill, mandate), 0),
         ("project.mandate", project, (fill, mandate), 1),
         ("initialize.mandate", initialize, (mandate, projection), 0),
         ("initialize.projection", initialize, (mandate, projection), 1),
-        ("reduce.state", reduce, (state, projection, occurrence), 0),
-        ("reduce.projection", reduce, (state, projection, occurrence), 1),
-        ("reduce.occurrence", reduce, (state, projection, occurrence), 2),
+        ("reduce.state", reduce, (state, projection), 0),
+        ("reduce.projection", reduce, (state, projection), 1),
+        ("market.state", reduce_market, (state, projection, occurrence), 0),
+        ("market.projection", reduce_market, (state, projection, occurrence), 1),
+        ("market.occurrence", reduce_market, (state, projection, occurrence), 2),
+        ("invalidate.state", invalidate, (state, projection), 0),
+        ("invalidate.projection", invalidate, (state, projection), 1),
     )
     for label, entrypoint, valid_arguments, attacked_index in matrix:
         events: list[str] = []
@@ -4413,11 +4696,13 @@ def test_public_entrypoints_emit_no_stdout_or_stderr(
     module = _protection_module()
     fill = _owned_fill_transition(label="public-entrypoint-no-output")
     mandate = _mandate(module)
-    project, initialize, reduce = _required(
+    project, initialize, reduce, reduce_market, invalidate = _required(
         module,
         "project_protection_venue",
         "initialize_position_protection",
         "reduce_position_protection",
+        "reduce_position_protection_market",
+        "invalidate_position_protection_market",
     )
     capsys.readouterr()
 
@@ -4425,7 +4710,7 @@ def test_public_entrypoints_emit_no_stdout_or_stderr(
     assert capsys.readouterr() == ("", "")
     state = initialize(mandate, projection)
     assert capsys.readouterr() == ("", "")
-    reduce(state, projection, None)
+    reduce(state, projection)
     assert capsys.readouterr() == ("", "")
     occurrence = _occurrence(
         module,
@@ -4433,7 +4718,9 @@ def test_public_entrypoints_emit_no_stdout_or_stderr(
         bid=100,
         ask=101,
     )
-    reduce(state, projection, occurrence)
+    reduce_market(state, projection, occurrence)
+    assert capsys.readouterr() == ("", "")
+    invalidate(state, projection)
     assert capsys.readouterr() == ("", "")
 
 
@@ -4442,6 +4729,8 @@ def test_public_value_shapes_and_enum_members_are_exact() -> None:
     expected_fields = {
         "EvidencePolicy": (
             "source_id",
+            "stream_generation",
+            "sequence_mode",
             "max_age",
             "corroboration_window",
             "max_step_fraction",
@@ -4467,6 +4756,7 @@ def test_public_value_shapes_and_enum_members_are_exact() -> None:
         "MarketOccurrence": (
             "occurrence_id",
             "source_id",
+            "stream_generation",
             "position_scope",
             "session_id",
             "market_epoch",
@@ -4531,6 +4821,7 @@ def test_public_value_shapes_and_enum_members_are_exact() -> None:
     }
     expected_enums = {
         "MarketKind": ("BEST_BID", "TRADE"),
+        "MarketSequenceMode": ("SEQUENCED", "SOURCE_TIME"),
         "ProtectionPolicy": (
             "FLOOR_ONLY",
             "TRAIL_ACTIVE",
@@ -4540,7 +4831,11 @@ def test_public_value_shapes_and_enum_members_are_exact() -> None:
         ),
         "ProtectionUrgency": ("NORMAL", "EMERGENCY"),
         "ProtectionDisposition": ("APPLIED", "EXACT_REPLAY", "STALE", "REFUSED"),
-        "ProtectionAlert": ("LATE_POSITIVE_AFTER_FLAT",),
+        "ProtectionAlert": (
+            "LATE_POSITIVE_AFTER_FLAT",
+            "MARKET_BASELINE_REQUIRED",
+            "MARKET_COORDINATE_EXHAUSTED",
+        ),
     }
     public_names = {name for name in vars(module) if not name.startswith("_")}
     assert public_names == set(module.__all__)
@@ -5287,6 +5582,8 @@ def test_mandate_rejects_every_malformed_authority_field(
     ("field_name", "value", "error"),
     [
         ("source_id", "feed", TypeError),
+        ("stream_generation", "11" * 32, TypeError),
+        ("sequence_mode", "SEQUENCED", TypeError),
         ("max_age", True, TypeError),
         ("max_age", -1, ValueError),
         ("corroboration_window", True, TypeError),
@@ -5331,18 +5628,22 @@ def test_execution_guard_requires_nonblank_identity_and_exact_commitment(
 @pytest.mark.parametrize(
     ("field_name", "value", "error"),
     [
-        ("occurrence_id", "occurrence", TypeError),
         ("source_id", "source", TypeError),
+        ("stream_generation", "11" * 32, TypeError),
         ("position_scope", "scope", TypeError),
         ("session_id", "session", TypeError),
         ("market_epoch", True, TypeError),
         ("market_epoch", -1, ValueError),
+        ("market_epoch", _U64_MAX + 1, ValueError),
         ("source_sequence", True, TypeError),
         ("source_sequence", -1, ValueError),
+        ("source_sequence", _U64_MAX + 1, ValueError),
         ("source_time", True, TypeError),
         ("source_time", -1, ValueError),
+        ("source_time", _U64_MAX + 1, ValueError),
         ("evaluation_time", True, TypeError),
         ("evaluation_time", -1, ValueError),
+        ("evaluation_time", _U64_MAX + 1, ValueError),
         ("kind", "BEST_BID", TypeError),
         ("best_bid", object(), TypeError),
         ("best_ask", object(), TypeError),
@@ -5361,6 +5662,66 @@ def test_market_occurrence_rejects_malformed_exact_fields(
     occurrence = _occurrence(module, "shape-valid", bid=100, ask=101)
     with pytest.raises(error):
         replace(occurrence, **{field_name: value})
+
+
+def test_market_occurrence_identity_is_derived_and_not_replaceable() -> None:
+    module = _protection_module()
+    occurrence = _occurrence(module, "derived-identity", bid=100, ask=101)
+    occurrence_field = next(
+        retained
+        for retained in fields(type(occurrence))
+        if retained.name == "occurrence_id"
+    )
+    assert occurrence_field.init is False
+    with pytest.raises((TypeError, ValueError)):
+        type(occurrence)(occurrence_id=occurrence.occurrence_id)
+    with pytest.raises((TypeError, ValueError)):
+        replace(occurrence, occurrence_id=occurrence.occurrence_id)
+    with pytest.raises(FrozenInstanceError):
+        occurrence.occurrence_id = occurrence.occurrence_id
+
+
+@pytest.mark.parametrize(
+    ("sequence_mode", "sequence", "expected"),
+    [
+        ("SEQUENCED", 1, "APPLIED"),
+        ("SEQUENCED", None, "REFUSED"),
+        ("SOURCE_TIME", None, "APPLIED"),
+        ("SOURCE_TIME", 1, "REFUSED"),
+    ],
+)
+def test_market_sequence_presence_is_bound_to_the_fixed_mandate_mode(
+    sequence_mode: str,
+    sequence: int | None,
+    expected: str,
+) -> None:
+    module = _protection_module()
+    current = _owned_fill_transition(label=f"mode-{sequence_mode}-{sequence}")
+    mandate = _mandate(module, sequence_mode=sequence_mode)
+    mandate, projection, state = _start(
+        module,
+        current,
+        mandate,
+        establish_baseline=False,
+    )
+    occurrence = _occurrence(
+        module,
+        "mode-binding",
+        bid=100,
+        ask=101,
+        sequence=sequence,
+        source_time=1,
+        evaluation_time=1,
+        source_id=mandate.evidence_policy.source_id,
+        stream_generation=mandate.evidence_policy.stream_generation,
+        position_scope=mandate.position_scope,
+        session_id=mandate.session_id,
+    )
+    result = _reduce_market(module, state, projection, occurrence)
+    (disposition,) = _required(module, "ProtectionDisposition")
+    assert result.disposition is getattr(disposition, expected)
+    if expected == "REFUSED":
+        assert result.state == state
 
 
 def test_market_kind_owns_one_exact_payload_shape() -> None:
@@ -5630,13 +5991,37 @@ def test_every_reducer_owned_state_field_is_authenticated_before_advancement() -
         unavailable_terminal,
         unavailable_mandate,
     )
-    (disposition,) = _required(module, "ProtectionDisposition")
+    disposition, state_is_authentic = _required(
+        module,
+        "ProtectionDisposition",
+        "_state_is_authentic",
+    )
+    (occurrence_id_type,) = _required(execution_core, "MarketOccurrenceId")
     assert state.high_watermark is None
     assert state.trail is None
     assert unavailable_state.formula_available is False
     assert unavailable_state.armed_hard_bail_trigger is None
     assert unavailable_state.high_watermark is None
     assert unavailable_state.trail is None
+    optional_cursor_replacements = {
+        ("_market_occurrence_epoch",): 7,
+        ("_market_committed_epoch",): 7,
+        ("_market_expected_epoch",): 8,
+        ("_market_source_sequence",): 9,
+        ("_market_source_time",): 10,
+        ("_market_evaluation_time",): 11,
+        ("_market_occurrence_identity",): occurrence_id_type("a1" * 32),
+        ("_market_last_primary",): bytes.fromhex("a2" * 32),
+        ("_hard_bid_identity",): occurrence_id_type("a3" * 32),
+        ("_hard_bid_source_time",): 12,
+        ("_trade_identity",): occurrence_id_type("a4" * 32),
+        ("_trade_source_time",): 13,
+        ("_trail_bid_identity",): occurrence_id_type("a5" * 32),
+        ("_trail_bid_source_time",): 14,
+    }
+    assert tuple(path[0] for path in optional_cursor_replacements) == (
+        _ADR023_OPTIONAL_MARKET_CURSOR_FIELDS
+    )
     scenarios = (
         (
             state,
@@ -5651,15 +6036,27 @@ def test_every_reducer_owned_state_field_is_authenticated_before_advancement() -
             unavailable_successor,
             {
                 ("armed_hard_bail_trigger",): _price(93),
+                ("activation_price",): _price(108),
                 ("high_watermark",): _price(101),
                 ("trail",): _price(99),
             },
         ),
     )
-    for sealed_state, sealed_successor, union_replacements in scenarios:
-        assert all(
-            type(value) is ReportedPrice for value in union_replacements.values()
-        )
+    for sealed_state, sealed_successor, price_replacements in scenarios:
+        possible_replacements = {
+            **price_replacements,
+            **optional_cursor_replacements,
+        }
+        union_replacements = {
+            path: replacement
+            for path, replacement in possible_replacements.items()
+            if getattr(sealed_state, path[0]) is None
+        }
+        assert {
+            (field_name,)
+            for field_name in _ADR023_OPTIONAL_MARKET_CURSOR_FIELDS
+            if getattr(sealed_state, field_name) is None
+        } <= set(union_replacements)
         mutations = _single_leaf_mutations(
             sealed_state,
             allowed_root_types=(state_type,),
@@ -5673,6 +6070,7 @@ def test_every_reducer_owned_state_field_is_authenticated_before_advancement() -
                 sealed_state,
                 mutation.forged,
             ) == frozenset({mutation.path})
+            assert state_is_authentic(mutation.forged) is False, mutation.path
             result = _reduce(module, mutation.forged, sealed_successor)
             assert result.disposition is disposition.REFUSED, mutation.path
             assert result.state == mutation.forged, mutation.path
@@ -6571,7 +6969,7 @@ def test_late_owned_buy_after_flat_restores_hard_bail_and_alert() -> None:
         "protection-late-pre-flat-occurrence",
         bid=100,
         ask=101,
-        sequence=None,
+        sequence=1,
     )
     pre_flat_seen = _reduce(
         module,
@@ -6634,7 +7032,7 @@ def test_late_owned_buy_after_flat_restores_hard_bail_and_alert() -> None:
         "protection-late-flat-occurrence",
         bid=92,
         ask=93,
-        sequence=None,
+        sequence=2,
         source_time=106,
         evaluation_time=110,
     )
@@ -7410,7 +7808,7 @@ def test_additional_economics_tightens_but_never_loosens_armed_trigger() -> None
     assert lower_result.state.armed_hard_bail_trigger.exact_value == Fraction(99)
 
 
-def test_same_call_applies_economics_before_market_evidence() -> None:
+def test_projection_and_market_transitions_are_separate_and_ordered() -> None:
     module = _protection_module()
     first = _owned_fill_transition(
         label="protection-same-call-first",
@@ -7425,40 +7823,58 @@ def test_same_call_applies_economics_before_market_evidence() -> None:
         units=120,
         prior_cumulative=2,
     )
-    combined = _reduce(
+    higher_projection = _projection(module, higher, mandate)
+    occurrence = _routed_occurrence(
+        module,
+        mandate,
+        "protection-split-first-bid",
+        bid=101,
+        ask=102,
+        sequence=1,
+        source_time=1,
+        evaluation_time=1,
+    )
+    refused = _reduce_market(
         module,
         state,
-        _projection(module, higher, mandate),
-        _occurrence(
-            module,
-            "protection-same-call-first-bid",
-            bid=101,
-            ask=102,
-            sequence=1,
-        ),
+        higher_projection,
+        occurrence,
     )
-    assert combined.state.raw_quantity == 4
-    assert combined.state.armed_hard_bail_trigger.exact_value == Fraction(102)
-    second = _reduce(
+    (disposition,) = _required(module, "ProtectionDisposition")
+    assert refused.disposition is disposition.REFUSED
+    assert refused.state == state
+
+    economics = _reduce_projection(module, state, higher_projection)
+    assert economics.state.raw_quantity == 4
+    assert economics.state.armed_hard_bail_trigger.exact_value == Fraction(102)
+    first_market = _reduce_market(
         module,
-        combined.state,
-        _projection(module, higher, mandate),
-        _occurrence(
+        economics.state,
+        higher_projection,
+        occurrence,
+    )
+    assert first_market.disposition is disposition.APPLIED
+    second = _reduce_market(
+        module,
+        first_market.state,
+        higher_projection,
+        _routed_occurrence(
             module,
-            "protection-same-call-second-bid",
+            mandate,
+            "protection-split-second-bid",
             bid=100,
             ask=101,
             sequence=2,
-            source_time=106,
-            evaluation_time=110,
+            source_time=2,
+            evaluation_time=2,
         ),
     )
     (policy,) = _required(module, "ProtectionPolicy")
     assert second.state.policy is policy.HARD_BAIL
 
 
-@pytest.mark.parametrize("case", ["exact_replay", "equivocation", "ineligible"])
-def test_venue_advancement_releases_goal_when_optional_market_input_is_inert(
+@pytest.mark.parametrize("case", ["exact_replay", "conflict", "halt"])
+def test_projection_goal_release_is_independent_from_later_market_classification(
     case: str,
 ) -> None:
     module = _protection_module()
@@ -7491,29 +7907,10 @@ def test_venue_advancement_releases_goal_when_optional_market_input_is_inert(
     )
     assert terminal_result.goal is None
 
-    occurrence = second_occurrence
-    if case == "equivocation":
-        occurrence = replace(
-            second_occurrence,
-            best_bid=_price(90),
-            best_ask=_price(91),
-        )
-    elif case == "ineligible":
-        occurrence = _occurrence(
-            module,
-            f"protection-advance-market-{case}-halted",
-            bid=90,
-            ask=91,
-            sequence=3,
-            source_time=112,
-            evaluation_time=116,
-            halted=True,
-        )
-    released = _reduce(
+    released = _reduce_projection(
         module,
         terminal_result.state,
         _projection(module, closed, mandate),
-        occurrence,
     )
     disposition, policy = _required(
         module,
@@ -7525,15 +7922,41 @@ def test_venue_advancement_releases_goal_when_optional_market_input_is_inert(
     assert released.state.waiting_buy_resolution is False
     assert released.state.execution_commitment == closed.execution.commitment
     assert released.goal is not None
-    if case == "ineligible":
-        assert released.state._seen_occurrence_receipts.size == (
-            terminal_result.state._seen_occurrence_receipts.size + 1
+    if case == "exact_replay":
+        occurrence = second_occurrence
+    elif case == "conflict":
+        occurrence = replace(
+            second_occurrence,
+            best_bid=_price(90),
+            best_ask=_price(91),
         )
     else:
-        assert (
-            released.state._seen_occurrence_receipts
-            == terminal_result.state._seen_occurrence_receipts
+        occurrence = _routed_occurrence(
+            module,
+            mandate,
+            "protection-release-halt",
+            bid=90,
+            ask=91,
+            sequence=3,
+            source_time=112,
+            evaluation_time=116,
+            halted=True,
         )
+    classified = _reduce_market(
+        module,
+        released.state,
+        _projection(module, closed, mandate),
+        occurrence,
+    )
+    assert classified.goal is None
+    if case == "exact_replay":
+        assert classified.disposition is disposition.EXACT_REPLAY
+        assert classified.state == released.state
+    else:
+        (alert,) = _required(module, "ProtectionAlert")
+        assert classified.disposition is disposition.APPLIED
+        assert classified.critical_alert is alert.MARKET_BASELINE_REQUIRED
+        assert classified.state._market_baseline_required is True
 
 
 def test_correction_and_bust_apply_economics_before_protection_policy() -> None:
@@ -8271,258 +8694,206 @@ def test_trade_plus_distinct_bid_within_window_triggers_hard_bail() -> None:
     assert bid.goal is not None
 
 
-@pytest.mark.parametrize("source_sequence", [7, None])
+@pytest.mark.parametrize("sequence_mode", ["SEQUENCED", "SOURCE_TIME"])
 @pytest.mark.parametrize("first_kind", ["BEST_BID", "TRADE"])
 def test_changed_delivery_context_replay_is_exact_for_every_occurrence_form(
     first_kind: str,
-    source_sequence: int | None,
+    sequence_mode: str,
 ) -> None:
     module = _protection_module()
     fill = _owned_fill_transition(
-        label=f"changed-context-{first_kind.lower()}-{source_sequence}"
+        label=f"changed-context-{first_kind.lower()}-{sequence_mode.lower()}"
     )
-    mandate, _, state = _start(module, fill)
+    mandate = _mandate(module, sequence_mode=sequence_mode)
+    mandate, _, state = _start(module, fill, mandate)
     terminal, closed = _close_base_parent(fill)
     state, projection, _ = _sync_transitions(module, state, mandate, (terminal, closed))
-    occurrence = _occurrence(
+    sequenced = sequence_mode == "SEQUENCED"
+    occurrence = _routed_occurrence(
         module,
-        f"changed-context-{first_kind.lower()}-{source_sequence}",
+        mandate,
+        "changed-context-first",
         kind=first_kind,
-        bid=92 if first_kind == "BEST_BID" else None,
-        ask=93 if first_kind == "BEST_BID" else None,
-        trade=92 if first_kind == "TRADE" else None,
-        sequence=source_sequence,
+        bid=92,
+        ask=93,
+        trade=92,
+        sequence=7 if sequenced else None,
+        source_time=100,
+        evaluation_time=104,
     )
-    first = _reduce(module, state, projection, occurrence)
-    retained_before_replay = _leaf_sort_key(first.state)
-    replay = _reduce(
-        module, first.state, projection, replace(occurrence, evaluation_time=109)
-    )
-    valid_after_replay = _reduce(
-        module,
-        replay.state,
-        projection,
-        _occurrence(
-            module,
-            f"valid-after-{first_kind.lower()}-{source_sequence}-replay",
-            bid=91,
-            ask=92,
-            sequence=8 if source_sequence is not None else None,
-            source_time=106,
-            evaluation_time=107,
-        ),
-    )
+    first = _reduce_market(module, state, projection, occurrence)
+    replay_occurrence = replace(occurrence, evaluation_time=105)
+    replay = _reduce_market(module, first.state, projection, replay_occurrence)
     disposition, policy = _required(
         module,
         "ProtectionDisposition",
         "ProtectionPolicy",
     )
+    assert replay_occurrence.occurrence_id == occurrence.occurrence_id
     assert replay.disposition is disposition.EXACT_REPLAY
-    assert _leaf_sort_key(replay.state) == retained_before_replay
     assert replay.state == first.state
-    assert replay.state.commitment == first.state.commitment
     assert replay.state.policy is policy.FLOOR_ONLY
     assert replay.goal is None
     assert replay.critical_alert is None
+
+    successor = _routed_occurrence(
+        module,
+        mandate,
+        "changed-context-successor",
+        bid=91,
+        ask=92,
+        sequence=8 if sequenced else None,
+        source_time=106,
+        evaluation_time=107,
+    )
+    valid_after_replay = _reduce_market(
+        module,
+        replay.state,
+        projection,
+        successor,
+    )
     assert valid_after_replay.state.policy is policy.HARD_BAIL
     assert valid_after_replay.goal is not None
 
 
-def test_nonadvancing_sequence_does_not_corroborate() -> None:
+def test_equal_sequence_conflict_latches_baseline_without_replacing_cursor() -> None:
     module = _protection_module()
-    fill = _owned_fill_transition(label="nonadvancing-sequence")
-    mandate, _, state = _start(module, fill)
-    terminal, closed = _close_base_parent(fill)
-    state, projection, _ = _sync_transitions(module, state, mandate, (terminal, closed))
-    first = _reduce(
+    fill = _owned_fill_transition(label="equal-sequence-conflict")
+    mandate, projection, state = _start(module, fill)
+    first_occurrence = _routed_occurrence(
+        module,
+        mandate,
+        "equal-sequence-first",
+        bid=92,
+        ask=93,
+        sequence=7,
+        source_time=100,
+        evaluation_time=104,
+    )
+    first = _reduce_market(module, state, projection, first_occurrence)
+    conflict_occurrence = _routed_occurrence(
+        module,
+        mandate,
+        "equal-sequence-conflict",
+        bid=91,
+        ask=92,
+        sequence=7,
+        source_time=106,
+        evaluation_time=110,
+    )
+    conflict = _reduce_market(module, first.state, projection, conflict_occurrence)
+    disposition, alert = _required(
+        module,
+        "ProtectionDisposition",
+        "ProtectionAlert",
+    )
+    assert conflict.disposition is disposition.APPLIED
+    assert conflict.critical_alert is alert.MARKET_BASELINE_REQUIRED
+    assert conflict.state._market_baseline_required is True
+    assert conflict.state._market_occurrence_identity == first_occurrence.occurrence_id
+    assert conflict.goal is None
+
+
+def test_wrong_mode_refusal_preserves_the_sequenced_high_water() -> None:
+    module = _protection_module()
+    fill = _owned_fill_transition(label="fixed-sequence-high-water")
+    mandate, projection, state = _start(module, fill)
+    first = _reduce_market(
         module,
         state,
         projection,
-        _occurrence(module, "advancing-sequence", bid=92, ask=93, sequence=7),
-    )
-    equal_sequence = _reduce(
-        module,
-        first.state,
-        projection,
-        _occurrence(
+        _routed_occurrence(
             module,
-            "different-id-equal-sequence",
-            bid=91,
-            ask=92,
-            sequence=7,
-            source_time=106,
-            evaluation_time=110,
-        ),
-    )
-    (policy,) = _required(module, "ProtectionPolicy")
-    _assert_recorded_market_inert(module, first.state, equal_sequence)
-    assert equal_sequence.state.policy is policy.FLOOR_ONLY
-
-
-def test_sequence_absence_does_not_erase_the_last_present_high_water() -> None:
-    module = _protection_module()
-    fill = _owned_fill_transition(label="mixed-sequence-high-water")
-    mandate, _, state = _start(module, fill)
-    terminal, closed = _close_base_parent(fill)
-    state, projection, _ = _sync_transitions(module, state, mandate, (terminal, closed))
-
-    baseline = _reduce(
-        module,
-        state,
-        projection,
-        _occurrence(
-            module,
-            "mixed-sequence-7-baseline",
-            bid=100,
-            ask=101,
+            mandate,
+            "fixed-sequence-seven",
             sequence=7,
             source_time=100,
             evaluation_time=104,
         ),
     )
-    sequence_absent = _reduce(
+    wrong_mode = _routed_occurrence(
         module,
-        baseline.state,
+        mandate,
+        "fixed-sequence-absent",
+        sequence=None,
+        source_time=106,
+        evaluation_time=110,
+    )
+    refused = _reduce_market(module, first.state, projection, wrong_mode)
+    (disposition,) = _required(module, "ProtectionDisposition")
+    assert refused.disposition is disposition.REFUSED
+    assert refused.state == first.state
+    assert refused.state._market_source_sequence == 7
+
+    advanced = _reduce_market(
+        module,
+        refused.state,
         projection,
-        _occurrence(
+        _routed_occurrence(
             module,
-            "mixed-sequence-absent",
-            bid=100,
-            ask=101,
-            sequence=None,
+            mandate,
+            "fixed-sequence-eight",
+            sequence=8,
             source_time=106,
             evaluation_time=110,
         ),
     )
-    reused = _reduce(
-        module,
-        sequence_absent.state,
-        projection,
-        _occurrence(
-            module,
-            "mixed-sequence-7-reused",
-            bid=92,
-            ask=93,
-            sequence=7,
-            source_time=112,
-            evaluation_time=116,
-        ),
-    )
-    _assert_recorded_market_inert(module, sequence_absent.state, reused)
-
-    first_fresh = _reduce(
-        module,
-        reused.state,
-        projection,
-        _occurrence(
-            module,
-            "mixed-sequence-8-fresh",
-            bid=92,
-            ask=93,
-            sequence=8,
-            source_time=118,
-            evaluation_time=122,
-        ),
-    )
-    (policy,) = _required(module, "ProtectionPolicy")
-    assert first_fresh.state.policy is policy.FLOOR_ONLY
-    assert first_fresh.goal is None
-
-    second_fresh = _reduce(
-        module,
-        first_fresh.state,
-        projection,
-        _occurrence(
-            module,
-            "mixed-sequence-9-fresh",
-            bid=91,
-            ask=92,
-            sequence=9,
-            source_time=124,
-            evaluation_time=128,
-        ),
-    )
-    assert second_fresh.state.policy is policy.HARD_BAIL
-    assert second_fresh.goal is not None
+    assert advanced.disposition is disposition.APPLIED
+    assert advanced.state._market_source_sequence == 8
 
 
-@pytest.mark.parametrize("second_sequence", [2, None])
+@pytest.mark.parametrize("sequence_mode", ["SEQUENCED", "SOURCE_TIME"])
 @pytest.mark.parametrize("first_kind", ["BEST_BID", "TRADE"])
-def test_occurrence_identity_equivocation_is_refused_before_corroboration(
+def test_derived_identity_conflict_is_one_shot_before_recovery(
     first_kind: str,
-    second_sequence: int | None,
+    sequence_mode: str,
 ) -> None:
     module = _protection_module()
     fill = _owned_fill_transition(
-        label=f"equivocation-{first_kind.lower()}-{second_sequence}"
+        label=f"identity-conflict-{first_kind.lower()}-{sequence_mode.lower()}"
     )
-    mandate, _, state = _start(module, fill)
-    terminal, closed = _close_base_parent(fill)
-    state, projection, _ = _sync_transitions(
+    mandate = _mandate(module, sequence_mode=sequence_mode)
+    mandate, projection, state = _start(module, fill, mandate)
+    sequenced = sequence_mode == "SEQUENCED"
+    first_occurrence = _routed_occurrence(
         module,
-        state,
         mandate,
-        (terminal, closed),
+        "identity-conflict-first",
+        kind=first_kind,
+        bid=92,
+        ask=93,
+        trade=92,
+        sequence=1 if sequenced else None,
+        source_time=100,
+        evaluation_time=104,
     )
-    shared_id = "equivocated-source-occurrence"
-    first = _reduce(
+    first = _reduce_market(module, state, projection, first_occurrence)
+    changed = _routed_occurrence(
         module,
-        state,
-        projection,
-        _occurrence(
-            module,
-            shared_id,
-            kind=first_kind,
-            bid=92 if first_kind == "BEST_BID" else None,
-            ask=93 if first_kind == "BEST_BID" else None,
-            trade=92 if first_kind == "TRADE" else None,
-            sequence=1 if second_sequence is not None else None,
-            source_time=100,
-            evaluation_time=104,
-        ),
+        mandate,
+        "identity-conflict-changed",
+        bid=91,
+        ask=92,
+        sequence=1 if sequenced else None,
+        source_time=100,
+        evaluation_time=105,
     )
-    equivocated = _reduce(
-        module,
-        first.state,
-        projection,
-        _occurrence(
-            module,
-            shared_id,
-            kind="BEST_BID",
-            bid=91,
-            ask=92,
-            sequence=second_sequence,
-            source_time=106,
-            evaluation_time=110,
-        ),
-    )
-    disposition, policy = _required(
+    assert changed.occurrence_id != first_occurrence.occurrence_id
+    conflict = _reduce_market(module, first.state, projection, changed)
+    disposition, alert = _required(
         module,
         "ProtectionDisposition",
-        "ProtectionPolicy",
+        "ProtectionAlert",
     )
-    assert equivocated.disposition is disposition.REFUSED
-    assert equivocated.state == first.state
-    assert equivocated.state.policy is policy.FLOOR_ONLY
-    assert equivocated.goal is None
-    assert equivocated.critical_alert is None
+    assert conflict.disposition is disposition.APPLIED
+    assert conflict.critical_alert is alert.MARKET_BASELINE_REQUIRED
+    assert conflict.state._market_occurrence_identity == first_occurrence.occurrence_id
 
-    distinct = _reduce(
-        module,
-        equivocated.state,
-        projection,
-        _occurrence(
-            module,
-            "equivocation-distinct-successor",
-            bid=91,
-            ask=92,
-            sequence=3 if second_sequence is not None else None,
-            source_time=110,
-            evaluation_time=116,
-        ),
-    )
-    assert distinct.state.policy is policy.HARD_BAIL
-    assert distinct.goal is not None
+    another = replace(changed, best_bid=_price(90), best_ask=_price(91))
+    refused = _reduce_market(module, conflict.state, projection, another)
+    assert refused.disposition is disposition.REFUSED
+    assert refused.state == conflict.state
+    assert refused.critical_alert is None
 
 
 def test_above_trigger_interruption_resets_bid_corroboration() -> None:
@@ -8659,10 +9030,11 @@ def test_trigger_ratchet_cannot_reuse_evidence_from_the_old_trigger() -> None:
     assert second_new.state.policy is policy.HARD_BAIL
 
 
-def test_sequence_absent_requires_distinct_stable_occurrence_ids() -> None:
+def test_source_time_mode_requires_strictly_timed_distinct_occurrences() -> None:
     module = _protection_module()
     fill = _owned_fill_transition()
-    mandate, _, state = _start(module, fill)
+    mandate = _mandate(module, sequence_mode="SOURCE_TIME")
+    mandate, _, state = _start(module, fill, mandate)
     terminal, closed = _close_base_parent(fill)
     state, projection, _ = _sync_transitions(module, state, mandate, (terminal, closed))
     first_occurrence = _occurrence(
@@ -8700,7 +9072,8 @@ def test_nonlast_sequence_absent_replay_cannot_rebuild_hard_bail_evidence(
 ) -> None:
     module = _protection_module()
     fill = _owned_fill_transition(label=f"nonlast-hard-replay-{first_kind.lower()}")
-    mandate, _, state = _start(module, fill)
+    mandate = _mandate(module, sequence_mode="SOURCE_TIME")
+    mandate, _, state = _start(module, fill, mandate)
     terminal, closed = _close_base_parent(fill)
     state, projection, _ = _sync_transitions(module, state, mandate, (terminal, closed))
     first_occurrence = _occurrence(
@@ -8725,7 +9098,7 @@ def test_nonlast_sequence_absent_replay_cannot_rebuild_hard_bail_evidence(
             bid=95,
             ask=96,
             sequence=None,
-            source_time=100,
+            source_time=101,
             evaluation_time=105,
         ),
     )
@@ -8741,7 +9114,7 @@ def test_nonlast_sequence_absent_replay_cannot_rebuild_hard_bail_evidence(
         "ProtectionDisposition",
         "ProtectionPolicy",
     )
-    assert replay.disposition is disposition.EXACT_REPLAY
+    assert replay.disposition is disposition.STALE
     assert replay.state == restarted_state
     assert replay.goal is None
     assert replay.critical_alert is None
@@ -8764,10 +9137,11 @@ def test_nonlast_sequence_absent_replay_cannot_rebuild_hard_bail_evidence(
     assert successor.goal is None
 
 
-def test_nonlast_occurrence_identity_equivocation_is_refused() -> None:
+def test_nonlast_old_coordinate_payload_change_is_stale() -> None:
     module = _protection_module()
     fill = _owned_fill_transition(label="nonlast-identity-equivocation")
-    mandate, _, state = _start(module, fill)
+    mandate = _mandate(module, sequence_mode="SOURCE_TIME")
+    mandate, _, state = _start(module, fill, mandate)
     terminal, closed = _close_base_parent(fill)
     state, projection, _ = _sync_transitions(module, state, mandate, (terminal, closed))
     shared_id = "nonlast-identity-equivocation-a"
@@ -8795,7 +9169,7 @@ def test_nonlast_occurrence_identity_equivocation_is_refused() -> None:
             bid=95,
             ask=96,
             sequence=None,
-            source_time=100,
+            source_time=101,
             evaluation_time=105,
         ),
     )
@@ -8818,7 +9192,7 @@ def test_nonlast_occurrence_identity_equivocation_is_refused() -> None:
         "ProtectionDisposition",
         "ProtectionPolicy",
     )
-    assert equivocated.disposition is disposition.REFUSED
+    assert equivocated.disposition is disposition.STALE
     assert equivocated.state == interrupted.state
     assert equivocated.state.policy is policy.FLOOR_ONLY
     assert equivocated.goal is None
@@ -8828,7 +9202,8 @@ def test_nonlast_occurrence_identity_equivocation_is_refused() -> None:
 def test_nonlast_sequence_absent_replay_cannot_rebuild_trail_exit_evidence() -> None:
     module = _protection_module()
     fill = _owned_fill_transition(label="nonlast-trail-replay")
-    mandate, _, state = _start(module, fill)
+    mandate = _mandate(module, sequence_mode="SOURCE_TIME")
+    mandate, _, state = _start(module, fill, mandate)
     terminal, closed = _close_base_parent(fill)
     state, projection, _ = _sync_transitions(module, state, mandate, (terminal, closed))
     activated = _reduce(
@@ -8840,7 +9215,7 @@ def test_nonlast_sequence_absent_replay_cannot_rebuild_trail_exit_evidence() -> 
             "nonlast-trail-replay-activation",
             bid=110,
             ask=111,
-            sequence=1,
+            sequence=None,
             source_time=100,
             evaluation_time=104,
         ),
@@ -8866,7 +9241,7 @@ def test_nonlast_sequence_absent_replay_cannot_rebuild_trail_exit_evidence() -> 
             bid=105,
             ask=106,
             sequence=None,
-            source_time=106,
+            source_time=107,
             evaluation_time=111,
         ),
     )
@@ -8882,7 +9257,7 @@ def test_nonlast_sequence_absent_replay_cannot_rebuild_trail_exit_evidence() -> 
         "ProtectionDisposition",
         "ProtectionPolicy",
     )
-    assert replay.disposition is disposition.EXACT_REPLAY
+    assert replay.disposition is disposition.STALE
     assert replay.state == restarted_state
     assert replay.goal is None
 
@@ -8907,7 +9282,8 @@ def test_nonlast_sequence_absent_replay_cannot_rebuild_trail_exit_evidence() -> 
 def test_stale_first_delivery_cannot_become_fresh_when_redelivered() -> None:
     module = _protection_module()
     fill = _owned_fill_transition(label="stale-first-delivery-replay")
-    mandate, _, state = _start(module, fill)
+    mandate = _mandate(module, sequence_mode="SOURCE_TIME")
+    mandate, _, state = _start(module, fill, mandate)
     terminal, closed = _close_base_parent(fill)
     state, projection, _ = _sync_transitions(module, state, mandate, (terminal, closed))
     stale = _occurrence(
@@ -8930,7 +9306,7 @@ def test_stale_first_delivery_cannot_become_fresh_when_redelivered() -> None:
             bid=95,
             ask=96,
             sequence=None,
-            source_time=100,
+            source_time=101,
             evaluation_time=105,
         ),
     )
@@ -8947,7 +9323,7 @@ def test_stale_first_delivery_cannot_become_fresh_when_redelivered() -> None:
     )
     assert first_delivery.disposition is disposition.APPLIED
     assert first_delivery.goal is None
-    assert replay.disposition is disposition.EXACT_REPLAY
+    assert replay.disposition is disposition.STALE
     assert replay.state == interruption.state
     assert replay.state.policy is policy.FLOOR_ONLY
     assert replay.goal is None
@@ -8958,7 +9334,8 @@ def test_step_invalid_first_delivery_cannot_become_eligible_after_anchor_moves()
 ):
     module = _protection_module()
     fill = _owned_fill_transition(label="step-first-delivery-replay")
-    mandate, _, state = _start(module, fill)
+    mandate = _mandate(module, sequence_mode="SOURCE_TIME")
+    mandate, _, state = _start(module, fill, mandate)
     terminal, closed = _close_base_parent(fill)
     state, projection, _ = _sync_transitions(module, state, mandate, (terminal, closed))
     anchored = _reduce(
@@ -8995,7 +9372,7 @@ def test_step_invalid_first_delivery_cannot_become_eligible_after_anchor_moves()
             bid=120,
             ask=121,
             sequence=None,
-            source_time=106,
+            source_time=107,
             evaluation_time=111,
         ),
     )
@@ -9012,7 +9389,7 @@ def test_step_invalid_first_delivery_cannot_become_eligible_after_anchor_moves()
     )
     assert first_delivery.disposition is disposition.APPLIED
     assert first_delivery.goal is None
-    assert replay.disposition is disposition.EXACT_REPLAY
+    assert replay.disposition is disposition.STALE
     assert replay.state == moved_anchor.state
     assert replay.state.policy is policy.TRAIL_ACTIVE
     assert replay.state.high_watermark.exact_value == Fraction(120)
@@ -9022,67 +9399,68 @@ def test_step_invalid_first_delivery_cannot_become_eligible_after_anchor_moves()
 def test_crossed_first_delivery_reserves_identity_against_payload_correction() -> None:
     module = _protection_module()
     fill = _owned_fill_transition(label="crossed-first-delivery-equivocation")
-    mandate, _, state = _start(module, fill)
+    mandate = _mandate(module, sequence_mode="SOURCE_TIME")
+    mandate, _, state = _start(module, fill, mandate)
     terminal, closed = _close_base_parent(fill)
     state, projection, _ = _sync_transitions(module, state, mandate, (terminal, closed))
-    shared_id = "crossed-first-delivery-equivocation-a"
-    crossed = _reduce(
+    crossed_occurrence = _routed_occurrence(
         module,
-        state,
-        projection,
-        _occurrence(
-            module,
-            shared_id,
-            bid=101,
-            ask=100,
-            sequence=None,
-            source_time=100,
-            evaluation_time=104,
-        ),
+        mandate,
+        "crossed-first-delivery",
+        bid=101,
+        ask=100,
+        sequence=None,
+        source_time=100,
+        evaluation_time=104,
     )
-    interrupted = _reduce(
+    crossed = _reduce_market(module, state, projection, crossed_occurrence)
+    corrected_occurrence = _routed_occurrence(
+        module,
+        mandate,
+        "crossed-first-delivery-corrected",
+        bid=92,
+        ask=93,
+        sequence=None,
+        source_time=100,
+        evaluation_time=105,
+    )
+    corrected = _reduce_market(
         module,
         crossed.state,
         projection,
-        _occurrence(
-            module,
-            "crossed-first-delivery-equivocation-b",
-            bid=95,
-            ask=96,
-            sequence=None,
-            source_time=100,
-            evaluation_time=105,
-        ),
+        corrected_occurrence,
     )
-    corrected = _reduce(
+    disposition, alert = _required(
         module,
-        interrupted.state,
-        projection,
-        _occurrence(
-            module,
-            shared_id,
-            bid=92,
-            ask=93,
-            sequence=None,
-            source_time=100,
-            evaluation_time=106,
-        ),
+        "ProtectionDisposition",
+        "ProtectionAlert",
     )
-    (disposition,) = _required(module, "ProtectionDisposition")
     assert crossed.disposition is disposition.APPLIED
-    assert corrected.disposition is disposition.REFUSED
-    assert corrected.state == interrupted.state
+    assert corrected.disposition is disposition.APPLIED
+    assert corrected.critical_alert is alert.MARKET_BASELINE_REQUIRED
+    assert corrected.state._market_baseline_required is True
+    assert (
+        corrected.state._market_occurrence_identity == crossed_occurrence.occurrence_id
+    )
     assert corrected.goal is None
+
+    another = replace(corrected_occurrence, best_bid=_price(91), best_ask=_price(92))
+    refused = _reduce_market(module, corrected.state, projection, another)
+    assert refused.disposition is disposition.REFUSED
+    assert refused.state == corrected.state
+    assert refused.critical_alert is None
 
 
 def test_source_time_regression_and_halt_reopen_start_fresh_branches() -> None:
     module = _protection_module()
     fill = _owned_fill_transition()
-    mandate, _, state = _start(module, fill)
+    mandate = _mandate(module, sequence_mode="SOURCE_TIME")
+    mandate, _, state = _start(module, fill, mandate)
     terminal, closed = _close_base_parent(fill)
     state, projection, _ = _sync_transitions(module, state, mandate, (terminal, closed))
-    first_occurrence = _occurrence(
+    first_occurrence = _routed_occurrence(
         module,
+        mandate,
         "time-before-halt",
         bid=92,
         ask=93,
@@ -9100,8 +9478,9 @@ def test_source_time_regression_and_halt_reopen_start_fresh_branches() -> None:
         module,
         first.state,
         projection,
-        _occurrence(
+        _routed_occurrence(
             module,
+            mandate,
             "time-regressed",
             bid=91,
             ask=92,
@@ -9110,12 +9489,16 @@ def test_source_time_regression_and_halt_reopen_start_fresh_branches() -> None:
             evaluation_time=104,
         ),
     )
+    (disposition,) = _required(module, "ProtectionDisposition")
+    assert regressed.disposition is disposition.STALE
+    assert regressed.state == first.state
     halted = _reduce(
         module,
         regressed.state,
         projection,
-        _occurrence(
+        _routed_occurrence(
             module,
+            mandate,
             "halted-market",
             bid=91,
             ask=92,
@@ -9132,16 +9515,16 @@ def test_source_time_regression_and_halt_reopen_start_fresh_branches() -> None:
         projection,
         replace(first_occurrence, evaluation_time=111),
     )
-    (disposition,) = _required(module, "ProtectionDisposition")
-    assert halted_replay.disposition is disposition.EXACT_REPLAY
+    assert halted_replay.disposition is disposition.STALE
     assert halted_replay.state == halted.state
     assert halted_replay.goal is None
     same_epoch = _reduce(
         module,
         halted_replay.state,
         projection,
-        _occurrence(
+        _routed_occurrence(
             module,
+            mandate,
             "same-epoch-after-halt",
             bid=91,
             ask=92,
@@ -9150,13 +9533,15 @@ def test_source_time_regression_and_halt_reopen_start_fresh_branches() -> None:
             evaluation_time=116,
         ),
     )
-    _assert_recorded_market_inert(module, halted.state, same_epoch)
-    reopened_first = _reduce(
+    assert same_epoch.disposition is disposition.STALE
+    assert same_epoch.state == halted.state
+    reopened_baseline = _reduce(
         module,
         same_epoch.state,
         projection,
-        _occurrence(
+        _routed_occurrence(
             module,
+            mandate,
             "reopen-below-1",
             bid=92,
             ask=93,
@@ -9167,19 +9552,40 @@ def test_source_time_regression_and_halt_reopen_start_fresh_branches() -> None:
         ),
     )
     (policy,) = _required(module, "ProtectionPolicy")
-    assert reopened_first.state.policy is policy.FLOOR_ONLY
-    reopened_second = _reduce(
+    assert reopened_baseline.state.policy is policy.FLOOR_ONLY
+    assert reopened_baseline.state._hard_bid_identity is None
+    assert reopened_baseline.goal is None
+    reopened_first = _reduce(
         module,
-        reopened_first.state,
+        reopened_baseline.state,
         projection,
-        _occurrence(
+        _routed_occurrence(
             module,
+            mandate,
             "reopen-below-2",
             bid=91,
             ask=92,
             sequence=None,
             source_time=118,
             evaluation_time=122,
+            market_epoch=1,
+        ),
+    )
+    assert reopened_first.state.policy is policy.FLOOR_ONLY
+    assert reopened_first.goal is None
+    reopened_second = _reduce(
+        module,
+        reopened_first.state,
+        projection,
+        _routed_occurrence(
+            module,
+            mandate,
+            "reopen-below-3",
+            bid=90,
+            ask=91,
+            sequence=None,
+            source_time=124,
+            evaluation_time=128,
             market_epoch=1,
         ),
     )
@@ -9288,7 +9694,9 @@ def test_evaluation_time_is_monotone_nondecreasing_per_market_stream(
         _assert_recorded_market_inert(module, first.state, second)
 
 
-def test_new_market_epoch_owns_a_fresh_evaluation_time_watermark() -> None:
+def test_recovery_epoch_preserves_generation_global_coordinates_and_watermarks() -> (
+    None
+):
     module = _protection_module()
     fill = _owned_fill_transition(label="evaluation-epoch-reset")
     mandate, _, state = _start(module, fill)
@@ -9328,55 +9736,92 @@ def test_new_market_epoch_owns_a_fresh_evaluation_time_watermark() -> None:
             halted=True,
         ),
     )
-    reopened = _reduce(
+    regressed_baseline_occurrence = _occurrence(
+        module,
+        "evaluation-epoch-one-regressed-baseline",
+        bid=92,
+        ask=93,
+        sequence=3,
+        source_time=107,
+        evaluation_time=109,
+        market_epoch=1,
+    )
+    regressed = _reduce(
         module,
         halted.state,
         projection,
+        regressed_baseline_occurrence,
+    )
+    (disposition,) = _required(module, "ProtectionDisposition")
+    assert regressed.disposition is disposition.APPLIED
+    assert regressed.state._market_source_sequence == 3
+    assert regressed.state._market_source_time == 107
+    assert regressed.state._market_evaluation_time == 110
+    assert regressed.state._market_baseline_required is True
+    assert regressed.state._market_committed_epoch == 0
+    assert regressed.goal is None
+
+    corrected_same_coordinate = _reduce(
+        module,
+        regressed.state,
+        projection,
+        replace(regressed_baseline_occurrence, evaluation_time=111),
+    )
+    assert corrected_same_coordinate.disposition is disposition.EXACT_REPLAY
+    assert corrected_same_coordinate.state == regressed.state
+
+    reopened = _reduce(
+        module,
+        corrected_same_coordinate.state,
+        projection,
         _occurrence(
             module,
-            "evaluation-epoch-one-first",
+            "evaluation-epoch-one-baseline",
             bid=92,
             ask=93,
-            sequence=1,
-            source_time=1,
-            evaluation_time=5,
+            sequence=4,
+            source_time=108,
+            evaluation_time=110,
             market_epoch=1,
         ),
     )
     (policy,) = _required(module, "ProtectionPolicy")
     assert reopened.state.policy is policy.FLOOR_ONLY
-    assert reopened.state != halted.state
+    assert reopened.state._market_committed_epoch == 1
+    assert reopened.state._market_baseline_required is False
+    assert reopened.state._hard_bid_identity is None
     assert reopened.goal is None
 
-    regressed = _reduce(
+    first = _reduce(
         module,
         reopened.state,
         projection,
         _occurrence(
             module,
-            "evaluation-epoch-one-regressed",
-            bid=91,
-            ask=92,
-            sequence=2,
-            source_time=2,
-            evaluation_time=4,
+            "evaluation-epoch-one-first-evidence",
+            bid=92,
+            ask=93,
+            sequence=5,
+            source_time=109,
+            evaluation_time=111,
             market_epoch=1,
         ),
     )
-    _assert_recorded_market_inert(module, reopened.state, regressed)
+    assert first.state.policy is policy.FLOOR_ONLY
+    assert first.goal is None
 
     valid_second = _reduce(
         module,
-        regressed.state,
+        first.state,
         projection,
         _occurrence(
             module,
             "evaluation-epoch-one-second",
             bid=91,
             ask=92,
-            sequence=2,
-            source_time=3,
-            evaluation_time=6,
+            sequence=6,
+            source_time=110,
+            evaluation_time=112,
             market_epoch=1,
         ),
     )
@@ -11182,6 +11627,8 @@ def test_goal_carries_complete_current_policy_binding() -> None:
         "emergency_guard_id",
         "emergency_guard_policy_commitment",
         "evidence_source",
+        "evidence_generation",
+        "evidence_sequence_mode",
         "evidence_max_age",
         "evidence_window",
         "evidence_max_step",
@@ -11265,6 +11712,11 @@ def test_protection_commitment_binds_each_retained_authority_independently(
         mandate_kwargs["emergency_guard"] = changed_guard
     elif binding == "evidence_source":
         mandate_kwargs["source_id"] = execution_core.MarketDataSourceId("sip-backup")
+    elif binding == "evidence_generation":
+        (generation_type,) = _required(execution_core, "MarketStreamGenerationId")
+        mandate_kwargs["stream_generation"] = generation_type("22" * 32)
+    elif binding == "evidence_sequence_mode":
+        mandate_kwargs["sequence_mode"] = "SOURCE_TIME"
     elif binding == "evidence_max_age":
         mandate_kwargs["max_age"] = 20
     elif binding == "evidence_window":
@@ -12210,9 +12662,10 @@ def test_value_objects_expose_no_mutating_or_broker_capability_fields() -> None:
         value_type: tuple(retained.name for retained in fields(value_type))
         for value_type in _required(module, *value_names)
     }
-    market_source_type, occurrence_id_type, session_type = _required(
+    market_source_type, generation_type, occurrence_id_type, session_type = _required(
         execution_core,
         "MarketDataSourceId",
+        "MarketStreamGenerationId",
         "MarketOccurrenceId",
         "SessionId",
     )
@@ -12228,8 +12681,8 @@ def test_value_objects_expose_no_mutating_or_broker_capability_fields() -> None:
             Quantity,
             ReportedPrice,
             TickMetadata,
-            _PersistentKeyMap,
             market_source_type,
+            generation_type,
             occurrence_id_type,
             session_type,
         }
@@ -12237,6 +12690,7 @@ def test_value_objects_expose_no_mutating_or_broker_capability_fields() -> None:
     protection_enum_types = _required(
         module,
         "MarketKind",
+        "MarketSequenceMode",
         "ProtectionPolicy",
         "ProtectionUrgency",
         "ProtectionDisposition",
@@ -12247,10 +12701,15 @@ def test_value_objects_expose_no_mutating_or_broker_capability_fields() -> None:
             protection_enum_types,
             (
                 ("BEST_BID", "TRADE"),
+                ("SEQUENCED", "SOURCE_TIME"),
                 ("FLOOR_ONLY", "TRAIL_ACTIVE", "EXIT_NORMAL", "HARD_BAIL", "FLAT"),
                 ("NORMAL", "EMERGENCY"),
                 ("APPLIED", "EXACT_REPLAY", "STALE", "REFUSED"),
-                ("LATE_POSITIVE_AFTER_FLAT",),
+                (
+                    "LATE_POSITIVE_AFTER_FLAT",
+                    "MARKET_BASELINE_REQUIRED",
+                    "MARKET_COORDINATE_EXHAUSTED",
+                ),
             ),
             strict=True,
         )
@@ -12262,3 +12721,4094 @@ def test_value_objects_expose_no_mutating_or_broker_capability_fields() -> None:
             trusted_leaf_types=trusted_leaf_types,
             allowed_enum_shapes=allowed_enum_shapes,
         )
+
+
+# ADR-023 literal oracles intentionally do not call production canonical encoders.
+_OCCURRENCE_DOMAIN = b"execution-core/market-occurrence/v1"
+_CURSOR_DOMAIN = b"execution-core/protection-market-cursor/v1"
+
+
+def _literal_pack_parts(domain: bytes, *parts: bytes) -> bytes:
+    packed = len(domain).to_bytes(4, "big") + domain
+    for part in parts:
+        packed += len(part).to_bytes(8, "big") + part
+    return packed
+
+
+def _literal_pack_parts_variant(
+    domain: bytes,
+    *parts: bytes,
+    domain_prefix_width: int = 4,
+    part_prefix_width: int = 8,
+) -> bytes:
+    packed = len(domain).to_bytes(domain_prefix_width, "big") + domain
+    for part in parts:
+        packed += len(part).to_bytes(part_prefix_width, "big") + part
+    return packed
+
+
+def _literal_encode_text(value: str) -> bytes:
+    encoded = value.encode("utf-8")
+    return len(encoded).to_bytes(8, "big") + encoded
+
+
+def _literal_encode_int(value: int) -> bytes:
+    magnitude = abs(value)
+    encoded = magnitude.to_bytes(
+        max(1, (magnitude.bit_length() + 7) // 8),
+        "big",
+    )
+    return (
+        (b"\x01" if value < 0 else b"\x00") + len(encoded).to_bytes(4, "big") + encoded
+    )
+
+
+def _literal_encode_fraction(value: Fraction) -> bytes:
+    return sha256(
+        _literal_pack_parts(
+            b"execution-core/fraction/v1",
+            _literal_encode_int(value.numerator),
+            _literal_encode_int(value.denominator),
+        )
+    ).digest()
+
+
+def _literal_encode_position_scope(scope: PositionScope) -> bytes:
+    return _literal_pack_parts(
+        b"execution-core/position-scope/v1",
+        _literal_encode_text(scope.broker.value),
+        _literal_encode_text(scope.environment.value),
+        _literal_encode_text(scope.account.value),
+        _literal_encode_text(scope.symbol_id.value),
+    )
+
+
+def _literal_encode_reported_price(value: ReportedPrice | None) -> bytes:
+    if value is None:
+        return sha256(
+            _literal_pack_parts(b"execution-core/reported-price/none/v1")
+        ).digest()
+    return sha256(
+        _literal_pack_parts(
+            b"execution-core/reported-price/v1",
+            _literal_encode_int(value.units.value),
+            _literal_encode_fraction(Fraction(value.scale.value)),
+            _literal_encode_int(value.tick.tick_units.value),
+            _literal_encode_fraction(Fraction(value.tick.scale.value)),
+        )
+    ).digest()
+
+
+def _literal_occurrence_preimage(
+    *,
+    source_id: str,
+    position_scope: PositionScope,
+    session_id: str,
+    stream_generation_hex: str,
+    market_epoch: int,
+    source_sequence: int | None,
+    source_time: int,
+    kind: str,
+    best_bid: ReportedPrice | None,
+    best_ask: ReportedPrice | None,
+    trade_price: ReportedPrice | None,
+    atr_distance: ReportedPrice | None,
+    structure_trail: ReportedPrice | None,
+    halted: bool,
+    domain: bytes = _OCCURRENCE_DOMAIN,
+    endian: str = "big",
+    include_evaluation_time: int | None = None,
+    swap_part_indices: tuple[int, int] | None = None,
+    domain_prefix_width: int = 4,
+    part_prefix_width: int = 8,
+    sequence_marker: bytes | None = None,
+    absent_sequence_payload: bytes = b"\x00" * 8,
+) -> bytes:
+    sequence_present = source_sequence is not None
+    parts = [
+        _literal_encode_text(source_id),
+        _literal_encode_position_scope(position_scope),
+        _literal_encode_text(session_id),
+        bytes.fromhex(stream_generation_hex),
+        market_epoch.to_bytes(8, endian),
+        (
+            sequence_marker
+            if sequence_marker is not None
+            else (b"\x01" if sequence_present else b"\x00")
+        ),
+        (
+            source_sequence.to_bytes(8, endian)
+            if source_sequence is not None
+            else absent_sequence_payload
+        ),
+        source_time.to_bytes(8, endian),
+        _literal_encode_text(kind),
+        _literal_encode_reported_price(best_bid),
+        _literal_encode_reported_price(best_ask),
+        _literal_encode_reported_price(trade_price),
+        _literal_encode_reported_price(atr_distance),
+        _literal_encode_reported_price(structure_trail),
+        b"\x01" if halted else b"\x00",
+    ]
+    if include_evaluation_time is not None:
+        parts.append(include_evaluation_time.to_bytes(8, endian))
+    if swap_part_indices is not None:
+        left, right = swap_part_indices
+        parts[left], parts[right] = parts[right], parts[left]
+    return _literal_pack_parts_variant(
+        domain,
+        *parts,
+        domain_prefix_width=domain_prefix_width,
+        part_prefix_width=part_prefix_width,
+    )
+
+
+def _literal_optional_u64(value: int | None) -> bytes:
+    return (
+        b"\x00" + b"\x00" * 8 if value is None else b"\x01" + value.to_bytes(8, "big")
+    )
+
+
+def _literal_optional_32(value: bytes | None) -> bytes:
+    return b"\x00" + b"\x00" * 32 if value is None else b"\x01" + value
+
+
+def _literal_cursor_preimage(
+    *,
+    stream_generation_hex: str,
+    sequence_mode: int,
+    occurrence_epoch: int | None,
+    committed_epoch: int | None,
+    expected_epoch: int | None,
+    source_sequence: int | None,
+    source_time: int | None,
+    evaluation_time: int | None,
+    occurrence_identity: bytes | None,
+    halted: bool,
+    baseline_required: bool,
+    exhausted: bool,
+    last_primary_commitment: bytes | None,
+    hard_bid_identity: bytes | None,
+    hard_bid_source_time: int | None,
+    trade_identity: bytes | None,
+    trade_source_time: int | None,
+    trail_bid_identity: bytes | None,
+    trail_bid_source_time: int | None,
+) -> bytes:
+    parts = (
+        bytes.fromhex(stream_generation_hex),
+        bytes((sequence_mode,)),
+        _literal_optional_u64(occurrence_epoch),
+        _literal_optional_u64(committed_epoch),
+        _literal_optional_u64(expected_epoch),
+        _literal_optional_u64(source_sequence),
+        _literal_optional_u64(source_time),
+        _literal_optional_u64(evaluation_time),
+        _literal_optional_32(occurrence_identity),
+        b"\x01" if halted else b"\x00",
+        b"\x01" if baseline_required else b"\x00",
+        b"\x01" if exhausted else b"\x00",
+        _literal_optional_32(last_primary_commitment),
+        _literal_optional_32(hard_bid_identity),
+        _literal_optional_u64(hard_bid_source_time),
+        _literal_optional_32(trade_identity),
+        _literal_optional_u64(trade_source_time),
+        _literal_optional_32(trail_bid_identity),
+        _literal_optional_u64(trail_bid_source_time),
+    )
+    assert len(parts) == 19
+    return _literal_pack_parts(_CURSOR_DOMAIN, *parts)
+
+
+_SEQUENCED_OCCURRENCE_PREIMAGE_HEX = (
+    "00000023657865637574696f6e2d636f72652f6d61726b65742d6f6363757272656e63652f7631000000000000001300"
+    "0000000000000b7369702d7072696d617279000000000000007e00000020657865637574696f6e2d636f72652f706f73"
+    "6974696f6e2d73636f70652f7631000000000000000e0000000000000006616c70616361000000000000000d00000000"
+    "0000000570617065720000000000000013000000000000000b6163636f756e742d303031000000000000000c00000000"
+    "000000044141504c0000000000000015000000000000000d73657373696f6e2d7274682d310000000000000020111111"
+    "111111111111111111111111111111111111111111111111111111111100000000000000080000000000000000000000"
+    "000000000101000000000000000800000000000000000000000000000008000000000000000000000000000000100000"
+    "000000000008424553545f4249440000000000000020b7e19ab62a158aea307a7e8c5361922d3effcfb7161414f2430f"
+    "f180e5b155be00000000000000206b3ed3cdd0d94d0d276896b235600d24cb38bdb3d89c6a92b4b5b8a299a2a5d00000"
+    "000000000020ff749ef794de421a13efa87be274fbaa9374838910b4aa0b4051fd3ccc7ef7890000000000000020ff74"
+    "9ef794de421a13efa87be274fbaa9374838910b4aa0b4051fd3ccc7ef7890000000000000020ff749ef794de421a13ef"
+    "a87be274fbaa9374838910b4aa0b4051fd3ccc7ef789000000000000000100"
+)
+_SOURCE_TIME_OCCURRENCE_PREIMAGE_HEX = (
+    "00000023657865637574696f6e2d636f72652f6d61726b65742d6f6363757272656e63652f7631000000000000001300"
+    "0000000000000b7369702d7072696d617279000000000000007e00000020657865637574696f6e2d636f72652f706f73"
+    "6974696f6e2d73636f70652f7631000000000000000e0000000000000006616c70616361000000000000000d00000000"
+    "0000000570617065720000000000000013000000000000000b6163636f756e742d303031000000000000000c00000000"
+    "000000044141504c0000000000000015000000000000000d73657373696f6e2d7274682d310000000000000020222222"
+    "222222222222222222222222222222222222222222222222222222222200000000000000080000000000000007000000"
+    "000000000100000000000000000800000000000000000000000000000008000000000000007b00000000000000100000"
+    "000000000008424553545f4249440000000000000020bb3ca4fe9ce7f0f1031b178e8b298e52162dc490a61a786600be"
+    "b6fd65840b280000000000000020e850ca419ee475673cef8f2bc6ec0d365978e456d08620022e3f4e7152316a310000"
+    "000000000020ff749ef794de421a13efa87be274fbaa9374838910b4aa0b4051fd3ccc7ef7890000000000000020fc95"
+    "a555f8203fe03a16045a018e183545acb5e7a44ef4f0786d7e1194be60f70000000000000020e3020031fc165c1188e4"
+    "8e795154d44bedbf772df76b1aed0f7b3dc3d6496d16000000000000000100"
+)
+_TRADE_OCCURRENCE_PREIMAGE_HEX = (
+    "00000023657865637574696f6e2d636f72652f6d61726b65742d6f6363757272656e63652f7631000000000000001300"
+    "0000000000000b7369702d7072696d617279000000000000007e00000020657865637574696f6e2d636f72652f706f73"
+    "6974696f6e2d73636f70652f7631000000000000000e0000000000000006616c70616361000000000000000d00000000"
+    "0000000570617065720000000000000013000000000000000b6163636f756e742d303031000000000000000c00000000"
+    "000000044141504c0000000000000015000000000000000d73657373696f6e2d7274682d310000000000000020333333"
+    "333333333333333333333333333333333333333333333333333333333300000000000000080000000000000009000000"
+    "0000000001010000000000000008000000000000000a000000000000000800000000000000c8000000000000000d0000"
+    "00000000000554524144450000000000000020ff749ef794de421a13efa87be274fbaa9374838910b4aa0b4051fd3ccc"
+    "7ef7890000000000000020ff749ef794de421a13efa87be274fbaa9374838910b4aa0b4051fd3ccc7ef7890000000000"
+    "00002035b4409f58105137bcf0e4bd01a71c3ec81485fb2b2d1482f71a8be1116ee9a60000000000000020ff749ef794"
+    "de421a13efa87be274fbaa9374838910b4aa0b4051fd3ccc7ef7890000000000000020ff749ef794de421a13efa87be274"
+    "fbaa9374838910b4aa0b4051fd3ccc7ef789000000000000000100"
+)
+_ABSENT_CURSOR_PREIMAGE_HEX = (
+    "0000002a657865637574696f6e2d636f72652f70726f74656374696f6e2d6d61726b65742d637572736f722f76310000"
+    "000000000020111111111111111111111111111111111111111111111111111111111111111100000000000000010000"
+    "000000000000090000000000000000000000000000000009000000000000000000000000000000000901000000000000"
+    "000000000000000000090000000000000000000000000000000009000000000000000000000000000000000900000000"
+    "000000000000000000000000210000000000000000000000000000000000000000000000000000000000000000000000"
+    "000000000001000000000000000001010000000000000001000000000000000021000000000000000000000000000000"
+    "000000000000000000000000000000000000000000000000002100000000000000000000000000000000000000000000"
+    "000000000000000000000000000000000000090000000000000000000000000000000021000000000000000000000000"
+    "000000000000000000000000000000000000000000000000000000000900000000000000000000000000000000210000"
+    "000000000000000000000000000000000000000000000000000000000000000000000000000009000000000000000000"
+)
+_PRESENT_CURSOR_PREIMAGE_HEX = (
+    "0000002a657865637574696f6e2d636f72652f70726f74656374696f6e2d6d61726b65742d637572736f722f76310000"
+    "000000000020222222222222222222222222222222222222222222222222222222222222222200000000000000010100"
+    "000000000000090100000000000000070000000000000009010000000000000007000000000000000901000000000000"
+    "00080000000000000009000000000000000000000000000000000901000000000000007b000000000000000901000000"
+    "00000000820000000000000021015fd6cf1fc78dda1d26965a9579ab48668b2d6276d88f947d24ae623a631d310c0000"
+    "00000000000101000000000000000101000000000000000100000000000000002101bb3ca4fe9ce7f0f1031b178e8b29"
+    "8e52162dc490a61a786600beb6fd65840b28000000000000002101333333333333333333333333333333333333333333"
+    "333333333333333333333300000000000000090100000000000000780000000000000021014444444444444444444444"
+    "444444444444444444444444444444444444444444000000000000000901000000000000007900000000000000210155"
+    "55555555555555555555555555555555555555555555555555555555555555000000000000000901000000000000007a"
+)
+_SEQUENCED_PRESENT_CURSOR_PREIMAGE_HEX = (
+    "0000002a657865637574696f6e2d636f72652f70726f74656374696f6e2d6d61726b65742d637572736f722f76310000"
+    "000000000020333333333333333333333333333333333333333333333333333333333333333300000000000000010000"
+    "000000000000090100000000000000090000000000000009010000000000000009000000000000000900000000000000"
+    "0000000000000000000901000000000000000a00000000000000090100000000000000c8000000000000000901000000"
+    "00000000cd0000000000000021014f45b5f91f633c4b2a72b5bd8b48da27159eb03907692e0b32ce0e132c6e50500000"
+    "0000000000010000000000000000010000000000000000010000000000000000210135b4409f58105137bcf0e4bd01a7"
+    "1c3ec81485fb2b2d1482f71a8be1116ee9a6000000000000002101444444444444444444444444444444444444444444"
+    "444444444444444444444400000000000000090100000000000000c60000000000000021014f45b5f91f633c4b2a72b5"
+    "bd8b48da27159eb03907692e0b32ce0e132c6e505000000000000000090100000000000000c800000000000000210155"
+    "5555555555555555555555555555555555555555555555555555555555555500000000000000090100000000000000c7"
+)
+
+
+def test_literal_occurrence_known_answer_oracle_is_failure_capable() -> None:
+    sequenced = _literal_occurrence_preimage(
+        source_id="sip-primary",
+        position_scope=POSITION_SCOPE,
+        session_id="session-rth-1",
+        stream_generation_hex="11" * 32,
+        market_epoch=0,
+        source_sequence=0,
+        source_time=0,
+        kind="BEST_BID",
+        best_bid=_price(100),
+        best_ask=_price(101),
+        trade_price=None,
+        atr_distance=None,
+        structure_trail=None,
+        halted=False,
+    )
+    source_time = _literal_occurrence_preimage(
+        source_id="sip-primary",
+        position_scope=POSITION_SCOPE,
+        session_id="session-rth-1",
+        stream_generation_hex="22" * 32,
+        market_epoch=7,
+        source_sequence=None,
+        source_time=123,
+        kind="BEST_BID",
+        best_bid=_price(110),
+        best_ask=_price(111),
+        trade_price=None,
+        atr_distance=_price(3),
+        structure_trail=_price(102),
+        halted=False,
+    )
+    trade = _literal_occurrence_preimage(
+        source_id="sip-primary",
+        position_scope=POSITION_SCOPE,
+        session_id="session-rth-1",
+        stream_generation_hex="33" * 32,
+        market_epoch=9,
+        source_sequence=10,
+        source_time=200,
+        kind="TRADE",
+        best_bid=None,
+        best_ask=None,
+        trade_price=_price(115),
+        atr_distance=None,
+        structure_trail=None,
+        halted=False,
+    )
+    assert sequenced == bytes.fromhex(_SEQUENCED_OCCURRENCE_PREIMAGE_HEX)
+    assert source_time == bytes.fromhex(_SOURCE_TIME_OCCURRENCE_PREIMAGE_HEX)
+    assert trade == bytes.fromhex(_TRADE_OCCURRENCE_PREIMAGE_HEX)
+    assert sha256(sequenced).hexdigest() == (
+        "75d3ede2c6cd8f01bc0096eb7bf66efc088815ff5a25b2f65c9403fd85a4992c"
+    )
+    assert sha256(source_time).hexdigest() == (
+        "5fd6cf1fc78dda1d26965a9579ab48668b2d6276d88f947d24ae623a631d310c"
+    )
+    assert sha256(trade).hexdigest() == (
+        "4f45b5f91f633c4b2a72b5bd8b48da27159eb03907692e0b32ce0e132c6e5050"
+    )
+
+    sequenced_mutants = (
+        _literal_occurrence_preimage(
+            source_id="sip-primary",
+            position_scope=POSITION_SCOPE,
+            session_id="session-rth-1",
+            stream_generation_hex="11" * 32,
+            market_epoch=0,
+            source_sequence=0,
+            source_time=0,
+            kind="BEST_BID",
+            best_bid=_price(100),
+            best_ask=_price(101),
+            trade_price=None,
+            atr_distance=None,
+            structure_trail=None,
+            halted=False,
+            domain=b"execution-core/market-occurrence/v0",
+        ),
+        _literal_occurrence_preimage(
+            source_id="sip-primary",
+            position_scope=POSITION_SCOPE,
+            session_id="session-rth-1",
+            stream_generation_hex="11" * 32,
+            market_epoch=0,
+            source_sequence=0,
+            source_time=0,
+            kind="BEST_BID",
+            best_bid=_price(100),
+            best_ask=_price(101),
+            trade_price=None,
+            atr_distance=None,
+            structure_trail=None,
+            halted=False,
+            swap_part_indices=(0, 1),
+        ),
+        _literal_occurrence_preimage(
+            source_id="sip-primary",
+            position_scope=POSITION_SCOPE,
+            session_id="session-rth-1",
+            stream_generation_hex="11" * 32,
+            market_epoch=0,
+            source_sequence=0,
+            source_time=0,
+            kind="BEST_BID",
+            best_bid=_price(100),
+            best_ask=_price(101),
+            trade_price=None,
+            atr_distance=None,
+            structure_trail=None,
+            halted=False,
+            domain_prefix_width=8,
+        ),
+        _literal_occurrence_preimage(
+            source_id="sip-primary",
+            position_scope=POSITION_SCOPE,
+            session_id="session-rth-1",
+            stream_generation_hex="11" * 32,
+            market_epoch=0,
+            source_sequence=0,
+            source_time=0,
+            kind="BEST_BID",
+            best_bid=_price(100),
+            best_ask=_price(101),
+            trade_price=None,
+            atr_distance=None,
+            structure_trail=None,
+            halted=False,
+            part_prefix_width=4,
+        ),
+        _literal_occurrence_preimage(
+            source_id="sip-primary",
+            position_scope=POSITION_SCOPE,
+            session_id="session-rth-1",
+            stream_generation_hex="11" * 32,
+            market_epoch=0,
+            source_sequence=0,
+            source_time=0,
+            kind="BEST_BID",
+            best_bid=_price(100),
+            best_ask=_price(101),
+            trade_price=None,
+            atr_distance=None,
+            structure_trail=None,
+            halted=False,
+            sequence_marker=b"\x00",
+        ),
+        _literal_occurrence_preimage(
+            source_id="sip-primary",
+            position_scope=POSITION_SCOPE,
+            session_id="session-rth-1",
+            stream_generation_hex="11" * 32,
+            market_epoch=0,
+            source_sequence=0,
+            source_time=0,
+            kind="BEST_BID",
+            best_bid=_price(100),
+            best_ask=_price(101),
+            trade_price=None,
+            atr_distance=None,
+            structure_trail=None,
+            halted=False,
+            include_evaluation_time=5,
+        ),
+    )
+    source_time_mutants = (
+        _literal_occurrence_preimage(
+            source_id="sip-primary",
+            position_scope=POSITION_SCOPE,
+            session_id="session-rth-1",
+            stream_generation_hex="22" * 32,
+            market_epoch=7,
+            source_sequence=None,
+            source_time=123,
+            kind="BEST_BID",
+            best_bid=_price(110),
+            best_ask=_price(111),
+            trade_price=None,
+            atr_distance=_price(3),
+            structure_trail=_price(102),
+            halted=False,
+            endian="little",
+        ),
+        _literal_occurrence_preimage(
+            source_id="sip-primary",
+            position_scope=POSITION_SCOPE,
+            session_id="session-rth-1",
+            stream_generation_hex="22" * 32,
+            market_epoch=7,
+            source_sequence=None,
+            source_time=123,
+            kind="BEST_BID",
+            best_bid=_price(110),
+            best_ask=_price(111),
+            trade_price=None,
+            atr_distance=_price(3),
+            structure_trail=_price(102),
+            halted=False,
+            sequence_marker=b"\x01",
+        ),
+        _literal_occurrence_preimage(
+            source_id="sip-primary",
+            position_scope=POSITION_SCOPE,
+            session_id="session-rth-1",
+            stream_generation_hex="22" * 32,
+            market_epoch=7,
+            source_sequence=None,
+            source_time=123,
+            kind="BEST_BID",
+            best_bid=_price(110),
+            best_ask=_price(111),
+            trade_price=None,
+            atr_distance=_price(3),
+            structure_trail=_price(102),
+            halted=False,
+            absent_sequence_payload=b"\x01" + b"\x00" * 7,
+        ),
+    )
+    assert all(mutant != sequenced for mutant in sequenced_mutants)
+    assert all(mutant != source_time for mutant in source_time_mutants)
+
+
+def test_literal_occurrence_identity_covers_every_immutable_field_only() -> None:
+    (symbol_type,) = _required(execution_core, "SymbolId")
+    base = {
+        "source_id": "sip-primary",
+        "position_scope": POSITION_SCOPE,
+        "session_id": "session-rth-1",
+        "stream_generation_hex": "11" * 32,
+        "market_epoch": 7,
+        "source_sequence": 8,
+        "source_time": 9,
+        "kind": "BEST_BID",
+        "best_bid": _price(100),
+        "best_ask": _price(101),
+        "trade_price": None,
+        "atr_distance": None,
+        "structure_trail": None,
+        "halted": False,
+    }
+    canonical = _literal_occurrence_preimage(**base)
+    immutable_mutations = (
+        {"source_id": "sip-secondary"},
+        {
+            "position_scope": replace(
+                POSITION_SCOPE,
+                symbol_id=symbol_type("MSFT"),
+            )
+        },
+        {"session_id": "session-rth-2"},
+        {"stream_generation_hex": "22" * 32},
+        {"market_epoch": 8},
+        {"source_sequence": 9},
+        {"source_time": 10},
+        {"kind": "TRADE"},
+        {"best_bid": _price(99)},
+        {"best_ask": _price(102)},
+        {"trade_price": _price(100)},
+        {"atr_distance": _price(2)},
+        {"structure_trail": _price(98)},
+        {"halted": True},
+    )
+    for mutation in immutable_mutations:
+        candidate = dict(base)
+        candidate.update(mutation)
+        assert _literal_occurrence_preimage(**candidate) != canonical
+
+    with_evaluation_context = dict(base)
+    with_evaluation_context["include_evaluation_time"] = 10
+    assert _literal_occurrence_preimage(**with_evaluation_context) != canonical
+    assert _literal_occurrence_preimage(**base) == canonical
+
+
+def test_production_occurrence_preimage_matches_independent_known_answers() -> None:
+    module = _protection_module()
+    (preimage,) = _required(module, "_market_occurrence_preimage")
+    sequenced = preimage(
+        source_id="sip-primary",
+        position_scope=POSITION_SCOPE,
+        session_id="session-rth-1",
+        stream_generation=bytes.fromhex("11" * 32),
+        market_epoch=0,
+        source_sequence=0,
+        source_time=0,
+        kind="BEST_BID",
+        best_bid=_price(100),
+        best_ask=_price(101),
+        trade_price=None,
+        atr_distance=None,
+        structure_trail=None,
+        halted=False,
+    )
+    source_time = preimage(
+        source_id="sip-primary",
+        position_scope=POSITION_SCOPE,
+        session_id="session-rth-1",
+        stream_generation=bytes.fromhex("22" * 32),
+        market_epoch=7,
+        source_sequence=None,
+        source_time=123,
+        kind="BEST_BID",
+        best_bid=_price(110),
+        best_ask=_price(111),
+        trade_price=None,
+        atr_distance=_price(3),
+        structure_trail=_price(102),
+        halted=False,
+    )
+    trade = preimage(
+        source_id="sip-primary",
+        position_scope=POSITION_SCOPE,
+        session_id="session-rth-1",
+        stream_generation=bytes.fromhex("33" * 32),
+        market_epoch=9,
+        source_sequence=10,
+        source_time=200,
+        kind="TRADE",
+        best_bid=None,
+        best_ask=None,
+        trade_price=_price(115),
+        atr_distance=None,
+        structure_trail=None,
+        halted=False,
+    )
+    assert sequenced == bytes.fromhex(_SEQUENCED_OCCURRENCE_PREIMAGE_HEX)
+    assert source_time == bytes.fromhex(_SOURCE_TIME_OCCURRENCE_PREIMAGE_HEX)
+    assert trade == bytes.fromhex(_TRADE_OCCURRENCE_PREIMAGE_HEX)
+
+    generation_type, source_type, session_type = _required(
+        execution_core,
+        "MarketStreamGenerationId",
+        "MarketDataSourceId",
+        "SessionId",
+    )
+    constructor_cases = (
+        (
+            _occurrence(
+                module,
+                "kat-sequenced-constructor",
+                bid=100,
+                ask=101,
+                sequence=0,
+                source_time=0,
+                evaluation_time=17,
+                market_epoch=0,
+                stream_generation=generation_type("11" * 32),
+                source_id=source_type("sip-primary"),
+                session_id=session_type("session-rth-1"),
+            ),
+            "75d3ede2c6cd8f01bc0096eb7bf66efc088815ff5a25b2f65c9403fd85a4992c",
+        ),
+        (
+            _occurrence(
+                module,
+                "kat-source-time-constructor",
+                bid=110,
+                ask=111,
+                sequence=None,
+                source_time=123,
+                evaluation_time=130,
+                market_epoch=7,
+                atr_distance=3,
+                structure_trail=102,
+                stream_generation=generation_type("22" * 32),
+                source_id=source_type("sip-primary"),
+                session_id=session_type("session-rth-1"),
+            ),
+            "5fd6cf1fc78dda1d26965a9579ab48668b2d6276d88f947d24ae623a631d310c",
+        ),
+        (
+            _occurrence(
+                module,
+                "kat-trade-constructor",
+                kind="TRADE",
+                trade=115,
+                sequence=10,
+                source_time=200,
+                evaluation_time=205,
+                market_epoch=9,
+                stream_generation=generation_type("33" * 32),
+                source_id=source_type("sip-primary"),
+                session_id=session_type("session-rth-1"),
+            ),
+            "4f45b5f91f633c4b2a72b5bd8b48da27159eb03907692e0b32ce0e132c6e5050",
+        ),
+    )
+    for occurrence, expected_digest in constructor_cases:
+        assert occurrence.occurrence_id.value == expected_digest
+
+    source = inspect.getsource(module.MarketOccurrence)
+    tree = ast.parse(textwrap.dedent(source))
+    helper_calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_market_occurrence_preimage"
+    ]
+    assert len(helper_calls) == 1
+
+
+def test_production_occurrence_identity_is_immutable_field_sensitive_only() -> None:
+    module = _protection_module()
+    source_type, generation_type, session_type, symbol_type = _required(
+        execution_core,
+        "MarketDataSourceId",
+        "MarketStreamGenerationId",
+        "SessionId",
+        "SymbolId",
+    )
+    base = _occurrence(
+        module,
+        "identity-base",
+        bid=100,
+        ask=101,
+        sequence=7,
+        source_time=8,
+        evaluation_time=9,
+        market_epoch=6,
+    )
+    same_identity = _occurrence(
+        module,
+        "identity-evaluation-context-only",
+        bid=100,
+        ask=101,
+        sequence=7,
+        source_time=8,
+        evaluation_time=10,
+        market_epoch=6,
+    )
+    assert same_identity.occurrence_id == base.occurrence_id
+
+    variants = (
+        _occurrence(
+            module,
+            "identity-source",
+            bid=100,
+            ask=101,
+            sequence=7,
+            source_time=8,
+            evaluation_time=9,
+            market_epoch=6,
+            source_id=source_type("sip-secondary"),
+        ),
+        _occurrence(
+            module,
+            "identity-generation",
+            bid=100,
+            ask=101,
+            sequence=7,
+            source_time=8,
+            evaluation_time=9,
+            market_epoch=6,
+            stream_generation=generation_type("22" * 32),
+        ),
+        _occurrence(
+            module,
+            "identity-scope",
+            bid=100,
+            ask=101,
+            sequence=7,
+            source_time=8,
+            evaluation_time=9,
+            market_epoch=6,
+            position_scope=replace(
+                POSITION_SCOPE,
+                symbol_id=symbol_type("MSFT"),
+            ),
+        ),
+        _occurrence(
+            module,
+            "identity-session",
+            bid=100,
+            ask=101,
+            sequence=7,
+            source_time=8,
+            evaluation_time=9,
+            market_epoch=6,
+            session_id=session_type("session-rth-2"),
+        ),
+        _occurrence(
+            module,
+            "identity-epoch",
+            bid=100,
+            ask=101,
+            sequence=7,
+            source_time=8,
+            evaluation_time=9,
+            market_epoch=7,
+        ),
+        _occurrence(
+            module,
+            "identity-sequence",
+            bid=100,
+            ask=101,
+            sequence=8,
+            source_time=8,
+            evaluation_time=9,
+            market_epoch=6,
+        ),
+        _occurrence(
+            module,
+            "identity-source-time",
+            bid=100,
+            ask=101,
+            sequence=7,
+            source_time=9,
+            evaluation_time=9,
+            market_epoch=6,
+        ),
+        _occurrence(
+            module,
+            "identity-kind-and-payload",
+            kind="TRADE",
+            trade=100,
+            sequence=7,
+            source_time=8,
+            evaluation_time=9,
+            market_epoch=6,
+        ),
+        _occurrence(
+            module,
+            "identity-bid",
+            bid=99,
+            ask=101,
+            sequence=7,
+            source_time=8,
+            evaluation_time=9,
+            market_epoch=6,
+        ),
+        _occurrence(
+            module,
+            "identity-ask",
+            bid=100,
+            ask=102,
+            sequence=7,
+            source_time=8,
+            evaluation_time=9,
+            market_epoch=6,
+        ),
+        _occurrence(
+            module,
+            "identity-trail-inputs",
+            bid=100,
+            ask=101,
+            sequence=7,
+            source_time=8,
+            evaluation_time=9,
+            market_epoch=6,
+            atr_distance=2,
+            structure_trail=98,
+        ),
+        _occurrence(
+            module,
+            "identity-halt",
+            bid=100,
+            ask=101,
+            sequence=7,
+            source_time=8,
+            evaluation_time=9,
+            market_epoch=6,
+            halted=True,
+        ),
+    )
+    assert all(variant.occurrence_id != base.occurrence_id for variant in variants)
+
+
+def test_literal_cursor_known_answer_oracle_is_failure_capable() -> None:
+    absent = _literal_cursor_preimage(
+        stream_generation_hex="11" * 32,
+        sequence_mode=0,
+        occurrence_epoch=None,
+        committed_epoch=None,
+        expected_epoch=0,
+        source_sequence=None,
+        source_time=None,
+        evaluation_time=None,
+        occurrence_identity=None,
+        halted=False,
+        baseline_required=True,
+        exhausted=False,
+        last_primary_commitment=None,
+        hard_bid_identity=None,
+        hard_bid_source_time=None,
+        trade_identity=None,
+        trade_source_time=None,
+        trail_bid_identity=None,
+        trail_bid_source_time=None,
+    )
+    present = _literal_cursor_preimage(
+        stream_generation_hex="22" * 32,
+        sequence_mode=1,
+        occurrence_epoch=7,
+        committed_epoch=7,
+        expected_epoch=8,
+        source_sequence=None,
+        source_time=123,
+        evaluation_time=130,
+        occurrence_identity=bytes.fromhex(
+            "5fd6cf1fc78dda1d26965a9579ab48668b2d6276d88f947d24ae623a631d310c"
+        ),
+        halted=True,
+        baseline_required=True,
+        exhausted=False,
+        last_primary_commitment=_literal_encode_reported_price(_price(110)),
+        hard_bid_identity=bytes.fromhex("33" * 32),
+        hard_bid_source_time=120,
+        trade_identity=bytes.fromhex("44" * 32),
+        trade_source_time=121,
+        trail_bid_identity=bytes.fromhex("55" * 32),
+        trail_bid_source_time=122,
+    )
+    sequenced_present = _literal_cursor_preimage(
+        stream_generation_hex="33" * 32,
+        sequence_mode=0,
+        occurrence_epoch=9,
+        committed_epoch=9,
+        expected_epoch=None,
+        source_sequence=10,
+        source_time=200,
+        evaluation_time=205,
+        occurrence_identity=bytes.fromhex(
+            "4f45b5f91f633c4b2a72b5bd8b48da27159eb03907692e0b32ce0e132c6e5050"
+        ),
+        halted=False,
+        baseline_required=False,
+        exhausted=False,
+        last_primary_commitment=_literal_encode_reported_price(_price(115)),
+        hard_bid_identity=bytes.fromhex("44" * 32),
+        hard_bid_source_time=198,
+        trade_identity=bytes.fromhex(
+            "4f45b5f91f633c4b2a72b5bd8b48da27159eb03907692e0b32ce0e132c6e5050"
+        ),
+        trade_source_time=200,
+        trail_bid_identity=bytes.fromhex("55" * 32),
+        trail_bid_source_time=199,
+    )
+    assert absent == bytes.fromhex(_ABSENT_CURSOR_PREIMAGE_HEX)
+    assert present == bytes.fromhex(_PRESENT_CURSOR_PREIMAGE_HEX)
+    assert sequenced_present == bytes.fromhex(_SEQUENCED_PRESENT_CURSOR_PREIMAGE_HEX)
+    assert len(absent) == len(present) == len(sequenced_present) == 480
+    assert sha256(absent).hexdigest() == (
+        "f38159b3599dcee2f7798d98c729e4ff0cf64d7b1035b2934da88ffa59e20af8"
+    )
+    assert sha256(present).hexdigest() == (
+        "b6f669db29246602042b752141ed3c6dbb71ef9107c52212da3ba9a30621c673"
+    )
+    assert sha256(sequenced_present).hexdigest() == (
+        "0f8e4b245248bd83eb10ebe2f3f189e28fc088139f0cfa0bd926641ff4d94f51"
+    )
+    omitted_current_epoch = _literal_cursor_preimage(
+        stream_generation_hex="22" * 32,
+        sequence_mode=1,
+        occurrence_epoch=None,
+        committed_epoch=7,
+        expected_epoch=8,
+        source_sequence=None,
+        source_time=123,
+        evaluation_time=130,
+        occurrence_identity=bytes.fromhex(
+            "5fd6cf1fc78dda1d26965a9579ab48668b2d6276d88f947d24ae623a631d310c"
+        ),
+        halted=True,
+        baseline_required=True,
+        exhausted=False,
+        last_primary_commitment=_literal_encode_reported_price(_price(110)),
+        hard_bid_identity=bytes.fromhex("33" * 32),
+        hard_bid_source_time=120,
+        trade_identity=bytes.fromhex("44" * 32),
+        trade_source_time=121,
+        trail_bid_identity=bytes.fromhex("55" * 32),
+        trail_bid_source_time=122,
+    )
+    assert omitted_current_epoch != present
+
+
+def test_literal_cursor_preimage_binds_all_nineteen_parts_independently() -> None:
+    base = {
+        "stream_generation_hex": "22" * 32,
+        "sequence_mode": 1,
+        "occurrence_epoch": 7,
+        "committed_epoch": 7,
+        "expected_epoch": 8,
+        "source_sequence": None,
+        "source_time": 123,
+        "evaluation_time": 130,
+        "occurrence_identity": bytes.fromhex(
+            "5fd6cf1fc78dda1d26965a9579ab48668b2d6276d88f947d24ae623a631d310c"
+        ),
+        "halted": True,
+        "baseline_required": True,
+        "exhausted": False,
+        "last_primary_commitment": _literal_encode_reported_price(_price(110)),
+        "hard_bid_identity": bytes.fromhex("33" * 32),
+        "hard_bid_source_time": 120,
+        "trade_identity": bytes.fromhex("44" * 32),
+        "trade_source_time": 121,
+        "trail_bid_identity": bytes.fromhex("55" * 32),
+        "trail_bid_source_time": 122,
+    }
+    canonical = _literal_cursor_preimage(**base)
+    mutations = (
+        {"stream_generation_hex": "23" * 32},
+        {"sequence_mode": 0},
+        {"occurrence_epoch": 8},
+        {"committed_epoch": 8},
+        {"expected_epoch": 9},
+        {"source_sequence": 124},
+        {"source_time": 124},
+        {"evaluation_time": 131},
+        {"occurrence_identity": bytes.fromhex("66" * 32)},
+        {"halted": False},
+        {"baseline_required": False},
+        {"exhausted": True},
+        {"last_primary_commitment": bytes.fromhex("77" * 32)},
+        {"hard_bid_identity": bytes.fromhex("88" * 32)},
+        {"hard_bid_source_time": 124},
+        {"trade_identity": bytes.fromhex("99" * 32)},
+        {"trade_source_time": 125},
+        {"trail_bid_identity": bytes.fromhex("aa" * 32)},
+        {"trail_bid_source_time": 126},
+    )
+    assert len(mutations) == 19
+    for mutation in mutations:
+        candidate = dict(base)
+        candidate.update(mutation)
+        assert _literal_cursor_preimage(**candidate) != canonical
+
+
+def test_production_cursor_preimage_matches_independent_known_answers() -> None:
+    module = _protection_module()
+    (preimage,) = _required(module, "_protection_market_cursor_preimage")
+    absent = preimage(
+        stream_generation=bytes.fromhex("11" * 32),
+        sequence_mode=0,
+        occurrence_epoch=None,
+        committed_epoch=None,
+        expected_epoch=0,
+        source_sequence=None,
+        source_time=None,
+        evaluation_time=None,
+        occurrence_identity=None,
+        halted=False,
+        baseline_required=True,
+        exhausted=False,
+        last_primary_commitment=None,
+        hard_bid_identity=None,
+        hard_bid_source_time=None,
+        trade_identity=None,
+        trade_source_time=None,
+        trail_bid_identity=None,
+        trail_bid_source_time=None,
+    )
+    present = preimage(
+        stream_generation=bytes.fromhex("22" * 32),
+        sequence_mode=1,
+        occurrence_epoch=7,
+        committed_epoch=7,
+        expected_epoch=8,
+        source_sequence=None,
+        source_time=123,
+        evaluation_time=130,
+        occurrence_identity=bytes.fromhex(
+            "5fd6cf1fc78dda1d26965a9579ab48668b2d6276d88f947d24ae623a631d310c"
+        ),
+        halted=True,
+        baseline_required=True,
+        exhausted=False,
+        last_primary_commitment=_literal_encode_reported_price(_price(110)),
+        hard_bid_identity=bytes.fromhex("33" * 32),
+        hard_bid_source_time=120,
+        trade_identity=bytes.fromhex("44" * 32),
+        trade_source_time=121,
+        trail_bid_identity=bytes.fromhex("55" * 32),
+        trail_bid_source_time=122,
+    )
+    sequenced_present = preimage(
+        stream_generation=bytes.fromhex("33" * 32),
+        sequence_mode=0,
+        occurrence_epoch=9,
+        committed_epoch=9,
+        expected_epoch=None,
+        source_sequence=10,
+        source_time=200,
+        evaluation_time=205,
+        occurrence_identity=bytes.fromhex(
+            "4f45b5f91f633c4b2a72b5bd8b48da27159eb03907692e0b32ce0e132c6e5050"
+        ),
+        halted=False,
+        baseline_required=False,
+        exhausted=False,
+        last_primary_commitment=_literal_encode_reported_price(_price(115)),
+        hard_bid_identity=bytes.fromhex("44" * 32),
+        hard_bid_source_time=198,
+        trade_identity=bytes.fromhex(
+            "4f45b5f91f633c4b2a72b5bd8b48da27159eb03907692e0b32ce0e132c6e5050"
+        ),
+        trade_source_time=200,
+        trail_bid_identity=bytes.fromhex("55" * 32),
+        trail_bid_source_time=199,
+    )
+    assert absent == bytes.fromhex(_ABSENT_CURSOR_PREIMAGE_HEX)
+    assert present == bytes.fromhex(_PRESENT_CURSOR_PREIMAGE_HEX)
+    assert sequenced_present == bytes.fromhex(_SEQUENCED_PRESENT_CURSOR_PREIMAGE_HEX)
+    assert len(absent) == len(present) == len(sequenced_present) == 480
+
+
+def _state_cursor_digest_binding_violations(source: str) -> list[str]:
+    tree = ast.parse(textwrap.dedent(source))
+    functions = [
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_state_commitment"
+    ]
+    if len(functions) != 1:
+        return ["expected exactly one _state_commitment"]
+    function = functions[0]
+    violations: list[str] = []
+    positional_parameters = tuple(argument.arg for argument in function.args.args)
+    if (
+        function.decorator_list
+        or function.args.posonlyargs
+        or function.args.vararg is not None
+        or function.args.kwonlyargs
+        or function.args.kwarg is not None
+        or function.args.defaults
+        or function.args.kw_defaults
+        or positional_parameters != _ADR023_STATE_COMMITMENT_PARAMETERS
+    ):
+        violations.append(
+            f"state commitment signature differs: observed={positional_parameters!r}"
+        )
+    if not (
+        len(function.body) == 1
+        and isinstance(function.body[0], ast.Return)
+        and isinstance(function.body[0].value, ast.Call)
+        and isinstance(function.body[0].value.func, ast.Name)
+        and function.body[0].value.func.id == "_commit_parts"
+    ):
+        violations.append("state commitment must be one straight-line return")
+    commit_calls = [
+        node
+        for node in ast.walk(function)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_commit_parts"
+    ]
+    if len(commit_calls) != 1:
+        violations.append("state commitment must own one _commit_parts call")
+        return violations
+
+    commit_call = commit_calls[0]
+    expected_argument_count = 1 + len(_ADR023_STATE_COMMITMENT_PART_SOURCES)
+    if len(commit_call.args) != expected_argument_count:
+        violations.append(
+            "state commitment must pass exactly 15 ordered commitment arguments"
+        )
+    if (
+        commit_call.keywords
+        or not commit_call.args
+        or not isinstance(commit_call.args[0], ast.Constant)
+        or commit_call.args[0].value != b"execution-core/position-protection-state/v4"
+        or any(isinstance(part, ast.Starred) for part in commit_call.args)
+    ):
+        violations.append("state commitment must use the exact v4 domain part")
+    for index, expected_source in enumerate(
+        _ADR023_STATE_COMMITMENT_PART_SOURCES,
+        start=1,
+    ):
+        if expected_source == "<CURSOR_DIGEST>" or index >= len(commit_call.args):
+            continue
+        expected_expression = ast.parse(
+            expected_source,
+            mode="eval",
+            feature_version=(3, 11),
+        ).body
+        if ast.dump(commit_call.args[index], include_attributes=False) != ast.dump(
+            expected_expression,
+            include_attributes=False,
+        ):
+            violations.append(
+                f"state commitment part {index} differs: expected {expected_source}"
+            )
+    cursor_digests: list[tuple[ast.Call, ast.Call]] = []
+    for part in commit_call.args[1:]:
+        if not (
+            isinstance(part, ast.Call)
+            and isinstance(part.func, ast.Attribute)
+            and part.func.attr == "digest"
+            and not part.args
+            and not part.keywords
+            and isinstance(part.func.value, ast.Call)
+            and isinstance(part.func.value.func, ast.Name)
+            and part.func.value.func.id == "_sha256"
+            and len(part.func.value.args) == 1
+            and not part.func.value.keywords
+            and isinstance(part.func.value.args[0], ast.Call)
+            and isinstance(part.func.value.args[0].func, ast.Name)
+            and part.func.value.args[0].func.id == "_protection_market_cursor_preimage"
+        ):
+            continue
+        cursor_digests.append((part, part.func.value.args[0]))
+
+    if len(cursor_digests) != 1:
+        violations.append("state commitment must bind one exact cursor digest part")
+        return violations
+
+    digest_part, preimage_call = cursor_digests[0]
+    expected_digest_index = 1 + _ADR023_STATE_COMMITMENT_PART_SOURCES.index(
+        "<CURSOR_DIGEST>"
+    )
+    if (
+        expected_digest_index >= len(commit_call.args)
+        or commit_call.args[expected_digest_index] is not digest_part
+    ):
+        violations.append("state commitment cursor digest is out of order")
+    if preimage_call.args or any(
+        keyword.arg is None for keyword in preimage_call.keywords
+    ):
+        violations.append("cursor preimage call must use fixed named arguments")
+    observed = tuple(keyword.arg for keyword in preimage_call.keywords)
+    if observed != _ADR023_CURSOR_PREIMAGE_PARAMETERS:
+        violations.append(f"cursor digest parameters differ: observed={observed!r}")
+    for expected, keyword in zip(
+        _ADR023_CURSOR_PREIMAGE_PARAMETERS,
+        preimage_call.keywords,
+        strict=False,
+    ):
+        if not (
+            keyword.arg == expected
+            and isinstance(keyword.value, ast.Name)
+            and keyword.value.id == expected
+        ):
+            violations.append(
+                f"cursor digest slot {expected} must use exact source {expected}"
+            )
+
+    cursor_names = set(_ADR023_CURSOR_PREIMAGE_PARAMETERS)
+    for part in commit_call.args:
+        if part is digest_part:
+            continue
+        leaked = sorted(
+            {
+                node.id
+                for node in ast.walk(part)
+                if isinstance(node, ast.Name) and node.id in cursor_names
+            }
+        )
+        if leaked:
+            violations.append(
+                f"raw cursor components bypass exact digest part: {leaked!r}"
+            )
+    return violations
+
+
+def test_state_commitment_binds_one_exact_cursor_digest_part() -> None:
+    module = _protection_module()
+    (state_commitment,) = _required(module, "_state_commitment")
+    assert not _state_cursor_digest_binding_violations(
+        inspect.getsource(state_commitment)
+    )
+
+
+def test_state_commitment_cursor_digest_runtime_dependencies_are_canonical() -> None:
+    module = _protection_module()
+    state_commitment, commit_parts, preimage = _required(
+        module,
+        "_state_commitment",
+        "_commit_parts",
+        "_protection_market_cursor_preimage",
+    )
+    fills_module = importlib.import_module("app.execution_core.fills")
+    assert type(state_commitment) is FunctionType
+    assert type(preimage) is FunctionType
+    assert state_commitment.__globals__ is vars(module)
+    assert preimage.__globals__ is vars(module)
+    assert vars(module).get("_state_commitment") is state_commitment
+    assert vars(module).get("_protection_market_cursor_preimage") is preimage
+    assert vars(module).get("_commit_parts") is commit_parts
+    assert commit_parts is vars(fills_module).get("_commit_parts")
+    assert state_commitment.__globals__.get("_commit_parts") is commit_parts
+    assert (
+        state_commitment.__globals__.get("_protection_market_cursor_preimage")
+        is preimage
+    )
+    assert state_commitment.__globals__.get("_sha256") is sha256
+
+
+def test_state_cursor_digest_binding_oracle_is_failure_capable() -> None:
+    parameters = ", ".join(_ADR023_STATE_COMMITMENT_PARAMETERS)
+    keywords = ", ".join(
+        f"{name}={name}" for name in _ADR023_CURSOR_PREIMAGE_PARAMETERS
+    )
+    digest_part_index = _ADR023_STATE_COMMITMENT_PART_SOURCES.index("<CURSOR_DIGEST>")
+    canonical_leading_parts = _ADR023_STATE_COMMITMENT_PART_SOURCES[:digest_part_index]
+
+    def source_with(
+        cursor_part: str,
+        extra_part: str = "",
+        *,
+        prelude: tuple[str, ...] = (),
+        parameter_source: str = parameters,
+        decorator: str = "",
+        leading_parts: tuple[str, ...] = canonical_leading_parts,
+    ) -> str:
+        suffix = f", {extra_part}" if extra_part else ""
+        preparation = "".join(f"    {statement}\n" for statement in prelude)
+        prepared_parts = ",\n".join(f"        {source}" for source in leading_parts)
+        return (
+            f"{decorator}def _state_commitment({parameter_source}):\n"
+            f"{preparation}"
+            "    return _commit_parts(\n"
+            "        b'execution-core/position-protection-state/v4',\n"
+            f"{prepared_parts},\n"
+            f"        {cursor_part}{suffix},\n"
+            "        exit_provenance,\n"
+            "    )\n"
+        )
+
+    exact_part = (
+        "_sha256(_protection_market_cursor_preimage(" + keywords + ")).digest()"
+    )
+    assert _state_cursor_digest_binding_violations(source_with(exact_part)) == []
+    swapped_keywords = ", ".join(
+        f"{name}="
+        + (
+            "sequence_mode"
+            if name == "stream_generation"
+            else "stream_generation"
+            if name == "sequence_mode"
+            else name
+        )
+        for name in _ADR023_CURSOR_PREIMAGE_PARAMETERS
+    )
+    constant_keywords = keywords.replace(
+        "occurrence_epoch=occurrence_epoch",
+        "occurrence_epoch=0",
+    )
+    transformed_keywords = keywords.replace(
+        "source_time=source_time",
+        "source_time=_encode_int(source_time)",
+    )
+    transformed_retained_parts = list(canonical_leading_parts)
+    transformed_retained_parts[2] = "_encode_int(raw_quantity + 0)"
+    dead_expression_parts = list(canonical_leading_parts)
+    dead_expression_parts[3] = "execution_commitment if True else execution_commitment"
+    reordered_retained_parts = list(canonical_leading_parts)
+    reordered_retained_parts[7], reordered_retained_parts[8] = (
+        reordered_retained_parts[8],
+        reordered_retained_parts[7],
+    )
+    mutants = {
+        "omitted cursor": source_with("other"),
+        "raw cursor": source_with(
+            "_protection_market_cursor_preimage(" + keywords + ")"
+        ),
+        "missing cursor field": source_with(
+            "_sha256(_protection_market_cursor_preimage("
+            + ", ".join(
+                f"{name}={name}"
+                for name in _ADR023_CURSOR_PREIMAGE_PARAMETERS
+                if name != "trade_identity"
+            )
+            + ")).digest()"
+        ),
+        "duplicated raw component": source_with(exact_part, "source_time"),
+        "explicit cursor slot swap": source_with(
+            "_sha256(_protection_market_cursor_preimage("
+            + swapped_keywords
+            + ")).digest()"
+        ),
+        "constant cursor slot substitution": source_with(
+            "_sha256(_protection_market_cursor_preimage("
+            + constant_keywords
+            + ")).digest()"
+        ),
+        "transformed cursor slot": source_with(
+            "_sha256(_protection_market_cursor_preimage("
+            + transformed_keywords
+            + ")).digest()"
+        ),
+        "raw component through local alias": source_with(
+            exact_part,
+            "duplicate",
+            prelude=("duplicate = source_time",),
+        ),
+        "raw component through transitive aliases": source_with(
+            exact_part,
+            "second",
+            prelude=("first = source_time", "second = first"),
+        ),
+        "extra parameter duplicate": source_with(
+            exact_part,
+            "source_time_duplicate",
+            parameter_source=f"{parameters}, source_time_duplicate",
+        ),
+        "commit-packer callable shadow": source_with(
+            exact_part,
+            parameter_source=f"{parameters}, _commit_parts",
+        ),
+        "cursor-preimage callable shadow": source_with(
+            exact_part,
+            parameter_source=f"{parameters}, _protection_market_cursor_preimage",
+        ),
+        "sha256 callable shadow": source_with(
+            exact_part,
+            parameter_source=f"{parameters}, _sha256",
+        ),
+        "default parameter": source_with(
+            exact_part,
+            parameter_source=parameters.replace(
+                "exit_provenance",
+                "exit_provenance=b''",
+            ),
+        ),
+        "positional-only parameters": source_with(
+            exact_part,
+            parameter_source=f"{parameters}, /",
+        ),
+        "variadic positional parameter": source_with(
+            exact_part,
+            parameter_source=f"{parameters}, *extra",
+        ),
+        "keyword-only parameter": source_with(
+            exact_part,
+            parameter_source=f"{parameters}, *, extra",
+        ),
+        "variadic keyword parameter": source_with(
+            exact_part,
+            parameter_source=f"{parameters}, **extra",
+        ),
+        "decorated commitment": source_with(
+            exact_part,
+            decorator="@staticmethod\n",
+        ),
+        "transformed retained source": source_with(
+            exact_part,
+            leading_parts=tuple(transformed_retained_parts),
+        ),
+        "dead retained expression": source_with(
+            exact_part,
+            leading_parts=tuple(dead_expression_parts),
+        ),
+        "omitted retained part": source_with(
+            exact_part,
+            leading_parts=(
+                *canonical_leading_parts[:6],
+                *canonical_leading_parts[7:],
+            ),
+        ),
+        "reordered retained parts": source_with(
+            exact_part,
+            leading_parts=tuple(reordered_retained_parts),
+        ),
+        "duplicated retained part": source_with(
+            exact_part,
+            leading_parts=(
+                *canonical_leading_parts[:3],
+                canonical_leading_parts[2],
+                *canonical_leading_parts[3:],
+            ),
+        ),
+    }
+    assert len(mutants) == 24
+    expected_findings = {
+        "explicit cursor slot swap": "cursor digest slot stream_generation",
+        "constant cursor slot substitution": "cursor digest slot occurrence_epoch",
+        "transformed cursor slot": "cursor digest slot source_time",
+        "raw component through local alias": "one straight-line return",
+        "raw component through transitive aliases": "one straight-line return",
+        "extra parameter duplicate": "signature differs",
+        "commit-packer callable shadow": "signature differs",
+        "cursor-preimage callable shadow": "signature differs",
+        "sha256 callable shadow": "signature differs",
+        "default parameter": "signature differs",
+        "positional-only parameters": "signature differs",
+        "variadic positional parameter": "signature differs",
+        "keyword-only parameter": "signature differs",
+        "variadic keyword parameter": "signature differs",
+        "decorated commitment": "signature differs",
+        "transformed retained source": "part 3 differs",
+        "dead retained expression": "part 4 differs",
+        "omitted retained part": "exactly 15 ordered commitment arguments",
+        "reordered retained parts": "part 8 differs",
+        "duplicated retained part": "exactly 15 ordered commitment arguments",
+    }
+    for label, source in mutants.items():
+        violations = _state_cursor_digest_binding_violations(source)
+        assert violations, label
+        if label in expected_findings:
+            assert any(expected_findings[label] in item for item in violations), label
+
+
+def test_main_state_commitment_authenticates_every_cursor_component() -> None:
+    module = _protection_module()
+    current = _owned_fill_transition(label="adr023-cursor-main-commitment")
+    mandate, _, state = _start(module, current)
+    (occurrence_id_type,) = _required(execution_core, "MarketOccurrenceId")
+    retained = _rebuild_authentic_state(
+        module,
+        state,
+        _market_occurrence_epoch=7,
+        _market_committed_epoch=7,
+        _market_expected_epoch=None,
+        _market_source_sequence=9,
+        _market_source_time=10,
+        _market_evaluation_time=11,
+        _market_occurrence_identity=occurrence_id_type("11" * 32),
+        _market_halted=False,
+        _market_baseline_required=False,
+        _market_exhausted=False,
+        _market_last_primary=bytes.fromhex("22" * 32),
+        _hard_bid_identity=occurrence_id_type("33" * 32),
+        _hard_bid_source_time=8,
+        _trade_identity=occurrence_id_type("44" * 32),
+        _trade_source_time=9,
+        _trail_bid_identity=occurrence_id_type("55" * 32),
+        _trail_bid_source_time=10,
+    )
+    (is_authentic,) = _required(module, "_state_is_authentic")
+    assert is_authentic(retained) is True
+    mutations = {
+        "_market_occurrence_epoch": 8,
+        "_market_committed_epoch": 8,
+        "_market_expected_epoch": 8,
+        "_market_source_sequence": 10,
+        "_market_source_time": 11,
+        "_market_evaluation_time": 12,
+        "_market_occurrence_identity": occurrence_id_type("66" * 32),
+        "_market_halted": True,
+        "_market_baseline_required": True,
+        "_market_exhausted": True,
+        "_market_last_primary": bytes.fromhex("77" * 32),
+        "_hard_bid_identity": occurrence_id_type("88" * 32),
+        "_hard_bid_source_time": 7,
+        "_trade_identity": occurrence_id_type("99" * 32),
+        "_trade_source_time": 8,
+        "_trail_bid_identity": occurrence_id_type("aa" * 32),
+        "_trail_bid_source_time": 9,
+    }
+    assert set(mutations) == set(_ADR023_MARKET_CURSOR_FIELDS)
+    for field_name, changed_value in mutations.items():
+        forged = _clone_opaque(retained, **{field_name: changed_value})
+        assert forged.commitment == retained.commitment
+        assert is_authentic(forged) is False, field_name
+    assert mandate.evidence_policy.stream_generation.value == "11" * 32
+
+
+@pytest.mark.parametrize(
+    ("identity_field", "time_field", "identity_present"),
+    [
+        pytest.param(
+            identity_field,
+            time_field,
+            identity_present,
+            id=f"{identity_field}-{'identity-only' if identity_present else 'coordinate-only'}",
+        )
+        for identity_field, time_field in (
+            ("occurrence_identity", "occurrence_epoch"),
+            ("hard_bid_identity", "hard_bid_source_time"),
+            ("trade_identity", "trade_source_time"),
+            ("trail_bid_identity", "trail_bid_source_time"),
+        )
+        for identity_present in (True, False)
+    ],
+)
+def test_production_cursor_preimage_rejects_mismatched_optional_pairs(
+    identity_field: str,
+    time_field: str,
+    identity_present: bool,
+) -> None:
+    module = _protection_module()
+    (preimage,) = _required(module, "_protection_market_cursor_preimage")
+    values = {
+        "stream_generation": bytes.fromhex("11" * 32),
+        "sequence_mode": 0,
+        "occurrence_epoch": None,
+        "committed_epoch": None,
+        "expected_epoch": 0,
+        "source_sequence": None,
+        "source_time": None,
+        "evaluation_time": None,
+        "occurrence_identity": None,
+        "halted": False,
+        "baseline_required": True,
+        "exhausted": False,
+        "last_primary_commitment": None,
+        "hard_bid_identity": None,
+        "hard_bid_source_time": None,
+        "trade_identity": None,
+        "trade_source_time": None,
+        "trail_bid_identity": None,
+        "trail_bid_source_time": None,
+    }
+    if identity_present:
+        values[identity_field] = bytes.fromhex("aa" * 32)
+    else:
+        values[time_field] = 1
+    with pytest.raises(ValueError):
+        preimage(**values)
+
+
+def _assert_no_variable_cardinality_market_value(
+    value: object,
+    *,
+    path: tuple[str, ...],
+) -> None:
+    forbidden_exact_types = {
+        list,
+        dict,
+        set,
+        frozenset,
+        tuple,
+        _PersistentKeyMap,
+    }
+    assert type(value) not in forbidden_exact_types, (
+        f"variable-cardinality market value at {'.'.join(path)}: {type(value).__name__}"
+    )
+    if value is None or type(value) in {bool, bytes, int, str, Decimal, Fraction}:
+        return
+    if isinstance(value, Enum):
+        return
+    assert is_dataclass(value) and not isinstance(value, type), (
+        f"unbounded or opaque market value at {'.'.join(path)}: {type(value).__name__}"
+    )
+    for retained in fields(value):
+        _assert_no_variable_cardinality_market_value(
+            getattr(value, retained.name),
+            path=(*path, retained.name),
+        )
+
+
+def _production_cursor_preimage_from_state(
+    module: ModuleType,
+    state: object,
+    mandate: object,
+) -> bytes:
+    (preimage,) = _required(module, "_protection_market_cursor_preimage")
+    mode = mandate.evidence_policy.sequence_mode
+    mode_byte = 0 if mode.value == "SEQUENCED" else 1
+    return preimage(
+        stream_generation=bytes.fromhex(
+            mandate.evidence_policy.stream_generation.value
+        ),
+        sequence_mode=mode_byte,
+        occurrence_epoch=state._market_occurrence_epoch,
+        committed_epoch=state._market_committed_epoch,
+        expected_epoch=state._market_expected_epoch,
+        source_sequence=state._market_source_sequence,
+        source_time=state._market_source_time,
+        evaluation_time=state._market_evaluation_time,
+        occurrence_identity=(
+            None
+            if state._market_occurrence_identity is None
+            else bytes.fromhex(state._market_occurrence_identity.value)
+        ),
+        halted=state._market_halted,
+        baseline_required=state._market_baseline_required,
+        exhausted=state._market_exhausted,
+        last_primary_commitment=state._market_last_primary,
+        hard_bid_identity=(
+            None
+            if state._hard_bid_identity is None
+            else bytes.fromhex(state._hard_bid_identity.value)
+        ),
+        hard_bid_source_time=state._hard_bid_source_time,
+        trade_identity=(
+            None
+            if state._trade_identity is None
+            else bytes.fromhex(state._trade_identity.value)
+        ),
+        trade_source_time=state._trade_source_time,
+        trail_bid_identity=(
+            None
+            if state._trail_bid_identity is None
+            else bytes.fromhex(state._trail_bid_identity.value)
+        ),
+        trail_bid_source_time=state._trail_bid_source_time,
+    )
+
+
+def _rebuild_authentic_state(
+    module: ModuleType,
+    state: object,
+    **overrides: object,
+) -> object:
+    (rebuild,) = _required(module, "_rebuild_state")
+    values: dict[str, object] = {}
+    consumed: set[str] = set()
+    for parameter_name in inspect.signature(rebuild).parameters:
+        candidates = (parameter_name, f"_{parameter_name}")
+        override_name = next(
+            (name for name in candidates if name in overrides),
+            None,
+        )
+        if override_name is not None:
+            values[parameter_name] = overrides[override_name]
+            consumed.add(override_name)
+            continue
+        retained_name = next(
+            (name for name in candidates if hasattr(state, name)),
+            None,
+        )
+        assert retained_name is not None, (
+            f"cannot map authentic rebuild parameter {parameter_name!r}"
+        )
+        values[parameter_name] = getattr(state, retained_name)
+    assert consumed == set(overrides), (
+        f"unused authentic rebuild overrides: {sorted(set(overrides) - consumed)!r}"
+    )
+    return rebuild(**values)
+
+
+def _exercise_near_boundary_market_history(module: ModuleType) -> tuple[object, object]:
+    current = _owned_fill_transition(label="bounded-market-near-u64")
+    mandate = _mandate(module, sequence_mode="SEQUENCED", max_age=_U64_MAX)
+    mandate, projection, state = _start(module, current, mandate)
+    starting_coordinate = _U64_MAX - 12
+    anchor = _routed_occurrence(
+        module,
+        mandate,
+        "bounded-market-near-u64-anchor",
+        sequence=starting_coordinate,
+        source_time=starting_coordinate,
+        evaluation_time=starting_coordinate,
+        market_epoch=0,
+    )
+    state = _rebuild_authentic_state(
+        module,
+        state,
+        _market_occurrence_epoch=0,
+        _market_committed_epoch=0,
+        _market_expected_epoch=None,
+        _market_source_sequence=starting_coordinate,
+        _market_source_time=starting_coordinate,
+        _market_evaluation_time=starting_coordinate,
+        _market_occurrence_identity=anchor.occurrence_id,
+        _market_halted=False,
+        _market_baseline_required=False,
+        _market_exhausted=False,
+    )
+    (disposition,) = _required(module, "ProtectionDisposition")
+    for offset in range(1, 11):
+        coordinate = starting_coordinate + offset
+        occurrence = _routed_occurrence(
+            module,
+            mandate,
+            f"bounded-market-near-u64-{offset}",
+            sequence=coordinate,
+            source_time=coordinate,
+            evaluation_time=coordinate,
+            market_epoch=0,
+        )
+        result = _reduce_market(module, state, projection, occurrence)
+        assert result.disposition is disposition.APPLIED
+        assert result.state._market_exhausted is False
+        state = result.state
+    assert state._market_source_sequence == _U64_MAX - 2
+    return mandate, state
+
+
+@dataclass(frozen=True, slots=True)
+class _BoundedHistoryEvidence:
+    mixed_step_count: int
+    projection_advance_count: int
+    late_projection_advance_step: int
+    pending_bid_count_before: int
+    pending_bid_count_after: int
+    pending_trade_count_before: int
+    pending_trade_count_after: int
+    initial_armed_trigger: Fraction
+    armed_trigger_after_bid_reset: Fraction
+    armed_trigger_after_trade_reset: Fraction
+
+
+def _exercise_bounded_market_history(
+    module: ModuleType,
+    *,
+    count: int,
+) -> tuple[object, object, _BoundedHistoryEvidence]:
+    transition = _owned_fill_transition(
+        label=f"bounded-market-{count}",
+        quantity=4,
+        units=100,
+    )
+    mandate = _mandate(module)
+    mandate, projection, state = _start(module, transition, mandate)
+    (reducer,) = _required(module, "reduce_position_protection_market")
+    (disposition,) = _required(module, "ProtectionDisposition")
+    epoch = 0
+    sequence = 1
+    last = _routed_occurrence(
+        module,
+        mandate,
+        f"bounded-branch-before-economics-{count}",
+        bid=92,
+        ask=93,
+        sequence=sequence,
+        source_time=sequence,
+        evaluation_time=sequence,
+    )
+    branched = reducer(state, projection, last)
+    assert branched.disposition is disposition.APPLIED
+    assert branched.goal is None
+    pending_bid_count_before = sum(
+        identity is not None
+        for identity in (
+            branched.state._hard_bid_identity,
+            branched.state._trade_identity,
+            branched.state._trail_bid_identity,
+        )
+    )
+    assert pending_bid_count_before == 1
+    assert branched.state._hard_bid_identity == last.occurrence_id
+    assert branched.state._trade_identity is None
+    assert branched.state._trail_bid_identity is None
+    initial_armed_trigger = branched.state.armed_hard_bail_trigger.exact_value
+
+    economics_transition = _advance_owned_fill(
+        transition,
+        label=f"bounded-economics-advance-{count}",
+        quantity=1,
+        units=120,
+        prior_cumulative=4,
+    )
+    projection = _projection(module, economics_transition, mandate)
+    economics = _reduce_projection(module, branched.state, projection)
+    assert economics.disposition is disposition.APPLIED
+    assert economics.state.execution_commitment == (
+        economics_transition.execution.commitment
+    )
+    armed_trigger_after_bid_reset = economics.state.armed_hard_bail_trigger.exact_value
+    assert armed_trigger_after_bid_reset > initial_armed_trigger
+    pending_bid_count_after = sum(
+        identity is not None
+        for identity in (
+            economics.state._hard_bid_identity,
+            economics.state._trade_identity,
+            economics.state._trail_bid_identity,
+        )
+    )
+    assert pending_bid_count_after == 0
+    state = economics.state
+    late_projection_advance_step = count - 10
+    pending_trade_count_before = -1
+    pending_trade_count_after = -1
+    armed_trigger_after_trade_reset = Fraction(-1)
+
+    for index in range(count):
+        if index == late_projection_advance_step:
+            sequence += 1
+            pending_trade = _routed_occurrence(
+                module,
+                mandate,
+                f"bounded-trade-before-economics-{count}",
+                bid=None,
+                ask=None,
+                sequence=sequence,
+                source_time=sequence,
+                evaluation_time=sequence,
+                market_epoch=epoch,
+                kind="TRADE",
+                trade=97,
+            )
+            traded = reducer(state, projection, pending_trade)
+            assert traded.disposition is disposition.APPLIED
+            assert traded.goal is None
+            pending_trade_count_before = sum(
+                identity is not None
+                for identity in (
+                    traded.state._hard_bid_identity,
+                    traded.state._trade_identity,
+                    traded.state._trail_bid_identity,
+                )
+            )
+            assert pending_trade_count_before == 1
+            assert traded.state._hard_bid_identity is None
+            assert traded.state._trade_identity == pending_trade.occurrence_id
+            assert traded.state._trail_bid_identity is None
+            assert (
+                traded.state.armed_hard_bail_trigger.exact_value
+                == armed_trigger_after_bid_reset
+            )
+
+            economics_transition = _advance_owned_fill(
+                economics_transition,
+                label=f"bounded-late-economics-advance-{count}",
+                quantity=1,
+                units=140,
+                prior_cumulative=5,
+            )
+            projection = _projection(module, economics_transition, mandate)
+            late_economics = _reduce_projection(
+                module,
+                traded.state,
+                projection,
+            )
+            assert late_economics.disposition is disposition.APPLIED
+            assert late_economics.state.execution_commitment == (
+                economics_transition.execution.commitment
+            )
+            armed_trigger_after_trade_reset = (
+                late_economics.state.armed_hard_bail_trigger.exact_value
+            )
+            assert armed_trigger_after_trade_reset > armed_trigger_after_bid_reset
+            pending_trade_count_after = sum(
+                identity is not None
+                for identity in (
+                    late_economics.state._hard_bid_identity,
+                    late_economics.state._trade_identity,
+                    late_economics.state._trail_bid_identity,
+                )
+            )
+            assert pending_trade_count_after == 0
+            state = late_economics.state
+            last = pending_trade
+
+        phase = index % 10
+        if phase == 1:
+            replay = reducer(state, projection, last)
+            assert replay.disposition is disposition.EXACT_REPLAY
+            assert replay.state == state
+            continue
+        if phase == 6:
+            conflict = replace(last, best_ask=_price(102))
+            latched = reducer(state, projection, conflict)
+            assert latched.disposition is disposition.APPLIED
+            state = latched.state
+            continue
+        if phase == 8:
+            invalidated = _invalidate_market(module, state, projection)
+            assert invalidated.disposition is disposition.APPLIED
+            state = invalidated.state
+            continue
+
+        if phase in {5, 7, 9}:
+            epoch += 1
+        sequence += 1
+        halted = phase == 4
+        crossed = phase == 2
+        occurrence = _occurrence(
+            module,
+            f"bounded-{index}",
+            bid=102 if crossed else 100,
+            ask=101,
+            sequence=sequence,
+            source_time=sequence,
+            evaluation_time=sequence,
+            market_epoch=epoch,
+            halted=halted,
+            source_id=mandate.evidence_policy.source_id,
+            stream_generation=mandate.evidence_policy.stream_generation,
+            position_scope=mandate.position_scope,
+            session_id=mandate.session_id,
+        )
+        applied = reducer(state, projection, occurrence)
+        assert applied.disposition is disposition.APPLIED
+        state = applied.state
+        last = occurrence
+    assert pending_trade_count_before == 1
+    assert pending_trade_count_after == 0
+    assert armed_trigger_after_trade_reset > armed_trigger_after_bid_reset
+    return (
+        mandate,
+        state,
+        _BoundedHistoryEvidence(
+            mixed_step_count=count,
+            projection_advance_count=2,
+            late_projection_advance_step=late_projection_advance_step,
+            pending_bid_count_before=pending_bid_count_before,
+            pending_bid_count_after=pending_bid_count_after,
+            pending_trade_count_before=pending_trade_count_before,
+            pending_trade_count_after=pending_trade_count_after,
+            initial_armed_trigger=initial_armed_trigger,
+            armed_trigger_after_bid_reset=armed_trigger_after_bid_reset,
+            armed_trigger_after_trade_reset=armed_trigger_after_trade_reset,
+        ),
+    )
+
+
+def test_market_state_and_work_are_constant_after_ten_and_one_hundred_thousand() -> (
+    None
+):
+    module = _protection_module()
+    small_mandate, small, small_evidence = _exercise_bounded_market_history(
+        module,
+        count=10,
+    )
+    large_mandate, large, large_evidence = _exercise_bounded_market_history(
+        module,
+        count=100_000,
+    )
+    boundary_mandate, boundary = _exercise_near_boundary_market_history(module)
+    assert small_evidence == _BoundedHistoryEvidence(
+        mixed_step_count=10,
+        projection_advance_count=2,
+        late_projection_advance_step=0,
+        pending_bid_count_before=1,
+        pending_bid_count_after=0,
+        pending_trade_count_before=1,
+        pending_trade_count_after=0,
+        initial_armed_trigger=Fraction(93),
+        armed_trigger_after_bid_reset=Fraction(97),
+        armed_trigger_after_trade_reset=Fraction(102),
+    )
+    assert large_evidence == _BoundedHistoryEvidence(
+        mixed_step_count=100_000,
+        projection_advance_count=2,
+        late_projection_advance_step=99_990,
+        pending_bid_count_before=1,
+        pending_bid_count_after=0,
+        pending_trade_count_before=1,
+        pending_trade_count_after=0,
+        initial_armed_trigger=Fraction(93),
+        armed_trigger_after_bid_reset=Fraction(97),
+        armed_trigger_after_trade_reset=Fraction(102),
+    )
+    for state in (small, large, boundary):
+        state_fields = tuple(retained.name for retained in fields(state))
+        assert state_fields == _ADR023_STATE_FIELDS
+        for field_name in state_fields:
+            _assert_no_variable_cardinality_market_value(
+                getattr(state, field_name),
+                path=(field_name,),
+            )
+        assert state._market_occurrence_identity is not None
+        evidence_identity_count = sum(
+            identity is not None
+            for identity in (
+                state._hard_bid_identity,
+                state._trade_identity,
+                state._trail_bid_identity,
+            )
+        )
+        assert evidence_identity_count <= 3
+
+    small_preimage = _production_cursor_preimage_from_state(
+        module,
+        small,
+        small_mandate,
+    )
+    large_preimage = _production_cursor_preimage_from_state(
+        module,
+        large,
+        large_mandate,
+    )
+    boundary_preimage = _production_cursor_preimage_from_state(
+        module,
+        boundary,
+        boundary_mandate,
+    )
+    assert len(small_preimage) == len(large_preimage) == len(boundary_preimage) == 480
+    assert tuple(retained.name for retained in fields(small)) == tuple(
+        retained.name for retained in fields(large)
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _ClassifierCase:
+    name: str
+    lifecycle: str
+    sequence_mode: str = "SEQUENCED"
+    projection: str = "current"
+    route: str = "exact"
+    epoch: str = "admitted"
+    coordinate: str = "greater"
+    identity: str = "different"
+    context: str = "eligible"
+
+
+@dataclass(frozen=True, slots=True)
+class _ClassifierExpectation:
+    disposition: str
+    alert: str | None
+    cursor_delta: bool
+    baseline_required: bool
+    exhausted: bool
+    evidence_cleared: bool
+    goal_suppressed: bool
+
+
+def _expect(
+    disposition: str,
+    *,
+    alert: str | None = None,
+    cursor_delta: bool = False,
+    baseline_required: bool = False,
+    exhausted: bool = False,
+    evidence_cleared: bool = False,
+    goal_suppressed: bool = True,
+) -> _ClassifierExpectation:
+    return _ClassifierExpectation(
+        disposition=disposition,
+        alert=alert,
+        cursor_delta=cursor_delta,
+        baseline_required=baseline_required,
+        exhausted=exhausted,
+        evidence_cleared=evidence_cleared,
+        goal_suppressed=goal_suppressed,
+    )
+
+
+def _classify_adr023_case(
+    case: _ClassifierCase,
+    *,
+    exact_current_before_epoch: bool = True,
+    exhaust_secondary_watermarks: bool = False,
+    route_before_cursor: bool = True,
+    reserve_before_context: bool = True,
+    conflict_latches_baseline: bool = True,
+    valid_baseline_clears_latch: bool = True,
+    exhaustion_before_admission: bool = False,
+    source_time_exhaustion_before_admission: bool = False,
+    source_time_evaluation_max_exhausts: bool = False,
+) -> _ClassifierExpectation:
+    initially_restrictive = case.lifecycle in {"baseline", "exhausted"}
+    premature_exhaustion = exhaustion_before_admission or (
+        source_time_exhaustion_before_admission and case.sequence_mode == "SOURCE_TIME"
+    )
+    if premature_exhaustion and (
+        case.coordinate == "strict-max" or case.epoch == "commit-max"
+    ):
+        return _expect(
+            "APPLIED",
+            alert="MARKET_COORDINATE_EXHAUSTED",
+            cursor_delta=True,
+            baseline_required=True,
+            exhausted=True,
+            evidence_cleared=True,
+        )
+    if route_before_cursor and (case.projection != "current" or case.route != "exact"):
+        return _expect(
+            "REFUSED",
+            baseline_required=initially_restrictive,
+            exhausted=case.lifecycle == "exhausted",
+            evidence_cleared=initially_restrictive,
+        )
+    exact_current = (
+        case.epoch == "retained"
+        and case.coordinate == "equal"
+        and case.identity == "identical"
+    )
+    conflict = (
+        case.epoch == "retained"
+        and case.coordinate == "equal"
+        and case.identity == "different"
+    )
+    if exact_current_before_epoch and exact_current:
+        return _expect(
+            "EXACT_REPLAY",
+            baseline_required=initially_restrictive,
+            exhausted=case.lifecycle == "exhausted",
+            evidence_cleared=initially_restrictive,
+        )
+    if exact_current_before_epoch and conflict:
+        if case.lifecycle == "serving":
+            return _expect(
+                "APPLIED" if conflict_latches_baseline else "STALE",
+                alert=(
+                    "MARKET_BASELINE_REQUIRED" if conflict_latches_baseline else None
+                ),
+                baseline_required=conflict_latches_baseline,
+                evidence_cleared=conflict_latches_baseline,
+            )
+        return _expect(
+            "REFUSED",
+            baseline_required=True,
+            exhausted=case.lifecycle == "exhausted",
+            evidence_cleared=True,
+        )
+    if case.lifecycle == "exhausted":
+        if case.epoch == "old" or case.coordinate == "lower":
+            return _expect(
+                "STALE",
+                baseline_required=True,
+                exhausted=True,
+                evidence_cleared=True,
+            )
+        return _expect(
+            "REFUSED",
+            baseline_required=True,
+            exhausted=True,
+            evidence_cleared=True,
+        )
+    if case.epoch == "old":
+        return _expect(
+            "STALE",
+            baseline_required=initially_restrictive,
+            evidence_cleared=initially_restrictive,
+        )
+    if case.epoch == "future":
+        return _expect(
+            "REFUSED",
+            baseline_required=initially_restrictive,
+            evidence_cleared=initially_restrictive,
+        )
+    if case.coordinate in {"lower", "equal"}:
+        return _expect(
+            "STALE",
+            baseline_required=initially_restrictive,
+            evidence_cleared=initially_restrictive,
+        )
+    if case.coordinate == "secondary-max" and (
+        exhaust_secondary_watermarks
+        or (source_time_evaluation_max_exhausts and case.sequence_mode == "SOURCE_TIME")
+    ):
+        return _expect(
+            "APPLIED",
+            alert="MARKET_COORDINATE_EXHAUSTED",
+            cursor_delta=True,
+            baseline_required=True,
+            exhausted=True,
+            evidence_cleared=True,
+        )
+    if case.coordinate == "strict-max" or case.epoch == "commit-max":
+        return _expect(
+            "APPLIED",
+            alert="MARKET_COORDINATE_EXHAUSTED",
+            cursor_delta=True,
+            baseline_required=True,
+            exhausted=True,
+            evidence_cleared=True,
+        )
+    contextually_ineligible = case.context != "eligible"
+    cursor_delta = not contextually_ineligible or reserve_before_context
+    if not route_before_cursor and (
+        case.projection != "current" or case.route != "exact"
+    ):
+        return _expect(
+            "REFUSED",
+            cursor_delta=cursor_delta,
+            baseline_required=initially_restrictive,
+            evidence_cleared=initially_restrictive,
+        )
+    if case.context == "halted":
+        return _expect(
+            "APPLIED",
+            alert=("MARKET_BASELINE_REQUIRED" if case.lifecycle == "serving" else None),
+            cursor_delta=cursor_delta,
+            baseline_required=True,
+            evidence_cleared=True,
+        )
+    if case.lifecycle == "baseline":
+        remains_latched = contextually_ineligible or not valid_baseline_clears_latch
+        return _expect(
+            "APPLIED",
+            cursor_delta=cursor_delta,
+            baseline_required=remains_latched,
+            evidence_cleared=True,
+        )
+    return _expect(
+        "APPLIED",
+        cursor_delta=cursor_delta,
+        evidence_cleared=contextually_ineligible,
+        goal_suppressed=contextually_ineligible,
+    )
+
+
+_CLASSIFIER_ROWS = (
+    (
+        _ClassifierCase("stale-projection", "serving", projection="stale"),
+        _expect("REFUSED"),
+    ),
+    (
+        _ClassifierCase("forked-projection", "serving", projection="forked"),
+        _expect("REFUSED"),
+    ),
+    (
+        _ClassifierCase("advancing-projection", "serving", projection="advancing"),
+        _expect("REFUSED"),
+    ),
+    (_ClassifierCase("wrong-source", "serving", route="source"), _expect("REFUSED")),
+    (
+        _ClassifierCase("wrong-generation", "serving", route="generation"),
+        _expect("REFUSED"),
+    ),
+    (_ClassifierCase("wrong-mode", "serving", route="mode"), _expect("REFUSED")),
+    (_ClassifierCase("wrong-scope", "serving", route="scope"), _expect("REFUSED")),
+    (_ClassifierCase("wrong-session", "serving", route="session"), _expect("REFUSED")),
+    (
+        _ClassifierCase(
+            "serving-replay",
+            "serving",
+            epoch="retained",
+            coordinate="equal",
+            identity="identical",
+        ),
+        _expect("EXACT_REPLAY"),
+    ),
+    (
+        _ClassifierCase(
+            "serving-conflict", "serving", epoch="retained", coordinate="equal"
+        ),
+        _expect(
+            "APPLIED",
+            alert="MARKET_BASELINE_REQUIRED",
+            baseline_required=True,
+            evidence_cleared=True,
+        ),
+    ),
+    (_ClassifierCase("serving-old-epoch", "serving", epoch="old"), _expect("STALE")),
+    (
+        _ClassifierCase("serving-future-epoch", "serving", epoch="future"),
+        _expect("REFUSED"),
+    ),
+    (_ClassifierCase("serving-lower", "serving", coordinate="lower"), _expect("STALE")),
+    (
+        _ClassifierCase("serving-advance", "serving"),
+        _expect("APPLIED", cursor_delta=True, goal_suppressed=False),
+    ),
+    (
+        _ClassifierCase("expired-reserves", "serving", context="expired"),
+        _expect("APPLIED", cursor_delta=True, evidence_cleared=True),
+    ),
+    (
+        _ClassifierCase("crossed-reserves", "serving", context="crossed"),
+        _expect("APPLIED", cursor_delta=True, evidence_cleared=True),
+    ),
+    (
+        _ClassifierCase("step-invalid-reserves", "serving", context="step"),
+        _expect("APPLIED", cursor_delta=True, evidence_cleared=True),
+    ),
+    (
+        _ClassifierCase("formula-loss-reserves", "serving", context="formula"),
+        _expect("APPLIED", cursor_delta=True, evidence_cleared=True),
+    ),
+    (
+        _ClassifierCase("flat-reserves", "serving", context="flat"),
+        _expect("APPLIED", cursor_delta=True, evidence_cleared=True),
+    ),
+    (
+        _ClassifierCase("serving-halt", "serving", context="halted"),
+        _expect(
+            "APPLIED",
+            alert="MARKET_BASELINE_REQUIRED",
+            cursor_delta=True,
+            baseline_required=True,
+            evidence_cleared=True,
+        ),
+    ),
+    (
+        _ClassifierCase(
+            "baseline-retained-replay",
+            "baseline",
+            epoch="retained",
+            coordinate="equal",
+            identity="identical",
+        ),
+        _expect("EXACT_REPLAY", baseline_required=True, evidence_cleared=True),
+    ),
+    (
+        _ClassifierCase(
+            "baseline-retained-conflict",
+            "baseline",
+            epoch="retained",
+            coordinate="equal",
+        ),
+        _expect("REFUSED", baseline_required=True, evidence_cleared=True),
+    ),
+    (
+        _ClassifierCase("baseline-old", "baseline", epoch="old"),
+        _expect("STALE", baseline_required=True, evidence_cleared=True),
+    ),
+    (
+        _ClassifierCase("baseline-future", "baseline", epoch="future"),
+        _expect("REFUSED", baseline_required=True, evidence_cleared=True),
+    ),
+    (
+        _ClassifierCase("baseline-lower", "baseline", coordinate="lower"),
+        _expect("STALE", baseline_required=True, evidence_cleared=True),
+    ),
+    (
+        _ClassifierCase("baseline-equal", "baseline", coordinate="equal"),
+        _expect("STALE", baseline_required=True, evidence_cleared=True),
+    ),
+    (
+        _ClassifierCase("baseline-invalid-consumes", "baseline", context="expired"),
+        _expect(
+            "APPLIED", cursor_delta=True, baseline_required=True, evidence_cleared=True
+        ),
+    ),
+    (
+        _ClassifierCase("baseline-halted-consumes", "baseline", context="halted"),
+        _expect(
+            "APPLIED", cursor_delta=True, baseline_required=True, evidence_cleared=True
+        ),
+    ),
+    (
+        _ClassifierCase("baseline-recovers", "baseline"),
+        _expect("APPLIED", cursor_delta=True, evidence_cleared=True),
+    ),
+    (
+        _ClassifierCase("strict-coordinate-max", "serving", coordinate="strict-max"),
+        _expect(
+            "APPLIED",
+            alert="MARKET_COORDINATE_EXHAUSTED",
+            cursor_delta=True,
+            baseline_required=True,
+            exhausted=True,
+            evidence_cleared=True,
+        ),
+    ),
+    (
+        _ClassifierCase("commit-epoch-max", "baseline", epoch="commit-max"),
+        _expect(
+            "APPLIED",
+            alert="MARKET_COORDINATE_EXHAUSTED",
+            cursor_delta=True,
+            baseline_required=True,
+            exhausted=True,
+            evidence_cleared=True,
+        ),
+    ),
+    (
+        _ClassifierCase(
+            "evaluation-max-not-terminal", "serving", coordinate="secondary-max"
+        ),
+        _expect("APPLIED", cursor_delta=True, goal_suppressed=False),
+    ),
+    (
+        _ClassifierCase(
+            "source-time-evaluation-max-not-terminal",
+            "serving",
+            sequence_mode="SOURCE_TIME",
+            coordinate="secondary-max",
+        ),
+        _expect("APPLIED", cursor_delta=True, goal_suppressed=False),
+    ),
+    (
+        _ClassifierCase(
+            "exhausted-replay",
+            "exhausted",
+            epoch="retained",
+            coordinate="equal",
+            identity="identical",
+        ),
+        _expect(
+            "EXACT_REPLAY",
+            baseline_required=True,
+            exhausted=True,
+            evidence_cleared=True,
+        ),
+    ),
+    (
+        _ClassifierCase(
+            "exhausted-conflict", "exhausted", epoch="retained", coordinate="equal"
+        ),
+        _expect(
+            "REFUSED", baseline_required=True, exhausted=True, evidence_cleared=True
+        ),
+    ),
+    (
+        _ClassifierCase("exhausted-old", "exhausted", epoch="old"),
+        _expect("STALE", baseline_required=True, exhausted=True, evidence_cleared=True),
+    ),
+    (
+        _ClassifierCase("exhausted-lower", "exhausted", coordinate="lower"),
+        _expect("STALE", baseline_required=True, exhausted=True, evidence_cleared=True),
+    ),
+    (
+        _ClassifierCase("exhausted-greater", "exhausted"),
+        _expect(
+            "REFUSED", baseline_required=True, exhausted=True, evidence_cleared=True
+        ),
+    ),
+    (
+        _ClassifierCase("exhausted-future", "exhausted", epoch="future"),
+        _expect(
+            "REFUSED", baseline_required=True, exhausted=True, evidence_cleared=True
+        ),
+    ),
+)
+
+_STATE_PRESERVING_CLASSIFIER_EXPECTATIONS = {
+    ("serving", "STALE"): _expect("STALE"),
+    ("serving", "REFUSED"): _expect("REFUSED"),
+    ("baseline", "STALE"): _expect(
+        "STALE", baseline_required=True, evidence_cleared=True
+    ),
+    ("baseline", "REFUSED"): _expect(
+        "REFUSED", baseline_required=True, evidence_cleared=True
+    ),
+    ("exhausted", "STALE"): _expect(
+        "STALE",
+        baseline_required=True,
+        exhausted=True,
+        evidence_cleared=True,
+    ),
+    ("exhausted", "REFUSED"): _expect(
+        "REFUSED",
+        baseline_required=True,
+        exhausted=True,
+        evidence_cleared=True,
+    ),
+}
+_CROSSED_CLASSIFIER_ROWS = (
+    *(
+        (
+            _ClassifierCase(
+                (
+                    f"{lifecycle}-{mismatch}-{coordinate}"
+                    if sequence_mode == "SEQUENCED"
+                    else f"source-time-{lifecycle}-{mismatch}-{coordinate}"
+                ),
+                lifecycle,
+                sequence_mode=sequence_mode,
+                projection="stale" if mismatch == "wrong-projection" else "current",
+                route="source" if mismatch == "wrong-route" else "exact",
+                epoch="retained" if coordinate == "equal" else "admitted",
+                coordinate=coordinate,
+                identity="identical" if coordinate == "equal" else "different",
+            ),
+            _STATE_PRESERVING_CLASSIFIER_EXPECTATIONS[(lifecycle, "REFUSED")],
+        )
+        for lifecycle in ("serving", "baseline", "exhausted")
+        for mismatch in ("wrong-route", "wrong-projection")
+        for coordinate in ("equal", "strict-max")
+        for sequence_mode in ("SEQUENCED", "SOURCE_TIME")
+    ),
+    *(
+        (
+            _ClassifierCase(
+                (
+                    f"{lifecycle}-{epoch}-{coordinate}"
+                    if sequence_mode == "SEQUENCED"
+                    else f"source-time-{lifecycle}-{epoch}-{coordinate}"
+                ),
+                lifecycle,
+                sequence_mode=sequence_mode,
+                epoch=epoch,
+                coordinate=coordinate,
+                identity="identical" if coordinate == "equal" else "different",
+            ),
+            _STATE_PRESERVING_CLASSIFIER_EXPECTATIONS[
+                (lifecycle, "STALE" if epoch == "old" else "REFUSED")
+            ],
+        )
+        for lifecycle in ("serving", "baseline", "exhausted")
+        for epoch in ("old", "future")
+        for coordinate in ("equal", "strict-max")
+        for sequence_mode in ("SEQUENCED", "SOURCE_TIME")
+    ),
+)
+
+
+_ALL_CLASSIFIER_ROWS = (*_CLASSIFIER_ROWS, *_CROSSED_CLASSIFIER_ROWS)
+
+
+def test_classifier_reference_oracle_is_failure_capable() -> None:
+    for case, expected in _ALL_CLASSIFIER_ROWS:
+        assert _classify_adr023_case(case) == expected, case.name
+
+    mutations = {
+        "exact-current-after-epoch": (
+            {"exact_current_before_epoch": False},
+            {
+                "baseline-retained-replay",
+                "baseline-retained-conflict",
+            },
+        ),
+        "secondary-watermark-exhaustion": (
+            {"exhaust_secondary_watermarks": True},
+            {"evaluation-max-not-terminal"},
+        ),
+        "route-after-cursor": (
+            {"route_before_cursor": False},
+            {"wrong-source", "wrong-generation", "wrong-mode"},
+        ),
+        "context-before-cursor": (
+            {"reserve_before_context": False},
+            {"expired-reserves", "crossed-reserves", "step-invalid-reserves"},
+        ),
+        "conflict-does-not-latch": (
+            {"conflict_latches_baseline": False},
+            {"serving-conflict"},
+        ),
+        "baseline-does-not-clear": (
+            {"valid_baseline_clears_latch": False},
+            {"baseline-recovers"},
+        ),
+        "exhaustion-before-admission": (
+            {"exhaustion_before_admission": True},
+            {
+                "serving-old-strict-max",
+                "serving-future-strict-max",
+                "baseline-old-strict-max",
+                "baseline-future-strict-max",
+                "exhausted-old-strict-max",
+                "exhausted-future-strict-max",
+                "serving-wrong-route-strict-max",
+                "baseline-wrong-projection-strict-max",
+            },
+        ),
+    }
+    for label, (mutation, required_kills) in mutations.items():
+        mismatches = {
+            case.name
+            for case, expected in _ALL_CLASSIFIER_ROWS
+            if _classify_adr023_case(case, **mutation) != expected
+        }
+        assert required_kills <= mismatches, (
+            label,
+            sorted(required_kills - mismatches),
+        )
+
+    source_time_admission_kills = {
+        *(
+            f"source-time-{lifecycle}-{mismatch}-strict-max"
+            for lifecycle in ("serving", "baseline", "exhausted")
+            for mismatch in ("wrong-route", "wrong-projection")
+        ),
+        *(
+            f"source-time-{lifecycle}-{epoch}-strict-max"
+            for lifecycle in ("serving", "baseline", "exhausted")
+            for epoch in ("old", "future")
+        ),
+    }
+    observed_admission_kills = {
+        case.name
+        for case, expected in _ALL_CLASSIFIER_ROWS
+        if _classify_adr023_case(
+            case,
+            source_time_exhaustion_before_admission=True,
+        )
+        != expected
+    }
+    assert observed_admission_kills == source_time_admission_kills
+
+    observed_evaluation_kills = {
+        case.name
+        for case, expected in _ALL_CLASSIFIER_ROWS
+        if _classify_adr023_case(
+            case,
+            source_time_evaluation_max_exhausts=True,
+        )
+        != expected
+    }
+    assert observed_evaluation_kills == {"source-time-evaluation-max-not-terminal"}
+
+
+@pytest.mark.parametrize("lifecycle", ["serving", "baseline", "exhausted"])
+@pytest.mark.parametrize("boundary", ["equal", "strict-max"])
+@pytest.mark.parametrize("sequence_mode", ["SEQUENCED", "SOURCE_TIME"])
+@pytest.mark.parametrize(
+    ("admission_case", "expected_disposition"),
+    [
+        pytest.param("wrong-route", "REFUSED", id="route-before-coordinate"),
+        pytest.param(
+            "wrong-projection",
+            "REFUSED",
+            id="projection-before-coordinate",
+        ),
+        pytest.param("old-epoch", "STALE", id="old-epoch-before-coordinate"),
+        pytest.param("future-epoch", "REFUSED", id="future-epoch-before-coordinate"),
+    ],
+)
+def test_production_admission_precedes_equal_or_maximum_coordinate(
+    lifecycle: str,
+    boundary: str,
+    sequence_mode: str,
+    admission_case: str,
+    expected_disposition: str,
+) -> None:
+    module = _protection_module()
+    current = _owned_fill_transition(
+        label=(
+            f"adr023-crossed-{sequence_mode}-{lifecycle}-{boundary}-{admission_case}"
+        )
+    )
+    mandate = _mandate(module, sequence_mode=sequence_mode, max_age=_U64_MAX)
+    mandate, projection, initial = _start(module, current, mandate)
+    state = _authentic_serving_state_at_epoch(
+        module,
+        initial,
+        mandate,
+        epoch=1,
+        coordinate=1,
+    )
+    if lifecycle == "baseline":
+        state = _rebuild_authentic_state(
+            module,
+            state,
+            _market_expected_epoch=2,
+            _market_baseline_required=True,
+            _market_exhausted=False,
+            _hard_bid_identity=None,
+            _hard_bid_source_time=None,
+            _trade_identity=None,
+            _trade_source_time=None,
+            _trail_bid_identity=None,
+            _trail_bid_source_time=None,
+        )
+    elif lifecycle == "exhausted":
+        state = _rebuild_authentic_state(
+            module,
+            state,
+            _market_expected_epoch=None,
+            _market_baseline_required=True,
+            _market_exhausted=True,
+            _hard_bid_identity=None,
+            _hard_bid_source_time=None,
+            _trade_identity=None,
+            _trade_source_time=None,
+            _trail_bid_identity=None,
+            _trail_bid_source_time=None,
+        )
+
+    coordinate = 1 if boundary == "equal" else _U64_MAX
+    admitted_epoch = 2 if lifecycle == "baseline" else 1
+    if admission_case == "old-epoch":
+        epoch = 0
+    elif admission_case == "future-epoch":
+        epoch = admitted_epoch + 1
+    else:
+        epoch = admitted_epoch
+    sequenced = sequence_mode == "SEQUENCED"
+    source_time = 2 if sequenced else coordinate
+    evaluation_time = 2 if sequenced or coordinate != _U64_MAX else _U64_MAX
+    occurrence = _routed_occurrence(
+        module,
+        mandate,
+        (
+            f"adr023-crossed-input-{sequence_mode}-{lifecycle}-{boundary}-"
+            f"{admission_case}"
+        ),
+        sequence=coordinate if sequenced else None,
+        source_time=source_time,
+        evaluation_time=evaluation_time,
+        market_epoch=epoch,
+        source_id=(
+            execution_core.MarketDataSourceId("sip-secondary")
+            if admission_case == "wrong-route"
+            else mandate.evidence_policy.source_id
+        ),
+    )
+    candidate_projection = projection
+    if admission_case == "wrong-projection":
+        additional = _advance_owned_fill(
+            current,
+            label=(f"adr023-crossed-projection-{sequence_mode}-{lifecycle}-{boundary}"),
+            quantity=1,
+            units=120,
+            prior_cumulative=4,
+        )
+        candidate_projection = _projection(module, additional, mandate)
+
+    before = state
+    result = _reduce_market(
+        module,
+        state,
+        candidate_projection,
+        occurrence,
+    )
+    (disposition,) = _required(module, "ProtectionDisposition")
+    assert result.disposition is getattr(disposition, expected_disposition)
+    assert result.state == before
+    assert result.goal is None
+    assert result.critical_alert is None
+
+
+def _invalidation_projection_fixture(
+    module: ModuleType,
+    *,
+    lifecycle: str,
+    projection_case: str,
+) -> tuple[object, object, object]:
+    current = _owned_fill_transition(
+        label=f"adr023-invalidation-projection-{lifecycle}-{projection_case}"
+    )
+    mandate, initial_projection, state = _start(module, current)
+    current_projection = initial_projection
+    candidate_projection = initial_projection
+
+    if projection_case in {"stale", "forked", "advancing"}:
+        branch_a = _advance_owned_fill(
+            current,
+            label=f"adr023-invalidation-{lifecycle}-{projection_case}-branch-a",
+            quantity=1,
+            units=120,
+            prior_cumulative=4,
+        )
+        branch_a_projection = _projection(module, branch_a, mandate)
+        if projection_case == "advancing":
+            candidate_projection = branch_a_projection
+        else:
+            advanced = _reduce_projection(module, state, branch_a_projection)
+            (disposition,) = _required(module, "ProtectionDisposition")
+            assert advanced.disposition is disposition.APPLIED
+            state = advanced.state
+            current_projection = branch_a_projection
+            if projection_case == "stale":
+                candidate_projection = initial_projection
+            else:
+                branch_b = _advance_owned_fill(
+                    current,
+                    label=(
+                        f"adr023-invalidation-{lifecycle}-{projection_case}-branch-b"
+                    ),
+                    quantity=1,
+                    units=121,
+                    prior_cumulative=4,
+                )
+                candidate_projection = _projection(module, branch_b, mandate)
+                assert (
+                    candidate_projection.predecessor_cursor_ordinal
+                    == branch_a_projection.predecessor_cursor_ordinal
+                )
+                assert (
+                    candidate_projection.predecessor_cursor_head
+                    == branch_a_projection.predecessor_cursor_head
+                )
+                assert (
+                    candidate_projection.cursor_head != branch_a_projection.cursor_head
+                )
+
+    if lifecycle == "baseline-required":
+        baseline_required = _invalidate_market(module, state, current_projection)
+        disposition, alert = _required(
+            module,
+            "ProtectionDisposition",
+            "ProtectionAlert",
+        )
+        assert baseline_required.disposition is disposition.APPLIED
+        assert baseline_required.critical_alert is alert.MARKET_BASELINE_REQUIRED
+        state = baseline_required.state
+    elif lifecycle == "exhausted":
+        exhausted = _reduce_market(
+            module,
+            state,
+            current_projection,
+            _routed_occurrence(
+                module,
+                mandate,
+                f"adr023-invalidation-{projection_case}-exhaustion",
+                sequence=_U64_MAX,
+                source_time=1,
+                evaluation_time=1,
+                market_epoch=0,
+            ),
+        )
+        disposition, alert = _required(
+            module,
+            "ProtectionDisposition",
+            "ProtectionAlert",
+        )
+        assert exhausted.disposition is disposition.APPLIED
+        assert exhausted.critical_alert is alert.MARKET_COORDINATE_EXHAUSTED
+        assert exhausted.state._market_exhausted is True
+        state = exhausted.state
+    else:
+        assert lifecycle == "serving"
+
+    return state, current_projection, candidate_projection
+
+
+@pytest.mark.parametrize(
+    "lifecycle",
+    ["serving", "baseline-required", "exhausted"],
+)
+@pytest.mark.parametrize(
+    "projection_case",
+    ["current", "stale", "forked", "advancing"],
+)
+def test_invalidation_projection_authority_matrix(
+    lifecycle: str,
+    projection_case: str,
+) -> None:
+    module = _protection_module()
+    state, current_projection, candidate_projection = _invalidation_projection_fixture(
+        module,
+        lifecycle=lifecycle,
+        projection_case=projection_case,
+    )
+    before_cursor = tuple(
+        getattr(state, field_name)
+        for field_name in sorted(_ADR023_MARKET_CURSOR_FIELDS)
+    )
+    result = _invalidate_market(module, state, candidate_projection)
+    disposition, alert = _required(
+        module,
+        "ProtectionDisposition",
+        "ProtectionAlert",
+    )
+
+    if projection_case != "current":
+        assert candidate_projection != current_projection
+        assert result.disposition is disposition.REFUSED
+        assert result.state == state
+        assert (
+            tuple(
+                getattr(result.state, field_name)
+                for field_name in sorted(_ADR023_MARKET_CURSOR_FIELDS)
+            )
+            == before_cursor
+        )
+        assert result.goal is None
+        assert result.critical_alert is None
+        return
+
+    assert candidate_projection == current_projection
+    assert result.goal is None
+    if lifecycle == "serving":
+        assert result.disposition is disposition.APPLIED
+        assert result.critical_alert is alert.MARKET_BASELINE_REQUIRED
+        assert result.state._market_baseline_required is True
+        assert result.state._market_exhausted is False
+    else:
+        assert result.disposition is disposition.EXACT_REPLAY
+        assert result.state == state
+        assert result.critical_alert is None
+
+
+def test_initial_baseline_and_prebaseline_invalidation_are_exact() -> None:
+    module = _protection_module()
+    current = _owned_fill_transition(label="adr023-initial-baseline")
+    mandate = _mandate(module)
+    mandate, projection, state = _start(
+        module,
+        current,
+        mandate,
+        establish_baseline=False,
+    )
+    assert state._market_occurrence_epoch is None
+    assert state._market_committed_epoch is None
+    assert state._market_expected_epoch == 0
+    assert state._market_source_sequence is None
+    assert state._market_source_time is None
+    assert state._market_evaluation_time is None
+    assert state._market_occurrence_identity is None
+    assert state._market_baseline_required is True
+    assert state._market_halted is False
+    assert state._market_exhausted is False
+
+    unchanged = _invalidate_market(module, state, projection)
+    (disposition,) = _required(module, "ProtectionDisposition")
+    assert unchanged.disposition is disposition.EXACT_REPLAY
+    assert unchanged.state == state
+    assert unchanged.goal is None
+    assert unchanged.critical_alert is None
+
+    baseline = _routed_occurrence(
+        module,
+        mandate,
+        "adr023-initial-baseline",
+        sequence=7,
+        source_time=8,
+        evaluation_time=9,
+        market_epoch=0,
+    )
+    applied = _reduce_market(module, state, projection, baseline)
+    assert applied.disposition is disposition.APPLIED
+    assert applied.state._market_committed_epoch == 0
+    assert applied.state._market_expected_epoch is None
+    assert applied.state._market_baseline_required is False
+    assert applied.state._market_halted is False
+    assert applied.state._market_occurrence_identity == baseline.occurrence_id
+    assert applied.state._hard_bid_identity is None
+    assert applied.state._trade_identity is None
+    assert applied.state._trail_bid_identity is None
+    assert applied.goal is None
+    assert applied.critical_alert is None
+
+
+def test_invalidation_recovery_is_exact_next_epoch_and_cursor_strict() -> None:
+    module = _protection_module()
+    current = _owned_fill_transition(label="adr023-invalidation")
+    mandate, projection, serving = _start(module, current)
+    (disposition, alert) = _required(
+        module,
+        "ProtectionDisposition",
+        "ProtectionAlert",
+    )
+    retained = (
+        serving._market_occurrence_epoch,
+        serving._market_committed_epoch,
+        serving._market_source_sequence,
+        serving._market_source_time,
+        serving._market_evaluation_time,
+        serving._market_occurrence_identity,
+        serving.raw_quantity,
+        serving.armed_hard_bail_trigger,
+        serving.activation_price,
+        serving.high_watermark,
+        serving.trail,
+        serving._exit_provenance,
+    )
+    invalidated = _invalidate_market(module, serving, projection)
+    assert invalidated.disposition is disposition.APPLIED
+    assert invalidated.critical_alert is alert.MARKET_BASELINE_REQUIRED
+    assert invalidated.goal is None
+    state = invalidated.state
+    assert state._market_baseline_required is True
+    assert state._market_expected_epoch == 1
+    assert (
+        state._market_occurrence_epoch,
+        state._market_committed_epoch,
+        state._market_source_sequence,
+        state._market_source_time,
+        state._market_evaluation_time,
+        state._market_occurrence_identity,
+        state.raw_quantity,
+        state.armed_hard_bail_trigger,
+        state.activation_price,
+        state.high_watermark,
+        state.trail,
+        state._exit_provenance,
+    ) == retained
+
+    replay = _invalidate_market(module, state, projection)
+    assert replay.disposition is disposition.EXACT_REPLAY
+    assert replay.state == state
+    assert replay.critical_alert is None
+
+    old_epoch = _routed_occurrence(
+        module,
+        mandate,
+        "adr023-recovery-old",
+        sequence=1,
+        source_time=1,
+        evaluation_time=1,
+        market_epoch=0,
+    )
+    stale = _reduce_market(module, state, projection, old_epoch)
+    assert stale.disposition is disposition.STALE
+    assert stale.state == state
+
+    future_epoch = _routed_occurrence(
+        module,
+        mandate,
+        "adr023-recovery-future",
+        sequence=1,
+        source_time=1,
+        evaluation_time=1,
+        market_epoch=2,
+    )
+    refused = _reduce_market(module, state, projection, future_epoch)
+    assert refused.disposition is disposition.REFUSED
+    assert refused.state == state
+
+    equal_coordinate = _routed_occurrence(
+        module,
+        mandate,
+        "adr023-recovery-equal",
+        sequence=0,
+        source_time=0,
+        evaluation_time=1,
+        market_epoch=1,
+    )
+    equal = _reduce_market(module, state, projection, equal_coordinate)
+    assert equal.disposition is disposition.STALE
+    assert equal.state == state
+
+    crossed = _routed_occurrence(
+        module,
+        mandate,
+        "adr023-recovery-crossed",
+        bid=102,
+        ask=101,
+        sequence=1,
+        source_time=1,
+        evaluation_time=1,
+        market_epoch=1,
+    )
+    consumed = _reduce_market(module, state, projection, crossed)
+    assert consumed.disposition is disposition.APPLIED
+    assert consumed.state._market_source_sequence == 1
+    assert consumed.state._market_baseline_required is True
+    assert consumed.state._market_committed_epoch == 0
+    assert consumed.critical_alert is None
+    assert consumed.goal is None
+
+    corrected_same_coordinate = _routed_occurrence(
+        module,
+        mandate,
+        "adr023-recovery-corrected-same-coordinate",
+        sequence=1,
+        source_time=1,
+        evaluation_time=2,
+        market_epoch=1,
+    )
+    conflict = _reduce_market(
+        module,
+        consumed.state,
+        projection,
+        corrected_same_coordinate,
+    )
+    assert conflict.disposition is disposition.REFUSED
+    assert conflict.state == consumed.state
+
+    baseline = _routed_occurrence(
+        module,
+        mandate,
+        "adr023-recovery-valid",
+        sequence=2,
+        source_time=2,
+        evaluation_time=2,
+        market_epoch=1,
+    )
+    recovered = _reduce_market(module, consumed.state, projection, baseline)
+    assert recovered.disposition is disposition.APPLIED
+    assert recovered.state._market_committed_epoch == 1
+    assert recovered.state._market_expected_epoch is None
+    assert recovered.state._market_baseline_required is False
+    assert recovered.state._market_halted is False
+    assert recovered.state._hard_bid_identity is None
+    assert recovered.state._trade_identity is None
+    assert recovered.state._trail_bid_identity is None
+    assert recovered.goal is None
+    assert recovered.critical_alert is None
+
+
+@pytest.mark.parametrize("sequence_mode", ["SEQUENCED", "SOURCE_TIME"])
+@pytest.mark.parametrize(
+    ("case", "expected", "alert_name"),
+    [
+        ("immediate-replay", "EXACT_REPLAY", None),
+        ("non-last-replay", "STALE", None),
+        ("lower-coordinate", "STALE", None),
+        ("equal-conflict", "APPLIED", "MARKET_BASELINE_REQUIRED"),
+        ("strict-advance", "APPLIED", None),
+    ],
+)
+def test_fixed_mode_replay_conflict_and_advance_matrix(
+    sequence_mode: str,
+    case: str,
+    expected: str,
+    alert_name: str | None,
+) -> None:
+    module = _protection_module()
+    current = _owned_fill_transition(label=f"adr023-{sequence_mode}-{case}")
+    mandate = _mandate(module, sequence_mode=sequence_mode)
+    mandate, projection, state = _start(module, current, mandate)
+    sequenced = sequence_mode == "SEQUENCED"
+    first = _routed_occurrence(
+        module,
+        mandate,
+        "adr023-matrix-first",
+        bid=100,
+        ask=101,
+        sequence=1 if sequenced else None,
+        source_time=1,
+        evaluation_time=1,
+    )
+    first_result = _reduce_market(module, state, projection, first)
+    state = first_result.state
+    candidate = first
+    if case == "immediate-replay":
+        candidate = replace(first, evaluation_time=2)
+    elif case == "non-last-replay":
+        second = _routed_occurrence(
+            module,
+            mandate,
+            "adr023-matrix-second",
+            bid=100,
+            ask=101,
+            sequence=2 if sequenced else None,
+            source_time=2,
+            evaluation_time=2,
+        )
+        state = _reduce_market(module, state, projection, second).state
+    elif case == "lower-coordinate":
+        second = _routed_occurrence(
+            module,
+            mandate,
+            "adr023-matrix-second",
+            bid=100,
+            ask=101,
+            sequence=3 if sequenced else None,
+            source_time=3,
+            evaluation_time=3,
+        )
+        state = _reduce_market(module, state, projection, second).state
+        candidate = _routed_occurrence(
+            module,
+            mandate,
+            "adr023-matrix-lower",
+            bid=99,
+            ask=100,
+            sequence=2 if sequenced else None,
+            source_time=2,
+            evaluation_time=4,
+        )
+    elif case == "equal-conflict":
+        candidate = replace(first, best_ask=_price(102))
+    elif case == "strict-advance":
+        candidate = _routed_occurrence(
+            module,
+            mandate,
+            "adr023-matrix-advance",
+            bid=100,
+            ask=101,
+            sequence=2 if sequenced else None,
+            source_time=2,
+            evaluation_time=2,
+        )
+
+    before = state
+    result = _reduce_market(module, state, projection, candidate)
+    disposition, alert = _required(
+        module,
+        "ProtectionDisposition",
+        "ProtectionAlert",
+    )
+    assert result.disposition is getattr(disposition, expected)
+    assert result.critical_alert is (
+        None if alert_name is None else getattr(alert, alert_name)
+    )
+    assert result.goal is None
+    if expected in {"EXACT_REPLAY", "STALE", "REFUSED"}:
+        assert result.state == before
+    if case == "equal-conflict":
+        assert result.state._market_baseline_required is True
+        assert result.state._market_occurrence_identity == first.occurrence_id
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "stale-projection",
+        "forked-projection",
+        "advancing-projection",
+        "wrong-source",
+        "wrong-generation",
+        "wrong-mode",
+        "wrong-scope",
+        "wrong-session",
+    ],
+)
+def test_route_and_projection_mismatch_precede_cursor_reservation(case: str) -> None:
+    module = _protection_module()
+    current = _owned_fill_transition(label=f"adr023-route-{case}")
+    mandate = _mandate(module)
+    mandate, projection, state = _start(
+        module,
+        current,
+        mandate,
+        establish_baseline=False,
+    )
+    tested_projection = projection
+    current_projection = projection
+    current_state = state
+    if case in {"stale-projection", "advancing-projection"}:
+        higher = _advance_owned_fill(
+            current,
+            label=f"adr023-route-{case}-higher",
+            quantity=1,
+            units=100,
+            prior_cumulative=4,
+        )
+        higher_projection = _projection(module, higher, mandate)
+        if case == "stale-projection":
+            advanced = _reduce_projection(module, state, higher_projection)
+            current_state = advanced.state
+            current_projection = higher_projection
+            tested_projection = projection
+        else:
+            tested_projection = higher_projection
+    elif case == "forked-projection":
+        tested_projection = _clone_opaque(
+            projection,
+            execution_commitment=_flip_digest(projection.execution_commitment),
+        )
+
+    source_type, generation_type, session_type, symbol_type = _required(
+        execution_core,
+        "MarketDataSourceId",
+        "MarketStreamGenerationId",
+        "SessionId",
+        "SymbolId",
+    )
+    overrides = {
+        "source_id": (
+            source_type("sip-secondary")
+            if case == "wrong-source"
+            else mandate.evidence_policy.source_id
+        ),
+        "stream_generation": (
+            generation_type("22" * 32)
+            if case == "wrong-generation"
+            else mandate.evidence_policy.stream_generation
+        ),
+        "position_scope": (
+            replace(mandate.position_scope, symbol_id=symbol_type("MSFT"))
+            if case == "wrong-scope"
+            else mandate.position_scope
+        ),
+        "session_id": (
+            session_type("session-rth-2")
+            if case == "wrong-session"
+            else mandate.session_id
+        ),
+    }
+    candidate = _routed_occurrence(
+        module,
+        mandate,
+        f"adr023-route-{case}-candidate",
+        sequence=None if case == "wrong-mode" else 1,
+        source_time=1,
+        evaluation_time=1,
+        market_epoch=0,
+        **overrides,
+    )
+    refused = _reduce_market(
+        module,
+        current_state,
+        tested_projection,
+        candidate,
+    )
+    (disposition,) = _required(module, "ProtectionDisposition")
+    assert refused.disposition is disposition.REFUSED
+    assert refused.state == current_state
+    assert refused.goal is None
+    assert refused.critical_alert is None
+
+    valid = _routed_occurrence(
+        module,
+        mandate,
+        f"adr023-route-{case}-valid",
+        sequence=1,
+        source_time=1,
+        evaluation_time=1,
+        market_epoch=0,
+    )
+    applied = _reduce_market(
+        module,
+        current_state,
+        current_projection,
+        valid,
+    )
+    assert applied.disposition is disposition.APPLIED
+    assert applied.state._market_source_sequence == 1
+
+
+@pytest.mark.parametrize(
+    "case",
+    ["expired", "evaluation-regressed", "crossed", "tick-invalid", "step-invalid"],
+)
+def test_context_denial_happens_after_irreversible_cursor_reservation(
+    case: str,
+) -> None:
+    module = _protection_module()
+    current = _owned_fill_transition(label=f"adr023-context-{case}")
+    mandate = _mandate(module)
+    if case == "evaluation-regressed":
+        mandate, projection, state = _start(
+            module,
+            current,
+            mandate,
+            establish_baseline=False,
+        )
+        baseline = _routed_occurrence(
+            module,
+            mandate,
+            "adr023-context-evaluation-baseline",
+            sequence=0,
+            source_time=0,
+            evaluation_time=10,
+        )
+        state = _reduce_market(module, state, projection, baseline).state
+    else:
+        mandate, projection, state = _start(module, current, mandate)
+
+    occurrence = _routed_occurrence(
+        module,
+        mandate,
+        f"adr023-context-{case}-first",
+        bid=(102 if case == "crossed" else 200 if case == "step-invalid" else 100),
+        ask=101 if case != "step-invalid" else 201,
+        sequence=1,
+        source_time=1 if case != "evaluation-regressed" else 10,
+        evaluation_time=(
+            20 if case == "expired" else 9 if case == "evaluation-regressed" else 1
+        ),
+    )
+    if case == "tick-invalid":
+        occurrence = replace(
+            occurrence,
+            best_bid=_price(100, tick_units=2),
+            best_ask=_price(102, tick_units=2),
+        )
+    first = _reduce_market(module, state, projection, occurrence)
+    disposition, alert = _required(
+        module,
+        "ProtectionDisposition",
+        "ProtectionAlert",
+    )
+    assert first.disposition is disposition.APPLIED
+    assert first.state._market_source_sequence == 1
+    assert first.state._market_occurrence_identity == occurrence.occurrence_id
+    assert first.goal is None
+    assert first.critical_alert is None
+
+    if case in {"expired", "evaluation-regressed"}:
+        corrected = replace(
+            occurrence,
+            evaluation_time=(2 if case == "expired" else 11),
+        )
+        replay = _reduce_market(module, first.state, projection, corrected)
+        assert corrected.occurrence_id == occurrence.occurrence_id
+        assert replay.disposition is disposition.EXACT_REPLAY
+        assert replay.state == first.state
+        assert replay.critical_alert is None
+    else:
+        corrected = _routed_occurrence(
+            module,
+            mandate,
+            f"adr023-context-{case}-corrected",
+            bid=100,
+            ask=101,
+            sequence=1,
+            source_time=1,
+            evaluation_time=2,
+        )
+        conflict = _reduce_market(module, first.state, projection, corrected)
+        assert corrected.occurrence_id != occurrence.occurrence_id
+        assert conflict.disposition is disposition.APPLIED
+        assert conflict.critical_alert is alert.MARKET_BASELINE_REQUIRED
+        assert conflict.state._market_baseline_required is True
+        assert conflict.state._market_occurrence_identity == occurrence.occurrence_id
+
+
+def test_halt_and_favorable_baseline_reopen_without_goal_or_evidence() -> None:
+    module = _protection_module()
+    current = _owned_fill_transition(label="adr023-halt-reopen")
+    mandate, projection, state = _start(module, current)
+    halt = _routed_occurrence(
+        module,
+        mandate,
+        "adr023-halt",
+        sequence=1,
+        source_time=1,
+        evaluation_time=1,
+        halted=True,
+    )
+    halted = _reduce_market(module, state, projection, halt)
+    disposition, alert, policy = _required(
+        module,
+        "ProtectionDisposition",
+        "ProtectionAlert",
+        "ProtectionPolicy",
+    )
+    assert halted.disposition is disposition.APPLIED
+    assert halted.critical_alert is alert.MARKET_BASELINE_REQUIRED
+    assert halted.state._market_halted is True
+    assert halted.state._market_baseline_required is True
+    assert halted.state._market_expected_epoch == 1
+    assert halted.goal is None
+
+    favorable = _routed_occurrence(
+        module,
+        mandate,
+        "adr023-favorable-reopen",
+        bid=120,
+        ask=121,
+        sequence=2,
+        source_time=2,
+        evaluation_time=2,
+        market_epoch=1,
+    )
+    reopened = _reduce_market(module, halted.state, projection, favorable)
+    assert reopened.disposition is disposition.APPLIED
+    assert reopened.state._market_halted is False
+    assert reopened.state._market_baseline_required is False
+    assert reopened.state._market_committed_epoch == 1
+    assert reopened.state.policy is policy.TRAIL_ACTIVE
+    assert reopened.state.high_watermark is not None
+    assert reopened.state.trail is not None
+    assert reopened.state._hard_bid_identity is None
+    assert reopened.state._trade_identity is None
+    assert reopened.state._trail_bid_identity is None
+    assert reopened.goal is None
+    assert reopened.critical_alert is None
+
+
+@pytest.mark.parametrize("sequence_mode", ["SEQUENCED", "SOURCE_TIME"])
+def test_strict_coordinate_max_enters_terminal_exhaustion_once(
+    sequence_mode: str,
+) -> None:
+    module = _protection_module()
+    current = _owned_fill_transition(label=f"adr023-coordinate-max-{sequence_mode}")
+    mandate = _mandate(
+        module,
+        sequence_mode=sequence_mode,
+        max_age=_U64_MAX,
+    )
+    mandate, projection, state = _start(
+        module,
+        current,
+        mandate,
+        establish_baseline=False,
+    )
+    maximum = _routed_occurrence(
+        module,
+        mandate,
+        f"adr023-coordinate-max-{sequence_mode}",
+        sequence=_U64_MAX if sequence_mode == "SEQUENCED" else None,
+        source_time=1 if sequence_mode == "SEQUENCED" else _U64_MAX,
+        evaluation_time=1 if sequence_mode == "SEQUENCED" else _U64_MAX,
+        market_epoch=0,
+    )
+    exhausted = _reduce_market(module, state, projection, maximum)
+    disposition, alert = _required(
+        module,
+        "ProtectionDisposition",
+        "ProtectionAlert",
+    )
+    assert exhausted.disposition is disposition.APPLIED
+    assert exhausted.critical_alert is alert.MARKET_COORDINATE_EXHAUSTED
+    assert exhausted.state._market_baseline_required is True
+    assert exhausted.state._market_exhausted is True
+    assert exhausted.state._market_expected_epoch is None
+    assert exhausted.goal is None
+
+    replay = _reduce_market(module, exhausted.state, projection, maximum)
+    assert replay.disposition is disposition.EXACT_REPLAY
+    assert replay.state == exhausted.state
+    assert replay.critical_alert is None
+
+    lower = _routed_occurrence(
+        module,
+        mandate,
+        f"adr023-coordinate-lower-{sequence_mode}",
+        sequence=_U64_MAX - 1 if sequence_mode == "SEQUENCED" else None,
+        source_time=2 if sequence_mode == "SEQUENCED" else _U64_MAX - 1,
+        evaluation_time=2 if sequence_mode == "SEQUENCED" else _U64_MAX,
+        market_epoch=0,
+    )
+    stale = _reduce_market(module, exhausted.state, projection, lower)
+    assert stale.disposition is disposition.STALE
+    assert stale.state == exhausted.state
+
+    conflict = replace(maximum, best_ask=_price(102))
+    refused = _reduce_market(module, exhausted.state, projection, conflict)
+    assert refused.disposition is disposition.REFUSED
+    assert refused.state == exhausted.state
+    repeated_invalidation = _invalidate_market(module, exhausted.state, projection)
+    assert repeated_invalidation.disposition is disposition.EXACT_REPLAY
+    assert repeated_invalidation.state == exhausted.state
+
+    additional_fill = _advance_owned_fill(
+        current,
+        label="adr023-exhausted-economics-advance",
+        quantity=1,
+        units=120,
+        prior_cumulative=4,
+    )
+    advanced_projection = _projection(module, additional_fill, mandate)
+    economics = _reduce_projection(
+        module,
+        exhausted.state,
+        advanced_projection,
+    )
+    assert economics.disposition is disposition.APPLIED
+    assert economics.state.raw_quantity == exhausted.state.raw_quantity + 1
+    assert economics.state.execution_commitment == additional_fill.execution.commitment
+    assert economics.state._market_baseline_required is True
+    assert economics.state._market_exhausted is True
+    assert economics.goal is None
+    assert economics.critical_alert is None
+
+
+def _authentic_serving_state_at_epoch(
+    module: ModuleType,
+    state: object,
+    mandate: object,
+    *,
+    epoch: int,
+    coordinate: int,
+) -> object:
+    sequenced = mandate.evidence_policy.sequence_mode.value == "SEQUENCED"
+    anchor = _routed_occurrence(
+        module,
+        mandate,
+        f"adr023-authentic-epoch-{epoch}-{coordinate}",
+        sequence=coordinate if sequenced else None,
+        source_time=coordinate,
+        evaluation_time=coordinate,
+        market_epoch=epoch,
+    )
+    return _rebuild_authentic_state(
+        module,
+        state,
+        _market_occurrence_epoch=epoch,
+        _market_committed_epoch=epoch,
+        _market_expected_epoch=None,
+        _market_source_sequence=coordinate if sequenced else None,
+        _market_source_time=coordinate,
+        _market_evaluation_time=coordinate,
+        _market_occurrence_identity=anchor.occurrence_id,
+        _market_halted=False,
+        _market_baseline_required=False,
+        _market_exhausted=False,
+        _hard_bid_identity=None,
+        _hard_bid_source_time=None,
+        _trade_identity=None,
+        _trade_source_time=None,
+        _trail_bid_identity=None,
+        _trail_bid_source_time=None,
+    )
+
+
+def test_committing_epoch_max_enters_terminal_exhaustion_independently() -> None:
+    module = _protection_module()
+    current = _owned_fill_transition(label="adr023-commit-epoch-max")
+    mandate = _mandate(module, sequence_mode="SEQUENCED", max_age=_U64_MAX)
+    mandate, projection, state = _start(module, current, mandate)
+    state = _authentic_serving_state_at_epoch(
+        module,
+        state,
+        mandate,
+        epoch=_U64_MAX - 1,
+        coordinate=1,
+    )
+    invalidated = _invalidate_market(module, state, projection)
+    disposition, alert = _required(
+        module,
+        "ProtectionDisposition",
+        "ProtectionAlert",
+    )
+    assert invalidated.disposition is disposition.APPLIED
+    assert invalidated.critical_alert is alert.MARKET_BASELINE_REQUIRED
+    assert invalidated.state._market_expected_epoch == _U64_MAX
+    assert invalidated.state._market_exhausted is False
+
+    baseline = _routed_occurrence(
+        module,
+        mandate,
+        "adr023-commit-epoch-max-baseline",
+        sequence=2,
+        source_time=2,
+        evaluation_time=2,
+        market_epoch=_U64_MAX,
+    )
+    exhausted = _reduce_market(module, invalidated.state, projection, baseline)
+    assert exhausted.disposition is disposition.APPLIED
+    assert exhausted.critical_alert is alert.MARKET_COORDINATE_EXHAUSTED
+    assert exhausted.state._market_committed_epoch == _U64_MAX
+    assert exhausted.state._market_occurrence_identity == baseline.occurrence_id
+    assert exhausted.state._market_expected_epoch is None
+    assert exhausted.state._market_baseline_required is True
+    assert exhausted.state._market_exhausted is True
+    assert exhausted.state._hard_bid_identity is None
+    assert exhausted.state._trade_identity is None
+    assert exhausted.state._trail_bid_identity is None
+    assert exhausted.goal is None
+
+    replay = _reduce_market(module, exhausted.state, projection, baseline)
+    assert replay.disposition is disposition.EXACT_REPLAY
+    assert replay.state == exhausted.state
+    refused = _reduce_market(
+        module,
+        exhausted.state,
+        projection,
+        _routed_occurrence(
+            module,
+            mandate,
+            "adr023-after-commit-epoch-max",
+            sequence=3,
+            source_time=3,
+            evaluation_time=3,
+            market_epoch=_U64_MAX,
+        ),
+    )
+    assert refused.disposition is disposition.REFUSED
+    assert refused.state == exhausted.state
+
+
+@pytest.mark.parametrize("cause", ["invalidation", "halt"])
+def test_increment_from_committed_epoch_max_exhausts_without_wrap(
+    cause: str,
+) -> None:
+    module = _protection_module()
+    current = _owned_fill_transition(label=f"adr023-increment-max-{cause}")
+    mandate = _mandate(module, sequence_mode="SEQUENCED", max_age=_U64_MAX)
+    mandate, projection, state = _start(module, current, mandate)
+    state = _authentic_serving_state_at_epoch(
+        module,
+        state,
+        mandate,
+        epoch=_U64_MAX,
+        coordinate=1,
+    )
+    if cause == "invalidation":
+        exhausted = _invalidate_market(module, state, projection)
+    else:
+        exhausted = _reduce_market(
+            module,
+            state,
+            projection,
+            _routed_occurrence(
+                module,
+                mandate,
+                "adr023-increment-max-halt",
+                sequence=2,
+                source_time=2,
+                evaluation_time=2,
+                market_epoch=_U64_MAX,
+                halted=True,
+            ),
+        )
+    disposition, alert = _required(
+        module,
+        "ProtectionDisposition",
+        "ProtectionAlert",
+    )
+    assert exhausted.disposition is disposition.APPLIED
+    assert exhausted.critical_alert is alert.MARKET_COORDINATE_EXHAUSTED
+    assert exhausted.state._market_committed_epoch == _U64_MAX
+    assert exhausted.state._market_expected_epoch is None
+    assert exhausted.state._market_baseline_required is True
+    assert exhausted.state._market_exhausted is True
+    assert exhausted.goal is None
+    repeated = _invalidate_market(module, exhausted.state, projection)
+    assert repeated.disposition is disposition.EXACT_REPLAY
+    assert repeated.state == exhausted.state
+
+
+@pytest.mark.parametrize(
+    ("source_time", "evaluation_time", "case"),
+    [
+        pytest.param(1, _U64_MAX, "evaluation-only", id="evaluation-time-max"),
+        pytest.param(
+            _U64_MAX,
+            _U64_MAX,
+            "source-after-evaluation-control",
+            id="sequenced-source-time-max",
+        ),
+    ],
+)
+def test_secondary_watermark_maxima_do_not_exhaust_sequenced_mode(
+    source_time: int,
+    evaluation_time: int,
+    case: str,
+) -> None:
+    module = _protection_module()
+    current = _owned_fill_transition(label=f"adr023-secondary-max-{case}")
+    mandate = _mandate(module, sequence_mode="SEQUENCED")
+    mandate, projection, state = _start(module, current, mandate)
+    first = _routed_occurrence(
+        module,
+        mandate,
+        f"adr023-secondary-max-{case}-first",
+        sequence=1,
+        source_time=source_time,
+        evaluation_time=evaluation_time,
+    )
+    applied = _reduce_market(module, state, projection, first)
+    (disposition,) = _required(module, "ProtectionDisposition")
+    assert applied.disposition is disposition.APPLIED
+    assert applied.state._market_exhausted is False
+    assert applied.critical_alert is None
+
+    second = _routed_occurrence(
+        module,
+        mandate,
+        f"adr023-secondary-max-{case}-second",
+        sequence=2,
+        source_time=source_time,
+        evaluation_time=evaluation_time,
+    )
+    advanced = _reduce_market(module, applied.state, projection, second)
+    assert advanced.disposition is disposition.APPLIED
+    assert advanced.state._market_source_sequence == 2
+    assert advanced.state._market_source_time == source_time
+    assert advanced.state._market_evaluation_time == evaluation_time
+    assert advanced.state._market_exhausted is False
+    assert advanced.critical_alert is None
+
+
+def test_evaluation_time_max_does_not_exhaust_source_time_mode() -> None:
+    module = _protection_module()
+    current = _owned_fill_transition(label="adr023-source-time-evaluation-max")
+    mandate = _mandate(
+        module,
+        sequence_mode="SOURCE_TIME",
+        max_age=_U64_MAX,
+    )
+    mandate, projection, state = _start(module, current, mandate)
+    (disposition,) = _required(module, "ProtectionDisposition")
+
+    first = _routed_occurrence(
+        module,
+        mandate,
+        "adr023-source-time-evaluation-max-first",
+        sequence=None,
+        source_time=1,
+        evaluation_time=_U64_MAX,
+    )
+    applied = _reduce_market(module, state, projection, first)
+    assert applied.disposition is disposition.APPLIED
+    assert applied.state._market_source_sequence is None
+    assert applied.state._market_source_time == 1
+    assert applied.state._market_evaluation_time == _U64_MAX
+    assert applied.state._market_exhausted is False
+    assert applied.critical_alert is None
+
+    second = _routed_occurrence(
+        module,
+        mandate,
+        "adr023-source-time-evaluation-max-second",
+        sequence=None,
+        source_time=2,
+        evaluation_time=_U64_MAX,
+    )
+    advanced = _reduce_market(module, applied.state, projection, second)
+    assert advanced.disposition is disposition.APPLIED
+    assert advanced.state._market_source_sequence is None
+    assert advanced.state._market_source_time == 2
+    assert advanced.state._market_evaluation_time == _U64_MAX
+    assert advanced.state._market_exhausted is False
+    assert advanced.critical_alert is None
+
+
+def _reference_exhausts(
+    cause: str,
+    *,
+    omit_strict_max: bool = False,
+    omit_commit_max: bool = False,
+    wrap_increment_max: bool = False,
+    exhaust_secondary_max: bool = False,
+    exhaust_source_time_evaluation_max: bool = False,
+) -> bool:
+    if cause == "strict-coordinate-max":
+        return not omit_strict_max
+    if cause == "commit-epoch-max":
+        return not omit_commit_max
+    if cause == "increment-from-committed-max":
+        return not wrap_increment_max
+    if cause == "source-time-evaluation-max":
+        return exhaust_secondary_max or exhaust_source_time_evaluation_max
+    if cause in {"evaluation-time-max", "sequenced-source-time-max"}:
+        return exhaust_secondary_max
+    raise AssertionError(cause)
+
+
+def test_three_exhaustion_causes_and_three_nontriggers_are_failure_capable() -> None:
+    expected = {
+        "strict-coordinate-max": True,
+        "commit-epoch-max": True,
+        "increment-from-committed-max": True,
+        "evaluation-time-max": False,
+        "sequenced-source-time-max": False,
+        "source-time-evaluation-max": False,
+    }
+    for cause, terminal in expected.items():
+        assert _reference_exhausts(cause) is terminal
+    mutations = {
+        "omit-strict-max": (
+            {"omit_strict_max": True},
+            {"strict-coordinate-max"},
+        ),
+        "omit-commit-max": (
+            {"omit_commit_max": True},
+            {"commit-epoch-max"},
+        ),
+        "wrap-increment-max": (
+            {"wrap_increment_max": True},
+            {"increment-from-committed-max"},
+        ),
+        "exhaust-secondary-max": (
+            {"exhaust_secondary_max": True},
+            {
+                "evaluation-time-max",
+                "sequenced-source-time-max",
+                "source-time-evaluation-max",
+            },
+        ),
+        "exhaust-source-time-evaluation-max": (
+            {"exhaust_source_time_evaluation_max": True},
+            {"source-time-evaluation-max"},
+        ),
+    }
+    for label, (mutation, required_kills) in mutations.items():
+        killed = {
+            cause
+            for cause, terminal in expected.items()
+            if _reference_exhausts(cause, **mutation) is not terminal
+        }
+        assert killed == required_kills, (label, killed)
+
+
+def test_epoch_increment_is_fixed_width_and_never_wraps() -> None:
+    module = _protection_module()
+    (next_epoch,) = _required(module, "_next_market_epoch")
+    assert next_epoch(0) == 1
+    assert next_epoch(_U64_MAX - 1) == _U64_MAX
+    assert next_epoch(_U64_MAX) is None
+    for malformed in (True, -1, _U64_MAX + 1):
+        with pytest.raises((TypeError, ValueError)):
+            next_epoch(malformed)
+
+
+def test_market_stream_generation_identity_is_exact_canonical_hex() -> None:
+    (generation_type,) = _required(execution_core, "MarketStreamGenerationId")
+    value = generation_type("ab" * 32)
+    assert value.value == "ab" * 32
+    for malformed in ("AB" * 32, "ab" * 31, "ab" * 33, "g0" * 32):
+        with pytest.raises((TypeError, ValueError)):
+            generation_type(malformed)
+
+
+def test_market_occurrence_identity_is_exact_canonical_hex() -> None:
+    (occurrence_id_type,) = _required(execution_core, "MarketOccurrenceId")
+    value = occurrence_id_type("ab" * 32)
+    assert value.value == "ab" * 32
+    for malformed in ("AB" * 32, "ab" * 31, "ab" * 33, "g0" * 32):
+        with pytest.raises((TypeError, ValueError)):
+            occurrence_id_type(malformed)
+
+
+def test_market_sequence_mode_and_alert_vocabularies_are_exact() -> None:
+    module = _protection_module()
+    sequence_mode, alert = _required(
+        module,
+        "MarketSequenceMode",
+        "ProtectionAlert",
+    )
+    assert tuple(member.name for member in sequence_mode) == (
+        "SEQUENCED",
+        "SOURCE_TIME",
+    )
+    assert tuple(member.name for member in alert) == (
+        "LATE_POSITIVE_AFTER_FLAT",
+        "MARKET_BASELINE_REQUIRED",
+        "MARKET_COORDINATE_EXHAUSTED",
+    )
+
+
+def test_adr023_split_transition_signatures_are_exact() -> None:
+    module = _protection_module()
+    reduce_projection, reduce_market, invalidate = _required(
+        module,
+        "reduce_position_protection",
+        "reduce_position_protection_market",
+        "invalidate_position_protection_market",
+    )
+    assert tuple(inspect.signature(reduce_projection).parameters) == (
+        "state",
+        "projection",
+    )
+    assert tuple(inspect.signature(reduce_market).parameters) == (
+        "state",
+        "projection",
+        "occurrence",
+    )
+    assert tuple(inspect.signature(invalidate).parameters) == ("state", "projection")
+
+
+def test_market_occurrence_public_shape_excludes_identity_construction() -> None:
+    module = _protection_module()
+    (occurrence_type,) = _required(module, "MarketOccurrence")
+    assert inspect.signature(occurrence_type).parameters.get("occurrence_id") is None
+    occurrence_field = next(
+        retained
+        for retained in fields(occurrence_type)
+        if retained.name == "occurrence_id"
+    )
+    assert occurrence_field.init is False
+
+
+def test_public_surface_cannot_accept_caller_recovery_authority() -> None:
+    module = _protection_module()
+    forbidden_fragments = {
+        "baseline_flag",
+        "baseline_ready",
+        "recovery_fence",
+        "restart_provenance",
+        "subscription_ack",
+    }
+    public_types = _required(module, "EvidencePolicy", "MarketOccurrence")
+    public_functions = _required(
+        module,
+        "reduce_position_protection_market",
+        "invalidate_position_protection_market",
+    )
+    exposed = {
+        retained.name for value_type in public_types for retained in fields(value_type)
+    }
+    exposed.update(
+        parameter
+        for function in public_functions
+        for parameter in inspect.signature(function).parameters
+    )
+    assert exposed.isdisjoint(forbidden_fragments)
+
+
+_PY311_AST_API = frozenset(
+    {
+        "AST",
+        "Add",
+        "And",
+        "AnnAssign",
+        "Assert",
+        "Assign",
+        "AsyncFor",
+        "AsyncFunctionDef",
+        "AsyncWith",
+        "Attribute",
+        "AugAssign",
+        "Await",
+        "BinOp",
+        "BitOr",
+        "BoolOp",
+        "Call",
+        "ClassDef",
+        "Compare",
+        "Constant",
+        "Del",
+        "Delete",
+        "Dict",
+        "DictComp",
+        "Div",
+        "Eq",
+        "ExceptHandler",
+        "Expr",
+        "FloorDiv",
+        "For",
+        "FunctionDef",
+        "GeneratorExp",
+        "Global",
+        "Gt",
+        "GtE",
+        "If",
+        "Import",
+        "ImportFrom",
+        "In",
+        "Is",
+        "IsNot",
+        "Lambda",
+        "List",
+        "ListComp",
+        "Load",
+        "Lt",
+        "LtE",
+        "Match",
+        "MatchAs",
+        "MatchMapping",
+        "MatchStar",
+        "Mod",
+        "Module",
+        "Mult",
+        "Name",
+        "NamedExpr",
+        "NodeVisitor",
+        "Nonlocal",
+        "Not",
+        "NotEq",
+        "NotIn",
+        "Or",
+        "Pass",
+        "Raise",
+        "Return",
+        "Set",
+        "SetComp",
+        "Starred",
+        "Store",
+        "Sub",
+        "Subscript",
+        "Try",
+        "TryStar",
+        "Tuple",
+        "UAdd",
+        "USub",
+        "UnaryOp",
+        "While",
+        "With",
+        "Yield",
+        "YieldFrom",
+        "arg",
+        "cmpop",
+        "comprehension",
+        "dump",
+        "get_source_segment",
+        "iter_child_nodes",
+        "keyword",
+        "parse",
+        "stmt",
+        "unparse",
+        "walk",
+    }
+)
+
+
+def _unsupported_python311_ast_api(source: str) -> frozenset[str]:
+    tree = ast.parse(source)
+    used = {
+        node.attr
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "ast"
+    }
+    return frozenset(used - _PY311_AST_API)
+
+
+def test_changed_red_python_is_python311_grammar_and_ast_api_compatible() -> None:
+    paths = (
+        Path(__file__),
+        Path(__file__).with_name("test_protection_stateful.py"),
+        Path(__file__).with_name("test_import_boundary.py"),
+    )
+    for path in paths:
+        source = path.read_text(encoding="utf-8")
+        ast.parse(source, filename=str(path), feature_version=(3, 11))
+        assert not _unsupported_python311_ast_api(source), path
+
+    with pytest.raises(SyntaxError):
+        ast.parse("type Python312Only = int", feature_version=(3, 11))
+    assert _unsupported_python311_ast_api("value = ast.TypeAlias") == frozenset(
+        {"TypeAlias"}
+    )

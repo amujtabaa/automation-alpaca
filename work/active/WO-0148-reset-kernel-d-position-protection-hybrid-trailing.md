@@ -1242,3 +1242,22 @@ This re-gate grants no runtime wiring, persistent application-database or direct
 broker/Alpaca/network activity, M2 implementation, master merge, deletion, or cleanup. The M2
 source-authoritative recovery-fence obligation remains explicitly deferred and cannot be claimed by
 WO-0148.
+
+### ADR-023 replacement RED pre-freeze convergence
+
+The replacement ADR-023 contract now collects 504 tests and classifies against unchanged
+pre-ADR-023 production as 410 intentional failures, 94 passing controls, zero errors, and zero
+skips. The preserved predecessor execution-core corpus passes 745/745. Ruff, format, Python 3.11
+grammar, mypy, diff, scope, install, version, ledger, PKL, disposition, application-absence, ADR
+hash, and auxiliary-worktree checks pass.
+
+Functional-conformance review found and closed eleven material P1 test-contract classes across the
+full pre-flight, including exact retained-field commitment sources, complete optional cursor
+authentication, repeated authenticated branch resets, deterministic exact state shape, and an
+explicit fixed-cardinality state-leaf model. The final materiality-scoped delta review returned
+**ACCEPT**, P0=0/P1=0/P2=0. Exact evidence and hashes are in
+`work/review/REV-0050/replay-retention-successor/ADR-023-RED-PRE-FREEZE-EVIDENCE.md`.
+
+This is still pre-freeze evidence. Application code remains unchanged and barred. The exact RED and
+evidence set must be committed immutably and receive fresh independent exact-commit `ACCEPT` with
+zero unresolved P0/P1 before production implementation may begin.

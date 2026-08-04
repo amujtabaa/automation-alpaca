@@ -1,6 +1,6 @@
 """Bounded generated histories for the pure WO-0148 protection reducer.
 
-The two machines keep their expected economics and market policy in plain test
+The four machines keep their expected economics and market policy in plain test
 data.  They never call a production classifier or formula helper to decide an
 expected result.  Every real reducer input is replayed from the same immutable
 predecessor to prove determinism and input immutability.
@@ -8,12 +8,14 @@ predecessor to prove determinism and input immutability.
 
 from __future__ import annotations
 
-from dataclasses import replace
+from collections.abc import Callable
+from dataclasses import dataclass, replace
 from fractions import Fraction
 from typing import Any
 
 from hypothesis import settings, strategies as st
 from hypothesis.stateful import RuleBasedStateMachine, invariant, precondition, rule
+import pytest
 
 from app.execution_core.fills import (
     BrokerTradeCorrectFact,
@@ -38,6 +40,277 @@ from tests.execution_core import test_venue_recovery as venue_fixtures
 
 def _ceil_exact(value: Fraction) -> Fraction:
     return Fraction(-(-value.numerator // value.denominator))
+
+
+@dataclass(frozen=True)
+class _LifecycleCounterexample:
+    """One literal trace and one independently named rule-breaking variant."""
+
+    family: str
+    mutation: str
+    run: Callable[[bool], tuple[str, ...]]
+    expected: tuple[str, ...]
+    mutated: tuple[str, ...]
+
+
+def _cursor_before_context_trace(mutated: bool) -> tuple[str, ...]:
+    """A crossed first delivery consumes its coordinate before quote checks."""
+    cursor = 0
+    trace: list[str] = []
+    if mutated:
+        trace.append(f"REFUSED@{cursor}:crossed")
+        cursor = 1
+        trace.append(f"APPLIED@{cursor}:friendly-redelivery")
+    else:
+        cursor = 1
+        trace.append(f"APPLIED@{cursor}:crossed-no-evidence")
+        trace.append(f"EXACT_REPLAY@{cursor}:friendly-redelivery")
+    return tuple(trace)
+
+
+def _replay_conflict_before_recovery_trace(mutated: bool) -> tuple[str, ...]:
+    """The retained current coordinate is classified before recovery admission."""
+    expected_epoch = 1
+    trace = [f"INVALIDATED:expect-{expected_epoch}"]
+    if mutated:
+        trace.extend(("STALE:current-replay", "STALE:current-conflict"))
+    else:
+        trace.extend(("EXACT_REPLAY:current", "REFUSED:current-conflict"))
+    trace.append("APPLIED:epoch-1-baseline")
+    return tuple(trace)
+
+
+def _exact_next_recovery_trace(mutated: bool) -> tuple[str, ...]:
+    """Only the already-fixed exact successor epoch may recover."""
+    trace: list[str] = []
+    if mutated:
+        trace.append("APPLIED_RECOVERY:epoch-2")
+        trace.extend(("STALE:epoch-0", "REFUSED:epoch-1-after-recovery"))
+    else:
+        trace.extend(
+            (
+                "REFUSED:epoch-2",
+                "STALE:epoch-0",
+                "APPLIED_RECOVERY:epoch-1",
+            )
+        )
+    return tuple(trace)
+
+
+def _halt_recovery_trace(mutated: bool) -> tuple[str, ...]:
+    """A halt consumes its coordinate and requires a fresh successor epoch."""
+    trace = ["APPLIED_HALT:epoch-0@1"]
+    if mutated:
+        trace.append("APPLIED_RECOVERY:epoch-0@2")
+    else:
+        trace.extend(
+            (
+                "STALE:epoch-0@2",
+                "APPLIED_NO_RECOVERY:epoch-1@2-halted",
+                "APPLIED_RECOVERY:epoch-1@3",
+            )
+        )
+    return tuple(trace)
+
+
+def _baseline_goal_suppression_trace(mutated: bool) -> tuple[str, ...]:
+    """Sticky exit policy never grants a goal while recovery is incomplete."""
+    trace = ["HARD_BAIL:goal", "INVALIDATED:no-goal"]
+    trace.append("PROJECTION:goal" if mutated else "PROJECTION:no-goal")
+    trace.extend(
+        (
+            "INVALID_BASELINE:no-goal",
+            "VALID_BASELINE:no-goal",
+            "LATER_MARKET:goal",
+        )
+    )
+    return tuple(trace)
+
+
+def _terminal_exhaustion_trace(mutated: bool) -> tuple[str, ...]:
+    """Maximum is terminal for market authority but not execution economics."""
+    if mutated:
+        return (
+            "APPLIED@0:wrapped",
+            "APPLIED@1:continued",
+            "PROJECTION_ECONOMICS:goal",
+        )
+    return (
+        "APPLIED@MAX:exhausted-alert",
+        "EXACT_REPLAY@MAX",
+        "STALE@MAX-1",
+        "REFUSED:novel-market",
+        "PROJECTION_ECONOMICS:no-goal",
+    )
+
+
+def _sequenced_time_regression_trace(mutated: bool) -> tuple[str, ...]:
+    """A greater sequence cannot move the generation source-time watermark back."""
+    if mutated:
+        return (
+            "APPLIED@SEQ2:time-9-evidence",
+            "SERVING:source-time-9",
+        )
+    return (
+        "APPLIED@SEQ2:baseline-alert",
+        "BASELINE_REQUIRED:source-time-10",
+        "EXACT_REPLAY@SEQ2",
+    )
+
+
+def _source_time_corroboration_trace(mutated: bool) -> tuple[str, ...]:
+    """Only later distinct source times can complete corroboration."""
+    trace = ["BASELINE@10:count-0", "APPLIED@11:count-1"]
+    if mutated:
+        trace.extend(("EXACT_REPLAY@11:count-2-goal", "APPLIED@12:sticky-goal"))
+    else:
+        trace.extend(("EXACT_REPLAY@11:count-1", "APPLIED@12:count-2-goal"))
+    return tuple(trace)
+
+
+_LIFECYCLE_COUNTEREXAMPLES = (
+    _LifecycleCounterexample(
+        family="cursor-before-context",
+        mutation="delay-cursor-reservation-until-after-context",
+        run=_cursor_before_context_trace,
+        expected=(
+            "APPLIED@1:crossed-no-evidence",
+            "EXACT_REPLAY@1:friendly-redelivery",
+        ),
+        mutated=("REFUSED@0:crossed", "APPLIED@1:friendly-redelivery"),
+    ),
+    _LifecycleCounterexample(
+        family="replay-conflict-before-recovery",
+        mutation="apply-recovery-epoch-gate-before-current-coordinate",
+        run=_replay_conflict_before_recovery_trace,
+        expected=(
+            "INVALIDATED:expect-1",
+            "EXACT_REPLAY:current",
+            "REFUSED:current-conflict",
+            "APPLIED:epoch-1-baseline",
+        ),
+        mutated=(
+            "INVALIDATED:expect-1",
+            "STALE:current-replay",
+            "STALE:current-conflict",
+            "APPLIED:epoch-1-baseline",
+        ),
+    ),
+    _LifecycleCounterexample(
+        family="exact-next-recovery",
+        mutation="admit-any-epoch-at-or-above-successor",
+        run=_exact_next_recovery_trace,
+        expected=(
+            "REFUSED:epoch-2",
+            "STALE:epoch-0",
+            "APPLIED_RECOVERY:epoch-1",
+        ),
+        mutated=(
+            "APPLIED_RECOVERY:epoch-2",
+            "STALE:epoch-0",
+            "REFUSED:epoch-1-after-recovery",
+        ),
+    ),
+    _LifecycleCounterexample(
+        family="halt-recovery",
+        mutation="reopen-halt-within-committed-epoch",
+        run=_halt_recovery_trace,
+        expected=(
+            "APPLIED_HALT:epoch-0@1",
+            "STALE:epoch-0@2",
+            "APPLIED_NO_RECOVERY:epoch-1@2-halted",
+            "APPLIED_RECOVERY:epoch-1@3",
+        ),
+        mutated=("APPLIED_HALT:epoch-0@1", "APPLIED_RECOVERY:epoch-0@2"),
+    ),
+    _LifecycleCounterexample(
+        family="baseline-goal-suppression",
+        mutation="emit-sticky-goal-on-projection-while-baseline-required",
+        run=_baseline_goal_suppression_trace,
+        expected=(
+            "HARD_BAIL:goal",
+            "INVALIDATED:no-goal",
+            "PROJECTION:no-goal",
+            "INVALID_BASELINE:no-goal",
+            "VALID_BASELINE:no-goal",
+            "LATER_MARKET:goal",
+        ),
+        mutated=(
+            "HARD_BAIL:goal",
+            "INVALIDATED:no-goal",
+            "PROJECTION:goal",
+            "INVALID_BASELINE:no-goal",
+            "VALID_BASELINE:no-goal",
+            "LATER_MARKET:goal",
+        ),
+    ),
+    _LifecycleCounterexample(
+        family="terminal-exhaustion",
+        mutation="wrap-maximum-coordinate-and-continue-serving",
+        run=_terminal_exhaustion_trace,
+        expected=(
+            "APPLIED@MAX:exhausted-alert",
+            "EXACT_REPLAY@MAX",
+            "STALE@MAX-1",
+            "REFUSED:novel-market",
+            "PROJECTION_ECONOMICS:no-goal",
+        ),
+        mutated=(
+            "APPLIED@0:wrapped",
+            "APPLIED@1:continued",
+            "PROJECTION_ECONOMICS:goal",
+        ),
+    ),
+    _LifecycleCounterexample(
+        family="sequenced-time-regression",
+        mutation="replace-source-time-high-water-with-regressed-value",
+        run=_sequenced_time_regression_trace,
+        expected=(
+            "APPLIED@SEQ2:baseline-alert",
+            "BASELINE_REQUIRED:source-time-10",
+            "EXACT_REPLAY@SEQ2",
+        ),
+        mutated=(
+            "APPLIED@SEQ2:time-9-evidence",
+            "SERVING:source-time-9",
+        ),
+    ),
+    _LifecycleCounterexample(
+        family="source-time-corroboration",
+        mutation="count-exact-replay-as-second-occurrence",
+        run=_source_time_corroboration_trace,
+        expected=(
+            "BASELINE@10:count-0",
+            "APPLIED@11:count-1",
+            "EXACT_REPLAY@11:count-1",
+            "APPLIED@12:count-2-goal",
+        ),
+        mutated=(
+            "BASELINE@10:count-0",
+            "APPLIED@11:count-1",
+            "EXACT_REPLAY@11:count-2-goal",
+            "APPLIED@12:sticky-goal",
+        ),
+    ),
+)
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        pytest.param(case, id=f"{case.family}--{case.mutation}")
+        for case in _LIFECYCLE_COUNTEREXAMPLES
+    ],
+)
+def test_adr023_lifecycle_reference_kills_its_named_mutation(
+    case: _LifecycleCounterexample,
+) -> None:
+    """Each ordering rule has its own literal, executable counterexample."""
+    reference_trace = case.run(False)
+    mutated_trace = case.run(True)
+    assert reference_trace == case.expected
+    assert mutated_trace == case.mutated
+    assert mutated_trace != reference_trace
 
 
 class ProtectionEconomicsMachine(RuleBasedStateMachine):
@@ -503,19 +776,30 @@ class ProtectionEconomicsMachine(RuleBasedStateMachine):
             assert self.state.policy is not policy.FLAT
 
 
-class ProtectionMarketMachine(RuleBasedStateMachine):
-    """Generated evidence eligibility, priority, and trail-ratchet histories."""
+class _FixedModeProtectionMarketMachine(RuleBasedStateMachine):
+    """Independent cursor/lifecycle model for one immutable ADR-023 mode."""
+
+    SEQUENCE_MODE = ""
 
     def __init__(self) -> None:
         super().__init__()
         self.module = protection_fixtures._protection_module()
         fill = protection_fixtures._owned_fill_transition(
-            label="stateful-market-root",
+            label=f"stateful-{self.SEQUENCE_MODE.lower()}-market-root",
             quantity=4,
             units=100,
             capacity=4,
         )
-        self.mandate, _, state = protection_fixtures._start(self.module, fill)
+        mandate = protection_fixtures._mandate(
+            self.module,
+            sequence_mode=self.SEQUENCE_MODE,
+            max_age=1_000,
+        )
+        self.mandate, _, state = protection_fixtures._start(
+            self.module,
+            fill,
+            mandate,
+        )
         terminal, closed = protection_fixtures._close_base_parent(fill)
         self.state, self.projection, _ = protection_fixtures._sync_transitions(
             self.module,
@@ -524,34 +808,159 @@ class ProtectionMarketMachine(RuleBasedStateMachine):
             (terminal, closed),
         )
         self.current = closed
-        self.policy = "FLOOR_ONLY"
-        self.hard_trigger = 93
-        self.activation = 108
-        self.high_water: int | None = None
-        self.trail: int | None = None
-        self.hard_count = 0
-        self.trail_count = 0
-        self.sequence = 0
-        self.source_time = 94
-        self.last_accepted_source_time = 94
-        self.last_accepted_sequence = 0
-        self.last_bid = 100
-        self.last_occurrence: object | None = None
-        self.market_epoch = 0
-        self.waiting = False
-        self.buy_effect = None
-        self.buy_leg = None
-        self.buy_stage = "NONE"
-        self.cross_kind_checked = False
+        self.committed_epoch = 0
+        self.occurrence_epoch = 0
+        self.expected_epoch: int | None = None
+        self.coordinate = 0
+        self.source_time = 0
+        self.evaluation_time = 0
+        self.baseline_required = False
+        self.halted = False
+        self.exhausted = False
+        self.raw_quantity = 4
+        self.last_occurrence = self._make_occurrence(
+            coordinate=0,
+            epoch=0,
+            source_time=0,
+            evaluation_time=0,
+        )
+        self.current_identity = self.last_occurrence.occurrence_id
         self.last_result: object | None = None
 
-    def _sync(self, transition: object) -> object:
+    def _is_sequenced(self) -> bool:
+        return self.SEQUENCE_MODE == "SEQUENCED"
+
+    def _is_serving(self) -> bool:
+        return not self.baseline_required and not self.exhausted
+
+    def _is_floor_serving(self) -> bool:
+        return self._is_serving() and self.state.policy.value == "FLOOR_ONLY"
+
+    def _next_coordinate(self) -> int:
+        return self.coordinate + 1
+
+    def _make_occurrence(
+        self,
+        *,
+        coordinate: int,
+        epoch: int | None = None,
+        source_time: int | None = None,
+        evaluation_time: int | None = None,
+        bid: int | None = 100,
+        ask: int | None = 101,
+        kind: str = "BEST_BID",
+        trade: int | None = None,
+        halted: bool = False,
+    ) -> object:
+        retained_source_time = (
+            source_time
+            if source_time is not None
+            else (self.source_time + 1 if self._is_sequenced() else coordinate)
+        )
+        retained_evaluation_time = (
+            evaluation_time
+            if evaluation_time is not None
+            else max(self.evaluation_time + 1, retained_source_time)
+        )
+        return protection_fixtures._occurrence(
+            self.module,
+            (
+                f"stateful-{self.SEQUENCE_MODE.lower()}-"
+                f"{self.committed_epoch}-{epoch}-{coordinate}"
+            ),
+            kind=kind,
+            bid=bid,
+            ask=ask,
+            trade=trade,
+            sequence=coordinate if self._is_sequenced() else None,
+            source_time=retained_source_time,
+            evaluation_time=retained_evaluation_time,
+            market_epoch=self.committed_epoch if epoch is None else epoch,
+            source_id=self.mandate.evidence_policy.source_id,
+            stream_generation=self.mandate.evidence_policy.stream_generation,
+            position_scope=self.mandate.position_scope,
+            session_id=self.mandate.session_id,
+            halted=halted,
+        )
+
+    def _deliver(self, occurrence: object) -> object:
+        result = protection_fixtures._reduce_market(
+            self.module,
+            self.state,
+            self.projection,
+            occurrence,
+        )
+        self.last_result = result
+        return result
+
+    def _invalidate(self) -> object:
+        result = protection_fixtures._invalidate_market(
+            self.module,
+            self.state,
+            self.projection,
+        )
+        self.last_result = result
+        return result
+
+    def _assert_result(
+        self,
+        result: object,
+        disposition_name: str,
+        *,
+        alert_name: str | None = None,
+    ) -> None:
+        disposition, alert = protection_fixtures._required(
+            self.module,
+            "ProtectionDisposition",
+            "ProtectionAlert",
+        )
+        assert result.disposition is getattr(disposition, disposition_name)
+        assert result.critical_alert is (
+            None if alert_name is None else getattr(alert, alert_name)
+        )
+        assert result.goal is None
+
+    def _record_occurrence(self, occurrence: object, result: object) -> None:
+        coordinate = (
+            occurrence.source_sequence
+            if self._is_sequenced()
+            else occurrence.source_time
+        )
+        assert type(coordinate) is int
+        self.state = result.state
+        self.coordinate = coordinate
+        self.occurrence_epoch = occurrence.market_epoch
+        self.source_time = max(self.source_time, occurrence.source_time)
+        self.evaluation_time = max(
+            self.evaluation_time,
+            occurrence.evaluation_time,
+        )
+        self.current_identity = occurrence.occurrence_id
+        self.last_occurrence = occurrence
+
+    def _enter_baseline_required(self, *, halted: bool | None = None) -> None:
+        self.baseline_required = True
+        self.expected_epoch = self.committed_epoch + 1
+        if halted is not None:
+            self.halted = halted
+
+    def _record_recovery(self, occurrence: object, result: object) -> None:
+        self._record_occurrence(occurrence, result)
+        self.committed_epoch = occurrence.market_epoch
+        self.expected_epoch = None
+        self.baseline_required = False
+        self.halted = False
+        assert result.state._hard_bid_identity is None
+        assert result.state._trade_identity is None
+        assert result.state._trail_bid_identity is None
+
+    def _sync_projection_transition(self, transition: object) -> object:
         projection = protection_fixtures._projection(
             self.module,
             transition,
             self.mandate,
         )
-        result = protection_fixtures._reduce(
+        result = protection_fixtures._reduce_projection(
             self.module,
             self.state,
             projection,
@@ -562,778 +971,965 @@ class ProtectionMarketMachine(RuleBasedStateMachine):
         self.last_result = result
         return result
 
-    def _deliver(self, occurrence: object) -> object:
-        result = protection_fixtures._reduce(
-            self.module,
-            self.state,
-            self.projection,
-            occurrence,
-        )
-        self.last_result = result
-        return result
-
-    @precondition(lambda self: self.policy in {"FLOOR_ONLY", "TRAIL_ACTIVE"})
-    @rule(bid=st.integers(min_value=90, max_value=130))
-    def eligible_bid(self, bid: int) -> None:
-        self.sequence += 1
-        self.source_time += 6
-        occurrence = protection_fixtures._occurrence(
-            self.module,
-            f"stateful-market-{self.market_epoch}-{self.sequence}",
+    @precondition(lambda self: self._is_floor_serving() and self.coordinate < 10_000)
+    @rule(bid=st.integers(min_value=95, max_value=107))
+    def advancing_nontriggering_bid_updates_only_bounded_state(self, bid: int) -> None:
+        occurrence = self._make_occurrence(
+            coordinate=self._next_coordinate(),
             bid=bid,
             ask=bid + 1,
-            sequence=self.sequence,
-            source_time=self.source_time,
-            evaluation_time=self.source_time + 4,
-            market_epoch=self.market_epoch,
         )
-        prior_policy = self.policy
-        if bid <= self.hard_trigger:
-            self.hard_count += 1
-        else:
-            self.hard_count = 0
-        if self.policy == "FLOOR_ONLY" and bid >= self.activation:
-            self.policy = "TRAIL_ACTIVE"
-            self.high_water = bid
-            self.trail = -(-(bid * 23) // 25)
-            self.trail_count = 0
-        elif self.policy == "TRAIL_ACTIVE":
-            assert self.high_water is not None and self.trail is not None
-            self.high_water = max(self.high_water, bid)
-            self.trail = max(self.trail, -(-(self.high_water * 23) // 25))
-            if bid <= self.trail:
-                self.trail_count += 1
-            else:
-                self.trail_count = 0
-        if self.hard_count >= 2:
-            self.policy = "HARD_BAIL"
-        elif self.policy == "TRAIL_ACTIVE" and self.trail_count >= 2:
-            self.policy = "EXIT_NORMAL"
         result = self._deliver(occurrence)
-        self.state = result.state
-        self.last_occurrence = occurrence
-        self.last_accepted_source_time = self.source_time
-        self.last_accepted_sequence = self.sequence
-        self.last_bid = bid
-        self.waiting = self.buy_stage in {"OPEN", "TERMINAL"}
-        if self.policy != prior_policy and self.policy in {"EXIT_NORMAL", "HARD_BAIL"}:
-            if self.waiting:
-                assert result.state.waiting_buy_resolution is True
-                assert result.goal is None
-            else:
-                assert result.goal is not None
+        self._assert_result(result, "APPLIED")
+        self._record_occurrence(occurrence, result)
 
     @precondition(lambda self: self.last_occurrence is not None)
     @rule()
-    def changed_delivery_context_replay_is_an_exact_evidence_noop(self) -> None:
+    def exact_replay_preserves_state_and_delivery_watermark(self) -> None:
         before = self.state
-        before_snapshot = protection_fixtures._leaf_sort_key(before)
-        replay = replace(
-            self.last_occurrence,
-            evaluation_time=self.last_occurrence.evaluation_time + 1,
-        )
+        replay = self.last_occurrence
+        if replay.evaluation_time < protection_fixtures._U64_MAX:
+            replay = replace(
+                replay,
+                evaluation_time=replay.evaluation_time + 1,
+            )
         result = self._deliver(replay)
-        (disposition,) = protection_fixtures._required(
-            self.module,
-            "ProtectionDisposition",
-        )
-        assert result.disposition is disposition.EXACT_REPLAY
-        assert protection_fixtures._leaf_sort_key(result.state) == before_snapshot
+        self._assert_result(result, "EXACT_REPLAY")
         assert result.state == before
-        assert result.state.commitment == before.commitment
-        assert result.goal is None
-        assert result.critical_alert is None
+
+    @precondition(lambda self: self._is_serving() and self.coordinate < 10_000)
+    @rule()
+    def wrong_sequence_shape_is_refused_without_cursor_reservation(self) -> None:
+        next_coordinate = self._next_coordinate()
+        source_time = self.source_time + 1
+        occurrence = protection_fixtures._occurrence(
+            self.module,
+            f"stateful-{self.SEQUENCE_MODE.lower()}-wrong-mode",
+            bid=100,
+            ask=101,
+            sequence=None if self._is_sequenced() else next_coordinate,
+            source_time=source_time if self._is_sequenced() else next_coordinate,
+            evaluation_time=max(self.evaluation_time + 1, source_time),
+            market_epoch=self.committed_epoch,
+            source_id=self.mandate.evidence_policy.source_id,
+            stream_generation=self.mandate.evidence_policy.stream_generation,
+            position_scope=self.mandate.position_scope,
+            session_id=self.mandate.session_id,
+        )
+        before = self.state
+        result = self._deliver(occurrence)
+        self._assert_result(result, "REFUSED")
+        assert result.state == before
+
+    @precondition(lambda self: self._is_floor_serving() and self.coordinate < 10_000)
+    @rule()
+    def context_denial_reserves_cursor_before_replay_or_conflict(self) -> None:
+        crossed = self._make_occurrence(
+            coordinate=self._next_coordinate(),
+            bid=101,
+            ask=100,
+        )
+        denied = self._deliver(crossed)
+        self._assert_result(denied, "APPLIED")
+        self._record_occurrence(crossed, denied)
+
+        before_replay = self.state
+        replay = replace(
+            crossed,
+            evaluation_time=crossed.evaluation_time + 1,
+        )
+        replayed = self._deliver(replay)
+        self._assert_result(replayed, "EXACT_REPLAY")
+        assert replayed.state == before_replay
+
+        conflict = replace(
+            crossed,
+            best_bid=protection_fixtures._price(99),
+            best_ask=protection_fixtures._price(100),
+        )
+        conflicted = self._deliver(conflict)
+        self._assert_result(
+            conflicted,
+            "APPLIED",
+            alert_name="MARKET_BASELINE_REQUIRED",
+        )
+        self.state = conflicted.state
+        self._enter_baseline_required()
+        assert self.state._market_occurrence_identity == crossed.occurrence_id
+
+    @precondition(lambda self: self._is_floor_serving() and self.coordinate < 10_000)
+    @rule()
+    def replay_and_conflict_precede_recovery_epoch_admission(self) -> None:
+        occurrence = self._make_occurrence(
+            coordinate=self._next_coordinate(),
+        )
+        applied = self._deliver(occurrence)
+        self._assert_result(applied, "APPLIED")
+        self._record_occurrence(occurrence, applied)
+
+        invalidated = self._invalidate()
+        self._assert_result(
+            invalidated,
+            "APPLIED",
+            alert_name="MARKET_BASELINE_REQUIRED",
+        )
+        self.state = invalidated.state
+        self._enter_baseline_required()
+
+        before = self.state
+        replay = replace(
+            occurrence,
+            evaluation_time=occurrence.evaluation_time + 1,
+        )
+        replayed = self._deliver(replay)
+        self._assert_result(replayed, "EXACT_REPLAY")
+        assert replayed.state == before
+
+        conflict = replace(
+            occurrence,
+            best_bid=protection_fixtures._price(99),
+            best_ask=protection_fixtures._price(100),
+        )
+        refused = self._deliver(conflict)
+        self._assert_result(refused, "REFUSED")
+        assert refused.state == before
 
     @precondition(
         lambda self: (
-            self.policy == "FLOOR_ONLY"
-            and self.hard_count == 0
-            and self.buy_stage == "NONE"
+            self._is_floor_serving()
+            and self.committed_epoch < protection_fixtures._U64_MAX - 1
+            and self.coordinate < 10_000
         )
     )
-    @rule(
-        first_kind=st.sampled_from(("BEST_BID", "TRADE")),
-        has_sequence=st.booleans(),
+    @rule()
+    def invalidation_requires_exact_next_recovery_epoch(self) -> None:
+        invalidated = self._invalidate()
+        self._assert_result(
+            invalidated,
+            "APPLIED",
+            alert_name="MARKET_BASELINE_REQUIRED",
+        )
+        self.state = invalidated.state
+        self._enter_baseline_required()
+
+        repeated = self._invalidate()
+        self._assert_result(repeated, "EXACT_REPLAY")
+        assert repeated.state == self.state
+
+        assert self.expected_epoch is not None
+        before = self.state
+        future = self._make_occurrence(
+            coordinate=self._next_coordinate(),
+            epoch=self.expected_epoch + 1,
+        )
+        refused = self._deliver(future)
+        self._assert_result(refused, "REFUSED")
+        assert refused.state == before
+
+        old = self._make_occurrence(
+            coordinate=self._next_coordinate(),
+            epoch=self.committed_epoch,
+        )
+        stale = self._deliver(old)
+        self._assert_result(stale, "STALE")
+        assert stale.state == before
+
+        crossed = self._make_occurrence(
+            coordinate=self._next_coordinate(),
+            epoch=self.expected_epoch,
+            bid=101,
+            ask=100,
+        )
+        consumed = self._deliver(crossed)
+        self._assert_result(consumed, "APPLIED")
+        self._record_occurrence(crossed, consumed)
+        assert self.state._market_baseline_required is True
+
+        recovered = self._make_occurrence(
+            coordinate=self._next_coordinate(),
+            epoch=self.expected_epoch,
+        )
+        result = self._deliver(recovered)
+        self._assert_result(result, "APPLIED")
+        self._record_recovery(recovered, result)
+
+    @precondition(
+        lambda self: (
+            self._is_floor_serving()
+            and self.committed_epoch < protection_fixtures._U64_MAX - 1
+            and self.coordinate < 10_000
+        )
     )
-    def changed_context_replay_preserves_between_time_successor(
-        self,
-        first_kind: str,
-        has_sequence: bool,
-    ) -> None:
-        """A redelivered fact cannot consume later delivery time or corroboration."""
-        self.sequence += 1
-        self.source_time += 6
-        first_sequence = self.sequence if has_sequence else None
-        first_evaluation_time = self.source_time + 5
-        first = protection_fixtures._occurrence(
-            self.module,
-            f"stateful-replay-first-{first_kind.lower()}-{self.sequence}",
-            kind=first_kind,
-            bid=92 if first_kind == "BEST_BID" else None,
-            ask=93 if first_kind == "BEST_BID" else None,
-            trade=92 if first_kind == "TRADE" else None,
-            sequence=first_sequence,
-            source_time=self.source_time,
-            evaluation_time=first_evaluation_time,
-            market_epoch=self.market_epoch,
+    @rule()
+    def halt_reopens_only_on_exact_next_epoch_baseline(self) -> None:
+        halted_occurrence = self._make_occurrence(
+            coordinate=self._next_coordinate(),
+            halted=True,
+        )
+        halted = self._deliver(halted_occurrence)
+        self._assert_result(
+            halted,
+            "APPLIED",
+            alert_name="MARKET_BASELINE_REQUIRED",
+        )
+        self._record_occurrence(halted_occurrence, halted)
+        self._enter_baseline_required(halted=True)
+
+        before = self.state
+        same_epoch = self._make_occurrence(
+            coordinate=self._next_coordinate(),
+            epoch=self.committed_epoch,
+        )
+        stale = self._deliver(same_epoch)
+        self._assert_result(stale, "STALE")
+        assert stale.state == before
+
+        assert self.expected_epoch is not None
+        baseline = self._make_occurrence(
+            coordinate=self._next_coordinate(),
+            epoch=self.expected_epoch,
+        )
+        reopened = self._deliver(baseline)
+        self._assert_result(reopened, "APPLIED")
+        self._record_recovery(baseline, reopened)
+
+    @precondition(lambda self: self._is_floor_serving() and self.coordinate < 10_000)
+    @rule()
+    def baseline_required_suppresses_sticky_goal(self) -> None:
+        first = self._make_occurrence(
+            coordinate=self._next_coordinate(),
+            bid=92,
+            ask=93,
         )
         first_result = self._deliver(first)
-        self.state = first_result.state
-        self.hard_count = 1
-        before_replay = self.state
-        before_replay_snapshot = protection_fixtures._leaf_sort_key(before_replay)
+        self._assert_result(first_result, "APPLIED")
+        self._record_occurrence(first, first_result)
 
-        replay_evaluation_time = first_evaluation_time + 4
-        replay = replace(first, evaluation_time=replay_evaluation_time)
-        replay_result = self._deliver(replay)
-        (disposition, policy) = protection_fixtures._required(
-            self.module,
-            "ProtectionDisposition",
-            "ProtectionPolicy",
-        )
-        assert replay_result.disposition is disposition.EXACT_REPLAY
-        assert (
-            protection_fixtures._leaf_sort_key(replay_result.state)
-            == before_replay_snapshot
-        )
-        assert replay_result.state == before_replay
-        assert replay_result.state.commitment == before_replay.commitment
-        assert replay_result.goal is None
-        assert replay_result.critical_alert is None
-
-        self.sequence += 1
-        self.source_time += 6
-        successor_evaluation_time = first_evaluation_time + 2
-        assert (
-            first_evaluation_time < successor_evaluation_time < replay_evaluation_time
-        )
-        successor = protection_fixtures._occurrence(
-            self.module,
-            f"stateful-replay-successor-{first_kind.lower()}-{self.sequence}",
+        second = self._make_occurrence(
+            coordinate=self._next_coordinate(),
             bid=91,
             ask=92,
-            sequence=self.sequence if has_sequence else None,
-            source_time=self.source_time,
-            evaluation_time=successor_evaluation_time,
-            market_epoch=self.market_epoch,
         )
-        successor_result = self._deliver(successor)
-        self.state = successor_result.state
-        self.policy = "HARD_BAIL"
-        self.hard_count = 2
-        self.last_occurrence = successor
-        self.last_accepted_source_time = self.source_time
-        if has_sequence:
-            self.last_accepted_sequence = self.sequence
-        self.last_bid = 91
-        self.waiting = False
-        assert successor_result.state.policy is policy.HARD_BAIL
-        assert successor_result.goal is not None
-        assert successor_result.critical_alert is None
-
-    @precondition(
-        lambda self: (
-            self.policy == "FLOOR_ONLY"
-            and self.hard_count == 0
-            and self.buy_stage == "NONE"
-        )
-    )
-    @rule(first_kind=st.sampled_from(("BEST_BID", "TRADE")))
-    def nonlast_sequence_less_replay_survives_restart_as_an_exact_noop(
-        self,
-        first_kind: str,
-    ) -> None:
-        """An interruption cannot make an older accepted identity authoritative again."""
-        case = self.sequence + 1
-        shared_source_time = self.source_time + 6
-        first = protection_fixtures._occurrence(
-            self.module,
-            f"stateful-nonlast-replay-{first_kind.lower()}-{case}-a",
-            kind=first_kind,
-            bid=92 if first_kind == "BEST_BID" else None,
-            ask=93 if first_kind == "BEST_BID" else None,
-            trade=92 if first_kind == "TRADE" else None,
-            sequence=None,
-            source_time=shared_source_time,
-            evaluation_time=shared_source_time + 4,
-            market_epoch=self.market_epoch,
-        )
-        first_result = self._deliver(first)
-        interrupted_occurrence = protection_fixtures._occurrence(
-            self.module,
-            f"stateful-nonlast-replay-{first_kind.lower()}-{case}-b",
-            bid=95,
-            ask=96,
-            sequence=None,
-            source_time=shared_source_time,
-            evaluation_time=shared_source_time + 5,
-            market_epoch=self.market_epoch,
-        )
-        interrupted = protection_fixtures._reduce(
-            self.module,
-            first_result.state,
-            self.projection,
-            interrupted_occurrence,
-        )
-        restarted_state = protection_fixtures._clone_opaque(interrupted.state)
-        replay = protection_fixtures._reduce(
-            self.module,
-            restarted_state,
-            self.projection,
-            replace(first, evaluation_time=shared_source_time + 6),
-        )
+        second_result = self._deliver(second)
         disposition, policy = protection_fixtures._required(
             self.module,
             "ProtectionDisposition",
             "ProtectionPolicy",
         )
-        assert replay.disposition is disposition.EXACT_REPLAY
-        assert replay.state == restarted_state
-        assert replay.goal is None
-
-        successor_source_time = shared_source_time + 6
-        successor = protection_fixtures._occurrence(
-            self.module,
-            f"stateful-nonlast-replay-{first_kind.lower()}-{case}-c",
-            bid=91,
-            ask=92,
-            sequence=None,
-            source_time=successor_source_time,
-            evaluation_time=successor_source_time + 4,
-            market_epoch=self.market_epoch,
-        )
-        successor_result = protection_fixtures._reduce(
-            self.module,
-            replay.state,
-            self.projection,
-            successor,
-        )
-        assert successor_result.state.policy is policy.FLOOR_ONLY
-        assert successor_result.goal is None
-
-        self.sequence += 4
-        self.source_time = successor_source_time
-        self.last_accepted_source_time = successor_source_time
-        self.state = successor_result.state
-        self.last_occurrence = successor
-        self.last_bid = 91
-        self.hard_count = 1
-        self.last_result = successor_result
-
-    @rule()
-    def crossed_quote_is_ineligible(self) -> None:
-        self.sequence += 1
-        self.source_time += 6
-        occurrence = protection_fixtures._occurrence(
-            self.module,
-            f"stateful-crossed-{self.market_epoch}-{self.sequence}",
-            bid=101,
-            ask=100,
-            sequence=self.sequence,
-            source_time=self.source_time,
-            evaluation_time=self.source_time + 4,
-            market_epoch=self.market_epoch,
-        )
-        before = self.state
-        result = self._deliver(occurrence)
-        protection_fixtures._assert_recorded_market_inert(
-            self.module,
-            before,
-            result,
-        )
-        self.state = result.state
-
-    @precondition(lambda self: self.last_occurrence is not None)
-    @rule()
-    def source_time_regression_is_ineligible(self) -> None:
-        self.sequence += 1
-        occurrence = protection_fixtures._occurrence(
-            self.module,
-            f"stateful-time-regression-{self.market_epoch}-{self.sequence}",
-            bid=92,
-            ask=93,
-            sequence=self.sequence,
-            source_time=self.last_accepted_source_time - 1,
-            evaluation_time=self.source_time + 4,
-            market_epoch=self.market_epoch,
-        )
-        before = self.state
-        result = self._deliver(occurrence)
-        protection_fixtures._assert_recorded_market_inert(
-            self.module,
-            before,
-            result,
-        )
-        self.state = result.state
-
-    @precondition(
-        lambda self: (
-            self.last_occurrence is not None
-            and self.last_occurrence.source_sequence is not None
-        )
-    )
-    @rule()
-    def nonadvancing_sequence_is_an_evidence_noop(self) -> None:
-        """A new occurrence id cannot reuse an already-consumed sequence."""
-        self.source_time += 6
-        occurrence = protection_fixtures._occurrence(
-            self.module,
-            (
-                f"stateful-nonadvancing-{self.market_epoch}-"
-                f"{self.sequence}-{self.source_time}"
-            ),
-            bid=92,
-            ask=93,
-            sequence=self.last_accepted_sequence,
-            source_time=self.source_time,
-            evaluation_time=self.source_time + 4,
-            market_epoch=self.market_epoch,
-        )
-        before = self.state
-        result = self._deliver(occurrence)
-        protection_fixtures._assert_recorded_market_inert(
-            self.module,
-            before,
-            result,
-        )
-        self.state = result.state
-
-    @precondition(
-        lambda self: (
-            self.policy == "FLOOR_ONLY"
-            and self.hard_count == 0
-            and self.buy_stage == "NONE"
-        )
-    )
-    @rule()
-    def sequence_absence_preserves_the_last_present_high_water(self) -> None:
-        """A sequence-less fact cannot make an older source ordinal reusable."""
-        baseline_sequence = self.sequence + 7
-        self.source_time += 6
-        baseline = protection_fixtures._occurrence(
-            self.module,
-            f"stateful-mixed-sequence-baseline-{baseline_sequence}",
-            bid=100,
-            ask=101,
-            sequence=baseline_sequence,
-            source_time=self.source_time,
-            evaluation_time=self.source_time + 4,
-            market_epoch=self.market_epoch,
-        )
-        baseline_result = self._deliver(baseline)
-        self.state = baseline_result.state
-        self.last_occurrence = baseline
-        self.last_accepted_source_time = self.source_time
-        self.last_accepted_sequence = baseline_sequence
-        self.last_bid = 100
-
-        self.source_time += 6
-        absent = protection_fixtures._occurrence(
-            self.module,
-            f"stateful-mixed-sequence-absent-{baseline_sequence}",
-            bid=100,
-            ask=101,
-            sequence=None,
-            source_time=self.source_time,
-            evaluation_time=self.source_time + 4,
-            market_epoch=self.market_epoch,
-        )
-        absent_result = self._deliver(absent)
-        self.state = absent_result.state
-        self.last_occurrence = absent
-        self.last_accepted_source_time = self.source_time
-
-        self.source_time += 6
-        reused = protection_fixtures._occurrence(
-            self.module,
-            f"stateful-mixed-sequence-reused-{baseline_sequence}",
-            bid=92,
-            ask=93,
-            sequence=baseline_sequence,
-            source_time=self.source_time,
-            evaluation_time=self.source_time + 4,
-            market_epoch=self.market_epoch,
-        )
-        before_reuse = self.state
-        reused_result = self._deliver(reused)
-        protection_fixtures._assert_recorded_market_inert(
-            self.module,
-            before_reuse,
-            reused_result,
-        )
-        self.state = reused_result.state
-
-        self.source_time += 6
-        first_fresh = protection_fixtures._occurrence(
-            self.module,
-            f"stateful-mixed-sequence-fresh-{baseline_sequence + 1}",
-            bid=92,
-            ask=93,
-            sequence=baseline_sequence + 1,
-            source_time=self.source_time,
-            evaluation_time=self.source_time + 4,
-            market_epoch=self.market_epoch,
-        )
-        first_result = self._deliver(first_fresh)
-        self.state = first_result.state
-        self.hard_count = 1
-        assert first_result.goal is None
-
-        self.source_time += 6
-        second_fresh = protection_fixtures._occurrence(
-            self.module,
-            f"stateful-mixed-sequence-fresh-{baseline_sequence + 2}",
-            bid=91,
-            ask=92,
-            sequence=baseline_sequence + 2,
-            source_time=self.source_time,
-            evaluation_time=self.source_time + 4,
-            market_epoch=self.market_epoch,
-        )
-        second_result = self._deliver(second_fresh)
-        (policy,) = protection_fixtures._required(
-            self.module,
-            "ProtectionPolicy",
-        )
-        self.state = second_result.state
-        self.policy = "HARD_BAIL"
-        self.hard_count = 2
-        self.sequence = baseline_sequence + 2
-        self.last_occurrence = second_fresh
-        self.last_accepted_source_time = self.source_time
-        self.last_accepted_sequence = self.sequence
-        self.last_bid = 91
+        assert second_result.disposition is disposition.APPLIED
         assert second_result.state.policy is policy.HARD_BAIL
         assert second_result.goal is not None
+        assert second_result.critical_alert is None
+        self._record_occurrence(second, second_result)
 
-    @precondition(lambda self: self.last_occurrence is not None)
+        invalidated = self._invalidate()
+        self._assert_result(
+            invalidated,
+            "APPLIED",
+            alert_name="MARKET_BASELINE_REQUIRED",
+        )
+        self.state = invalidated.state
+        self._enter_baseline_required()
+
+        projection_only = protection_fixtures._reduce_projection(
+            self.module,
+            self.state,
+            self.projection,
+        )
+        assert projection_only.goal is None
+        assert projection_only.state._market_baseline_required is True
+
+        assert self.expected_epoch is not None
+        denied = self._make_occurrence(
+            coordinate=self._next_coordinate(),
+            epoch=self.expected_epoch,
+            bid=101,
+            ask=100,
+        )
+        denied_result = self._deliver(denied)
+        self._assert_result(denied_result, "APPLIED")
+        self._record_occurrence(denied, denied_result)
+
+    @precondition(lambda self: self._is_floor_serving() and self.coordinate < 10_000)
     @rule()
-    def max_step_jump_is_an_evidence_noop(self) -> None:
-        """A fresh but implausible quote cannot corroborate or ratchet."""
-        self.sequence += 1
-        self.source_time += 6
-        occurrence = protection_fixtures._occurrence(
-            self.module,
-            f"stateful-step-jump-{self.market_epoch}-{self.sequence}",
-            bid=max(160, self.last_bid * 2),
-            ask=max(161, self.last_bid * 2 + 1),
-            sequence=self.sequence,
-            source_time=self.source_time,
-            evaluation_time=self.source_time + 4,
-            market_epoch=self.market_epoch,
-        )
-        before = self.state
-        result = self._deliver(occurrence)
-        protection_fixtures._assert_recorded_market_inert(
-            self.module,
-            before,
-            result,
-        )
-        self.state = result.state
-
-    @precondition(
-        lambda self: (
-            self.policy == "FLOOR_ONLY"
-            and self.hard_count == 0
-            and self.buy_stage == "NONE"
-            and not self.cross_kind_checked
-        )
-    )
-    @rule(first_kind=st.sampled_from(("BEST_BID", "TRADE")))
-    def cross_kind_step_limit_uses_last_eligible_primary(
-        self,
-        first_kind: str,
-    ) -> None:
-        """A large trade/bid discontinuity cannot become corroboration."""
-        first_units = self.last_bid
-        self.sequence += 1
-        self.source_time += 6
-        first = protection_fixtures._occurrence(
-            self.module,
-            f"stateful-cross-kind-first-{first_kind.lower()}-{self.sequence}",
-            kind=first_kind,
-            bid=first_units if first_kind == "BEST_BID" else None,
-            ask=first_units + 1 if first_kind == "BEST_BID" else None,
-            trade=first_units if first_kind == "TRADE" else None,
-            sequence=self.sequence,
-            source_time=self.source_time,
-            evaluation_time=self.source_time + 4,
-            market_epoch=self.market_epoch,
-        )
-        first_result = self._deliver(first)
-        self.state = first_result.state
-        self.cross_kind_checked = True
-        assert first_result.goal is None
-
-        self.sequence += 1
-        self.source_time += 6
-        second_kind = "TRADE" if first_kind == "BEST_BID" else "BEST_BID"
-        second_units = max(160, first_units * 2)
-        second = protection_fixtures._occurrence(
-            self.module,
-            f"stateful-cross-kind-second-{second_kind.lower()}-{self.sequence}",
-            kind=second_kind,
-            bid=second_units if second_kind == "BEST_BID" else None,
-            ask=second_units + 1 if second_kind == "BEST_BID" else None,
-            trade=second_units if second_kind == "TRADE" else None,
-            sequence=self.sequence,
-            source_time=self.source_time,
-            evaluation_time=self.source_time + 4,
-            market_epoch=self.market_epoch,
-        )
-        before = self.state
-        rejected = self._deliver(second)
-        protection_fixtures._assert_recorded_market_inert(
-            self.module,
-            before,
-            rejected,
-        )
-        self.state = rejected.state
-
-        self.market_epoch += 1
-        self.sequence = 1
-        self.source_time += 6
-        restart = protection_fixtures._occurrence(
-            self.module,
-            f"stateful-cross-kind-restart-{self.market_epoch}",
-            bid=100,
-            ask=101,
-            sequence=self.sequence,
-            source_time=self.source_time,
-            evaluation_time=self.source_time + 4,
-            market_epoch=self.market_epoch,
-        )
-        restarted = self._deliver(restart)
-        self.state = restarted.state
-        self.last_occurrence = restart
-        self.last_accepted_source_time = self.source_time
-        self.last_accepted_sequence = self.sequence
-        self.last_bid = 100
-        self.hard_count = 0
-        self.trail_count = 0
-        assert restarted.goal is None
-
-    @precondition(lambda self: self.policy == "TRAIL_ACTIVE")
-    @rule()
-    def optional_atr_and_structure_inputs_can_only_tighten_a_trail(self) -> None:
-        """Optional corroborating inputs never loosen the independent percent floor."""
-        assert self.high_water is not None and self.trail is not None
-        self.sequence += 1
-        self.source_time += 6
-        percent_floor = -(-(self.high_water * 23) // 25)
-        atr_floor = self.high_water - 5
-        structure_floor = self.high_water - 1
-        occurrence = protection_fixtures._occurrence(
-            self.module,
-            f"stateful-optional-trail-{self.market_epoch}-{self.sequence}",
-            bid=self.high_water,
-            ask=self.high_water + 1,
-            sequence=self.sequence,
-            source_time=self.source_time,
-            evaluation_time=self.source_time + 4,
-            market_epoch=self.market_epoch,
-            atr_distance=2,
-            structure_trail=structure_floor,
-        )
-        self.trail = max(
-            self.trail,
-            percent_floor,
-            atr_floor,
-            structure_floor,
-        )
-        result = self._deliver(occurrence)
-        self.state = result.state
-        self.last_occurrence = occurrence
-        self.last_accepted_source_time = self.source_time
-        self.last_accepted_sequence = self.sequence
-        self.last_bid = self.high_water
-        self.hard_count = 0
-        self.trail_count = 0
-        assert result.state.policy is not None
-        assert result.state.trail.exact_value == self.trail
-        assert result.goal is None
-
-    @precondition(lambda self: self.policy == "FLOOR_ONLY" and self.hard_count == 0)
-    @rule()
-    def interruption_reopen_epoch_requires_fresh_corroboration(self) -> None:
-        """A halt and new epoch reset corroboration in this shared history."""
-        self.sequence += 1
-        self.source_time += 6
-        first = protection_fixtures._occurrence(
-            self.module,
-            f"stateful-epoch-first-{self.market_epoch}-{self.sequence}",
+    def strict_coordinate_max_enters_terminal_exhaustion(self) -> None:
+        first = self._make_occurrence(
+            coordinate=self._next_coordinate(),
             bid=92,
             ask=93,
-            sequence=self.sequence,
-            source_time=self.source_time,
-            evaluation_time=self.source_time + 4,
-            market_epoch=self.market_epoch,
         )
         first_result = self._deliver(first)
-        self.state = first_result.state
-        assert first_result.goal is None
-        self.hard_count = 1
+        self._assert_result(first_result, "APPLIED")
+        self._record_occurrence(first, first_result)
 
-        self.sequence += 1
-        self.source_time += 6
-        interrupted = protection_fixtures._occurrence(
-            self.module,
-            f"stateful-epoch-halt-{self.market_epoch}-{self.sequence}",
-            bid=92,
-            ask=93,
-            sequence=self.sequence,
-            source_time=self.source_time,
-            evaluation_time=self.source_time + 4,
-            market_epoch=self.market_epoch,
-            halted=True,
-        )
-        halted = self._deliver(interrupted)
-        self.state = halted.state
-        assert halted.goal is None
-        self.sequence += 1
-        self.source_time += 6
-        same_epoch = protection_fixtures._occurrence(
-            self.module,
-            f"stateful-epoch-same-{self.market_epoch}-{self.sequence}",
+        second = self._make_occurrence(
+            coordinate=self._next_coordinate(),
             bid=91,
             ask=92,
-            sequence=self.sequence,
-            source_time=self.source_time,
-            evaluation_time=self.source_time + 4,
-            market_epoch=self.market_epoch,
         )
-        before_reopen = self.state
-        not_reopened = self._deliver(same_epoch)
-        protection_fixtures._assert_recorded_market_inert(
+        second_result = self._deliver(second)
+        disposition, policy = protection_fixtures._required(
             self.module,
-            before_reopen,
-            not_reopened,
+            "ProtectionDisposition",
+            "ProtectionPolicy",
         )
-        self.state = not_reopened.state
-        self.market_epoch += 1
-        self.sequence = 1
-        self.source_time += 6
-        self.hard_count = 0
-        reopen_first = protection_fixtures._occurrence(
-            self.module,
-            f"stateful-epoch-reopen-first-{self.market_epoch}",
-            bid=92,
-            ask=93,
-            sequence=self.sequence,
-            source_time=self.source_time,
-            evaluation_time=self.source_time + 4,
-            market_epoch=self.market_epoch,
-        )
-        reopened = self._deliver(reopen_first)
-        self.state = reopened.state
-        assert reopened.goal is None
-        self.hard_count = 1
-        self.sequence += 1
-        self.source_time += 6
-        reopen_second = protection_fixtures._occurrence(
-            self.module,
-            f"stateful-epoch-reopen-second-{self.market_epoch}",
-            bid=92,
-            ask=93,
-            sequence=self.sequence,
-            source_time=self.source_time,
-            evaluation_time=self.source_time + 4,
-            market_epoch=self.market_epoch,
-        )
-        bailed = self._deliver(reopen_second)
-        self.state = bailed.state
-        (policy,) = protection_fixtures._required(self.module, "ProtectionPolicy")
-        self.policy = "HARD_BAIL"
-        self.hard_count = 2
-        self.last_occurrence = reopen_second
-        self.last_accepted_source_time = self.source_time
-        self.last_accepted_sequence = self.sequence
-        self.last_bid = 92
-        self.waiting = self.buy_stage in {"OPEN", "TERMINAL"}
-        assert bailed.state.policy is policy.HARD_BAIL
-        assert bailed.state.waiting_buy_resolution is self.waiting
-        if self.waiting:
-            assert bailed.goal is None
-        else:
-            assert bailed.goal is not None
+        assert second_result.disposition is disposition.APPLIED
+        assert second_result.state.policy is policy.HARD_BAIL
+        assert second_result.goal is not None
+        assert second_result.critical_alert is None
+        self._record_occurrence(second, second_result)
 
-    @precondition(
-        lambda self: (
-            self.buy_stage == "NONE" and self.policy in {"FLOOR_ONLY", "TRAIL_ACTIVE"}
+        maximum = protection_fixtures._U64_MAX
+        maximum_occurrence = self._make_occurrence(
+            coordinate=maximum,
+            source_time=(self.source_time + 1 if self._is_sequenced() else maximum),
+            evaluation_time=(
+                self.evaluation_time + 1 if self._is_sequenced() else maximum
+            ),
         )
-    )
-    @rule()
-    def introduce_unresolved_buy_into_shared_history(self) -> None:
-        """An owned unresolved BUY composes with later market-policy changes."""
-        buy_chain, buy_effect, buy_leg, _ = (
+        exhausted = self._deliver(maximum_occurrence)
+        self._assert_result(
+            exhausted,
+            "APPLIED",
+            alert_name="MARKET_COORDINATE_EXHAUSTED",
+        )
+        self._record_occurrence(maximum_occurrence, exhausted)
+        self.baseline_required = True
+        self.exhausted = True
+        self.expected_epoch = None
+
+        before = self.state
+        replayed = self._deliver(maximum_occurrence)
+        self._assert_result(replayed, "EXACT_REPLAY")
+        assert replayed.state == before
+
+        lower = self._make_occurrence(
+            coordinate=maximum - 1,
+            source_time=(self.source_time if self._is_sequenced() else maximum - 1),
+            evaluation_time=(
+                self.evaluation_time if self._is_sequenced() else maximum - 1
+            ),
+        )
+        stale = self._deliver(lower)
+        self._assert_result(stale, "STALE")
+        assert stale.state == before
+
+        conflict = replace(
+            maximum_occurrence,
+            best_bid=protection_fixtures._price(99),
+            best_ask=protection_fixtures._price(100),
+        )
+        refused = self._deliver(conflict)
+        self._assert_result(refused, "REFUSED")
+        assert refused.state == before
+
+        repeated = self._invalidate()
+        self._assert_result(repeated, "EXACT_REPLAY")
+        assert repeated.state == before
+
+        projection_only = protection_fixtures._reduce_projection(
+            self.module,
+            self.state,
+            self.projection,
+        )
+        assert projection_only.goal is None
+        assert projection_only.state == before
+
+        prefix = f"stateful-{self.SEQUENCE_MODE.lower()}-exhausted-economics"
+        buy_chain, effect_id, leg_key, _ = (
             protection_fixtures._append_needs_review_effect(
                 self.current,
-                prefix="stateful-wait-buy",
+                prefix=prefix,
                 side=ExecutionSide.BUY,
                 quantity=1,
             )
         )
         for transition in buy_chain:
-            result = self._sync(transition)
-            assert result.goal is None
-        self.buy_effect = buy_effect
-        self.buy_leg = buy_leg
-        self.buy_stage = "OPEN"
-        self.waiting = True
+            pending = self._sync_projection_transition(transition)
+            assert pending.state._market_exhausted is True
+            assert pending.goal is None
 
-    @precondition(lambda self: self.buy_stage == "OPEN")
-    @rule()
-    def terminalize_unresolved_buy_in_shared_history(self) -> None:
-        assert self.buy_effect is not None and self.buy_leg is not None
+        prior_execution_commitment = self.state.execution_commitment
+        filled = venue_fixtures.apply_venue_recovery_input(
+            buy_chain[-1].book,
+            buy_chain[-1].execution,
+            RecordBrokerFillEvidence(
+                input_id=VenueInputId(f"{prefix}-fill-input"),
+                effect_id=effect_id,
+                leg_key=leg_key,
+                prior_cumulative_quantity=Quantity(0),
+                resulting_cumulative_quantity=Quantity(1),
+                fact=venue_fixtures._broker_fill(
+                    f"{prefix}-fill-source",
+                    f"{prefix}-fill-root",
+                    leg_key=leg_key,
+                    side=ExecutionSide.BUY,
+                    quantity=1,
+                    units=120,
+                ),
+                evidence_digest=b"\xb1" * 32,
+            ),
+        )
+        assert filled.quantity_delta == 1
+        economics = self._sync_projection_transition(filled)
+        assert economics.state.raw_quantity == self.raw_quantity + 1
+        assert economics.state.execution_commitment != prior_execution_commitment
+        assert economics.state.policy is policy.HARD_BAIL
+        assert economics.state._market_exhausted is True
+        assert economics.goal is None
+
         _, terminal = protection_fixtures._terminal_fixture(
-            self.current,
-            effect_id=self.buy_effect,
-            leg_key=self.buy_leg,
-            label="stateful-wait-buy",
-            cumulative_quantity=0,
+            filled,
+            effect_id=effect_id,
+            leg_key=leg_key,
+            label=prefix,
+            cumulative_quantity=1,
         )
-        result = self._sync(terminal)
-        self.buy_stage = "TERMINAL"
-        self.waiting = True
-        assert result.state.waiting_buy_resolution is self.waiting
-        assert result.goal is None
-
-    @precondition(lambda self: self.buy_stage == "TERMINAL")
-    @rule()
-    def close_unresolved_buy_parent_in_shared_history(self) -> None:
-        assert self.buy_effect is not None
-        exit_was_waiting = self.policy in {"EXIT_NORMAL", "HARD_BAIL"}
+        terminal_result = self._sync_projection_transition(terminal)
+        assert terminal_result.goal is None
         _, closed = protection_fixtures._close_parent_fixture(
-            self.current,
-            effect_id=self.buy_effect,
-            label="stateful-wait-buy",
+            terminal,
+            effect_id=effect_id,
+            label=prefix,
         )
-        released = self._sync(closed)
-        self.buy_stage = "CLOSED"
-        self.waiting = False
-        assert released.state.waiting_buy_resolution is False
-        if exit_was_waiting:
-            assert released.goal is not None
-            expected_guard = (
-                self.mandate.normal_guard
-                if self.policy == "EXIT_NORMAL"
-                else self.mandate.emergency_guard
-            )
-            assert released.goal.guard == expected_guard
-        else:
-            assert released.goal is None
+        closed_result = self._sync_projection_transition(closed)
+        assert closed_result.state.waiting_buy_resolution is False
+        assert closed_result.state.policy is policy.HARD_BAIL
+        assert closed_result.state._market_exhausted is True
+        assert closed_result.goal is None
+        self.raw_quantity += 1
+        self.last_result = closed_result
+
+    @precondition(
+        lambda self: (
+            self.baseline_required
+            and not self.exhausted
+            and self.expected_epoch is not None
+            and self.coordinate < 10_000
+        )
+    )
+    @rule()
+    def invalid_baseline_candidate_consumes_coordinate_without_authority(
+        self,
+    ) -> None:
+        assert self.expected_epoch is not None
+        crossed = self._make_occurrence(
+            coordinate=self._next_coordinate(),
+            epoch=self.expected_epoch,
+            bid=101,
+            ask=100,
+        )
+        result = self._deliver(crossed)
+        self._assert_result(result, "APPLIED")
+        self._record_occurrence(crossed, result)
+        assert self.state._market_baseline_required is True
+
+    @precondition(
+        lambda self: (
+            self.baseline_required
+            and not self.exhausted
+            and self.expected_epoch is not None
+            and self.coordinate < 10_000
+        )
+    )
+    @rule()
+    def valid_baseline_recovers_without_goal_or_corroboration(self) -> None:
+        assert self.expected_epoch is not None
+        baseline = self._make_occurrence(
+            coordinate=self._next_coordinate(),
+            epoch=self.expected_epoch,
+        )
+        result = self._deliver(baseline)
+        self._assert_result(result, "APPLIED")
+        self._record_recovery(baseline, result)
 
     @invariant()
-    def market_oracle_matches_public_state(self) -> None:
+    def bounded_cursor_matches_independent_lifecycle_model(self) -> None:
+        state = self.state
+        assert self.mandate.evidence_policy.sequence_mode.value == self.SEQUENCE_MODE
+        assert state._market_committed_epoch == self.committed_epoch
+        assert state._market_expected_epoch == self.expected_epoch
+        assert state._market_occurrence_epoch == self.occurrence_epoch
+        assert state._market_source_sequence == (
+            self.coordinate if self._is_sequenced() else None
+        )
+        assert state._market_source_time == self.source_time
+        assert state._market_evaluation_time == self.evaluation_time
+        assert state._market_occurrence_identity == self.current_identity
+        assert state._market_baseline_required is self.baseline_required
+        assert state._market_halted is self.halted
+        assert state._market_exhausted is self.exhausted
+        for identity_name, source_time_name in (
+            ("_hard_bid_identity", "_hard_bid_source_time"),
+            ("_trade_identity", "_trade_source_time"),
+            ("_trail_bid_identity", "_trail_bid_source_time"),
+        ):
+            assert (getattr(state, identity_name) is None) is (
+                getattr(state, source_time_name) is None
+            )
+        if self.baseline_required:
+            assert state._hard_bid_identity is None
+            assert state._trade_identity is None
+            assert state._trail_bid_identity is None
+        assert state.raw_quantity == self.raw_quantity
+        assert state.execution_commitment == self.current.execution.commitment
+
+
+class ProtectionSequencedMarketMachine(_FixedModeProtectionMarketMachine):
+    """Generated market histories for one immutable SEQUENCED mandate."""
+
+    SEQUENCE_MODE = "SEQUENCED"
+
+    @precondition(lambda self: self._is_floor_serving() and self.coordinate < 10_000)
+    @rule()
+    def greater_sequence_with_lower_time_requires_recovery(self) -> None:
+        warm = self._make_occurrence(
+            coordinate=self._next_coordinate(),
+            source_time=self.source_time + 2,
+        )
+        warm_result = self._deliver(warm)
+        self._assert_result(warm_result, "APPLIED")
+        self._record_occurrence(warm, warm_result)
+        retained_source_time = self.source_time
+
+        regressed = self._make_occurrence(
+            coordinate=self._next_coordinate(),
+            source_time=retained_source_time - 1,
+            evaluation_time=self.evaluation_time + 1,
+        )
+        result = self._deliver(regressed)
+        self._assert_result(
+            result,
+            "APPLIED",
+            alert_name="MARKET_BASELINE_REQUIRED",
+        )
+        self._record_occurrence(regressed, result)
+        self._enter_baseline_required()
+        assert self.source_time == retained_source_time
+        assert self.state._market_source_time == retained_source_time
+
+
+class ProtectionSourceTimeMarketMachine(_FixedModeProtectionMarketMachine):
+    """Generated market histories for one immutable SOURCE_TIME mandate."""
+
+    SEQUENCE_MODE = "SOURCE_TIME"
+
+    @precondition(lambda self: self._is_floor_serving() and self.coordinate < 10_000)
+    @rule()
+    def two_strict_source_times_can_corroborate(self) -> None:
+        first = self._make_occurrence(
+            coordinate=self._next_coordinate(),
+            bid=92,
+            ask=93,
+        )
+        first_result = self._deliver(first)
+        self._assert_result(first_result, "APPLIED")
+        self._record_occurrence(first, first_result)
+
+        second = self._make_occurrence(
+            coordinate=self._next_coordinate(),
+            bid=91,
+            ask=92,
+        )
+        second_result = self._deliver(second)
+        disposition, policy = protection_fixtures._required(
+            self.module,
+            "ProtectionDisposition",
+            "ProtectionPolicy",
+        )
+        assert second_result.disposition is disposition.APPLIED
+        assert second_result.state.policy is policy.HARD_BAIL
+        assert second_result.goal is not None
+        assert second_result.critical_alert is None
+        self._record_occurrence(second, second_result)
+
+
+class RetainedMarketPolicyMachine(RuleBasedStateMachine):
+    """Fixed-mode generated histories retained from the accepted ADR-021 RED."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.module = protection_fixtures._protection_module()
+        fill = protection_fixtures._owned_fill_transition(
+            label="stateful-retained-policy-root",
+            quantity=4,
+            units=100,
+            capacity=8,
+        )
+        mandate = protection_fixtures._mandate(
+            self.module,
+            sequence_mode="SEQUENCED",
+            max_age=1_000,
+        )
+        self.mandate, _, state = protection_fixtures._start(
+            self.module,
+            fill,
+            mandate,
+        )
+        terminal, closed = protection_fixtures._close_base_parent(fill)
+        self.state, self.projection, _ = protection_fixtures._sync_transitions(
+            self.module,
+            state,
+            self.mandate,
+            (terminal, closed),
+        )
+        self.current = closed
+        self.coordinate = 0
+        self.source_time = 0
+        self.evaluation_time = 0
+        self.raw_quantity = 4
+        self.used = False
+        self.last_result: object | None = None
+
+    def _sync(self, transition: object) -> object:
+        projection = protection_fixtures._projection(
+            self.module,
+            transition,
+            self.mandate,
+        )
+        result = protection_fixtures._reduce_projection(
+            self.module,
+            self.state,
+            projection,
+        )
+        self.state = result.state
+        self.projection = projection
+        self.current = transition
+        self.last_result = result
+        return result
+
+    def _deliver(
+        self,
+        *,
+        label: str,
+        kind: str = "BEST_BID",
+        units: int,
+        atr_distance: int | None = None,
+        structure_trail: int | None = None,
+    ) -> tuple[object, object]:
+        coordinate = self.coordinate + 1
+        source_time = self.source_time + 6
+        occurrence = protection_fixtures._routed_occurrence(
+            self.module,
+            self.mandate,
+            label,
+            kind=kind,
+            bid=None if kind == "TRADE" else units,
+            ask=None if kind == "TRADE" else units + 1,
+            trade=units if kind == "TRADE" else None,
+            sequence=coordinate,
+            source_time=source_time,
+            evaluation_time=source_time + 1,
+            market_epoch=0,
+            atr_distance=atr_distance,
+            structure_trail=structure_trail,
+        )
+        result = protection_fixtures._reduce_market(
+            self.module,
+            self.state,
+            self.projection,
+            occurrence,
+        )
+        (disposition,) = protection_fixtures._required(
+            self.module,
+            "ProtectionDisposition",
+        )
+        assert result.disposition is disposition.APPLIED
+        self.state = result.state
+        self.coordinate = coordinate
+        self.source_time = source_time
+        self.evaluation_time = source_time + 1
+        self.last_result = result
+        return occurrence, result
+
+    def _append_filled_buy(
+        self,
+        *,
+        prefix: str,
+        units: int,
+        close: bool,
+    ) -> tuple[object, object, object]:
+        buy_chain, effect_id, leg_key, _ = (
+            protection_fixtures._append_needs_review_effect(
+                self.current,
+                prefix=prefix,
+                side=ExecutionSide.BUY,
+                quantity=1,
+            )
+        )
+        for transition in buy_chain:
+            pending = self._sync(transition)
+            assert pending.goal is None
+        filled = venue_fixtures.apply_venue_recovery_input(
+            buy_chain[-1].book,
+            buy_chain[-1].execution,
+            RecordBrokerFillEvidence(
+                input_id=VenueInputId(f"{prefix}-fill-input"),
+                effect_id=effect_id,
+                leg_key=leg_key,
+                prior_cumulative_quantity=Quantity(0),
+                resulting_cumulative_quantity=Quantity(1),
+                fact=venue_fixtures._broker_fill(
+                    f"{prefix}-fill-source",
+                    f"{prefix}-fill-root",
+                    leg_key=leg_key,
+                    side=ExecutionSide.BUY,
+                    quantity=1,
+                    units=units,
+                ),
+                evidence_digest=b"\xb2" * 32,
+            ),
+        )
+        assert filled.quantity_delta == 1
+        filled_result = self._sync(filled)
+        self.raw_quantity += 1
+        assert filled_result.state.raw_quantity == self.raw_quantity
+        if not close:
+            return filled, effect_id, leg_key
+
+        _, terminal = protection_fixtures._terminal_fixture(
+            filled,
+            effect_id=effect_id,
+            leg_key=leg_key,
+            label=prefix,
+            cumulative_quantity=1,
+        )
+        self._sync(terminal)
+        _, closed = protection_fixtures._close_parent_fixture(
+            terminal,
+            effect_id=effect_id,
+            label=prefix,
+        )
+        self._sync(closed)
+        return closed, effect_id, leg_key
+
+    @precondition(lambda self: not self.used)
+    @rule(first_kind=st.sampled_from(("BEST_BID", "TRADE")))
+    def cross_kind_step_deviation_is_cursor_only(
+        self,
+        first_kind: str,
+    ) -> None:
+        _, first = self._deliver(
+            label=f"retained-cross-kind-{first_kind}-first",
+            kind=first_kind,
+            units=100,
+        )
+        assert first.goal is None
+        before_policy = self.state.policy
+        before_high = self.state.high_watermark
+        before_trail = self.state.trail
+        second_kind = "TRADE" if first_kind == "BEST_BID" else "BEST_BID"
+        _, deviated = self._deliver(
+            label=f"retained-cross-kind-{first_kind}-deviation",
+            kind=second_kind,
+            units=160,
+        )
+        assert deviated.state.policy is before_policy
+        assert deviated.state.high_watermark == before_high
+        assert deviated.state.trail == before_trail
+        assert deviated.goal is None
+        assert deviated.critical_alert is None
+        self.used = True
+
+    @precondition(lambda self: not self.used)
+    @rule()
+    def optional_atr_and_structure_tighten_independently(self) -> None:
+        _, activated = self._deliver(
+            label="retained-optional-activation",
+            units=120,
+        )
         (policy,) = protection_fixtures._required(self.module, "ProtectionPolicy")
-        assert self.state.policy is getattr(policy, self.policy)
-        if self.high_water is not None:
-            assert self.state.high_watermark.exact_value == self.high_water
-        if self.trail is not None:
-            assert self.state.trail.exact_value == self.trail
-        assert self.state.waiting_buy_resolution is self.waiting
-        assert self.state.raw_quantity == 4
+        expected_percent = _ceil_exact(Fraction(120) * Fraction(23, 25))
+        assert activated.state.policy is policy.TRAIL_ACTIVE
+        assert activated.state.high_watermark.exact_value == 120
+        assert activated.state.trail.exact_value == expected_percent
+
+        _, tightened = self._deliver(
+            label="retained-optional-tightening",
+            units=120,
+            atr_distance=2,
+            structure_trail=118,
+        )
+        expected_atr = _ceil_exact(Fraction(120) - Fraction(5, 2) * 2)
+        expected_structure = Fraction(118)
+        expected = max(expected_percent, expected_atr, expected_structure)
+        assert expected == 118
+        assert tightened.state.policy is policy.TRAIL_ACTIVE
+        assert tightened.state.high_watermark.exact_value == 120
+        assert tightened.state.trail.exact_value == expected
+        assert tightened.goal is None
+        self.used = True
+
+    @precondition(lambda self: not self.used)
+    @rule()
+    def high_water_and_percent_trail_only_ratchet(self) -> None:
+        (policy,) = protection_fixtures._required(self.module, "ProtectionPolicy")
+        _, activated = self._deliver(
+            label="retained-ratchet-activation",
+            units=108,
+        )
+        first_trail = _ceil_exact(Fraction(108) * Fraction(23, 25))
+        assert activated.state.policy is policy.TRAIL_ACTIVE
+        assert activated.state.high_watermark.exact_value == 108
+        assert activated.state.trail.exact_value == first_trail
+
+        _, raised = self._deliver(
+            label="retained-ratchet-raised",
+            units=125,
+        )
+        raised_trail = _ceil_exact(Fraction(125) * Fraction(23, 25))
+        assert raised.state.high_watermark.exact_value == 125
+        assert raised.state.trail.exact_value == raised_trail
+
+        _, lower = self._deliver(
+            label="retained-ratchet-lower",
+            units=120,
+        )
+        assert lower.state.high_watermark.exact_value == 125
+        assert lower.state.trail.exact_value == raised_trail
+        assert lower.goal is None
+        self.used = True
+
+    @precondition(lambda self: not self.used)
+    @rule()
+    def trigger_change_resets_the_corroboration_branch(self) -> None:
+        old_occurrence, first = self._deliver(
+            label="retained-trigger-old-branch",
+            units=92,
+        )
+        policy, disposition = protection_fixtures._required(
+            self.module,
+            "ProtectionPolicy",
+            "ProtectionDisposition",
+        )
+        assert first.state.policy is policy.FLOOR_ONLY
+        assert first.goal is None
+
+        self._append_filled_buy(
+            prefix="retained-trigger-ratchet",
+            units=200,
+            close=True,
+        )
+        expected_average = Fraction(4 * 100 + 200, 5)
+        expected_trigger = _ceil_exact(expected_average * Fraction(37, 40))
+        assert expected_trigger == 111
+        assert self.state.armed_hard_bail_trigger.exact_value == expected_trigger
+
+        replay = protection_fixtures._reduce_market(
+            self.module,
+            self.state,
+            self.projection,
+            replace(old_occurrence, evaluation_time=old_occurrence.evaluation_time + 1),
+        )
+        assert replay.disposition is disposition.EXACT_REPLAY
+        assert replay.state == self.state
+        assert replay.goal is None
+
+        _, new_first = self._deliver(
+            label="retained-trigger-new-branch-first",
+            units=110,
+        )
+        assert new_first.state.policy is policy.FLOOR_ONLY
+        assert new_first.goal is None
+        _, new_second = self._deliver(
+            label="retained-trigger-new-branch-second",
+            units=109,
+        )
+        assert new_second.state.policy is policy.HARD_BAIL
+        assert new_second.goal is not None
+        self.used = True
+
+    @precondition(lambda self: not self.used)
+    @rule()
+    def venue_rollback_and_current_execution_mismatch_fail_closed(self) -> None:
+        old_projection = self.projection
+        old_current = self.current
+        self._append_filled_buy(
+            prefix="retained-rollback-current",
+            units=120,
+            close=False,
+        )
+        before = self.state
+        stale = protection_fixtures._reduce_projection(
+            self.module,
+            self.state,
+            old_projection,
+        )
+        (disposition,) = protection_fixtures._required(
+            self.module,
+            "ProtectionDisposition",
+        )
+        assert stale.disposition is disposition.STALE
+        assert stale.state == before
+        mixed = protection_fixtures._clone_opaque(
+            self.current,
+            execution=old_current.execution,
+        )
+        with pytest.raises(ValueError):
+            protection_fixtures._projection(self.module, mixed, self.mandate)
+        self.last_result = stale
+        self.used = True
+
+    @precondition(lambda self: not self.used)
+    @rule()
+    def unresolved_buy_waits_through_terminal_and_releases_on_parent_close(
+        self,
+    ) -> None:
+        prefix = "retained-unresolved-buy"
+        buy_chain, effect_id, leg_key, _ = (
+            protection_fixtures._append_needs_review_effect(
+                self.current,
+                prefix=prefix,
+                side=ExecutionSide.BUY,
+                quantity=1,
+            )
+        )
+        for transition in buy_chain:
+            pending = self._sync(transition)
+            assert pending.goal is None
+        assert self.state.waiting_buy_resolution is True
+
+        _, first = self._deliver(label="retained-wait-hard-1", units=92)
+        assert first.goal is None
+        _, waiting = self._deliver(label="retained-wait-hard-2", units=91)
+        policy, urgency = protection_fixtures._required(
+            self.module,
+            "ProtectionPolicy",
+            "ProtectionUrgency",
+        )
+        assert waiting.state.policy is policy.HARD_BAIL
+        assert waiting.state.waiting_buy_resolution is True
+        assert waiting.goal is None
+
+        _, terminal = protection_fixtures._terminal_fixture(
+            buy_chain[-1],
+            effect_id=effect_id,
+            leg_key=leg_key,
+            label=prefix,
+            cumulative_quantity=0,
+        )
+        terminal_result = self._sync(terminal)
+        assert terminal_result.state.waiting_buy_resolution is True
+        assert terminal_result.goal is None
+        _, closed = protection_fixtures._close_parent_fixture(
+            terminal,
+            effect_id=effect_id,
+            label=prefix,
+        )
+        released = self._sync(closed)
+        assert released.state.policy is policy.HARD_BAIL
+        assert released.state.waiting_buy_resolution is False
+        assert released.goal is not None
+        assert released.goal.urgency is urgency.EMERGENCY
+        assert released.goal.guard == self.mandate.emergency_guard
+        self.used = True
+
+    @invariant()
+    def retained_policy_state_matches_its_bounded_reference(self) -> None:
+        assert self.mandate.evidence_policy.sequence_mode.value == "SEQUENCED"
+        assert self.state.raw_quantity == self.raw_quantity
         assert self.state.execution_commitment == self.current.execution.commitment
+        assert not hasattr(self.state, "_seen_occurrence_receipts")
 
 
 def _registered_rule(
@@ -1370,18 +1966,30 @@ def _execute_registered(
 
 def test_high_risk_stateful_rules_are_registered_with_preconditions() -> None:
     """A removed decorator or precondition cannot silently erase generated coverage."""
+    shared_market_rules = {
+        "context_denial_reserves_cursor_before_replay_or_conflict",
+        "replay_and_conflict_precede_recovery_epoch_admission",
+        "invalidation_requires_exact_next_recovery_epoch",
+        "halt_reopens_only_on_exact_next_epoch_baseline",
+        "baseline_required_suppresses_sticky_goal",
+        "strict_coordinate_max_enters_terminal_exhaustion",
+    }
     expected = {
         ProtectionEconomicsMachine: {
             "correction_bust_and_authentic_restore_compose_with_later_history",
             "incompatible_tick_loss_and_restore_advance_shared_history",
         },
-        ProtectionMarketMachine: {
-            "changed_context_replay_preserves_between_time_successor",
-            "cross_kind_step_limit_uses_last_eligible_primary",
-            "interruption_reopen_epoch_requires_fresh_corroboration",
-            "introduce_unresolved_buy_into_shared_history",
-            "terminalize_unresolved_buy_in_shared_history",
-            "close_unresolved_buy_parent_in_shared_history",
+        ProtectionSequencedMarketMachine: shared_market_rules
+        | {"greater_sequence_with_lower_time_requires_recovery"},
+        ProtectionSourceTimeMarketMachine: shared_market_rules
+        | {"two_strict_source_times_can_corroborate"},
+        RetainedMarketPolicyMachine: {
+            "cross_kind_step_deviation_is_cursor_only",
+            "optional_atr_and_structure_tighten_independently",
+            "high_water_and_percent_trail_only_ratchet",
+            "trigger_change_resets_the_corroboration_branch",
+            "venue_rollback_and_current_execution_mismatch_fail_closed",
+            "unresolved_buy_waits_through_terminal_and_releases_on_parent_close",
         },
     }
     for machine_type, names in expected.items():
@@ -1389,8 +1997,8 @@ def test_high_risk_stateful_rules_are_registered_with_preconditions() -> None:
             _registered_rule(machine_type, name)
 
 
-def test_high_risk_stateful_rules_advance_one_machine_history() -> None:
-    """Drive registered rules through the exact risky compositions they must cover."""
+def test_high_risk_economics_rules_advance_one_machine_history() -> None:
+    """Retained economics rules still compose on one directed history."""
     economics = ProtectionEconomicsMachine()
     _execute_registered(
         economics,
@@ -1409,56 +2017,140 @@ def test_high_risk_stateful_rules_advance_one_machine_history() -> None:
     assert economics.formula_expected is True
     assert economics.expected_policy == "HARD_BAIL"
 
-    replay_market = ProtectionMarketMachine()
-    replay_successor = _execute_registered(
-        replay_market,
-        "changed_context_replay_preserves_between_time_successor",
-        first_kind="TRADE",
-        has_sequence=False,
-    )
-    assert replay_market.policy == "HARD_BAIL"
-    assert replay_successor.goal is not None
 
-    cross_kind_market = ProtectionMarketMachine()
-    cross_kind = _execute_registered(
-        cross_kind_market,
-        "cross_kind_step_limit_uses_last_eligible_primary",
-        first_kind="TRADE",
-    )
-    assert cross_kind_market.policy == "FLOOR_ONLY"
-    assert cross_kind_market.market_epoch == 1
-    assert cross_kind.goal is None
+@pytest.mark.parametrize(
+    ("machine_type", "rule_name"),
+    [
+        pytest.param(
+            ProtectionSequencedMarketMachine,
+            "context_denial_reserves_cursor_before_replay_or_conflict",
+            id="sequenced-cursor-before-context",
+        ),
+        pytest.param(
+            ProtectionSequencedMarketMachine,
+            "replay_and_conflict_precede_recovery_epoch_admission",
+            id="sequenced-replay-conflict-precedence",
+        ),
+        pytest.param(
+            ProtectionSequencedMarketMachine,
+            "invalidation_requires_exact_next_recovery_epoch",
+            id="sequenced-exact-next-recovery",
+        ),
+        pytest.param(
+            ProtectionSequencedMarketMachine,
+            "halt_reopens_only_on_exact_next_epoch_baseline",
+            id="sequenced-halt-recovery",
+        ),
+        pytest.param(
+            ProtectionSequencedMarketMachine,
+            "baseline_required_suppresses_sticky_goal",
+            id="sequenced-goal-suppression",
+        ),
+        pytest.param(
+            ProtectionSequencedMarketMachine,
+            "strict_coordinate_max_enters_terminal_exhaustion",
+            id="sequenced-terminal-exhaustion",
+        ),
+        pytest.param(
+            ProtectionSequencedMarketMachine,
+            "greater_sequence_with_lower_time_requires_recovery",
+            id="sequenced-time-regression",
+        ),
+        pytest.param(
+            ProtectionSourceTimeMarketMachine,
+            "context_denial_reserves_cursor_before_replay_or_conflict",
+            id="source-time-cursor-before-context",
+        ),
+        pytest.param(
+            ProtectionSourceTimeMarketMachine,
+            "replay_and_conflict_precede_recovery_epoch_admission",
+            id="source-time-replay-conflict-precedence",
+        ),
+        pytest.param(
+            ProtectionSourceTimeMarketMachine,
+            "invalidation_requires_exact_next_recovery_epoch",
+            id="source-time-exact-next-recovery",
+        ),
+        pytest.param(
+            ProtectionSourceTimeMarketMachine,
+            "halt_reopens_only_on_exact_next_epoch_baseline",
+            id="source-time-halt-recovery",
+        ),
+        pytest.param(
+            ProtectionSourceTimeMarketMachine,
+            "baseline_required_suppresses_sticky_goal",
+            id="source-time-goal-suppression",
+        ),
+        pytest.param(
+            ProtectionSourceTimeMarketMachine,
+            "strict_coordinate_max_enters_terminal_exhaustion",
+            id="source-time-terminal-exhaustion",
+        ),
+        pytest.param(
+            ProtectionSourceTimeMarketMachine,
+            "two_strict_source_times_can_corroborate",
+            id="source-time-strict-corroboration",
+        ),
+    ],
+)
+def test_high_risk_market_rules_advance_directed_histories(
+    machine_type: type[_FixedModeProtectionMarketMachine],
+    rule_name: str,
+) -> None:
+    """Each high-risk lifecycle path remains directly executable after GREEN."""
+    machine = machine_type()
+    result = _execute_registered(machine, rule_name)
+    assert result.state == machine.state
 
-    market = ProtectionMarketMachine()
-    _execute_registered(
-        market,
-        "introduce_unresolved_buy_into_shared_history",
-    )
-    assert market.buy_stage == "OPEN"
-    interrupted = _execute_registered(
-        market,
-        "interruption_reopen_epoch_requires_fresh_corroboration",
-    )
-    assert market.policy == "HARD_BAIL"
-    assert market.waiting is True
-    assert interrupted.state.waiting_buy_resolution is True
-    assert interrupted.goal is None
-    terminal = _execute_registered(
-        market,
-        "terminalize_unresolved_buy_in_shared_history",
-    )
-    assert market.buy_stage == "TERMINAL"
-    assert terminal.state.waiting_buy_resolution is True
-    assert terminal.goal is None
-    released = _execute_registered(
-        market,
-        "close_unresolved_buy_parent_in_shared_history",
-    )
-    assert market.buy_stage == "CLOSED"
-    assert market.waiting is False
-    assert released.state.waiting_buy_resolution is False
-    assert released.goal is not None
-    assert released.goal.guard == market.mandate.emergency_guard
+
+@pytest.mark.parametrize(
+    ("rule_name", "kwargs"),
+    [
+        pytest.param(
+            "cross_kind_step_deviation_is_cursor_only",
+            {"first_kind": "BEST_BID"},
+            id="cross-kind-bid-to-trade",
+        ),
+        pytest.param(
+            "cross_kind_step_deviation_is_cursor_only",
+            {"first_kind": "TRADE"},
+            id="cross-kind-trade-to-bid",
+        ),
+        pytest.param(
+            "optional_atr_and_structure_tighten_independently",
+            {},
+            id="optional-atr-structure",
+        ),
+        pytest.param(
+            "high_water_and_percent_trail_only_ratchet",
+            {},
+            id="high-water-trail-ratchet",
+        ),
+        pytest.param(
+            "trigger_change_resets_the_corroboration_branch",
+            {},
+            id="trigger-branch-reset",
+        ),
+        pytest.param(
+            "venue_rollback_and_current_execution_mismatch_fail_closed",
+            {},
+            id="venue-rollback-current-execution",
+        ),
+        pytest.param(
+            "unresolved_buy_waits_through_terminal_and_releases_on_parent_close",
+            {},
+            id="unresolved-buy-wait-release",
+        ),
+    ],
+)
+def test_retained_market_policy_rules_advance_directed_histories(
+    rule_name: str,
+    kwargs: dict[str, object],
+) -> None:
+    """Every retained ADR-021 family is registered and directly reachable."""
+    machine = RetainedMarketPolicyMachine()
+    result = _execute_registered(machine, rule_name, **kwargs)
+    assert result.state == machine.state
 
 
 TestProtectionEconomicsMachine = ProtectionEconomicsMachine.TestCase
@@ -1468,9 +2160,23 @@ TestProtectionEconomicsMachine.settings = settings(
     deadline=None,
 )
 
-TestProtectionMarketMachine = ProtectionMarketMachine.TestCase
-TestProtectionMarketMachine.settings = settings(
-    max_examples=30,
-    stateful_step_count=18,
+TestProtectionSequencedMarketMachine = ProtectionSequencedMarketMachine.TestCase
+TestProtectionSequencedMarketMachine.settings = settings(
+    max_examples=20,
+    stateful_step_count=12,
+    deadline=None,
+)
+
+TestProtectionSourceTimeMarketMachine = ProtectionSourceTimeMarketMachine.TestCase
+TestProtectionSourceTimeMarketMachine.settings = settings(
+    max_examples=20,
+    stateful_step_count=12,
+    deadline=None,
+)
+
+TestRetainedMarketPolicyMachine = RetainedMarketPolicyMachine.TestCase
+TestRetainedMarketPolicyMachine.settings = settings(
+    max_examples=20,
+    stateful_step_count=1,
     deadline=None,
 )

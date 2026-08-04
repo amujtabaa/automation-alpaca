@@ -130,10 +130,7 @@ _PROTECTION_ALLOWED_BUILTIN_CALLS = {
 }
 
 _PROTECTION_ALLOWED_ATTRIBUTE_CALLS = {
-    ("_PersistentKeyMap", "empty"),
-    ("_PersistentKeyMap", "get"),
-    ("_PersistentKeyMap", "insert_new"),
-    ("_PersistentKeyMap", "replace_existing"),
+    ("int", "to_bytes"),
     ("object", "__new__"),
     ("object", "__setattr__"),
 }
@@ -147,6 +144,7 @@ _PROTECTION_ALLOWED_STDLIB_IMPORTED_CALLS = {
     ("dataclasses", "dataclass"),
     ("decimal", "Decimal"),
     ("fractions", "Fraction"),
+    ("hashlib", "sha256"),
 }
 
 _PROTECTION_IMPORTED_ENUM_MEMBERS = {
@@ -175,13 +173,15 @@ _PROTECTION_IMPORTED_ENUM_MEMBERS = {
 
 _PROTECTION_ALLOWED_INTERNAL_IMPORTED_CALLS = {
     ("app.execution_core.fills", "PositionScope"),
-    ("app.execution_core.fills", "_PersistentKeyMap"),
     ("app.execution_core.fills", "_commit_parts"),
     ("app.execution_core.fills", "_encode_fraction"),
     ("app.execution_core.fills", "_encode_int"),
     ("app.execution_core.fills", "_encode_position_scope"),
     ("app.execution_core.fills", "_encode_reported_price"),
     ("app.execution_core.fills", "_encode_text"),
+    ("app.execution_core.fills", "_pack_parts"),
+    ("app.execution_core.identity", "MarketOccurrenceId"),
+    ("app.execution_core.identity", "MarketStreamGenerationId"),
     ("app.execution_core.values", "PriceScale"),
     ("app.execution_core.values", "PriceUnits"),
     ("app.execution_core.values", "Quantity"),
@@ -200,6 +200,7 @@ _PROTECTION_ALLOWED_IMPORTED_BINDINGS = (
         ("app.execution_core.identity", "MandateId"),
         ("app.execution_core.identity", "MarketDataSourceId"),
         ("app.execution_core.identity", "MarketOccurrenceId"),
+        ("app.execution_core.identity", "MarketStreamGenerationId"),
         ("app.execution_core.identity", "SessionId"),
         ("app.execution_core.position", "BasisAuthority"),
         ("app.execution_core.position", "ExecutionSnapshot"),
@@ -212,6 +213,20 @@ _PROTECTION_ALLOWED_IMPORTED_BINDINGS = (
         ("app.execution_core.venue", "_SymbolAuthoritySummary"),
     }
 )
+
+_PROTECTION_FIXED_STATE_LEAF_IMPORTS = {
+    ("enum", "Enum"),
+    ("fractions", "Fraction"),
+    ("app.execution_core.fills", "PositionScope"),
+    ("app.execution_core.identity", "MandateId"),
+    ("app.execution_core.identity", "MarketDataSourceId"),
+    ("app.execution_core.identity", "MarketOccurrenceId"),
+    ("app.execution_core.identity", "MarketStreamGenerationId"),
+    ("app.execution_core.identity", "SessionId"),
+    ("app.execution_core.values", "Quantity"),
+    ("app.execution_core.values", "ReportedPrice"),
+    ("app.execution_core.values", "TickMetadata"),
+}
 
 _PROTECTION_FORBIDDEN_BINDING_ATTRIBUTES = {
     "__bases__",
@@ -288,6 +303,8 @@ _PUBLIC_SURFACE = {
     "MarketKind",
     "MarketOccurrence",
     "MarketOccurrenceId",
+    "MarketSequenceMode",
+    "MarketStreamGenerationId",
     "ManualFlattenId",
     "ObserveVenueStatus",
     "OrderId",
@@ -351,8 +368,61 @@ _PUBLIC_SURFACE = {
     "derive_ordered_basis_candidate",
     "initial_execution_authority_state",
     "initialize_position_protection",
+    "invalidate_position_protection_market",
     "project_protection_venue",
     "reduce_position_protection",
+    "reduce_position_protection_market",
+}
+
+_PROTECTION_PUBLIC_TRANSITIONS = {
+    "initialize_position_protection": ("mandate", "projection"),
+    "invalidate_position_protection_market": ("state", "projection"),
+    "project_protection_venue": ("transition", "mandate"),
+    "reduce_position_protection": ("state", "projection"),
+    "reduce_position_protection_market": ("state", "projection", "occurrence"),
+}
+
+_PROTECTION_MARKET_ROOTS = {
+    "invalidate_position_protection_market",
+    "reduce_position_protection_market",
+}
+
+_PROTECTION_VARIABLE_CARDINALITY_TYPES = {
+    "AbstractSet",
+    "Collection",
+    "DefaultDict",
+    "Deque",
+    "Dict",
+    "FrozenSet",
+    "Generator",
+    "Iterable",
+    "Iterator",
+    "List",
+    "Mapping",
+    "MutableMapping",
+    "MutableSequence",
+    "Sequence",
+    "Set",
+    "_PersistentKeyMap",
+    "dict",
+    "frozenset",
+    "list",
+    "set",
+}
+
+_PROTECTION_VARIADIC_TUPLE_TYPES = {"Tuple", "tuple"}
+
+_PROTECTION_ALLOWED_MARKET_LOCAL_CONSTRUCTORS = {
+    "ExecutionGoal",
+    "ProtectionTransition",
+}
+
+_PROTECTION_HISTORY_NAME_FRAGMENTS = {
+    "history",
+    "persistentkeymap",
+    "receipt",
+    "seen_occurrence",
+    "tape",
 }
 
 _FORBIDDEN_PUBLIC_ACCEPTANCE_CLOSURE_CAPABILITIES = {
@@ -412,25 +482,58 @@ def _python_files() -> list[Path]:
     return files
 
 
-def test_protection_has_one_public_reducer_and_no_operational_or_raw_venue_seam() -> (
-    None
-):
-    """Protection stays pure policy data behind one authenticated venue extractor."""
+def _protection_public_transition_violations(
+    tree: ast.Module,
+    path: Path,
+) -> list[str]:
+    """Pin the five ADR-023 roles and reject caller-shaped recovery surfaces."""
 
-    path = _PACKAGE_ROOT / "protection.py"
-    assert path.is_file(), "WO-0148 protection semantic center is missing"
-    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    violations: list[str] = []
     public_functions = {
-        node.name
+        node.name: node
         for node in tree.body
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
         and not node.name.startswith("_")
     }
-    assert public_functions == {
-        "initialize_position_protection",
-        "project_protection_venue",
-        "reduce_position_protection",
-    }
+    actual = set(public_functions)
+    expected = set(_PROTECTION_PUBLIC_TRANSITIONS)
+    if actual != expected:
+        violations.append(
+            f"{_display(path, tree)} exact public transition set differs: "
+            f"missing={sorted(expected - actual)!r}, extra={sorted(actual - expected)!r}"
+        )
+
+    for name in sorted(expected & actual):
+        function = public_functions[name]
+        arguments = function.args
+        positional = arguments.posonlyargs + arguments.args
+        observed = tuple(argument.arg for argument in positional)
+        exact_shape = (
+            isinstance(function, ast.FunctionDef)
+            and not function.decorator_list
+            and not arguments.posonlyargs
+            and observed == _PROTECTION_PUBLIC_TRANSITIONS[name]
+            and arguments.vararg is None
+            and arguments.kwarg is None
+            and not arguments.kwonlyargs
+            and not arguments.defaults
+            and not arguments.kw_defaults
+        )
+        if not exact_shape:
+            violations.append(
+                f"{_display(path, function)} public transition {name} has "
+                f"noncanonical parameters {observed!r}"
+            )
+    return violations
+
+
+def test_protection_has_exact_adr023_public_roles_and_no_operational_seam() -> None:
+    """Protection exposes five independent pure roles behind one venue extractor."""
+
+    path = _PACKAGE_ROOT / "protection.py"
+    assert path.is_file(), "WO-0148 protection semantic center is missing"
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    assert not _protection_public_transition_violations(tree, path)
     assert not _protection_dynamic_public_surface_violations(tree, path)
     forbidden = {
         "BrokerEffectRequest",
@@ -499,6 +602,1631 @@ def _protection_dynamic_public_surface_violations(
                 f"{_display(path, statement)} dynamic module surface hook {name}"
             )
     return violations
+
+
+def _annotation_imports(tree: ast.Module) -> dict[str, tuple[str, str]]:
+    """Return retained annotation names and their canonical import bindings."""
+
+    imported: dict[str, tuple[str, str]] = {}
+    for statement in tree.body:
+        if isinstance(statement, ast.ImportFrom):
+            owner = statement.module or ""
+            if statement.level == 1:
+                owner = "app.execution_core" + (f".{owner}" if owner else "")
+            for alias in statement.names:
+                imported[alias.asname or alias.name] = (owner, alias.name)
+        elif isinstance(statement, ast.Import):
+            for alias in statement.names:
+                retained = alias.asname or alias.name.split(".", 1)[0]
+                imported[retained] = (alias.name, "")
+    return imported
+
+
+def _top_level_annotation_aliases(tree: ast.Module) -> dict[str, ast.AST]:
+    """Resolve simple module aliases used by deferred field annotations."""
+
+    aliases: dict[str, ast.AST] = {}
+    for statement in tree.body:
+        if isinstance(statement, ast.Assign):
+            for target in statement.targets:
+                if isinstance(target, ast.Name):
+                    aliases[target.id] = statement.value
+        elif (
+            isinstance(statement, ast.AnnAssign)
+            and isinstance(statement.target, ast.Name)
+            and statement.value is not None
+        ):
+            aliases[statement.target.id] = statement.value
+    return aliases
+
+
+def _class_annotation_aliases(declaration: ast.ClassDef) -> dict[str, ast.AST]:
+    """Return simple aliases declared in one reachable class namespace."""
+
+    aliases: dict[str, ast.AST] = {}
+    for statement in declaration.body:
+        if isinstance(statement, ast.Assign):
+            for target in statement.targets:
+                if isinstance(target, ast.Name):
+                    aliases[target.id] = statement.value
+        elif (
+            isinstance(statement, ast.AnnAssign)
+            and isinstance(statement.target, ast.Name)
+            and statement.value is not None
+        ):
+            aliases[statement.target.id] = statement.value
+    return aliases
+
+
+def _annotation_assignment_names(target: ast.AST) -> set[str]:
+    if isinstance(target, ast.Name):
+        return {target.id}
+    if isinstance(target, (ast.List, ast.Tuple)):
+        return {
+            name
+            for element in target.elts
+            for name in _annotation_assignment_names(element)
+        }
+    return set()
+
+
+def _unsafe_annotation_aliases(statements: list[ast.stmt]) -> frozenset[str]:
+    """Find aliases introduced through conditional or structured assignment."""
+
+    unsafe: set[str] = set()
+    for statement in statements:
+        if isinstance(statement, ast.Assign):
+            if not (
+                len(statement.targets) == 1
+                and isinstance(statement.targets[0], ast.Name)
+            ):
+                unsafe.update(
+                    name
+                    for target in statement.targets
+                    for name in _annotation_assignment_names(target)
+                )
+            continue
+        if isinstance(statement, ast.AnnAssign):
+            if not isinstance(statement.target, ast.Name):
+                unsafe.update(_annotation_assignment_names(statement.target))
+            continue
+        if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue
+        pending = [statement]
+        while pending:
+            node = pending.pop()
+            if node is not statement and isinstance(
+                node,
+                (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef),
+            ):
+                continue
+            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+                unsafe.add(node.id)
+            pending.extend(ast.iter_child_nodes(node))
+    return frozenset(unsafe)
+
+
+def _local_annotation_classes(tree: ast.Module) -> dict[str, tuple[ast.ClassDef, ...]]:
+    """Index module and lexically nested classes without entering functions."""
+
+    found: dict[str, list[ast.ClassDef]] = {}
+
+    def collect(statements: list[ast.stmt]) -> None:
+        for statement in statements:
+            if not isinstance(statement, ast.ClassDef):
+                continue
+            found.setdefault(statement.name, []).append(statement)
+            collect(statement.body)
+
+    collect(tree.body)
+    return {name: tuple(declarations) for name, declarations in found.items()}
+
+
+def _annotation_terminal_name(
+    node: ast.AST,
+    imported: dict[str, tuple[str, str]],
+) -> str | None:
+    if isinstance(node, ast.Name):
+        binding = imported.get(node.id)
+        return node.id if binding is None else binding[1].rsplit(".", 1)[-1]
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    return None
+
+
+def _annotation_slice_elements(node: ast.AST) -> tuple[ast.AST, ...]:
+    return tuple(node.elts) if isinstance(node, ast.Tuple) else (node,)
+
+
+def _protection_bounded_market_state_violations(
+    tree: ast.Module,
+    path: Path,
+) -> list[str]:
+    """Reject reachable protection history stores and variable-cardinality state."""
+
+    violations: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and node.id == "_PersistentKeyMap":
+            violations.append(
+                f"{_display(path, node)} protection owns forbidden _PersistentKeyMap"
+            )
+        elif isinstance(node, ast.ImportFrom) and any(
+            alias.name == "_PersistentKeyMap" for alias in node.names
+        ):
+            violations.append(
+                f"{_display(path, node)} protection imports forbidden _PersistentKeyMap"
+            )
+
+    aliases = _top_level_annotation_aliases(tree)
+    unsafe_aliases = _unsafe_annotation_aliases(tree.body)
+    imported = _annotation_imports(tree)
+    local_classes = _local_annotation_classes(tree)
+    class_aliases = {
+        declaration: _class_annotation_aliases(declaration)
+        for declarations in local_classes.values()
+        for declaration in declarations
+    }
+    class_unsafe_aliases = {
+        declaration: _unsafe_annotation_aliases(declaration.body)
+        for declarations in local_classes.values()
+        for declaration in declarations
+    }
+    state_classes = local_classes.get("PositionProtectionState", ())
+    if len(state_classes) != 1:
+        violations.append(
+            f"{_display(path, tree)} expected one PositionProtectionState declaration"
+        )
+        return violations
+
+    completed_classes: set[str] = set()
+    safe_terminals = {"bool", "bytes", "int", "str"}
+    opaque_terminals = {"object", "type"}
+
+    def report(owner: str, node: ast.AST, detail: str) -> None:
+        violations.append(
+            f"{_display(path, node)} variable-cardinality protection field "
+            f"{owner}: {detail}"
+        )
+
+    def inspect_class(
+        class_name: str,
+        owner: str,
+        active_aliases: frozenset[tuple[ast.ClassDef | None, str]],
+        active_classes: frozenset[str],
+    ) -> None:
+        declarations = local_classes.get(class_name, ())
+        if not declarations:
+            return
+        if len(declarations) != 1:
+            violations.append(
+                f"{_display(path, declarations[0])} ambiguous reachable protection "
+                f"state type {class_name}"
+            )
+            return
+        if class_name in active_classes:
+            violations.append(
+                f"{_display(path, declarations[0])} recursive reachable protection "
+                f"state type {class_name} from {owner}"
+            )
+            return
+        if class_name in completed_classes:
+            return
+        declaration = declarations[0]
+        next_classes = active_classes | {class_name}
+        for base in declaration.bases:
+            inspect_annotation(
+                base,
+                f"{owner}.<base>",
+                active_aliases,
+                next_classes,
+                None,
+            )
+        for statement in declaration.body:
+            if not isinstance(statement, ast.AnnAssign):
+                continue
+            field = (
+                statement.target.id
+                if isinstance(statement.target, ast.Name)
+                else "<dynamic>"
+            )
+            inspect_annotation(
+                statement.annotation,
+                f"{owner}.{field}",
+                active_aliases,
+                next_classes,
+                declaration,
+            )
+        completed_classes.add(class_name)
+
+    def inspect_reference(
+        node: ast.AST,
+        owner: str,
+        active_aliases: frozenset[tuple[ast.ClassDef | None, str]],
+        active_classes: frozenset[str],
+        scope: ast.ClassDef | None,
+    ) -> None:
+        if not isinstance(node, ast.Name):
+            return
+        name = node.id
+        scoped_aliases = class_aliases.get(scope, {}) if scope is not None else {}
+        scoped_unsafe = (
+            class_unsafe_aliases.get(scope, frozenset())
+            if scope is not None
+            else unsafe_aliases
+        )
+        if name in scoped_unsafe or (
+            name not in scoped_aliases and name in unsafe_aliases
+        ):
+            violations.append(
+                f"{_display(path, node)} unsafe protection annotation alias "
+                f"{name} from {owner}"
+            )
+            return
+        alias_scope: ast.ClassDef | None = None
+        alias_value: ast.AST | None = None
+        if name in scoped_aliases:
+            alias_scope = scope
+            alias_value = scoped_aliases[name]
+        elif name in aliases:
+            alias_value = aliases[name]
+        if alias_value is not None:
+            alias_key = (alias_scope, name)
+            if alias_key in active_aliases:
+                violations.append(
+                    f"{_display(path, node)} recursive protection annotation alias "
+                    f"{name} from {owner}"
+                )
+                return
+            inspect_annotation(
+                alias_value,
+                owner,
+                active_aliases | {alias_key},
+                active_classes,
+                alias_scope,
+            )
+        elif name in local_classes:
+            inspect_class(name, owner, active_aliases, active_classes)
+        elif name in safe_terminals:
+            return
+        elif name in opaque_terminals:
+            violations.append(
+                f"{_display(path, node)} unapproved opaque protection state "
+                f"terminal {name} from {owner}"
+            )
+        elif name in imported:
+            if imported[name] not in _PROTECTION_FIXED_STATE_LEAF_IMPORTS:
+                violations.append(
+                    f"{_display(path, node)} unapproved imported protection state "
+                    f"type {name} from {owner}"
+                )
+        else:
+            violations.append(
+                f"{_display(path, node)} unresolved protection annotation name "
+                f"{name} from {owner}"
+            )
+
+    def inspect_qualified_annotation(
+        annotation: ast.Attribute,
+        owner: str,
+        active_aliases: frozenset[tuple[ast.ClassDef | None, str]],
+        active_classes: frozenset[str],
+    ) -> None:
+        attribute_path = _static_attribute_path(annotation)
+        if attribute_path is None or len(attribute_path) != 2:
+            violations.append(
+                f"{_display(path, annotation)} unresolved protection annotation path "
+                f"for {owner}"
+            )
+            return
+        class_name, member = attribute_path
+        declarations = local_classes.get(class_name, ())
+        if len(declarations) != 1:
+            violations.append(
+                f"{_display(path, annotation)} unresolved protection annotation path "
+                f"{'.'.join(attribute_path)} from {owner}"
+            )
+            return
+        declaration = declarations[0]
+        if member in class_unsafe_aliases.get(declaration, frozenset()):
+            violations.append(
+                f"{_display(path, annotation)} unsafe protection annotation alias "
+                f"{'.'.join(attribute_path)} from {owner}"
+            )
+            return
+        alias_value = class_aliases.get(declaration, {}).get(member)
+        if alias_value is not None:
+            alias_key = (declaration, member)
+            if alias_key in active_aliases:
+                violations.append(
+                    f"{_display(path, annotation)} recursive protection annotation "
+                    f"alias {'.'.join(attribute_path)} from {owner}"
+                )
+                return
+            inspect_annotation(
+                alias_value,
+                owner,
+                active_aliases | {alias_key},
+                active_classes,
+                declaration,
+            )
+            return
+        nested = [
+            statement
+            for statement in declaration.body
+            if isinstance(statement, ast.ClassDef) and statement.name == member
+        ]
+        if len(nested) == 1:
+            inspect_class(member, owner, active_aliases, active_classes)
+            return
+        violations.append(
+            f"{_display(path, annotation)} unresolved protection annotation path "
+            f"{'.'.join(attribute_path)} from {owner}"
+        )
+
+    def inspect_annotation(
+        annotation: ast.AST,
+        owner: str,
+        active_aliases: frozenset[tuple[ast.ClassDef | None, str]],
+        active_classes: frozenset[str],
+        scope: ast.ClassDef | None,
+    ) -> None:
+        if isinstance(annotation, ast.Name):
+            terminal = _annotation_terminal_name(annotation, imported)
+            if terminal in _PROTECTION_VARIABLE_CARDINALITY_TYPES:
+                report(owner, annotation, terminal)
+                return
+            if terminal in _PROTECTION_VARIADIC_TUPLE_TYPES:
+                report(owner, annotation, f"unparameterized {terminal}")
+                return
+            inspect_reference(
+                annotation,
+                owner,
+                active_aliases,
+                active_classes,
+                scope,
+            )
+            return
+        if isinstance(annotation, ast.Attribute):
+            terminal = _annotation_terminal_name(annotation, imported)
+            if terminal in _PROTECTION_VARIABLE_CARDINALITY_TYPES:
+                report(owner, annotation, terminal)
+                return
+            if terminal in _PROTECTION_VARIADIC_TUPLE_TYPES:
+                report(owner, annotation, f"unparameterized {terminal}")
+                return
+            inspect_qualified_annotation(
+                annotation,
+                owner,
+                active_aliases,
+                active_classes,
+            )
+            return
+        if isinstance(annotation, ast.Subscript):
+            terminal = _annotation_terminal_name(annotation.value, imported)
+            elements = _annotation_slice_elements(annotation.slice)
+            if terminal in _PROTECTION_VARIABLE_CARDINALITY_TYPES:
+                report(owner, annotation, terminal)
+            elif terminal in _PROTECTION_VARIADIC_TUPLE_TYPES:
+                if any(
+                    isinstance(element, ast.Constant) and element.value is Ellipsis
+                    for element in elements
+                ):
+                    report(owner, annotation, f"variadic {terminal}")
+            else:
+                if isinstance(annotation.value, ast.Name):
+                    inspect_reference(
+                        annotation.value,
+                        owner,
+                        active_aliases,
+                        active_classes,
+                        scope,
+                    )
+                elif isinstance(annotation.value, ast.Attribute):
+                    inspect_qualified_annotation(
+                        annotation.value,
+                        owner,
+                        active_aliases,
+                        active_classes,
+                    )
+                else:
+                    violations.append(
+                        f"{_display(path, annotation.value)} unsupported reachable "
+                        f"protection annotation base for {owner}"
+                    )
+            for element in elements:
+                if not (
+                    isinstance(element, ast.Constant) and element.value is Ellipsis
+                ):
+                    inspect_annotation(
+                        element,
+                        owner,
+                        active_aliases,
+                        active_classes,
+                        scope,
+                    )
+            return
+        if isinstance(annotation, ast.BinOp) and isinstance(annotation.op, ast.BitOr):
+            inspect_annotation(
+                annotation.left,
+                owner,
+                active_aliases,
+                active_classes,
+                scope,
+            )
+            inspect_annotation(
+                annotation.right,
+                owner,
+                active_aliases,
+                active_classes,
+                scope,
+            )
+            return
+        if isinstance(annotation, ast.Tuple):
+            for element in annotation.elts:
+                inspect_annotation(
+                    element,
+                    owner,
+                    active_aliases,
+                    active_classes,
+                    scope,
+                )
+            return
+        if isinstance(annotation, ast.Constant):
+            if annotation.value is None:
+                return
+            violations.append(
+                f"{_display(path, annotation)} unsupported reachable protection "
+                f"annotation for {owner}"
+            )
+            return
+        violations.append(
+            f"{_display(path, annotation)} unsupported reachable protection "
+            f"annotation grammar for {owner}"
+        )
+
+    inspect_class(
+        "PositionProtectionState",
+        "PositionProtectionState",
+        frozenset(),
+        frozenset(),
+    )
+    return list(dict.fromkeys(violations))
+
+
+def _function_body_nodes(function: ast.FunctionDef) -> tuple[ast.AST, ...]:
+    """Walk one function body without entering nested callable declarations."""
+
+    found: list[ast.AST] = []
+    pending = list(reversed(function.body))
+    while pending:
+        node = pending.pop()
+        found.append(node)
+        if isinstance(
+            node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)
+        ):
+            continue
+        pending.extend(reversed(tuple(ast.iter_child_nodes(node))))
+    return tuple(found)
+
+
+def _assigned_names(node: ast.AST) -> set[str]:
+    if isinstance(node, ast.Name):
+        return {node.id}
+    if isinstance(node, (ast.Tuple, ast.List)):
+        return {name for element in node.elts for name in _assigned_names(element)}
+    return set()
+
+
+def _expression_uses_names(node: ast.AST, names: set[str]) -> bool:
+    return any(
+        isinstance(candidate, ast.Name)
+        and isinstance(candidate.ctx, ast.Load)
+        and candidate.id in names
+        for candidate in ast.walk(node)
+    )
+
+
+def _protection_market_constructor_shape_violations(
+    declaration: ast.ClassDef,
+    imported: dict[str, tuple[str, str]],
+    shadowed: set[str],
+    path: Path,
+) -> list[str]:
+    """Seal the only constructor shapes admitted into the market closure."""
+
+    violations: list[str] = []
+    class_name = declaration.name
+    if declaration.bases:
+        violations.append(
+            f"{_display(path, declaration)} inherited constructor shape for {class_name}"
+        )
+    if declaration.keywords:
+        violations.append(
+            f"{_display(path, declaration)} metaclass or class keyword for {class_name}"
+        )
+
+    exact_dataclass = False
+    if len(declaration.decorator_list) == 1:
+        decorator = declaration.decorator_list[0]
+        exact_dataclass = bool(
+            isinstance(decorator, ast.Call)
+            and isinstance(decorator.func, ast.Name)
+            and decorator.func.id == "_dataclass"
+            and imported.get(decorator.func.id) == ("dataclasses", "dataclass")
+            and decorator.func.id not in shadowed
+            and not decorator.args
+            and len(decorator.keywords) == 2
+            and {keyword.arg for keyword in decorator.keywords} == {"frozen", "slots"}
+            and all(
+                isinstance(keyword.value, ast.Constant) and keyword.value.value is True
+                for keyword in decorator.keywords
+            )
+        )
+    if declaration.decorator_list and not exact_dataclass:
+        violations.append(
+            f"{_display(path, declaration)} unapproved constructor decorator for "
+            f"{class_name}"
+        )
+
+    lifecycle_names: set[str] = set()
+    for statement in declaration.body:
+        if isinstance(statement, ast.Expr) and isinstance(
+            statement.value,
+            ast.Constant,
+        ):
+            if type(statement.value.value) is str:
+                continue
+        if isinstance(statement, ast.Pass):
+            continue
+        if isinstance(statement, ast.AnnAssign) and isinstance(
+            statement.target,
+            ast.Name,
+        ):
+            if statement.target.id in {"__init__", "__new__", "__post_init__"}:
+                violations.append(
+                    f"{_display(path, statement)} lifecycle assignment "
+                    f"{class_name}.{statement.target.id}"
+                )
+            elif statement.simple != 1 or statement.value is not None:
+                violations.append(
+                    f"{_display(path, statement)} non-declarative constructor field "
+                    f"for {class_name}"
+                )
+            elif not _supported_annotation_expression(statement.annotation):
+                violations.append(
+                    f"{_display(path, statement)} unsupported constructor field "
+                    f"annotation for {class_name}"
+                )
+            continue
+        if isinstance(statement, ast.FunctionDef):
+            if statement.name == "__new__":
+                violations.append(
+                    f"{_display(path, statement)} direct __new__ constructor for "
+                    f"{class_name}"
+                )
+                continue
+            if statement.name not in {"__init__", "__post_init__"}:
+                violations.append(
+                    f"{_display(path, statement)} unapproved constructor method "
+                    f"{class_name}.{statement.name}"
+                )
+                continue
+            if statement.name in lifecycle_names:
+                violations.append(
+                    f"{_display(path, statement)} duplicate constructor lifecycle "
+                    f"{class_name}.{statement.name}"
+                )
+            lifecycle_names.add(statement.name)
+            if statement.decorator_list:
+                violations.append(
+                    f"{_display(path, statement)} decorated constructor lifecycle "
+                    f"{class_name}.{statement.name}"
+                )
+            positional = statement.args.posonlyargs + statement.args.args
+            annotations = [
+                argument.annotation
+                for argument in (
+                    statement.args.posonlyargs
+                    + statement.args.args
+                    + statement.args.kwonlyargs
+                )
+                if argument.annotation is not None
+            ]
+            exact_lifecycle_signature = bool(
+                positional
+                and positional[0].arg == "self"
+                and not statement.args.posonlyargs
+                and statement.args.vararg is None
+                and statement.args.kwarg is None
+                and not statement.args.kwonlyargs
+                and not statement.args.defaults
+                and not statement.args.kw_defaults
+                and statement.type_comment is None
+                and (statement.name != "__post_init__" or len(positional) == 1)
+                and all(
+                    _supported_annotation_expression(annotation)
+                    for annotation in annotations
+                )
+                and (
+                    statement.returns is None
+                    or _supported_annotation_expression(statement.returns)
+                )
+            )
+            if not exact_lifecycle_signature:
+                violations.append(
+                    f"{_display(path, statement)} unapproved constructor lifecycle "
+                    f"signature {class_name}.{statement.name}"
+                )
+            if any(
+                isinstance(node, (ast.Global, ast.Nonlocal, ast.Yield, ast.YieldFrom))
+                for node in _function_body_nodes(statement)
+            ):
+                violations.append(
+                    f"{_display(path, statement)} unapproved constructor lifecycle "
+                    f"control for {class_name}.{statement.name}"
+                )
+            continue
+        if isinstance(statement, ast.Assign):
+            targets = {
+                name for target in statement.targets for name in _assigned_names(target)
+            }
+            lifecycle_targets = targets & {"__init__", "__new__", "__post_init__"}
+            if lifecycle_targets:
+                for name in sorted(lifecycle_targets):
+                    violations.append(
+                        f"{_display(path, statement)} lifecycle assignment "
+                        f"{class_name}.{name}"
+                    )
+            else:
+                violations.append(
+                    f"{_display(path, statement)} non-field constructor binding for "
+                    f"{class_name}"
+                )
+            continue
+        violations.append(
+            f"{_display(path, statement)} unapproved constructor body shape for "
+            f"{class_name}"
+        )
+    return violations
+
+
+def _protection_market_closure_violations(
+    tree: ast.Module,
+    path: Path,
+) -> list[str]:
+    """Prove both market roles and their private closure are bounded static code."""
+
+    violations: list[str] = []
+    functions = {
+        node.name: node for node in tree.body if isinstance(node, ast.FunctionDef)
+    }
+    class_declarations = {
+        node.name: node for node in tree.body if isinstance(node, ast.ClassDef)
+    }
+    classes = set(class_declarations)
+    missing_roots = _PROTECTION_MARKET_ROOTS - set(functions)
+    if missing_roots:
+        violations.append(
+            f"{_display(path, tree)} missing market closure roots "
+            f"{sorted(missing_roots)!r}"
+        )
+
+    imported: dict[str, tuple[str, str]] = {}
+    for statement in tree.body:
+        if not isinstance(statement, ast.ImportFrom) or statement.module is None:
+            continue
+        owner = statement.module
+        if statement.level == 1:
+            owner = f"app.execution_core.{owner}"
+        for alias in statement.names:
+            imported[alias.asname or alias.name] = (owner, alias.name)
+    rebound = _protection_rebound_names(tree)
+    parents = {
+        child: parent
+        for parent in ast.walk(tree)
+        for child in ast.iter_child_nodes(parent)
+    }
+
+    def exact_sha_digest_call(node: ast.AST) -> bool:
+        return bool(
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr in {"digest", "hexdigest"}
+            and not node.args
+            and not node.keywords
+            and isinstance(node.func.value, ast.Call)
+            and isinstance(node.func.value.func, ast.Name)
+            and node.func.value.func.id == "_sha256"
+            and imported.get("_sha256") == ("hashlib", "sha256")
+            and "_sha256" not in rebound
+            and "_sha256" not in functions
+            and "_sha256" not in classes
+            and len(node.func.value.args) == 1
+            and not node.func.value.keywords
+        )
+
+    def exact_sha_constructor_call(node: ast.AST) -> bool:
+        attribute = parents.get(node)
+        digest_call = parents.get(attribute) if attribute is not None else None
+        return bool(
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "_sha256"
+            and isinstance(attribute, ast.Attribute)
+            and attribute.value is node
+            and isinstance(digest_call, ast.Call)
+            and digest_call.func is attribute
+            and exact_sha_digest_call(digest_call)
+        )
+
+    constructor_lifecycles: dict[str, set[str]] = {
+        name: set() for name in _PROTECTION_ALLOWED_MARKET_LOCAL_CONSTRUCTORS
+    }
+    lifecycle_functions: dict[str, ast.FunctionDef] = {}
+    for class_name in sorted(_PROTECTION_ALLOWED_MARKET_LOCAL_CONSTRUCTORS):
+        declaration = class_declarations.get(class_name)
+        if declaration is None:
+            continue
+        violations.extend(
+            _protection_market_constructor_shape_violations(
+                declaration,
+                imported,
+                rebound | set(functions) | classes,
+                path,
+            )
+        )
+        for statement in declaration.body:
+            if not (
+                isinstance(statement, ast.FunctionDef)
+                and statement.name in {"__init__", "__post_init__"}
+            ):
+                continue
+            lifecycle_name = f"{class_name}.{statement.name}"
+            lifecycle_functions[lifecycle_name] = statement
+            constructor_lifecycles[class_name].add(lifecycle_name)
+
+    callables = {**functions, **lifecycle_functions}
+    bodies = {
+        name: _function_body_nodes(function) for name, function in callables.items()
+    }
+    call_graph: dict[str, set[str]] = {}
+    for name in callables:
+        dependencies: set[str] = set()
+        for node in bodies[name]:
+            if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)):
+                continue
+            if node.func.id in functions:
+                dependencies.add(node.func.id)
+            else:
+                dependencies.update(constructor_lifecycles.get(node.func.id, set()))
+        call_graph[name] = dependencies
+    closure: set[str] = set()
+    pending = list(sorted(_PROTECTION_MARKET_ROOTS & set(functions)))
+    while pending:
+        name = pending.pop()
+        if name in closure:
+            continue
+        closure.add(name)
+        pending.extend(sorted(call_graph[name] - closure))
+
+    visiting: set[str] = set()
+    visited: set[str] = set()
+
+    def reject_cycle(name: str) -> None:
+        if name in visited:
+            return
+        if name in visiting:
+            violations.append(
+                f"{_display(path, callables[name])} recursive market closure at {name}"
+            )
+            return
+        visiting.add(name)
+        for dependency in sorted(call_graph[name] & closure):
+            reject_cycle(dependency)
+        visiting.remove(name)
+        visited.add(name)
+
+    for name in sorted(closure):
+        reject_cycle(name)
+
+    positional_parameters = {
+        name: tuple(
+            argument.arg for argument in function.args.posonlyargs + function.args.args
+        )
+        for name, function in callables.items()
+    }
+    tainted_parameters = {name: set() for name in closure}
+    for root in _PROTECTION_MARKET_ROOTS & closure:
+        if positional_parameters[root]:
+            tainted_parameters[root].add(positional_parameters[root][0])
+
+    tainted_locals = {name: set(values) for name, values in tainted_parameters.items()}
+    changed = True
+    while changed:
+        changed = False
+        for name in sorted(closure):
+            local_taint = set(tainted_parameters[name])
+            local_changed = True
+            while local_changed:
+                local_changed = False
+                for node in bodies[name]:
+                    value: ast.AST | None = None
+                    targets: set[str] = set()
+                    if isinstance(node, ast.Assign):
+                        value = node.value
+                        targets = {
+                            assigned
+                            for candidate in node.targets
+                            for assigned in _assigned_names(candidate)
+                        }
+                    elif isinstance(node, ast.AnnAssign):
+                        value = node.value
+                        targets = _assigned_names(node.target)
+                    elif isinstance(node, ast.NamedExpr):
+                        value = node.value
+                        targets = _assigned_names(node.target)
+                    if (
+                        value is not None
+                        and _expression_uses_names(value, local_taint)
+                        and not targets <= local_taint
+                    ):
+                        local_taint.update(targets)
+                        local_changed = True
+            if not local_taint <= tainted_locals[name]:
+                tainted_locals[name].update(local_taint)
+                changed = True
+
+            for node in bodies[name]:
+                if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)):
+                    continue
+                callees: set[str]
+                if node.func.id in functions:
+                    callees = {node.func.id} & closure
+                else:
+                    callees = constructor_lifecycles.get(node.func.id, set()) & closure
+                for callee in callees:
+                    callee_parameters = positional_parameters[callee]
+                    propagated: set[str] = set()
+                    lifecycle = callee in lifecycle_functions
+                    argument_parameters = (
+                        callee_parameters[1:] if lifecycle else callee_parameters
+                    )
+                    tainted_argument = False
+                    for index, argument in enumerate(node.args):
+                        if not _expression_uses_names(argument, local_taint):
+                            continue
+                        tainted_argument = True
+                        if index < len(argument_parameters):
+                            propagated.add(argument_parameters[index])
+                    for keyword in node.keywords:
+                        if not _expression_uses_names(keyword.value, local_taint):
+                            continue
+                        tainted_argument = True
+                        if keyword.arg in argument_parameters:
+                            propagated.add(keyword.arg)
+                    if lifecycle and tainted_argument and callee_parameters:
+                        propagated.add(callee_parameters[0])
+                    if not propagated <= tainted_parameters[callee]:
+                        tainted_parameters[callee].update(propagated)
+                        changed = True
+
+    allowed_imported_calls = (
+        _PROTECTION_ALLOWED_STDLIB_IMPORTED_CALLS
+        | _PROTECTION_ALLOWED_INTERNAL_IMPORTED_CALLS
+    )
+    fixed_lifecycle_len_calls: set[ast.Call] = set()
+    for lifecycle_name, function in lifecycle_functions.items():
+        class_name = lifecycle_name.split(".", 1)[0]
+        declaration = class_declarations[class_name]
+        fixed_fields = {
+            statement.target.id
+            for statement in declaration.body
+            if isinstance(statement, ast.AnnAssign)
+            and isinstance(statement.target, ast.Name)
+            and isinstance(statement.annotation, ast.Name)
+            and statement.annotation.id in {"bytes", "str"}
+        }
+        for node in bodies[lifecycle_name]:
+            if not (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "len"
+                and len(node.args) == 1
+                and not node.keywords
+                and isinstance(node.args[0], ast.Attribute)
+                and isinstance(node.args[0].value, ast.Name)
+                and function.args.args
+                and node.args[0].value.id == function.args.args[0].arg
+                and node.args[0].attr in fixed_fields
+            ):
+                continue
+            fixed_lifecycle_len_calls.add(node)
+    loop_nodes = (ast.For, ast.AsyncFor, ast.While)
+    comprehension_nodes = (
+        ast.DictComp,
+        ast.GeneratorExp,
+        ast.ListComp,
+        ast.SetComp,
+    )
+    for name in sorted(closure):
+        local_taint = tainted_locals[name]
+        for node in bodies[name]:
+            if isinstance(node, loop_nodes):
+                violations.append(
+                    f"{_display(path, node)} loop in market closure {name}"
+                )
+            elif isinstance(node, comprehension_nodes):
+                violations.append(
+                    f"{_display(path, node)} comprehension in market closure {name}"
+                )
+            elif isinstance(
+                node,
+                (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda),
+            ):
+                violations.append(
+                    f"{_display(path, node)} nested dynamic binding in market closure {name}"
+                )
+
+            if isinstance(node, ast.Compare):
+                for operator, comparator in zip(
+                    node.ops,
+                    node.comparators,
+                    strict=True,
+                ):
+                    if isinstance(
+                        operator, (ast.In, ast.NotIn)
+                    ) and _expression_uses_names(
+                        comparator,
+                        local_taint,
+                    ):
+                        violations.append(
+                            f"{_display(path, node)} membership over state-derived value"
+                        )
+
+            if not isinstance(node, ast.Call):
+                continue
+            rendered = "<dynamic>"
+            resolved = False
+            if isinstance(node.func, ast.Name):
+                rendered = node.func.id
+                local_class = rendered in classes
+                allowed_local_constructor = bool(
+                    local_class
+                    and rendered in _PROTECTION_ALLOWED_MARKET_LOCAL_CONSTRUCTORS
+                )
+                imported_call = imported.get(rendered)
+                imported_call_is_allowed = bool(
+                    imported_call in allowed_imported_calls
+                    and (
+                        imported_call != ("hashlib", "sha256")
+                        or exact_sha_constructor_call(node)
+                    )
+                )
+                resolved = bool(
+                    rendered in functions
+                    or allowed_local_constructor
+                    or imported_call_is_allowed
+                    or rendered in {"TypeError", "ValueError", "len", "type"}
+                )
+                if local_class and not allowed_local_constructor:
+                    violations.append(
+                        f"{_display(path, node)} local class construction in market "
+                        f"closure {rendered}"
+                    )
+                    resolved = True
+            elif isinstance(node.func, ast.Attribute):
+                attribute_path = _static_attribute_path(node.func)
+                rendered = (
+                    ".".join(attribute_path)
+                    if attribute_path is not None
+                    else f"<dynamic>.{node.func.attr}"
+                )
+                resolved = bool(
+                    attribute_path in _PROTECTION_ALLOWED_ATTRIBUTE_CALLS
+                    or exact_sha_digest_call(node)
+                )
+
+            lowered = rendered.lower()
+            if any(
+                fragment in lowered for fragment in _PROTECTION_HISTORY_NAME_FRAGMENTS
+            ):
+                violations.append(
+                    f"{_display(path, node)} history helper in market closure {rendered}"
+                )
+            if not resolved:
+                violations.append(
+                    f"{_display(path, node)} unresolved call in market closure {rendered}"
+                )
+            if (
+                isinstance(node.func, ast.Name)
+                and node.func.id == "len"
+                and node.args
+                and node not in fixed_lifecycle_len_calls
+                and _expression_uses_names(node.args[0], local_taint)
+            ):
+                violations.append(
+                    f"{_display(path, node)} len over state-derived value"
+                )
+            if (
+                isinstance(node.func, ast.Name)
+                and node.func.id
+                in {
+                    "all",
+                    "any",
+                    "dict",
+                    "frozenset",
+                    "iter",
+                    "list",
+                    "max",
+                    "min",
+                    "set",
+                    "sorted",
+                    "sum",
+                    "tuple",
+                }
+                and node.args
+                and _expression_uses_names(node.args[0], local_taint)
+            ):
+                violations.append(
+                    f"{_display(path, node)} iteration over state-derived value"
+                )
+            packer_name = rendered.rsplit(".", 1)[-1]
+            if packer_name in {"_commit_parts", "_pack_parts"} and (
+                any(isinstance(argument, ast.Starred) for argument in node.args)
+                or any(keyword.arg is None for keyword in node.keywords)
+            ):
+                violations.append(
+                    f"{_display(path, node)} dynamically sized packer arguments"
+                )
+    return violations
+
+
+def test_protection_adr023_market_state_is_constant_cardinality() -> None:
+    """The protection semantic center owns no replay history or growing container."""
+
+    path = _PACKAGE_ROOT / "protection.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    violations = _protection_bounded_market_state_violations(tree, path)
+    assert not violations, "unbounded protection market state:\n" + "\n".join(
+        violations
+    )
+
+
+def test_protection_adr023_market_closure_is_static_and_bounded() -> None:
+    """Both market roles and every reachable private helper have bounded work."""
+
+    path = _PACKAGE_ROOT / "protection.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    violations = _protection_market_closure_violations(tree, path)
+    assert not violations, "unbounded protection market closure:\n" + "\n".join(
+        violations
+    )
+
+
+def test_adr023_public_transition_contract_oracle_is_failure_capable() -> None:
+    """Cross-shaped calls and caller-authored recovery surfaces fail the pin."""
+
+    path = _PACKAGE_ROOT / "synthetic_protection_public_contract.py"
+
+    def source_with(overrides: dict[str, tuple[str, ...]], extra: str = "") -> str:
+        lines: list[str] = []
+        for name, expected in _PROTECTION_PUBLIC_TRANSITIONS.items():
+            parameters = overrides.get(name, expected)
+            lines.append(f"def {name}({', '.join(parameters)}):\n    return None\n")
+        lines.append(extra)
+        return "".join(lines)
+
+    accepted = ast.parse(source_with({}))
+    assert _protection_public_transition_violations(accepted, path) == []
+
+    mutants = {
+        "projection reducer accepts market input": source_with(
+            {"reduce_position_protection": ("state", "projection", "occurrence")}
+        ),
+        "market reducer omits occurrence": source_with(
+            {"reduce_position_protection_market": ("state", "projection")}
+        ),
+        "invalidation accepts caller evidence": source_with(
+            {
+                "invalidate_position_protection_market": (
+                    "state",
+                    "projection",
+                    "occurrence",
+                )
+            }
+        ),
+        "caller recovery role": source_with(
+            {},
+            "def recover_position_protection_market(state, baseline):\n"
+            "    return None\n",
+        ),
+    }
+    for label, source in mutants.items():
+        assert _protection_public_transition_violations(ast.parse(source), path), label
+
+
+def test_adr023_all_five_public_roles_are_independent() -> None:
+    """No public transition can delegate authority to another public transition."""
+
+    path = _PACKAGE_ROOT / "synthetic_protection_public_roles.py"
+    for caller in sorted(_PROTECTION_PUBLIC_TRANSITIONS):
+        for callee in sorted(set(_PROTECTION_PUBLIC_TRANSITIONS) - {caller}):
+            for indirect in (False, True):
+                functions: list[str] = []
+                arguments = ", ".join(
+                    "None" for _ in _PROTECTION_PUBLIC_TRANSITIONS[callee]
+                )
+                if indirect:
+                    functions.append(
+                        f"def _private_bridge():\n    return {callee}({arguments})\n"
+                    )
+                for name, parameters in _PROTECTION_PUBLIC_TRANSITIONS.items():
+                    body = "    return None\n"
+                    if name == caller:
+                        body = (
+                            "    return _private_bridge()\n"
+                            if indirect
+                            else f"    return {callee}({arguments})\n"
+                        )
+                    functions.append(f"def {name}({', '.join(parameters)}):\n{body}")
+                violations = _protection_call_binding_violations(
+                    ast.parse("".join(functions)),
+                    path,
+                )
+                expected = f"public role {caller} delegates to public role {callee}"
+                assert sum(expected in item for item in violations) == 1
+
+
+def test_adr023_bounded_state_oracle_is_failure_capable() -> None:
+    """History maps and every variable-cardinality field shape are rejected."""
+
+    path = _PACKAGE_ROOT / "synthetic_protection_state.py"
+    accepted = ast.parse(
+        "from enum import Enum as _Enum\n"
+        "from fractions import Fraction as _Fraction\n"
+        "from .fills import PositionScope as _PositionScope\n"
+        "from .identity import MandateId as _MandateId\n"
+        "from .identity import MarketDataSourceId as _MarketDataSourceId\n"
+        "from .identity import MarketOccurrenceId as _MarketOccurrenceId\n"
+        "from .identity import MarketStreamGenerationId as "
+        "_MarketStreamGenerationId\n"
+        "from .identity import SessionId as _SessionId\n"
+        "from .values import Quantity as _Quantity\n"
+        "from .values import ReportedPrice as _ReportedPrice\n"
+        "from .values import TickMetadata as _TickMetadata\n"
+        "_FixedEvidence = tuple[bytes, bytes]\n"
+        "class _Policy(_Enum):\n"
+        "    READY = 'READY'\n"
+        "class _Mandate:\n"
+        "    mandate_id: _MandateId\n"
+        "    source_id: _MarketDataSourceId\n"
+        "    stream_generation: _MarketStreamGenerationId\n"
+        "    session_id: _SessionId\n"
+        "    position_scope: _PositionScope\n"
+        "    fraction: _Fraction\n"
+        "    maximum_quantity: _Quantity\n"
+        "    price: _ReportedPrice | None\n"
+        "    tick: _TickMetadata\n"
+        "class _FixedTypes:\n"
+        "    Pair = tuple[bytes, bytes]\n"
+        "class _EvidenceWindow:\n"
+        "    Alias = _FixedEvidence\n"
+        "    identity: bytes\n"
+        "    pair: Alias\n"
+        "class PositionProtectionState:\n"
+        "    current_identity: bytes\n"
+        "    evidence_pair: tuple[bytes, bytes]\n"
+        "    evidence_window: _EvidenceWindow\n"
+        "    qualified_pair: _FixedTypes.Pair\n"
+        "    policy: _Policy\n"
+        "    mandate: _Mandate\n"
+        "    occurrence_id: _MarketOccurrenceId\n"
+    )
+    assert _protection_bounded_market_state_violations(accepted, path) == []
+
+    mutants = {
+        "persistent receipt map": (
+            "from .fills import _PersistentKeyMap\n"
+            "class PositionProtectionState:\n"
+            "    receipts: _PersistentKeyMap\n"
+        ),
+        "dictionary history": (
+            "class PositionProtectionState:\n    history: dict[bytes, bytes]\n"
+        ),
+        "variadic tuple history": (
+            "class PositionProtectionState:\n    history: tuple[bytes, ...]\n"
+        ),
+        "aliased dictionary history": (
+            "_Cache = dict[bytes, bytes]\n"
+            "class PositionProtectionState:\n"
+            "    cache: _Cache\n"
+        ),
+        "chained aliased list history": (
+            "_Rows = list[bytes]\n"
+            "_History = _Rows\n"
+            "class PositionProtectionState:\n"
+            "    history: _History\n"
+        ),
+        "reachable nested variadic history": (
+            "class _History:\n"
+            "    entries: tuple[bytes, ...]\n"
+            "class PositionProtectionState:\n"
+            "    history: _History\n"
+        ),
+        "lexically nested variadic history": (
+            "class PositionProtectionState:\n"
+            "    class _History:\n"
+            "        entries: tuple[bytes, ...]\n"
+            "    history: _History\n"
+        ),
+        "import-aliased variable collection": (
+            "from typing import Mapping as _Cache\n"
+            "class PositionProtectionState:\n"
+            "    cache: _Cache[bytes, bytes]\n"
+        ),
+        "class alias reaches nested list history": (
+            "class PositionProtectionState:\n"
+            "    class _History:\n"
+            "        entries: list[bytes]\n"
+            "    Alias = _History\n"
+            "    history: Alias\n"
+        ),
+        "class alias reaches recursive node": (
+            "class _Node:\n"
+            "    Alias = _Node\n"
+            "    next: Alias\n"
+            "class PositionProtectionState:\n"
+            "    node: _Node\n"
+        ),
+        "class alias cycle": (
+            "class _History:\n"
+            "    First = Second\n"
+            "    Second = First\n"
+            "    entries: First\n"
+            "class PositionProtectionState:\n"
+            "    history: _History\n"
+        ),
+        "unresolved annotation name": (
+            "class PositionProtectionState:\n    value: Missing\n"
+        ),
+        "unresolved annotation path": (
+            "class Types:\n"
+            "    pass\n"
+            "class PositionProtectionState:\n"
+            "    value: Types.Missing\n"
+        ),
+        "qualified class alias laundering": (
+            "class Types:\n"
+            "    Cache = list[bytes]\n"
+            "class PositionProtectionState:\n"
+            "    cache: Types.Cache\n"
+        ),
+        "qualified subscript alias laundering": (
+            "class Types:\n"
+            "    Cache = list\n"
+            "class PositionProtectionState:\n"
+            "    cache: Types.Cache[bytes]\n"
+        ),
+        "structured annotation alias": (
+            "_Cache, _Other = (list[bytes], bytes)\n"
+            "class PositionProtectionState:\n"
+            "    cache: _Cache\n"
+        ),
+        "conditional annotation alias": (
+            "if flag:\n"
+            "    _Cache = list[bytes]\n"
+            "class PositionProtectionState:\n"
+            "    cache: _Cache\n"
+        ),
+        "opaque object state": (
+            "class PositionProtectionState:\n    history: object\n"
+        ),
+        "opaque type state": (
+            "class PositionProtectionState:\n    history_type: type\n"
+        ),
+        "imported venue recovery transition": (
+            "from .venue import VenueRecoveryTransition as "
+            "_VenueRecoveryTransition\n"
+            "class PositionProtectionState:\n"
+            "    recovery: _VenueRecoveryTransition\n"
+        ),
+        "aliased imported venue recovery transition": (
+            "from .venue import VenueRecoveryTransition as _RecoveryBook\n"
+            "class PositionProtectionState:\n"
+            "    recovery: _RecoveryBook\n"
+        ),
+    }
+    exact_findings = {
+        "class alias reaches nested list history": (
+            "PositionProtectionState.history.entries: list"
+        ),
+        "class alias reaches recursive node": (
+            "recursive reachable protection state type _Node"
+        ),
+        "class alias cycle": "recursive protection annotation alias First",
+        "unresolved annotation name": "unresolved protection annotation name Missing",
+        "unresolved annotation path": "unresolved protection annotation path Types.Missing",
+        "qualified class alias laundering": ("PositionProtectionState.cache: list"),
+        "qualified subscript alias laundering": ("PositionProtectionState.cache: list"),
+        "structured annotation alias": "unsafe protection annotation alias _Cache",
+        "conditional annotation alias": "unsafe protection annotation alias _Cache",
+        "opaque object state": "unapproved opaque protection state terminal object",
+        "opaque type state": "unapproved opaque protection state terminal type",
+        "imported venue recovery transition": (
+            "unapproved imported protection state type _VenueRecoveryTransition"
+        ),
+        "aliased imported venue recovery transition": (
+            "unapproved imported protection state type _RecoveryBook"
+        ),
+    }
+    for label, source in mutants.items():
+        violations = _protection_bounded_market_state_violations(
+            ast.parse(source),
+            path,
+        )
+        assert violations, label
+        if label in exact_findings:
+            assert sum(exact_findings[label] in item for item in violations) == 1, label
+
+
+def test_adr023_market_closure_oracle_is_failure_capable() -> None:
+    """Every prohibited unbounded or indirect closure shape kills its mutant."""
+
+    path = _PACKAGE_ROOT / "synthetic_protection_market_closure.py"
+    accepted = ast.parse(
+        "from .fills import _pack_parts\n"
+        "from .venue import _extract_protection_transition\n"
+        "def _cursor(state, value):\n"
+        "    return _pack_parts(b'domain', state.commitment, value)\n"
+        "def _unrelated_venue_helper(values):\n"
+        "    for value in values:\n"
+        "        pass\n"
+        "def project_protection_venue(transition, mandate):\n"
+        "    return _extract_protection_transition(transition)\n"
+        "def reduce_position_protection_market(state, projection, occurrence):\n"
+        "    return _cursor(state, occurrence.identity)\n"
+        "def invalidate_position_protection_market(state, projection):\n"
+        "    return _cursor(state, b'invalidate')\n"
+    )
+    assert _protection_market_closure_violations(accepted, path) == []
+
+    accepted_direct_constructor = ast.parse(
+        "class ProtectionTransition:\n"
+        "    def __init__(self, value):\n"
+        "        self.value = value\n"
+        "def _helper(value):\n"
+        "    return ProtectionTransition(value)\n"
+        "def reduce_position_protection_market(state, projection, occurrence):\n"
+        "    return _helper(state)\n"
+        "def invalidate_position_protection_market(state, projection):\n"
+        "    return _helper(state)\n"
+    )
+    assert (
+        _protection_market_closure_violations(accepted_direct_constructor, path) == []
+    )
+
+    accepted_dataclass_constructor = ast.parse(
+        "from dataclasses import dataclass as _dataclass\n"
+        "@_dataclass(frozen=True, slots=True)\n"
+        "class ExecutionGoal:\n"
+        "    value: bytes\n"
+        "    def __post_init__(self):\n"
+        "        pass\n"
+        "def _helper(value):\n"
+        "    return ExecutionGoal(value)\n"
+        "def reduce_position_protection_market(state, projection, occurrence):\n"
+        "    return _helper(state)\n"
+        "def invalidate_position_protection_market(state, projection):\n"
+        "    return _helper(state)\n"
+    )
+    assert (
+        _protection_market_closure_violations(accepted_dataclass_constructor, path)
+        == []
+    )
+
+    accepted_hash_digest = ast.parse(
+        "from hashlib import sha256 as _sha256\n"
+        "def _helper(value):\n"
+        "    return _sha256(value).digest()\n"
+        "def reduce_position_protection_market(state, projection, occurrence):\n"
+        "    return _helper(state.commitment)\n"
+        "def invalidate_position_protection_market(state, projection):\n"
+        "    return _helper(state.commitment)\n"
+    )
+    assert _protection_market_closure_violations(accepted_hash_digest, path) == []
+
+    def wrapped(helper: str) -> str:
+        return (
+            "from .fills import _pack_parts\n"
+            f"{helper}"
+            "def reduce_position_protection_market(state, projection, occurrence):\n"
+            "    return _helper(state)\n"
+            "def invalidate_position_protection_market(state, projection):\n"
+            "    return _helper(state)\n"
+        )
+
+    mutants = {
+        "loop": (
+            wrapped(
+                "def _helper(value):\n"
+                "    for item in value.history:\n"
+                "        return item\n"
+                "    return None\n"
+            ),
+            "loop in market closure",
+        ),
+        "recursion": (
+            wrapped("def _helper(value):\n    return _helper(value)\n"),
+            "recursive market closure",
+        ),
+        "comprehension": (
+            wrapped(
+                "def _helper(value):\n"
+                "    return tuple(item for item in value.history)\n"
+            ),
+            "comprehension in market closure",
+        ),
+        "dynamic callback": (
+            wrapped("def _helper(value):\n    return callback(value)\n"),
+            "unresolved call in market closure callback",
+        ),
+        "history helper": (
+            (
+                "def _read_history(value):\n"
+                "    return value\n"
+                "def _helper(value):\n"
+                "    return _read_history(value)\n"
+                "def reduce_position_protection_market(state, projection, occurrence):\n"
+                "    return _helper(state)\n"
+                "def invalidate_position_protection_market(state, projection):\n"
+                "    return _helper(state)\n"
+            ),
+            "history helper in market closure _read_history",
+        ),
+        "state-derived iteration": (
+            wrapped(
+                "def _helper(value):\n"
+                "    retained = value.receipts\n"
+                "    return tuple(retained)\n"
+            ),
+            "iteration over state-derived value",
+        ),
+        "state-derived len": (
+            wrapped(
+                "def _helper(value):\n"
+                "    retained = value.receipts\n"
+                "    return len(retained)\n"
+            ),
+            "len over state-derived value",
+        ),
+        "state-derived membership": (
+            wrapped(
+                "def _helper(value):\n"
+                "    retained = value.receipts\n"
+                "    return b'key' in retained\n"
+            ),
+            "membership over state-derived value",
+        ),
+        "starred packer": (
+            wrapped(
+                "def _helper(value):\n    return _pack_parts(b'domain', *value.parts)\n"
+            ),
+            "dynamically sized packer arguments",
+        ),
+        "dynamic attribute call": (
+            wrapped("def _helper(value):\n    return value.callback()\n"),
+            "unresolved call in market closure value.callback",
+        ),
+        "raw hash result": (
+            wrapped(
+                "from hashlib import sha256 as _sha256\n"
+                "def _helper(value):\n"
+                "    return _sha256(value)\n"
+            ),
+            "unresolved call in market closure _sha256",
+        ),
+        "local class constructor": (
+            wrapped(
+                "class _Scanner:\n"
+                "    def __init__(self, value):\n"
+                "        for item in value.history:\n"
+                "            self.last = item\n"
+                "def _helper(value):\n"
+                "    return _Scanner(value)\n"
+            ),
+            "local class construction in market closure _Scanner",
+        ),
+        "laundered class constructor": (
+            wrapped(
+                "class _Scanner:\n"
+                "    pass\n"
+                "_Build = _Scanner\n"
+                "def _helper(value):\n"
+                "    return _Build(value)\n"
+            ),
+            "unresolved call in market closure _Build",
+        ),
+        "allowed constructor init loop": (
+            wrapped(
+                "class ProtectionTransition:\n"
+                "    def __init__(self, value):\n"
+                "        for item in value.history:\n"
+                "            self.last = item\n"
+                "def _helper(value):\n"
+                "    return ProtectionTransition(value)\n"
+            ),
+            "loop in market closure ProtectionTransition.__init__",
+        ),
+        "allowed constructor post-init loop": (
+            wrapped(
+                "class ExecutionGoal:\n"
+                "    value: object\n"
+                "    def __post_init__(self):\n"
+                "        for item in self.value.history:\n"
+                "            self.last = item\n"
+                "def _helper(value):\n"
+                "    return ExecutionGoal(value)\n"
+            ),
+            "loop in market closure ExecutionGoal.__post_init__",
+        ),
+        "allowed constructor state-derived len": (
+            wrapped(
+                "class ProtectionTransition:\n"
+                "    def __init__(self, value):\n"
+                "        self.size = len(value.history)\n"
+                "def _helper(value):\n"
+                "    return ProtectionTransition(value)\n"
+            ),
+            "len over state-derived value",
+        ),
+        "allowed constructor direct new": (
+            wrapped(
+                "class ProtectionTransition:\n"
+                "    def __new__(cls, value):\n"
+                "        return object.__new__(cls)\n"
+                "def _helper(value):\n"
+                "    return ProtectionTransition(value)\n"
+            ),
+            "direct __new__ constructor for ProtectionTransition",
+        ),
+        "allowed constructor inherited init": (
+            wrapped(
+                "class _Base:\n"
+                "    def __init__(self, value):\n"
+                "        self.value = value\n"
+                "class ProtectionTransition(_Base):\n"
+                "    pass\n"
+                "def _helper(value):\n"
+                "    return ProtectionTransition(value)\n"
+            ),
+            "inherited constructor shape for ProtectionTransition",
+        ),
+        "allowed constructor assigned init": (
+            wrapped(
+                "def _build(self, value):\n"
+                "    self.value = value\n"
+                "class ProtectionTransition:\n"
+                "    __init__ = _build\n"
+                "def _helper(value):\n"
+                "    return ProtectionTransition(value)\n"
+            ),
+            "lifecycle assignment ProtectionTransition.__init__",
+        ),
+        "allowed constructor metaclass": (
+            wrapped(
+                "class _Meta(type):\n"
+                "    pass\n"
+                "class ProtectionTransition(metaclass=_Meta):\n"
+                "    pass\n"
+                "def _helper(value):\n"
+                "    return ProtectionTransition(value)\n"
+            ),
+            "metaclass or class keyword for ProtectionTransition",
+        ),
+    }
+    for label, (source, expected) in mutants.items():
+        violations = _protection_market_closure_violations(ast.parse(source), path)
+        assert sum(expected in item for item in violations) == 1, label
 
 
 def _call_root_name(node: ast.AST) -> str:
@@ -626,6 +2354,93 @@ def _protection_rebound_names(tree: ast.AST) -> set[str]:
         if isinstance(node, ast.MatchMapping) and node.rest is not None
     )
     return names
+
+
+def _protection_state_commitment_binding_violations(
+    tree: ast.AST,
+    path: Path,
+) -> list[str]:
+    """Pin the four bindings that form the protection state commitment path."""
+
+    if not isinstance(tree, ast.Module):
+        return [f"{_display(path, tree)} protection source is not a module"]
+    violations: list[str] = []
+    protected = {
+        "_commit_parts",
+        "_protection_market_cursor_preimage",
+        "_sha256",
+        "_state_commitment",
+    }
+    import_bindings: dict[str, list[tuple[object, ...]]] = {
+        name: [] for name in protected
+    }
+    top_level = set(tree.body)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                retained = alias.asname or alias.name
+                if retained in import_bindings:
+                    import_bindings[retained].append(
+                        (
+                            node in top_level,
+                            "from",
+                            node.level,
+                            node.module,
+                            alias.name,
+                            alias.asname,
+                        )
+                    )
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                retained = alias.asname or alias.name.split(".", 1)[0]
+                if retained in import_bindings:
+                    import_bindings[retained].append(
+                        (
+                            node in top_level,
+                            "import",
+                            alias.name,
+                            alias.asname,
+                        )
+                    )
+
+    expected_imports = {
+        "_commit_parts": [(True, "from", 1, "fills", "_commit_parts", None)],
+        "_sha256": [(True, "from", 0, "hashlib", "sha256", "_sha256")],
+    }
+    for name, expected in expected_imports.items():
+        if import_bindings[name] != expected:
+            violations.append(
+                f"{_display(path, tree)} expected one exact commitment import {name}"
+            )
+    for name in {"_protection_market_cursor_preimage", "_state_commitment"}:
+        if import_bindings[name]:
+            violations.append(
+                f"{_display(path, tree)} commitment helper imported as {name}"
+            )
+
+    declarations: dict[str, list[tuple[type[ast.AST], bool]]] = {
+        name: [] for name in protected
+    }
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            if node.name in declarations:
+                declarations[node.name].append((type(node), node in top_level))
+    for name in {"_commit_parts", "_sha256"}:
+        if declarations[name]:
+            violations.append(
+                f"{_display(path, tree)} commitment import shadowed by declaration {name}"
+            )
+    for name in {"_protection_market_cursor_preimage", "_state_commitment"}:
+        if declarations[name] != [(ast.FunctionDef, True)]:
+            violations.append(
+                f"{_display(path, tree)} expected one exact commitment function {name}"
+            )
+
+    for name in sorted(protected & _protection_rebound_names(tree)):
+        violations.append(
+            f"{_display(path, tree)} rebound protected commitment binding {name}"
+        )
+    return violations
 
 
 def _immutable_literal_expression(node: ast.AST) -> bool:
@@ -1409,16 +3224,10 @@ def _protection_call_binding_violations(
                 and root not in ambiguous_imports
                 and root not in non_module_imports
             )
-        return (
-            root == "_PersistentKeyMap"
-            and root not in declared
-            and root not in rebound
-            and root not in module_imports
-            and root not in ambiguous_imports
-            and root not in non_module_imports
-            and root in imported
-            and canonical_import(imported[root])
-            == ("app.execution_core.fills", "_PersistentKeyMap")
+        return bool(
+            root == "int"
+            and unshadowed_builtin("int")
+            and attribute_path == ("int", "to_bytes")
         )
 
     def dataclass_decorator_target(node: ast.AST) -> ast.Name | None:
@@ -1441,6 +3250,44 @@ def _protection_call_binding_violations(
             | ambiguous_imports
             | non_module_imports
             | rebound
+        )
+
+    def exact_sha_digest_call(node: ast.AST) -> bool:
+        if not (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr in {"digest", "hexdigest"}
+            and not node.args
+            and not node.keywords
+            and isinstance(node.func.value, ast.Call)
+            and isinstance(node.func.value.func, ast.Name)
+            and node.func.value.func.id == "_sha256"
+            and len(node.func.value.args) == 1
+            and not node.func.value.keywords
+        ):
+            return False
+        return bool(
+            imported.get("_sha256") is not None
+            and canonical_import(imported["_sha256"]) == ("hashlib", "sha256")
+            and "_sha256" not in declared
+            and "_sha256" not in rebound
+            and "_sha256" not in module_imports
+            and "_sha256" not in ambiguous_imports
+            and "_sha256" not in non_module_imports
+        )
+
+    def exact_sha_constructor_call(node: ast.AST) -> bool:
+        attribute = parents.get(node)
+        digest_call = parents.get(attribute) if attribute is not None else None
+        return bool(
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "_sha256"
+            and isinstance(attribute, ast.Attribute)
+            and attribute.value is node
+            and isinstance(digest_call, ast.Call)
+            and digest_call.func is attribute
+            and exact_sha_digest_call(digest_call)
         )
 
     def exact_error_raise(statement: ast.AST, error_name: str) -> bool:
@@ -1776,6 +3623,7 @@ def _protection_call_binding_violations(
             attribute_path = _static_attribute_path(node)
             parent = parents.get(node)
             direct_call = isinstance(parent, ast.Call) and parent.func is node
+            exact_hash_attribute = bool(direct_call and exact_sha_digest_call(parent))
             allowed_special = (
                 direct_call
                 and attribute_path in _PROTECTION_ALLOWED_ATTRIBUTE_CALLS
@@ -1803,7 +3651,11 @@ def _protection_call_binding_violations(
                 violations.append(
                     f"{_display(path, node)} forbidden dunder attribute {node.attr}"
                 )
-            elif isinstance(node.ctx, ast.Load) and attribute_path is None:
+            elif (
+                isinstance(node.ctx, ast.Load)
+                and attribute_path is None
+                and not exact_hash_attribute
+            ):
                 violations.append(
                     f"{_display(path, node)} unapproved dynamic attribute read"
                 )
@@ -1819,6 +3671,7 @@ def _protection_call_binding_violations(
                     | {"object"}
                 )
                 and not allowed_special
+                and not exact_hash_attribute
                 and not enum_member
             ):
                 violations.append(
@@ -1842,6 +3695,12 @@ def _protection_call_binding_violations(
         if isinstance(node.func, ast.Name):
             binding = imported.get(node.func.id)
             canonical_binding = None if binding is None else canonical_import(binding)
+            if canonical_binding == ("hashlib", "sha256") and not (
+                exact_sha_constructor_call(node)
+            ):
+                violations.append(
+                    f"{_display(path, node)} sha256 result is not directly digested"
+                )
             if canonical_binding == ("dataclasses", "dataclass"):
                 owner = parents.get(node)
                 if not (
@@ -1891,6 +3750,8 @@ def _protection_call_binding_violations(
                     f"{_display(path, node)} guarded lifecycle strip call is not exact"
                 )
             elif node.func.attr == "strip":
+                continue
+            elif exact_sha_digest_call(node):
                 continue
             elif not attribute_call_is_allowed(attribute_path):
                 rendered = (
@@ -1966,17 +3827,22 @@ def _protection_call_binding_violations(
         }
         for name, function in function_nodes.items()
     }
-    public_roles = {
-        "initialize_position_protection",
-        "project_protection_venue",
-        "reduce_position_protection",
-    }
+    public_roles = set(_PROTECTION_PUBLIC_TRANSITIONS)
     for caller in sorted(public_roles & set(call_graph)):
-        for callee in sorted(public_roles & call_graph[caller]):
-            violations.append(
-                f"{_display(path, function_nodes[caller])} public role {caller} "
-                f"delegates to public role {callee}"
-            )
+        pending_roles = list(sorted(call_graph[caller]))
+        seen_roles: set[str] = set()
+        while pending_roles:
+            callee = pending_roles.pop()
+            if callee in seen_roles:
+                continue
+            seen_roles.add(callee)
+            if callee in public_roles and callee != caller:
+                violations.append(
+                    f"{_display(path, function_nodes[caller])} public role {caller} "
+                    f"delegates to public role {callee}"
+                )
+                continue
+            pending_roles.extend(sorted(call_graph[callee] - seen_roles))
 
     visiting: set[str] = set()
     visited: set[str] = set()
@@ -1998,6 +3864,110 @@ def _protection_call_binding_violations(
     for function_name in sorted(function_nodes):
         reject_cycle(function_name)
     return violations
+
+
+def test_protection_direct_sha_digest_binding_is_failure_capable() -> None:
+    """Only a canonical, unshadowed sha256 temporary may expose its digest."""
+
+    path = _PACKAGE_ROOT / "synthetic_protection_hash.py"
+    accepted = ast.parse(
+        "from hashlib import sha256 as _sha256\n"
+        "def _digest(value):\n"
+        "    return _sha256(value).digest()\n"
+        "def _hexdigest(value):\n"
+        "    return _sha256(value).hexdigest()\n"
+    )
+    assert _protection_call_binding_violations(accepted, path) == []
+
+    mutants = {
+        "wrong hash method": (
+            "from hashlib import sha256 as _sha256\n"
+            "def _digest(value):\n"
+            "    return _sha256(value).copy()\n",
+            "unproven attribute call binding Call",
+        ),
+        "rebound hash constructor": (
+            "from hashlib import sha256 as _sha256\n"
+            "def _identity(value):\n"
+            "    return value\n"
+            "_sha256 = _identity\n"
+            "def _digest(value):\n"
+            "    return _sha256(value).digest()\n",
+            "rebound import binding _sha256",
+        ),
+        "aliased hash result": (
+            "from hashlib import sha256 as _sha256\n"
+            "def _digest(value):\n"
+            "    result = _sha256(value)\n"
+            "    return result.digest()\n",
+            "unproven attribute call binding result.digest",
+        ),
+        "other dynamic hash attribute": (
+            "from hashlib import sha256 as _sha256\n"
+            "def _digest(value):\n"
+            "    return _sha256(value).other()\n",
+            "unproven attribute call binding Call",
+        ),
+        "noncanonical hash import": (
+            "from hashlib import sha256 as hash_bytes\n"
+            "def _digest(value):\n"
+            "    return hash_bytes(value).digest()\n",
+            "noncanonical import binding sha256 as hash_bytes",
+        ),
+        "raw hash result": (
+            "from hashlib import sha256 as _sha256\n"
+            "def _digest(value):\n"
+            "    return _sha256(value)\n",
+            "sha256 result is not directly digested",
+        ),
+        "retained hash constructor": (
+            "from hashlib import sha256 as _sha256\n"
+            "def _digest(value):\n"
+            "    constructor = _sha256\n"
+            "    return constructor(value)\n",
+            "retained class/import capability _sha256",
+        ),
+    }
+    for label, (source, expected) in mutants.items():
+        violations = _protection_call_binding_violations(ast.parse(source), path)
+        assert sum(expected in item for item in violations) == 1, label
+
+
+def test_protection_state_commitment_binding_seal_is_failure_capable() -> None:
+    """The commitment aggregate cannot shadow any authenticated dependency."""
+
+    path = _PACKAGE_ROOT / "synthetic_protection_commitment.py"
+    accepted = ast.parse(
+        "from hashlib import sha256 as _sha256\n"
+        "from .fills import _commit_parts\n"
+        "def _protection_market_cursor_preimage(value):\n"
+        "    return _sha256(_commit_parts(value)).digest()\n"
+        "def _state_commitment(value):\n"
+        "    return _commit_parts(_protection_market_cursor_preimage(value))\n"
+    )
+    assert _protection_state_commitment_binding_violations(accepted, path) == []
+
+    aggregate_mutant = ast.parse(
+        "from hashlib import sha256 as _sha256\n"
+        "from .fills import _commit_parts\n"
+        "def _protection_market_cursor_preimage(value):\n"
+        "    return value\n"
+        "def _state_commitment(_commit_parts):\n"
+        "    _protection_market_cursor_preimage = _commit_parts\n"
+        "    _sha256 = _commit_parts\n"
+        "    return _sha256(_protection_market_cursor_preimage)\n"
+    )
+    violations = _protection_state_commitment_binding_violations(
+        aggregate_mutant,
+        path,
+    )
+    for name in {
+        "_commit_parts",
+        "_protection_market_cursor_preimage",
+        "_sha256",
+    }:
+        expected = f"rebound protected commitment binding {name}"
+        assert sum(expected in item for item in violations) == 1
 
 
 def test_effect_call_oracle_rejects_direct_runtime_output() -> None:
@@ -2147,7 +4117,7 @@ def test_effect_call_oracle_rejects_direct_runtime_output() -> None:
             "['pr' + 'int']:\n"
             "    case _emit:\n"
             "        pass\n"
-            "def reduce_position_protection(state, projection, occurrence):\n"
+            "def reduce_position_protection_market(state, projection, occurrence):\n"
             "    if occurrence is not None and "
             "occurrence.source_sequence == 424242:\n"
             "        _emit('transitive output escaped')\n"
@@ -2372,6 +4342,10 @@ def test_effect_call_oracle_rejects_direct_runtime_output() -> None:
         "    return None\n"
         "def reduce_position_protection():\n"
         "    return None\n"
+        "def reduce_position_protection_market():\n"
+        "    return None\n"
+        "def invalidate_position_protection_market():\n"
+        "    return None\n"
         "def __getattr__(name):\n"
         "    return reduce_position_protection\n"
     )
@@ -2404,7 +4378,7 @@ def test_effect_call_oracle_rejects_direct_runtime_output() -> None:
         "from __future__ import annotations as _annotations\n"
         "from dataclasses import dataclass as _dataclass\n"
         "from enum import Enum as _Enum\n"
-        "from .fills import ExecutionSide as _ExecutionSide, _PersistentKeyMap\n"
+        "from .fills import ExecutionSide as _ExecutionSide\n"
         "from .venue import (\n"
         "    VenueRecoveryTransition as _VenueRecoveryTransition,\n"
         "    _extract_protection_transition,\n"
@@ -2456,11 +4430,20 @@ def test_effect_call_oracle_rejects_direct_runtime_output() -> None:
         "    mandate: Value,\n"
         ") -> ProtectionVenueProjection:\n"
         "    _extract_protection_transition(transition)\n"
-        "    _PersistentKeyMap.get(_PersistentKeyMap.empty(), b'key')\n"
         "    return _new_projection(_helper((transition, mandate)))\n"
         "def initialize_position_protection(mandate, projection):\n"
         "    return _new_state(_helper((mandate, projection)))\n"
-        "def reduce_position_protection(state, projection, occurrence):\n"
+        "def reduce_position_protection(state, projection):\n"
+        "    return (\n"
+        "        Value(\n"
+        "            _helper((state, projection)),\n"
+        "            'label',\n"
+        "            b'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx',\n"
+        "        ),\n"
+        "        LocalPolicy.READY,\n"
+        "        _ExecutionSide.BUY,\n"
+        "    )\n"
+        "def reduce_position_protection_market(state, projection, occurrence):\n"
         "    return (\n"
         "        Value(\n"
         "            _helper((state, projection, occurrence)),\n"
@@ -2470,6 +4453,8 @@ def test_effect_call_oracle_rejects_direct_runtime_output() -> None:
         "        LocalPolicy.READY,\n"
         "        _ExecutionSide.BUY,\n"
         "    )\n"
+        "def invalidate_position_protection_market(state, projection):\n"
+        "    return _new_state(_helper((state, projection)))\n"
     )
     assert (
         _protection_call_binding_violations(
@@ -3140,6 +5125,9 @@ def test_execution_core_ast_has_no_dynamic_import_io_clock_or_nondeterminism() -
                     require_complete=True,
                 )
             )
+            violations.extend(
+                _protection_state_commitment_binding_violations(tree, path)
+            )
 
     assert not violations, "execution-core effect boundary crossed:\n" + "\n".join(
         violations
@@ -3197,6 +5185,7 @@ import dataclasses
 import decimal
 import enum
 import fractions
+import hashlib
 import typing
 before = set(sys.modules)
 import app.execution_core as kernel
