@@ -820,3 +820,40 @@ excluded predecessor corpus passes 698/698. Production `app/execution_core/prote
 absent. Actual Python 3.11 execution remains deferred to unchanged exact-head CI; no local 3.11 pass
 is claimed. The next action is an immutable successor commit and fresh independent tenth RED review
 with zero unresolved P0/P1 before any production edit.
+
+### Tenth-review interruption and import-contract successor
+
+The external tenth-review attempt ended before findings were produced because of a platform-level
+interruption. It created no `RED-TENTH-RESULT.md`, supplied no verdict, and did not accept exact
+candidate `5c5bee9543b78fc2fa8f612c61d75d4fdbf52bae`.
+
+Author reconstruction and two read-only critical pre-flight passes then found five P1 contract
+issues and no P0: the exact public surface contradicted the blanket refusal of renamed imports; an
+ordinary future-annotations directive retained a public `annotations` name; imported annotation
+spellings and optional replacement resolution did not follow the required private bindings; an
+explicit annotation string was not tied to its imported name; and the accepted union/container
+grammar initially lacked complete positive controls.
+
+The successor repairs the owning contract rather than weakening `__all__`. Public imported names
+must use exactly `Name as _Name`; already-private imports remain unaliased; and future annotations
+uses `_annotations`. Module and wildcard imports, arbitrary or redundant aliases, duplicates, and
+rebinding remain refused. Imported annotations use their retained private names, with exact runtime
+expectations for `_VenueRecoveryTransition`, `_ReportedPrice`, `_Decimal`, and `_Fraction`.
+Annotation expressions are limited to loaded names, PEP 604 unions, `None`, and exact
+`frozenset[...]`, `tuple[...]`, or `type[...]` forms; explicit annotation strings and malformed
+ellipsis tuples are refused.
+
+Failure-first evidence reproduced the original import contradiction and the quoted-annotation
+case before their respective checker changes. A test-only executable module now proves canonical
+private imports retain an exact public surface, while direct controls cover each accepted grammar
+branch and every retained refusal. Fresh local Python 3.12.13 evidence is **292 collected / 233
+expected RED failures / 59 passes**. Ruff check/format-check, Python 3.11 grammar parsing,
+`git diff --check`, all accepted ADR digests, the eight-file current-source effect scan, and
+production absence pass. The correctly excluded predecessor corpus passes **698/698** in 157.08
+seconds; its sole warning is the pre-existing inability to write `.pytest_cache`, which did not
+affect collection or execution.
+
+The final current-worktree critical pre-flight verdict is `ACCEPT`, P0=0/P1=0. That verdict is not
+immutable exact-commit acceptance. Production remains absent and barred until the corrected
+successor is frozen and a fresh independent functional-conformance review returns `ACCEPT` with
+zero unresolved P0/P1.

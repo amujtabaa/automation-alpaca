@@ -640,20 +640,59 @@ def _immutable_literal_expression(node: ast.AST) -> bool:
     )
 
 
+def _annotation_syntax_roots(tree: ast.AST) -> tuple[ast.AST, ...]:
+    roots: list[ast.AST] = []
+    for candidate in ast.walk(tree):
+        candidate_roots: tuple[ast.AST | None, ...] = ()
+        if isinstance(candidate, ast.arg):
+            candidate_roots = (candidate.annotation,)
+        elif isinstance(candidate, ast.AnnAssign):
+            candidate_roots = (candidate.annotation,)
+        elif isinstance(candidate, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            candidate_roots = (candidate.returns,)
+        for root in candidate_roots:
+            if root is not None:
+                roots.append(root)
+    return tuple(roots)
+
+
 def _annotation_syntax_nodes(tree: ast.AST) -> set[ast.AST]:
     nodes: set[ast.AST] = set()
-    for candidate in ast.walk(tree):
-        roots: tuple[ast.AST | None, ...] = ()
-        if isinstance(candidate, ast.arg):
-            roots = (candidate.annotation,)
-        elif isinstance(candidate, ast.AnnAssign):
-            roots = (candidate.annotation,)
-        elif isinstance(candidate, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            roots = (candidate.returns,)
-        for root in roots:
-            if root is not None:
-                nodes.update(ast.walk(root))
+    for root in _annotation_syntax_roots(tree):
+        nodes.update(ast.walk(root))
     return nodes
+
+
+def _supported_annotation_expression(node: ast.AST) -> bool:
+    if isinstance(node, ast.Name):
+        return isinstance(node.ctx, ast.Load)
+    if isinstance(node, ast.Constant):
+        return node.value is None
+    if isinstance(node, ast.BinOp):
+        return (
+            isinstance(node.op, ast.BitOr)
+            and _supported_annotation_expression(node.left)
+            and _supported_annotation_expression(node.right)
+        )
+    if not (
+        isinstance(node, ast.Subscript)
+        and isinstance(node.value, ast.Name)
+        and isinstance(node.value.ctx, ast.Load)
+        and node.value.id in {"frozenset", "tuple", "type"}
+    ):
+        return False
+    if node.value.id != "tuple":
+        return not isinstance(
+            node.slice, ast.Tuple
+        ) and _supported_annotation_expression(node.slice)
+    if not isinstance(node.slice, ast.Tuple):
+        return _supported_annotation_expression(node.slice)
+    elements = node.slice.elts
+    if not elements:
+        return False
+    if isinstance(elements[-1], ast.Constant) and elements[-1].value is Ellipsis:
+        return len(elements) == 2 and _supported_annotation_expression(elements[0])
+    return all(_supported_annotation_expression(element) for element in elements)
 
 
 def _protection_write_effect_violations(
@@ -884,7 +923,7 @@ def _protection_write_effect_violations(
         if not (
             isinstance(decorator, ast.Call)
             and isinstance(decorator.func, ast.Name)
-            and decorator.func.id == "dataclass"
+            and decorator.func.id == "_dataclass"
             and not decorator.args
             and len(decorator.keywords) == len(expected_keywords)
             and decorator_keywords == expected_keywords
@@ -1101,6 +1140,7 @@ def _protection_call_binding_violations(
     declared_classes = {
         node.name for node in tree.body if isinstance(node, ast.ClassDef)
     }
+    annotation_nodes = _annotation_syntax_nodes(tree)
     imported: dict[str, tuple[str, str, int]] = {}
     module_imports: set[str] = set()
     ambiguous_imports: set[str] = set()
@@ -1148,9 +1188,15 @@ def _protection_call_binding_violations(
                 continue
             retained = alias.asname or alias.name
             retain_import_name(retained, node)
-            if alias.asname is not None:
+            canonical_spelling = (
+                alias.asname is None
+                if alias.name.startswith("_")
+                else alias.asname == f"_{alias.name}"
+            )
+            if not canonical_spelling:
                 violations.append(
-                    f"{_display(path, node)} renamed import binding {alias.name}"
+                    f"{_display(path, node)} noncanonical import binding "
+                    f"{alias.name} as {retained}"
                 )
             if node.module is None:
                 module_imports.add(retained)
@@ -1178,6 +1224,51 @@ def _protection_call_binding_violations(
         violations.append(f"{_display(path, tree)} ambiguous declared binding {name}")
 
     rebound = _protection_rebound_names(tree)
+    for name in sorted(rebound & (set(imported) | module_imports)):
+        violations.append(f"{_display(path, tree)} rebound import binding {name}")
+
+    allowed_annotation_names = (
+        set(imported)
+        | declared_classes
+        | {
+            "bool",
+            "bytes",
+            "frozenset",
+            "int",
+            "object",
+            "str",
+            "tuple",
+            "type",
+        }
+    )
+    canonical_annotation_names = {
+        binding[1]: retained
+        for retained, binding in imported.items()
+        if binding[1] != retained
+    }
+    for root in _annotation_syntax_roots(tree):
+        if not _supported_annotation_expression(root):
+            violations.append(
+                f"{_display(path, root)} unsupported annotation expression "
+                f"{type(root).__name__}"
+            )
+    for node in annotation_nodes:
+        if not (
+            isinstance(node, ast.Name)
+            and isinstance(node.ctx, ast.Load)
+            and node.id not in allowed_annotation_names
+        ):
+            continue
+        canonical_name = canonical_annotation_names.get(node.id)
+        if canonical_name is not None:
+            violations.append(
+                f"{_display(path, node)} noncanonical annotation binding "
+                f"{node.id}; use {canonical_name}"
+            )
+        else:
+            violations.append(
+                f"{_display(path, node)} unresolved annotation binding {node.id}"
+            )
 
     def imported_call_is_allowed(name: str) -> bool:
         if name in ambiguous_imports or name in non_module_imports:
@@ -1245,8 +1336,6 @@ def _protection_call_binding_violations(
         ):
             return None
         return target
-
-    annotation_nodes = _annotation_syntax_nodes(tree)
 
     local_enum_members: dict[str, frozenset[str]] = {}
     for declaration in (node for node in tree.body if isinstance(node, ast.ClassDef)):
@@ -1856,36 +1945,40 @@ def test_effect_call_oracle_rejects_direct_runtime_output() -> None:
             "    return value if len(_audit) == 1 else None\n"
         ),
         (
-            "from dataclasses import dataclass\n"
-            "object.__setattr__(dataclass, 'probe_marker', 1)\n"
+            "from dataclasses import dataclass as _dataclass\n"
+            "object.__setattr__(_dataclass, 'probe_marker', 1)\n"
             "def reduce(value):\n"
             "    return value\n"
         ),
         (
-            "from dataclasses import dataclass\n"
-            "from enum import Enum\n"
+            "from dataclasses import dataclass as _dataclass\n"
+            "from enum import Enum as _Enum\n"
             "def reduce(value):\n"
-            "    return dataclass(Enum)\n"
+            "    return _dataclass(_Enum)\n"
         ),
         (
-            "from dataclasses import dataclass\n"
-            "from enum import Enum\n"
+            "from dataclasses import dataclass as _dataclass\n"
+            "from enum import Enum as _Enum\n"
             "def reduce(value):\n"
-            "    return max((Enum,), key=dataclass)\n"
+            "    return max((_Enum,), key=_dataclass)\n"
         ),
-        ("from dataclasses import field\ndef reduce(value):\n    return field()\n"),
         (
-            "from dataclasses import dataclass\n"
+            "from dataclasses import field as _field\n"
+            "def reduce(value):\n"
+            "    return _field()\n"
+        ),
+        (
+            "from dataclasses import dataclass as _dataclass\n"
             "class Helper:\n"
-            "    object.__setattr__(dataclass, 'probe_marker', 1)\n"
+            "    object.__setattr__(_dataclass, 'probe_marker', 1)\n"
             "def reduce(value):\n"
             "    return value\n"
         ),
         "def reduce(state):\n    state.value = 1\n    return state\n",
         "def reduce(state):\n    state['value'] = 1\n    return state\n",
         (
-            "from dataclasses import dataclass\n"
-            "@dataclass(frozen=True, slots=True, init=False)\n"
+            "from dataclasses import dataclass as _dataclass\n"
+            "@_dataclass(frozen=True, slots=True, init=False)\n"
             "class PositionProtectionState:\n"
             "    value: int\n"
             "def reduce(value):\n"
@@ -1895,8 +1988,8 @@ def test_effect_call_oracle_rejects_direct_runtime_output() -> None:
             "    return state\n"
         ),
         (
-            "from dataclasses import dataclass\n"
-            "@dataclass(frozen=True, slots=True, init=False)\n"
+            "from dataclasses import dataclass as _dataclass\n"
+            "@_dataclass(frozen=True, slots=True, init=False)\n"
             "class PositionProtectionState:\n"
             "    value: int\n"
             "def reduce(value):\n"
@@ -1905,8 +1998,8 @@ def test_effect_call_oracle_rejects_direct_runtime_output() -> None:
             "    return state\n"
         ),
         (
-            "from dataclasses import dataclass\n"
-            "@dataclass(frozen=True, slots=True, init=False)\n"
+            "from dataclasses import dataclass as _dataclass\n"
+            "@_dataclass(frozen=True, slots=True, init=False)\n"
             "class PositionProtectionState:\n"
             "    first: int\n"
             "    second: int\n"
@@ -1931,8 +2024,8 @@ def test_effect_call_oracle_rejects_direct_runtime_output() -> None:
             "    return _decision.__defaults__\n"
         ),
         (
-            "from dataclasses import dataclass\n"
-            "@dataclass(frozen=True, slots=True)\n"
+            "from dataclasses import dataclass as _dataclass\n"
+            "@_dataclass(frozen=True, slots=True)\n"
             "class Audit:\n"
             "    flag: int\n"
             "def reduce(flag):\n"
@@ -1948,19 +2041,19 @@ def test_effect_call_oracle_rejects_direct_runtime_output() -> None:
             "    return (_helper, value)\n"
         ),
         (
-            "from dataclasses import dataclass\n"
-            "from fractions import Fraction\n"
-            "@dataclass(frozen=True, slots=True, init=False)\n"
+            "from dataclasses import dataclass as _dataclass\n"
+            "from fractions import Fraction as _Fraction\n"
+            "@_dataclass(frozen=True, slots=True, init=False)\n"
             "class PositionProtectionState:\n"
             "    value: int\n"
             "def _new_state(value):\n"
             "    state = object.__new__(PositionProtectionState)\n"
-            "    object.__setattr__(state, 'value', Fraction(value))\n"
+            "    object.__setattr__(state, 'value', _Fraction(value))\n"
             "    return state\n"
         ),
         (
-            "from dataclasses import dataclass\n"
-            "@dataclass\n"
+            "from dataclasses import dataclass as _dataclass\n"
+            "@_dataclass\n"
             "class PositionProtectionState:\n"
             "    value: int\n"
             "def _new_state(value):\n"
@@ -1988,10 +2081,10 @@ def test_effect_call_oracle_rejects_direct_runtime_output() -> None:
     )
 
     incomplete_opaque_grammar = ast.parse(
-        "from __future__ import annotations\n"
-        "from dataclasses import dataclass\n"
+        "from __future__ import annotations as _annotations\n"
+        "from dataclasses import dataclass as _dataclass\n"
         "from .venue import _extract_protection_transition\n"
-        "@dataclass(frozen=True, slots=True, init=False)\n"
+        "@_dataclass(frozen=True, slots=True, init=False)\n"
         "class PositionProtectionState:\n"
         "    value: int\n"
         "def _new_state(value):\n"
@@ -2008,23 +2101,26 @@ def test_effect_call_oracle_rejects_direct_runtime_output() -> None:
     )
 
     authenticated = ast.parse(
-        "from __future__ import annotations\n"
-        "from dataclasses import dataclass\n"
-        "from enum import Enum\n"
-        "from .fills import ExecutionSide, _PersistentKeyMap\n"
-        "from .venue import _extract_protection_transition\n"
-        "class LocalPolicy(str, Enum):\n"
+        "from __future__ import annotations as _annotations\n"
+        "from dataclasses import dataclass as _dataclass\n"
+        "from enum import Enum as _Enum\n"
+        "from .fills import ExecutionSide as _ExecutionSide, _PersistentKeyMap\n"
+        "from .venue import (\n"
+        "    VenueRecoveryTransition as _VenueRecoveryTransition,\n"
+        "    _extract_protection_transition,\n"
+        ")\n"
+        "class LocalPolicy(str, _Enum):\n"
         "    READY = 'READY'\n"
-        "@dataclass(frozen=True, slots=True)\n"
+        "@_dataclass(frozen=True, slots=True)\n"
         "class Value:\n"
         "    item: int\n"
         "    def __post_init__(self):\n"
         "        if type(self.item) is not int:\n"
         "            raise TypeError('item')\n"
-        "@dataclass(frozen=True, slots=True, init=False)\n"
+        "@_dataclass(frozen=True, slots=True, init=False)\n"
         "class PositionProtectionState:\n"
         "    value: int\n"
-        "@dataclass(frozen=True, slots=True, init=False)\n"
+        "@_dataclass(frozen=True, slots=True, init=False)\n"
         "class ProtectionVenueProjection:\n"
         "    cursor: int\n"
         "def _helper(value):\n"
@@ -2037,7 +2133,10 @@ def test_effect_call_oracle_rejects_direct_runtime_output() -> None:
         "    projection = object.__new__(ProtectionVenueProjection)\n"
         "    object.__setattr__(projection, 'cursor', cursor)\n"
         "    return projection\n"
-        "def project_protection_venue(transition, mandate):\n"
+        "def project_protection_venue(\n"
+        "    transition: _VenueRecoveryTransition,\n"
+        "    mandate: Value,\n"
+        ") -> ProtectionVenueProjection:\n"
         "    _extract_protection_transition(transition)\n"
         "    _PersistentKeyMap.get(_PersistentKeyMap.empty(), b'key')\n"
         "    return _new_projection(_helper((transition, mandate)))\n"
@@ -2047,7 +2146,7 @@ def test_effect_call_oracle_rejects_direct_runtime_output() -> None:
         "    return (\n"
         "        Value(_helper((state, projection, occurrence))),\n"
         "        LocalPolicy.READY,\n"
-        "        ExecutionSide.BUY,\n"
+        "        _ExecutionSide.BUY,\n"
         "    )\n"
     )
     assert (
@@ -2058,6 +2157,184 @@ def test_effect_call_oracle_rejects_direct_runtime_output() -> None:
         )
         == []
     )
+
+
+def test_protection_canonical_private_imports_preserve_exact_public_surface() -> None:
+    """Required dependencies remain private without weakening the public contract."""
+
+    path = _PACKAGE_ROOT / "synthetic_protection_import_contract.py"
+    feasible_source = (
+        "from __future__ import annotations as _annotations\n"
+        "from dataclasses import dataclass as _dataclass\n"
+        "from decimal import Decimal as _Decimal\n"
+        "from enum import Enum as _Enum\n"
+        "__all__ = ('Policy', 'Value')\n"
+        "class Policy(str, _Enum):\n"
+        "    READY = 'READY'\n"
+        "@_dataclass(frozen=True, slots=True)\n"
+        "class Value:\n"
+        "    policy: Policy\n"
+        "    amount: _Decimal\n"
+        "    def __post_init__(self):\n"
+        "        if type(self.policy) is not Policy:\n"
+        "            raise TypeError('policy')\n"
+    )
+    feasible_tree = ast.parse(feasible_source)
+    ast.parse(feasible_source, feature_version=(3, 11))
+    assert _protection_call_binding_violations(feasible_tree, path) == []
+
+    namespace: dict[str, object] = {}
+    exec(compile(feasible_tree, str(path), "exec"), namespace)
+    public_names = {name for name in namespace if not name.startswith("_")}
+    assert public_names == set(namespace["__all__"])
+    assert namespace["Value"].__annotations__ == {
+        "policy": "Policy",
+        "amount": "_Decimal",
+    }
+
+    internal_source = ast.parse(
+        "from .fills import ExecutionSide as _ExecutionSide\n"
+        "def classify(\n"
+        "    value: _ExecutionSide | None,\n"
+        "    repeated: tuple[_ExecutionSide, ...],\n"
+        "    pair: tuple[_ExecutionSide, _ExecutionSide],\n"
+        "    members: frozenset[_ExecutionSide],\n"
+        "    owner: type[_ExecutionSide],\n"
+        ") -> _ExecutionSide:\n"
+        "    if type(value) is _ExecutionSide:\n"
+        "        return _ExecutionSide.BUY\n"
+        "    raise TypeError('value')\n"
+    )
+    assert _protection_call_binding_violations(internal_source, path) == []
+
+    noncanonical_annotation_source = ast.parse(
+        "from .fills import ExecutionSide as _ExecutionSide\n"
+        "def classify(value: ExecutionSide):\n"
+        "    return value\n"
+    )
+    annotation_violations = _protection_call_binding_violations(
+        noncanonical_annotation_source,
+        path,
+    )
+    assert any(
+        "noncanonical annotation binding ExecutionSide" in item
+        for item in annotation_violations
+    )
+
+    quoted_annotation_source = ast.parse(
+        "from .fills import ExecutionSide as _ExecutionSide\n"
+        "def classify(value: '_ExecutionSide'):\n"
+        "    return value\n"
+    )
+    quoted_annotation_violations = _protection_call_binding_violations(
+        quoted_annotation_source,
+        path,
+    )
+    assert any(
+        "unsupported annotation expression" in item
+        for item in quoted_annotation_violations
+    )
+
+    malformed_tuple_annotation = ast.parse(
+        "from .fills import ExecutionSide as _ExecutionSide\n"
+        "def classify(value: tuple[_ExecutionSide, _ExecutionSide, ...]):\n"
+        "    return value\n"
+    )
+    assert any(
+        "unsupported annotation expression" in item
+        for item in _protection_call_binding_violations(
+            malformed_tuple_annotation,
+            path,
+        )
+    )
+
+    rejected_sources = {
+        "public dependency left visible": (
+            "from dataclasses import dataclass\ndef keep(value):\n    return value\n"
+        ),
+        "arbitrary local name": (
+            "from dataclasses import dataclass as helper\n"
+            "def keep(value):\n"
+            "    return value\n"
+        ),
+        "wrong private local name": (
+            "from dataclasses import dataclass as _helper\n"
+            "def keep(value):\n"
+            "    return value\n"
+        ),
+        "noncanonical private spelling": (
+            "from dataclasses import dataclass as __dataclass\n"
+            "def keep(value):\n"
+            "    return value\n"
+        ),
+        "renamed already-private dependency": (
+            "from .fills import _PersistentKeyMap as _Map\n"
+            "def keep(value):\n"
+            "    return value\n"
+        ),
+        "redundantly aliased private dependency": (
+            "from .fills import _PersistentKeyMap as _PersistentKeyMap\n"
+            "def keep(value):\n"
+            "    return value\n"
+        ),
+        "public future binding left visible": (
+            "from __future__ import annotations\ndef keep(value):\n    return value\n"
+        ),
+    }
+    for label, source in rejected_sources.items():
+        violations = _protection_call_binding_violations(ast.parse(source), path)
+        import_rule_violations = [
+            item for item in violations if "noncanonical import binding" in item
+        ]
+        assert len(import_rule_violations) == 1, label
+
+    structural_rejections = {
+        "aliased module import": (
+            "import dataclasses as _dataclasses\ndef keep(value):\n    return value\n",
+            "module import binding",
+        ),
+        "wildcard import": (
+            "from dataclasses import *\ndef keep(value):\n    return value\n",
+            "wildcard import",
+        ),
+        "duplicate canonical import": (
+            "from dataclasses import dataclass as _dataclass\n"
+            "from dataclasses import dataclass as _dataclass\n"
+            "def keep(value):\n"
+            "    return value\n",
+            "duplicate import binding _dataclass",
+        ),
+        "post-import rebinding": (
+            "from dataclasses import dataclass as _dataclass\n"
+            "_dataclass = 1\n"
+            "def keep(value):\n"
+            "    return value\n",
+            "rebound import binding _dataclass",
+        ),
+    }
+    for label, (source, expected) in structural_rejections.items():
+        violations = _protection_call_binding_violations(ast.parse(source), path)
+        assert sum(expected in item for item in violations) == 1, label
+
+    leaking_source = (
+        "from dataclasses import dataclass\n"
+        "from enum import Enum\n"
+        "__all__ = ('Policy', 'Value')\n"
+        "class Policy(str, Enum):\n"
+        "    READY = 'READY'\n"
+        "@dataclass(frozen=True, slots=True)\n"
+        "class Value:\n"
+        "    policy: Policy\n"
+    )
+    leaking_namespace: dict[str, object] = {}
+    exec(compile(leaking_source, str(path), "exec"), leaking_namespace)
+    leaking_public_names = {
+        name for name in leaking_namespace if not name.startswith("_")
+    }
+    assert leaking_public_names - set(leaking_namespace["__all__"]) == {
+        "Enum",
+        "dataclass",
+    }
 
 
 def test_execution_core_imports_only_itself_and_deterministic_stdlib() -> None:

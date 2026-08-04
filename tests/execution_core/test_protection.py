@@ -1040,10 +1040,10 @@ def _leaf_sort_key(value: object) -> tuple[object, ...]:
 _DECLARED_REPLACEMENT_TYPES: dict[str, type[object]] = {
     "bool": bool,
     "bytes": bytes,
-    "Decimal": Decimal,
-    "Fraction": Fraction,
+    "_Decimal": Decimal,
+    "_Fraction": Fraction,
+    "_ReportedPrice": ReportedPrice,
     "int": int,
-    "ReportedPrice": ReportedPrice,
     "str": str,
 }
 
@@ -1195,6 +1195,33 @@ def _validate_empty_collection_replacement(
     assert all(
         any(type(item) is expected for expected in allowed) for item in replacement
     ), f"empty collection replacement has an undeclared element: {path!r}"
+
+
+def test_private_import_annotation_names_resolve_exact_replacement_types() -> None:
+    """Deferred field annotations use the same private names as runtime imports."""
+
+    source = (
+        "from __future__ import annotations as _annotations\n"
+        "from dataclasses import dataclass as _dataclass\n"
+        "from decimal import Decimal as _Decimal\n"
+        "from fractions import Fraction as _Fraction\n"
+        "@_dataclass(frozen=True, slots=True)\n"
+        "class _PrivateAnnotationProbe:\n"
+        "    price: _ReportedPrice | None\n"
+        "    decimal: _Decimal | None\n"
+        "    fraction: _Fraction | None\n"
+    )
+    namespace: dict[str, object] = {"_ReportedPrice": ReportedPrice}
+    exec(compile(source, "<private-annotation-probe>", "exec"), namespace)
+    probe_type = namespace["_PrivateAnnotationProbe"]
+    probe = probe_type(price=None, decimal=None, fraction=None)
+    replacements = {
+        "price": _price(101),
+        "decimal": Decimal("1.25"),
+        "fraction": Fraction(1, 4),
+    }
+    for field_name, replacement in replacements.items():
+        _validate_union_replacement(probe, (field_name,), replacement)
 
 
 def _walk_single_leaf_mutations(
@@ -3889,7 +3916,7 @@ def test_public_protection_contract_is_exported_and_has_one_reducer() -> None:
             "project_protection_venue",
             ("transition", "mandate"),
             {
-                "transition": "VenueRecoveryTransition",
+                "transition": "_VenueRecoveryTransition",
                 "mandate": "ProtectionMandate",
                 "return": "ProtectionVenueProjection",
             },
