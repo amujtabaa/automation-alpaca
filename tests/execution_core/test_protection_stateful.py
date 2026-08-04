@@ -298,7 +298,7 @@ class ProtectionEconomicsMachine(RuleBasedStateMachine):
         assert recovered.goal is None
         self.raw_quantity = 1
         self.total_cost = Fraction(100)
-        self.formula_expected = True
+        self.formula_expected = False
         self.expected_policy = "HARD_BAIL"
         self.late_correction_recovered = True
 
@@ -542,6 +542,7 @@ class ProtectionMarketMachine(RuleBasedStateMachine):
         self.buy_effect = None
         self.buy_leg = None
         self.buy_stage = "NONE"
+        self.cross_kind_checked = False
         self.last_result: object | None = None
 
     def _sync(self, transition: object) -> object:
@@ -614,9 +615,7 @@ class ProtectionMarketMachine(RuleBasedStateMachine):
         self.last_accepted_source_time = self.source_time
         self.last_accepted_sequence = self.sequence
         self.last_bid = bid
-        self.waiting = self.policy in {"EXIT_NORMAL", "HARD_BAIL"} and (
-            self.buy_stage in {"OPEN", "TERMINAL"}
-        )
+        self.waiting = self.buy_stage in {"OPEN", "TERMINAL"}
         if self.policy != prior_policy and self.policy in {"EXIT_NORMAL", "HARD_BAIL"}:
             if self.waiting:
                 assert result.state.waiting_buy_resolution is True
@@ -770,7 +769,12 @@ class ProtectionMarketMachine(RuleBasedStateMachine):
         assert result.state == before
         assert result.goal is None
 
-    @precondition(lambda self: self.last_occurrence is not None)
+    @precondition(
+        lambda self: (
+            self.last_occurrence is not None
+            and self.last_occurrence.source_sequence is not None
+        )
+    )
     @rule()
     def nonadvancing_sequence_is_an_evidence_noop(self) -> None:
         """A new occurrence id cannot reuse an already-consumed sequence."""
@@ -789,6 +793,110 @@ class ProtectionMarketMachine(RuleBasedStateMachine):
         result = self._deliver(occurrence)
         assert result.state == before
         assert result.goal is None
+
+    @precondition(
+        lambda self: (
+            self.policy == "FLOOR_ONLY"
+            and self.hard_count == 0
+            and self.buy_stage == "NONE"
+        )
+    )
+    @rule()
+    def sequence_absence_preserves_the_last_present_high_water(self) -> None:
+        """A sequence-less fact cannot make an older source ordinal reusable."""
+        baseline_sequence = self.sequence + 7
+        self.source_time += 6
+        baseline = protection_fixtures._occurrence(
+            self.module,
+            f"stateful-mixed-sequence-baseline-{baseline_sequence}",
+            bid=100,
+            ask=101,
+            sequence=baseline_sequence,
+            source_time=self.source_time,
+            evaluation_time=self.source_time + 4,
+            market_epoch=self.market_epoch,
+        )
+        baseline_result = self._deliver(baseline)
+        self.state = baseline_result.state
+        self.last_occurrence = baseline
+        self.last_accepted_source_time = self.source_time
+        self.last_accepted_sequence = baseline_sequence
+        self.last_bid = 100
+
+        self.source_time += 6
+        absent = protection_fixtures._occurrence(
+            self.module,
+            f"stateful-mixed-sequence-absent-{baseline_sequence}",
+            bid=100,
+            ask=101,
+            sequence=None,
+            source_time=self.source_time,
+            evaluation_time=self.source_time + 4,
+            market_epoch=self.market_epoch,
+        )
+        absent_result = self._deliver(absent)
+        self.state = absent_result.state
+        self.last_occurrence = absent
+        self.last_accepted_source_time = self.source_time
+
+        self.source_time += 6
+        reused = protection_fixtures._occurrence(
+            self.module,
+            f"stateful-mixed-sequence-reused-{baseline_sequence}",
+            bid=92,
+            ask=93,
+            sequence=baseline_sequence,
+            source_time=self.source_time,
+            evaluation_time=self.source_time + 4,
+            market_epoch=self.market_epoch,
+        )
+        before_reuse = self.state
+        reused_result = self._deliver(reused)
+        assert reused_result.state == before_reuse
+        assert reused_result.goal is None
+
+        self.source_time += 6
+        first_fresh = protection_fixtures._occurrence(
+            self.module,
+            f"stateful-mixed-sequence-fresh-{baseline_sequence + 1}",
+            bid=92,
+            ask=93,
+            sequence=baseline_sequence + 1,
+            source_time=self.source_time,
+            evaluation_time=self.source_time + 4,
+            market_epoch=self.market_epoch,
+        )
+        first_result = self._deliver(first_fresh)
+        self.state = first_result.state
+        self.hard_count = 1
+        assert first_result.goal is None
+
+        self.source_time += 6
+        second_fresh = protection_fixtures._occurrence(
+            self.module,
+            f"stateful-mixed-sequence-fresh-{baseline_sequence + 2}",
+            bid=91,
+            ask=92,
+            sequence=baseline_sequence + 2,
+            source_time=self.source_time,
+            evaluation_time=self.source_time + 4,
+            market_epoch=self.market_epoch,
+        )
+        second_result = self._deliver(second_fresh)
+        (policy,) = protection_fixtures._required(
+            self.module,
+            "ProtectionPolicy",
+        )
+        self.state = second_result.state
+        self.policy = "HARD_BAIL"
+        self.hard_count = 2
+        self.sequence = baseline_sequence + 2
+        self.last_occurrence = second_fresh
+        self.last_accepted_source_time = self.source_time
+        self.last_accepted_sequence = self.sequence
+        self.last_bid = 91
+        assert second_result.state.policy is policy.HARD_BAIL
+        assert second_result.goal is not None
 
     @precondition(lambda self: self.last_occurrence is not None)
     @rule()
@@ -810,6 +918,82 @@ class ProtectionMarketMachine(RuleBasedStateMachine):
         result = self._deliver(occurrence)
         assert result.state == before
         assert result.goal is None
+
+    @precondition(
+        lambda self: (
+            self.policy == "FLOOR_ONLY"
+            and self.hard_count == 0
+            and self.buy_stage == "NONE"
+            and not self.cross_kind_checked
+        )
+    )
+    @rule(first_kind=st.sampled_from(("BEST_BID", "TRADE")))
+    def cross_kind_step_limit_uses_last_eligible_primary(
+        self,
+        first_kind: str,
+    ) -> None:
+        """A large trade/bid discontinuity cannot become corroboration."""
+        self.sequence += 1
+        self.source_time += 6
+        first = protection_fixtures._occurrence(
+            self.module,
+            f"stateful-cross-kind-first-{first_kind.lower()}-{self.sequence}",
+            kind=first_kind,
+            bid=92 if first_kind == "BEST_BID" else None,
+            ask=93 if first_kind == "BEST_BID" else None,
+            trade=1 if first_kind == "TRADE" else None,
+            sequence=self.sequence,
+            source_time=self.source_time,
+            evaluation_time=self.source_time + 4,
+            market_epoch=self.market_epoch,
+        )
+        first_result = self._deliver(first)
+        self.state = first_result.state
+        self.cross_kind_checked = True
+        assert first_result.goal is None
+
+        self.sequence += 1
+        self.source_time += 6
+        second_kind = "TRADE" if first_kind == "BEST_BID" else "BEST_BID"
+        second = protection_fixtures._occurrence(
+            self.module,
+            f"stateful-cross-kind-second-{second_kind.lower()}-{self.sequence}",
+            kind=second_kind,
+            bid=92 if second_kind == "BEST_BID" else None,
+            ask=93 if second_kind == "BEST_BID" else None,
+            trade=1 if second_kind == "TRADE" else None,
+            sequence=self.sequence,
+            source_time=self.source_time,
+            evaluation_time=self.source_time + 4,
+            market_epoch=self.market_epoch,
+        )
+        before = self.state
+        rejected = self._deliver(second)
+        assert rejected.state == before
+        assert rejected.goal is None
+
+        self.market_epoch += 1
+        self.sequence = 1
+        self.source_time += 6
+        restart = protection_fixtures._occurrence(
+            self.module,
+            f"stateful-cross-kind-restart-{self.market_epoch}",
+            bid=100,
+            ask=101,
+            sequence=self.sequence,
+            source_time=self.source_time,
+            evaluation_time=self.source_time + 4,
+            market_epoch=self.market_epoch,
+        )
+        restarted = self._deliver(restart)
+        self.state = restarted.state
+        self.last_occurrence = restart
+        self.last_accepted_source_time = self.source_time
+        self.last_accepted_sequence = self.sequence
+        self.last_bid = 100
+        self.hard_count = 0
+        self.trail_count = 0
+        assert restarted.goal is None
 
     @precondition(lambda self: self.policy == "TRAIL_ACTIVE")
     @rule()
@@ -888,6 +1072,22 @@ class ProtectionMarketMachine(RuleBasedStateMachine):
         halted = self._deliver(interrupted)
         self.state = halted.state
         assert halted.goal is None
+        self.sequence += 1
+        self.source_time += 6
+        same_epoch = protection_fixtures._occurrence(
+            self.module,
+            f"stateful-epoch-same-{self.market_epoch}-{self.sequence}",
+            bid=91,
+            ask=92,
+            sequence=self.sequence,
+            source_time=self.source_time,
+            evaluation_time=self.source_time + 4,
+            market_epoch=self.market_epoch,
+        )
+        before_reopen = self.state
+        not_reopened = self._deliver(same_epoch)
+        assert not_reopened.state == before_reopen
+        assert not_reopened.goal is None
         self.market_epoch += 1
         self.sequence = 1
         self.source_time += 6
@@ -957,7 +1157,7 @@ class ProtectionMarketMachine(RuleBasedStateMachine):
         self.buy_effect = buy_effect
         self.buy_leg = buy_leg
         self.buy_stage = "OPEN"
-        self.waiting = self.policy in {"EXIT_NORMAL", "HARD_BAIL"}
+        self.waiting = True
 
     @precondition(lambda self: self.buy_stage == "OPEN")
     @rule()
@@ -972,7 +1172,7 @@ class ProtectionMarketMachine(RuleBasedStateMachine):
         )
         result = self._sync(terminal)
         self.buy_stage = "TERMINAL"
-        self.waiting = self.policy in {"EXIT_NORMAL", "HARD_BAIL"}
+        self.waiting = True
         assert result.state.waiting_buy_resolution is self.waiting
         assert result.goal is None
 
@@ -980,7 +1180,7 @@ class ProtectionMarketMachine(RuleBasedStateMachine):
     @rule()
     def close_unresolved_buy_parent_in_shared_history(self) -> None:
         assert self.buy_effect is not None
-        was_waiting = self.waiting
+        exit_was_waiting = self.policy in {"EXIT_NORMAL", "HARD_BAIL"}
         _, closed = protection_fixtures._close_parent_fixture(
             self.current,
             effect_id=self.buy_effect,
@@ -990,7 +1190,7 @@ class ProtectionMarketMachine(RuleBasedStateMachine):
         self.buy_stage = "CLOSED"
         self.waiting = False
         assert released.state.waiting_buy_resolution is False
-        if was_waiting:
+        if exit_was_waiting:
             assert released.goal is not None
             expected_guard = (
                 self.mandate.normal_guard
@@ -1055,6 +1255,7 @@ def test_high_risk_stateful_rules_are_registered_with_preconditions() -> None:
         },
         ProtectionMarketMachine: {
             "changed_context_replay_preserves_between_time_successor",
+            "cross_kind_step_limit_uses_last_eligible_primary",
             "interruption_reopen_epoch_requires_fresh_corroboration",
             "introduce_unresolved_buy_into_shared_history",
             "terminalize_unresolved_buy_in_shared_history",
@@ -1095,6 +1296,16 @@ def test_high_risk_stateful_rules_advance_one_machine_history() -> None:
     )
     assert replay_market.policy == "HARD_BAIL"
     assert replay_successor.goal is not None
+
+    cross_kind_market = ProtectionMarketMachine()
+    cross_kind = _execute_registered(
+        cross_kind_market,
+        "cross_kind_step_limit_uses_last_eligible_primary",
+        first_kind="TRADE",
+    )
+    assert cross_kind_market.policy == "FLOOR_ONLY"
+    assert cross_kind_market.market_epoch == 1
+    assert cross_kind.goal is None
 
     market = ProtectionMarketMachine()
     _execute_registered(

@@ -41,6 +41,7 @@ from app.execution_core.authority import (
     BrokerEffectRequest,
     ClaimEffect,
     CreateBrokerEffect,
+    EngageKill,
     EnginePhase,
     RequestBudget,
     SupervisorFence,
@@ -107,6 +108,7 @@ from app.execution_core.venue import (
     VenueRecoveryDisposition,
     VenueExecutionCheckpoint,
 )
+from tests.execution_core import test_authority as authority_fixtures
 from tests.execution_core import test_venue_recovery as venue_fixtures
 
 
@@ -497,8 +499,64 @@ def _owned_fill_fixture(
     capacity: int = 20,
     tick_units: int = 1,
     scale: PriceScale = SCALE,
+    mandate_id: MandateId = MANDATE_ID,
 ):
-    book, execution = venue_fixtures._seed_needs_review(capacity=capacity)
+    if mandate_id == MANDATE_ID:
+        book, execution = venue_fixtures._seed_needs_review(capacity=capacity)
+    else:
+        book = VenueRecoveryBook.empty(VENUE_SCOPE)
+        execution = ExecutionSnapshot.flat(POSITION_SCOPE)
+        commands = (
+            RequestedEffect(
+                input_id=VenueInputId("request-effect"),
+                effect_id=BASE_EFFECT,
+                request_occurrence_id=venue_fixtures.REQUEST,
+                mandate_id=mandate_id,
+                kind=EffectKind.SUBMIT,
+                client_order_id=venue_fixtures.CLIENT,
+                symbol_id=SYMBOL,
+                side=ExecutionSide.BUY,
+                quantity=Quantity(capacity),
+                economic_scope=b"AAPL|BUY-or-SELL|fixed-order-capacity",
+            ),
+            RecordDispatchClaim(
+                input_id=VenueInputId("claim-effect"),
+                effect_id=BASE_EFFECT,
+                claim_occurrence_id=BASE_CLAIM,
+            ),
+            RecordTransportOutcome(
+                input_id=VenueInputId("transport-unknown"),
+                effect_id=BASE_EFFECT,
+                state=BrokerEffectState.OUTCOME_UNKNOWN,
+            ),
+            DiscoverVenueLeg(
+                input_id=VenueInputId("discover-leg-1"),
+                effect_id=BASE_EFFECT,
+                leg_key=BASE_LEG,
+                observation_id=VenueObservationId("acceptance-observation-1"),
+            ),
+            ObserveVenueStatus(
+                input_id=VenueInputId("needs-review-leg-1"),
+                leg_key=BASE_LEG,
+                status=VenueAttemptState.NEEDS_REVIEW,
+                observation_id=VenueObservationId("review-observation-1"),
+                cumulative_quantity=Quantity(0),
+            ),
+            RecordTransportOutcome(
+                input_id=VenueInputId("transport-needs-review"),
+                effect_id=BASE_EFFECT,
+                state=BrokerEffectState.NEEDS_REVIEW,
+            ),
+        )
+        for command in commands:
+            transition = venue_fixtures.apply_venue_recovery_input(
+                book,
+                execution,
+                command,
+            )
+            assert transition.disposition is VenueRecoveryDisposition.APPLIED
+            book = transition.book
+            execution = transition.execution
     fact = venue_fixtures._broker_fill(
         f"{label}-source",
         f"{label}-root",
@@ -537,6 +595,7 @@ def _owned_fill_transition(
     capacity: int = 20,
     tick_units: int = 1,
     scale: PriceScale = SCALE,
+    mandate_id: MandateId = MANDATE_ID,
 ):
     return _owned_fill_fixture(
         label=label,
@@ -545,6 +604,7 @@ def _owned_fill_transition(
         capacity=capacity,
         tick_units=tick_units,
         scale=scale,
+        mandate_id=mandate_id,
     )[-1]
 
 
@@ -835,12 +895,14 @@ def _close_parent_fixture(
 
 
 def _close_base_parent(transition: object) -> tuple[object, object]:
+    attempt = transition.book.active_attempt(BASE_LEG)
+    assert attempt is not None
     _, terminal = _terminal_fixture(
         transition,
         effect_id=BASE_EFFECT,
         leg_key=BASE_LEG,
         label="protection-base",
-        cumulative_quantity=transition.execution.position.raw_quantity,
+        cumulative_quantity=attempt.cumulative_quantity.value,
     )
     _, closed = _close_parent_fixture(
         terminal,
@@ -1038,6 +1100,8 @@ def _leaf_sort_key(value: object) -> tuple[object, ...]:
 
 
 _DECLARED_REPLACEMENT_TYPES: dict[str, type[object]] = {
+    "EffectId": EffectId,
+    "VenueLegKey": VenueLegKey,
     "bool": bool,
     "bytes": bytes,
     "_Decimal": Decimal,
@@ -3665,6 +3729,7 @@ def _owned_fill_transition_for_scope(
     units: int = 100,
     tick_units: int = 1,
     scale: PriceScale = SCALE,
+    mandate_id: MandateId = MANDATE_ID,
 ) -> tuple[object, EffectId, VenueLegKey]:
     book = VenueRecoveryBook.empty(VENUE_SCOPE)
     execution = ExecutionSnapshot.flat(position_scope)
@@ -3680,7 +3745,7 @@ def _owned_fill_transition_for_scope(
             input_id=VenueInputId(f"{label}-request-input"),
             effect_id=effect_id,
             request_occurrence_id=RequestOccurrenceId(f"{label}-request"),
-            mandate_id=MANDATE_ID,
+            mandate_id=mandate_id,
             kind=EffectKind.SUBMIT,
             client_order_id=ClientOrderId(f"{label}-client"),
             symbol_id=position_scope.symbol_id,
@@ -3775,6 +3840,11 @@ def _emergency_goal_fixture(
     second_bid: int = 91,
 ) -> tuple[object, object, object, object]:
     occurrence_label = market_label or label
+    current_mandate = (
+        mandate
+        if mandate is not None
+        else _mandate(module, position_scope=position_scope)
+    )
     if position_scope == POSITION_SCOPE:
         fill = _owned_fill_transition(
             label=f"{label}-fill",
@@ -3783,6 +3853,7 @@ def _emergency_goal_fixture(
             capacity=max(20, fill_quantity),
             tick_units=tick_units,
             scale=scale,
+            mandate_id=current_mandate.mandate_id,
         )
         effect_id = BASE_EFFECT
         leg_key = BASE_LEG
@@ -3794,12 +3865,8 @@ def _emergency_goal_fixture(
             units=fill_units,
             tick_units=tick_units,
             scale=scale,
+            mandate_id=current_mandate.mandate_id,
         )
-    current_mandate = (
-        mandate
-        if mandate is not None
-        else _mandate(module, position_scope=position_scope)
-    )
     _, _, state = _start(module, fill, current_mandate)
     _, terminal = _terminal_fixture(
         fill,
@@ -5566,6 +5633,53 @@ def test_every_venue_transition_field_is_bound_into_the_protection_proof() -> No
     assert tested == {retained.name for retained in fields(applied)}
 
 
+def test_every_protection_proof_leaf_is_bound_into_its_cursor_lineage() -> None:
+    module = _protection_module()
+    _, _, _, applied = _owned_fill_fixture(label="protection-proof-leaf-seal")
+    mandate = _mandate(module)
+    proof = applied._protection_proof
+    empty_collection_replacements: dict[tuple[object, ...], object] = {}
+    for summary_name in ("predecessor_summary", "summary"):
+        summary = getattr(proof, summary_name)
+        for field_name, replacement in (
+            ("stand_downable_buy_effect_ids", (BASE_EFFECT,)),
+            ("known_cancellable_buy_leg_keys", (BASE_LEG,)),
+            ("known_cancel_pending_buy_leg_keys", (BASE_LEG,)),
+        ):
+            if not getattr(summary, field_name):
+                empty_collection_replacements[(summary_name, field_name)] = replacement
+    mutations = _single_leaf_mutations(
+        proof,
+        allowed_root_types=(type(proof),),
+        empty_collection_replacements=empty_collection_replacements,
+    )
+    expected_paths = _retained_leaf_paths(proof)
+    assert frozenset(mutation.path for mutation in mutations) == expected_paths
+    assert len(mutations) == len(expected_paths)
+    for mutation in mutations:
+        assert _changed_leaf_paths(proof, mutation.forged) == frozenset({mutation.path})
+        forged = _clone_opaque(
+            applied,
+            _protection_proof=mutation.forged,
+            _protection_proof_commitment=mutation.forged.commitment,
+        )
+        with pytest.raises((TypeError, ValueError)):
+            _projection(module, forged, mandate)
+
+
+def test_projection_rejects_forged_nonextractor_book_envelope_field() -> None:
+    module = _protection_module()
+    _, _, _, applied = _owned_fill_fixture(label="protection-book-envelope-seal")
+    mandate = _mandate(module)
+    forged_book = _clone_opaque(
+        applied.book,
+        _account_authority_epoch=applied.book._account_authority_epoch + 1,
+    )
+    forged = _clone_opaque(applied, book=forged_book)
+    with pytest.raises(ValueError, match="book envelope"):
+        _projection(module, forged, mandate)
+
+
 def test_projection_rejects_substituted_transition_book_or_execution() -> None:
     module = _protection_module()
     prior_book, prior_execution, _, applied = _owned_fill_fixture()
@@ -5671,6 +5785,114 @@ def test_reducer_rejects_forged_projection_cursor_execution_and_summary(
     assert result.critical_alert is None
 
 
+def test_reducer_rejects_predecessor_execution_discontinuity() -> None:
+    module = _protection_module()
+    fill = _owned_fill_transition()
+    mandate, _, state = _start(module, fill)
+    _, advanced = _terminal_fixture(
+        fill,
+        effect_id=BASE_EFFECT,
+        leg_key=BASE_LEG,
+        label="protection-predecessor-execution-gap",
+        cumulative_quantity=4,
+    )
+    projection = _projection(module, advanced, mandate)
+    assert projection.predecessor_cursor_ordinal == state._cursor_ordinal
+    assert projection.predecessor_cursor_head == state._cursor_head
+    assert projection.predecessor_execution_commitment == state.execution_commitment
+
+    forged = _clone_opaque(
+        projection,
+        predecessor_execution_commitment=_flip_digest(state.execution_commitment),
+    )
+    projection_commitment = getattr(module, "_projection_commitment")
+    object.__setattr__(
+        forged,
+        "_seal",
+        projection_commitment(
+            forged.predecessor_cursor_ordinal,
+            forged.predecessor_cursor_head,
+            forged.cursor_ordinal,
+            forged.cursor_head,
+            forged.predecessor_execution_commitment,
+            forged.execution_commitment,
+            forged.predecessor_blocking_effect_count,
+            forged.predecessor_blocking_buy_effect_count,
+            forged.blocking_effect_count,
+            forged.blocking_buy_effect_count,
+            forged.predecessor_execution_binding_matches,
+            forged.execution_binding_matches,
+            forged.predecessor_account_reconciliation_clear,
+            forged.account_reconciliation_clear,
+            forged._position_scope,
+            forged._mandate_commitment,
+            forged._raw_quantity,
+            forged._basis_available,
+            forged._cost_basis,
+            forged._basis_metadata_available,
+            forged._basis_price,
+            forged._integrity,
+        ),
+    )
+    assert getattr(module, "_projection_is_authentic")(forged)
+
+    result = _reduce(module, state, forged)
+    (disposition,) = _required(module, "ProtectionDisposition")
+    assert result.disposition is disposition.STALE
+    assert result.state == state
+    assert result.goal is None
+    assert result.critical_alert is None
+
+
+def test_transition_proof_rejects_predecessor_execution_seal_discontinuity() -> None:
+    import app.execution_core.venue as venue_module
+
+    fill = _owned_fill_transition()
+    _, advanced = _terminal_fixture(
+        fill,
+        effect_id=BASE_EFFECT,
+        leg_key=BASE_LEG,
+        label="protection-proof-predecessor-execution-gap",
+        cumulative_quantity=4,
+    )
+    proof = advanced._protection_proof
+    assert proof.predecessor_cursor.ordinal > 0
+    changed_predecessor_commitment = _flip_digest(
+        proof.predecessor_execution_commitment
+    )
+    changed_cursor = venue_module._next_protection_cursor(
+        proof.predecessor_cursor,
+        proof.position_scope,
+        proof.cursor.mandate_id,
+        proof.predecessor_book_scope,
+        proof.book_scope,
+        proof.predecessor_book_commitment,
+        proof.book_commitment,
+        changed_predecessor_commitment,
+        proof.execution_commitment,
+        proof.predecessor_execution_checkpoint,
+        proof.execution_checkpoint,
+        proof.predecessor_summary,
+        proof.summary,
+        proof.predecessor_binding,
+        proof.binding,
+        proof.predecessor_execution_binding_matches,
+        proof.execution_binding_matches,
+        proof.predecessor_account_reconciliation_clear,
+        proof.account_reconciliation_clear,
+        proof.command_commitment,
+        proof.disposition,
+        proof.quantity_delta,
+    )
+    internally_recomputed = replace(
+        proof,
+        predecessor_execution_commitment=changed_predecessor_commitment,
+        cursor=changed_cursor,
+    )
+
+    assert not internally_recomputed.lineage_is_authentic
+
+
 def test_sibling_venue_fork_cannot_advance_from_the_same_predecessor_twice() -> None:
     module = _protection_module()
     fill = _owned_fill_transition()
@@ -5699,6 +5921,18 @@ def test_sibling_venue_fork_cannot_advance_from_the_same_predecessor_twice() -> 
     assert projection_a.cursor_head != projection_b.cursor_head
     after_a = _reduce(module, state, projection_a)
     _assert_stale_unchanged(module, after_a.state, projection_b)
+
+    forged_proof = _clone_opaque(
+        branch_b._protection_proof,
+        predecessor_cursor=branch_a._protection_proof.cursor,
+    )
+    forged_branch_b = _clone_opaque(
+        branch_b,
+        _protection_proof=forged_proof,
+        _protection_proof_commitment=forged_proof.commitment,
+    )
+    with pytest.raises(ValueError, match="lineage"):
+        _projection(module, forged_branch_b, mandate)
 
 
 def test_exact_venue_replay_never_advances_cursor_or_policy() -> None:
@@ -6923,12 +7157,72 @@ def test_first_owned_fill_arms_only_its_exact_mandate_after_economics() -> None:
     assert projection.execution_commitment == venue_transition.execution.commitment
 
 
+def test_authentic_projection_rejects_changed_mandate_authority_and_scope() -> None:
+    module = _protection_module()
+    venue_transition = _owned_fill_transition(label="protection-mandate-binding")
+    mandate, projection, state = _start(module, venue_transition)
+    (initialize,) = _required(module, "initialize_position_protection")
+    changed_configuration = _mandate(
+        module,
+        configuration_version="protection-v2",
+    )
+    with pytest.raises(ValueError, match="authority"):
+        initialize(changed_configuration, projection)
+
+    changed_projection = _projection(
+        module,
+        venue_transition,
+        changed_configuration,
+    )
+    rejected = _reduce(module, state, changed_projection)
+    (disposition,) = _required(module, "ProtectionDisposition")
+    assert rejected.disposition is disposition.REFUSED
+    assert rejected.state == state
+    assert rejected.goal is None
+
+    changed_scope = PositionScope(
+        broker=BROKER,
+        environment=ENVIRONMENT,
+        account=ACCOUNT,
+        symbol_id=type(SYMBOL)("MSFT"),
+    )
+    with pytest.raises(ValueError, match="scopes differ"):
+        initialize(
+            _mandate(module, position_scope=changed_scope),
+            projection,
+        )
+
+
 def test_formula_uses_fraction_then_one_upward_tick_conversion() -> None:
     module = _protection_module()
     venue_transition = _owned_fill_transition(quantity=4, units=100)
     _, _, state = _start(module, venue_transition)
     assert state.armed_hard_bail_trigger.exact_value == Fraction(93)
     assert state.activation_price.exact_value == Fraction(108)
+
+
+def test_fractional_average_rounds_formula_candidates_up_to_the_next_tick() -> None:
+    module = _protection_module()
+    first = _owned_fill_transition(
+        label="protection-fractional-average-first",
+        quantity=1,
+        units=100,
+    )
+    mandate, _, state = _start(module, first)
+    second = _advance_owned_fill(
+        first,
+        label="protection-fractional-average-second",
+        quantity=1,
+        units=101,
+        prior_cumulative=1,
+    )
+    result = _reduce(
+        module,
+        state,
+        _projection(module, second, mandate),
+    )
+    assert result.state.armed_hard_bail_trigger.exact_value == Fraction(93)
+    assert result.state.activation_price.exact_value == Fraction(109)
 
 
 def test_coarse_tick_with_no_candidate_below_average_withholds_formula() -> None:
@@ -6976,6 +7270,123 @@ def test_additional_economics_tightens_but_never_loosens_armed_trigger() -> None
     lower_projection = _projection(module, lower, mandate)
     lower_result = _reduce(module, higher_result.state, lower_projection)
     assert lower_result.state.armed_hard_bail_trigger.exact_value == Fraction(99)
+
+
+def test_same_call_applies_economics_before_market_evidence() -> None:
+    module = _protection_module()
+    first = _owned_fill_transition(
+        label="protection-same-call-first",
+        quantity=2,
+        units=100,
+    )
+    mandate, _, state = _start(module, first)
+    higher = _advance_owned_fill(
+        first,
+        label="protection-same-call-higher",
+        quantity=2,
+        units=120,
+        prior_cumulative=2,
+    )
+    combined = _reduce(
+        module,
+        state,
+        _projection(module, higher, mandate),
+        _occurrence(
+            module,
+            "protection-same-call-first-bid",
+            bid=101,
+            ask=102,
+            sequence=1,
+        ),
+    )
+    assert combined.state.raw_quantity == 4
+    assert combined.state.armed_hard_bail_trigger.exact_value == Fraction(102)
+    second = _reduce(
+        module,
+        combined.state,
+        _projection(module, higher, mandate),
+        _occurrence(
+            module,
+            "protection-same-call-second-bid",
+            bid=100,
+            ask=101,
+            sequence=2,
+            source_time=106,
+            evaluation_time=110,
+        ),
+    )
+    (policy,) = _required(module, "ProtectionPolicy")
+    assert second.state.policy is policy.HARD_BAIL
+
+
+@pytest.mark.parametrize("case", ["exact_replay", "equivocation", "ineligible"])
+def test_venue_advancement_releases_goal_when_optional_market_input_is_inert(
+    case: str,
+) -> None:
+    module = _protection_module()
+    fill = _owned_fill_transition(label=f"protection-advance-market-{case}")
+    mandate, projection, state = _start(module, fill)
+    first_occurrence = _occurrence(
+        module,
+        f"protection-advance-market-{case}-first",
+        bid=92,
+        ask=93,
+        sequence=1,
+    )
+    first = _reduce(module, state, projection, first_occurrence)
+    second_occurrence = _occurrence(
+        module,
+        f"protection-advance-market-{case}-second",
+        bid=91,
+        ask=92,
+        sequence=2,
+        source_time=106,
+        evaluation_time=110,
+    )
+    waiting = _reduce(module, first.state, projection, second_occurrence)
+    assert waiting.goal is None
+    terminal, closed = _close_base_parent(fill)
+    terminal_result = _reduce(
+        module,
+        waiting.state,
+        _projection(module, terminal, mandate),
+    )
+    assert terminal_result.goal is None
+
+    occurrence = second_occurrence
+    if case == "equivocation":
+        occurrence = replace(
+            second_occurrence,
+            best_bid=_price(90),
+            best_ask=_price(91),
+        )
+    elif case == "ineligible":
+        occurrence = _occurrence(
+            module,
+            f"protection-advance-market-{case}-halted",
+            bid=90,
+            ask=91,
+            sequence=3,
+            source_time=112,
+            evaluation_time=116,
+            halted=True,
+        )
+    released = _reduce(
+        module,
+        terminal_result.state,
+        _projection(module, closed, mandate),
+        occurrence,
+    )
+    disposition, policy = _required(
+        module,
+        "ProtectionDisposition",
+        "ProtectionPolicy",
+    )
+    assert released.disposition is disposition.APPLIED
+    assert released.state.policy is policy.HARD_BAIL
+    assert released.state.waiting_buy_resolution is False
+    assert released.state.execution_commitment == closed.execution.commitment
+    assert released.goal is not None
 
 
 def test_correction_and_bust_apply_economics_before_protection_policy() -> None:
@@ -7110,6 +7521,42 @@ def test_positive_broker_overfill_is_quarantined_before_any_goal_authority() -> 
         state = result.state
         assert result.goal is None
     assert state.policy is policy.HARD_BAIL
+
+
+def test_positive_broker_overfill_cannot_emit_after_trigger_shaped_evidence() -> None:
+    module = _protection_module()
+    overfill = _owned_fill_transition(
+        label="protection-positive-overfill-goal",
+        quantity=5,
+        capacity=4,
+    )
+    mandate, _, state = _start(module, overfill)
+    terminal, closed = _close_base_parent(overfill)
+    state, projection, _ = _sync_transitions(
+        module,
+        state,
+        mandate,
+        (terminal, closed),
+    )
+    result = None
+    for index, bid in enumerate((92, 91), start=1):
+        result = _reduce(
+            module,
+            state,
+            projection,
+            _occurrence(
+                module,
+                f"positive-overfill-goal-{index}",
+                bid=bid,
+                ask=bid + 1,
+                sequence=index,
+                source_time=94 + index * 6,
+                evaluation_time=98 + index * 6,
+            ),
+        )
+        state = result.state
+    assert result is not None
+    assert result.goal is None
 
 
 @pytest.mark.parametrize(
@@ -7434,28 +7881,31 @@ def test_formula_loss_discards_market_evidence_and_restores_a_fresh_branch() -> 
     assert activated.state.armed_hard_bail_trigger.exact_value == Fraction(93)
     assert activated.state.trail.exact_value == Fraction(111)
 
-    _, incompatible = _correct_owned_root(
+    _, unavailable_transition = _correct_owned_root(
         closed,
-        label="protection-formula-loss-incompatible",
+        label="protection-formula-loss-rounding-unavailable",
         root_fill_id=fill_command.fact.root_fill_id,
         predecessor_source_event_id=fill_command.fact.key.source_event_id,
         prior_root_quantity=4,
         resulting_quantity=4,
-        units=102,
+        units=1,
         prior_venue_cumulative=4,
-        tick_units=2,
+        closure_id=ClosureId("protection-formula-loss-unavailable-closure"),
+        evidence_reference=EvidenceReference(
+            "protection-formula-loss-unavailable-evidence"
+        ),
     )
     unavailable = _reduce(
         module,
         activated.state,
-        _projection(module, incompatible, mandate),
+        _projection(module, unavailable_transition, mandate),
     )
     assert unavailable.state.raw_quantity == 4
     assert unavailable.state.formula_available is False
     assert unavailable.state.policy is policy.HARD_BAIL
     assert unavailable.goal is None
     state = unavailable.state
-    projection = _projection(module, incompatible, mandate)
+    projection = _projection(module, unavailable_transition, mandate)
     for index, bid in enumerate((92, 91), start=2):
         ignored = _reduce(
             module,
@@ -7477,16 +7927,20 @@ def test_formula_loss_discards_market_evidence_and_restores_a_fresh_branch() -> 
         assert ignored.goal is None
 
     _, restored_transition = _correct_owned_root(
-        incompatible,
+        unavailable_transition,
         label="protection-formula-loss-restored",
         root_fill_id=fill_command.fact.root_fill_id,
         predecessor_source_event_id=SourceEventId(
-            "protection-formula-loss-incompatible-source"
+            "protection-formula-loss-rounding-unavailable-source"
         ),
         prior_root_quantity=4,
         resulting_quantity=4,
         units=100,
         prior_venue_cumulative=4,
+        closure_id=ClosureId("protection-formula-loss-restored-closure"),
+        evidence_reference=EvidenceReference(
+            "protection-formula-loss-restored-evidence"
+        ),
     )
     restored_projection = _projection(module, restored_transition, mandate)
     restored = _reduce(module, state, restored_projection)
@@ -7579,6 +8033,45 @@ def test_two_distinct_advancing_bids_trigger_sticky_hard_bail() -> None:
     assert second.goal is not None
     assert second.goal.urgency is urgency.EMERGENCY
     assert second.goal.guard == mandate.emergency_guard
+
+
+def test_two_distinct_bids_at_the_exact_trigger_activate_hard_bail() -> None:
+    module = _protection_module()
+    fill = _owned_fill_transition(label="hard-trigger-inclusive")
+    mandate, _, state = _start(module, fill)
+    terminal, closed = _close_base_parent(fill)
+    state, projection, _ = _sync_transitions(module, state, mandate, (terminal, closed))
+    assert state.armed_hard_bail_trigger.exact_value == Fraction(93)
+    first = _reduce(
+        module,
+        state,
+        projection,
+        _occurrence(
+            module,
+            "hard-trigger-inclusive-1",
+            bid=93,
+            ask=94,
+            sequence=1,
+        ),
+    )
+    second = _reduce(
+        module,
+        first.state,
+        projection,
+        _occurrence(
+            module,
+            "hard-trigger-inclusive-2",
+            bid=93,
+            ask=94,
+            sequence=2,
+            source_time=106,
+            evaluation_time=110,
+        ),
+    )
+    policy, urgency = _required(module, "ProtectionPolicy", "ProtectionUrgency")
+    assert second.state.policy is policy.HARD_BAIL
+    assert second.goal is not None
+    assert second.goal.urgency is urgency.EMERGENCY
 
 
 def test_trade_plus_distinct_bid_within_window_triggers_hard_bail() -> None:
@@ -7703,6 +8196,94 @@ def test_nonadvancing_sequence_does_not_corroborate() -> None:
     assert equal_sequence.critical_alert is None
 
 
+def test_sequence_absence_does_not_erase_the_last_present_high_water() -> None:
+    module = _protection_module()
+    fill = _owned_fill_transition(label="mixed-sequence-high-water")
+    mandate, _, state = _start(module, fill)
+    terminal, closed = _close_base_parent(fill)
+    state, projection, _ = _sync_transitions(module, state, mandate, (terminal, closed))
+
+    baseline = _reduce(
+        module,
+        state,
+        projection,
+        _occurrence(
+            module,
+            "mixed-sequence-7-baseline",
+            bid=100,
+            ask=101,
+            sequence=7,
+            source_time=100,
+            evaluation_time=104,
+        ),
+    )
+    sequence_absent = _reduce(
+        module,
+        baseline.state,
+        projection,
+        _occurrence(
+            module,
+            "mixed-sequence-absent",
+            bid=100,
+            ask=101,
+            sequence=None,
+            source_time=106,
+            evaluation_time=110,
+        ),
+    )
+    reused = _reduce(
+        module,
+        sequence_absent.state,
+        projection,
+        _occurrence(
+            module,
+            "mixed-sequence-7-reused",
+            bid=92,
+            ask=93,
+            sequence=7,
+            source_time=112,
+            evaluation_time=116,
+        ),
+    )
+    assert reused.state == sequence_absent.state
+    assert reused.goal is None
+
+    first_fresh = _reduce(
+        module,
+        reused.state,
+        projection,
+        _occurrence(
+            module,
+            "mixed-sequence-8-fresh",
+            bid=92,
+            ask=93,
+            sequence=8,
+            source_time=118,
+            evaluation_time=122,
+        ),
+    )
+    (policy,) = _required(module, "ProtectionPolicy")
+    assert first_fresh.state.policy is policy.FLOOR_ONLY
+    assert first_fresh.goal is None
+
+    second_fresh = _reduce(
+        module,
+        first_fresh.state,
+        projection,
+        _occurrence(
+            module,
+            "mixed-sequence-9-fresh",
+            bid=91,
+            ask=92,
+            sequence=9,
+            source_time=124,
+            evaluation_time=128,
+        ),
+    )
+    assert second_fresh.state.policy is policy.HARD_BAIL
+    assert second_fresh.goal is not None
+
+
 @pytest.mark.parametrize("second_sequence", [2, None])
 @pytest.mark.parametrize("first_kind", ["BEST_BID", "TRADE"])
 def test_occurrence_identity_equivocation_is_refused_before_corroboration(
@@ -7774,7 +8355,7 @@ def test_occurrence_identity_equivocation_is_refused_before_corroboration(
             bid=91,
             ask=92,
             sequence=3 if second_sequence is not None else None,
-            source_time=112,
+            source_time=110,
             evaluation_time=116,
         ),
     )
@@ -7983,9 +8564,26 @@ def test_source_time_regression_and_halt_reopen_start_fresh_branches() -> None:
             halted=True,
         ),
     )
-    reopened_first = _reduce(
+    assert halted.state != regressed.state
+    same_epoch = _reduce(
         module,
         halted.state,
+        projection,
+        _occurrence(
+            module,
+            "same-epoch-after-halt",
+            bid=91,
+            ask=92,
+            sequence=None,
+            source_time=112,
+            evaluation_time=116,
+        ),
+    )
+    assert same_epoch.state == halted.state
+    assert same_epoch.goal is None
+    reopened_first = _reduce(
+        module,
+        same_epoch.state,
         projection,
         _occurrence(
             module,
@@ -8016,6 +8614,52 @@ def test_source_time_regression_and_halt_reopen_start_fresh_branches() -> None:
         ),
     )
     assert reopened_second.state.policy is policy.HARD_BAIL
+
+
+@pytest.mark.parametrize("first_kind", ["BEST_BID", "TRADE"])
+def test_cross_kind_market_step_limit_uses_the_last_eligible_primary(
+    first_kind: str,
+) -> None:
+    module = _protection_module()
+    fill = _owned_fill_transition(label=f"protection-cross-kind-step-{first_kind}")
+    mandate, _, state = _start(module, fill)
+    terminal, closed = _close_base_parent(fill)
+    state, projection, _ = _sync_transitions(module, state, mandate, (terminal, closed))
+    first = _reduce(
+        module,
+        state,
+        projection,
+        _occurrence(
+            module,
+            f"protection-cross-kind-step-{first_kind}-first",
+            kind=first_kind,
+            bid=92 if first_kind == "BEST_BID" else None,
+            ask=93 if first_kind == "BEST_BID" else None,
+            trade=1 if first_kind == "TRADE" else None,
+            sequence=1,
+        ),
+    )
+    second_kind = "TRADE" if first_kind == "BEST_BID" else "BEST_BID"
+    second = _reduce(
+        module,
+        first.state,
+        projection,
+        _occurrence(
+            module,
+            f"protection-cross-kind-step-{first_kind}-second",
+            kind=second_kind,
+            bid=92 if second_kind == "BEST_BID" else None,
+            ask=93 if second_kind == "BEST_BID" else None,
+            trade=1 if second_kind == "TRADE" else None,
+            sequence=2,
+            source_time=106,
+            evaluation_time=110,
+        ),
+    )
+    (policy,) = _required(module, "ProtectionPolicy")
+    assert second.state == first.state
+    assert second.state.policy is policy.FLOOR_ONLY
+    assert second.goal is None
 
 
 @pytest.mark.parametrize(
@@ -8176,7 +8820,7 @@ def test_new_market_epoch_owns_a_fresh_evaluation_time_watermark() -> None:
 
 @pytest.mark.parametrize(
     "case",
-    ["stale", "crossed", "wrong_scope", "wrong_source", "halted"],
+    ["stale", "crossed", "wrong_scope", "wrong_source"],
 )
 def test_ineligible_market_data_cannot_change_policy_or_emit_goal(case: str) -> None:
     module = _protection_module()
@@ -8201,8 +8845,6 @@ def test_ineligible_market_data_cannot_change_policy_or_emit_goal(case: str) -> 
     elif case == "wrong_source":
         (source_type,) = _required(execution_core, "MarketDataSourceId")
         kwargs.update(source_id=source_type("unapproved-feed"))
-    else:
-        kwargs.update(halted=True)
     result = _reduce(
         module,
         state,
@@ -8276,6 +8918,64 @@ def test_capital_relevant_market_eligibility_failures_are_inert(case: str) -> No
     assert result.state == state
     assert result.goal is None
     assert result.critical_alert is None
+
+
+@pytest.mark.parametrize(
+    "case",
+    ["nonpositive", "misaligned", "tick_mismatch"],
+)
+def test_invalid_trade_price_cannot_supply_hard_bail_corroboration(case: str) -> None:
+    module = _protection_module()
+    fill = _owned_fill_transition(label=f"protection-invalid-trade-{case}")
+    mandate = _mandate(
+        module,
+        tick=(
+            TickMetadata(tick_units=PriceUnits(2), scale=SCALE)
+            if case == "misaligned"
+            else TICK
+        ),
+    )
+    mandate, _, state = _start(module, fill, mandate)
+    terminal, closed = _close_base_parent(fill)
+    state, projection, _ = _sync_transitions(module, state, mandate, (terminal, closed))
+    invalid_trade = _occurrence(
+        module,
+        f"protection-invalid-trade-{case}-first",
+        kind="TRADE",
+        trade=92,
+        sequence=1,
+    )
+    if case == "nonpositive":
+        invalid_trade = replace(invalid_trade, trade_price=_price(0))
+    elif case == "misaligned":
+        invalid_trade = replace(invalid_trade, trade_price=_price(93))
+    else:
+        invalid_trade = replace(
+            invalid_trade,
+            trade_price=_price(92, tick_units=2),
+        )
+    ignored = _reduce(module, state, projection, invalid_trade)
+    assert ignored.state == state
+    assert ignored.goal is None
+
+    second = _reduce(
+        module,
+        ignored.state,
+        projection,
+        _occurrence(
+            module,
+            f"protection-invalid-trade-{case}-second",
+            bid=92,
+            ask=94 if case == "misaligned" else 93,
+            sequence=2,
+            source_time=106,
+            evaluation_time=110,
+            tick_units=2 if case == "misaligned" else 1,
+        ),
+    )
+    (policy,) = _required(module, "ProtectionPolicy")
+    assert second.state.policy is policy.FLOOR_ONLY
+    assert second.goal is None
 
 
 @pytest.mark.parametrize(
@@ -9883,7 +10583,7 @@ def test_goal_carries_complete_current_policy_binding() -> None:
     )
     _, changed_closed, changed_state, changed_goal = _emergency_goal_fixture(
         module,
-        label="goal-binding-changed-config",
+        label="goal-binding",
         mandate=changed_mandate,
     )
     assert changed_goal.execution_commitment == changed_closed.execution.commitment
@@ -10249,6 +10949,639 @@ def test_goal_translation_remains_subject_to_m1c_create_and_claim_gates() -> Non
         assert retained.state is BrokerEffectState.REQUESTED
         assert retained.claim_occurrence_id is None
         assert denied.fresh_claim is None
+
+
+def test_m1c_create_claim_and_outcome_publish_ordered_protection_provenance() -> None:
+    module = _protection_module()
+    mandate, closed, protection_state, goal = _emergency_goal_fixture(
+        module,
+        label="goal-m1c-provenance",
+    )
+    request = BrokerEffectRequest(
+        effect_id=EffectId("protection-goal-provenance-effect"),
+        request_occurrence_id=RequestOccurrenceId(
+            "protection-goal-provenance-occurrence"
+        ),
+        mandate_id=goal.mandate_id,
+        kind=EffectKind.SUBMIT,
+        client_order_id=ClientOrderId("protection-goal-provenance-client"),
+        symbol_id=SYMBOL,
+        side=goal.side,
+        quantity=goal.residual,
+        economic_scope=goal.protection_commitment,
+        target_leg_key=None,
+    )
+    authority = _forge_authority_predecessor(
+        closed.book,
+        session_id=goal.session_id,
+    )
+    created = apply_execution_authority_input(
+        authority,
+        closed.execution,
+        CreateBrokerEffect(
+            input_id=execution_core.AuthorityInputId("provenance-create"),
+            session_id=goal.session_id,
+            request=request,
+            manual_flatten_id=None,
+            emergency_grant_id=None,
+        ),
+    )
+    assert created.disposition is AuthorityDisposition.APPLIED
+    assert len(created.venue_transitions) == 1
+    for transition in created.venue_transitions:
+        result = _reduce(
+            module,
+            protection_state,
+            _projection(module, transition, mandate),
+        )
+        protection_state = result.state
+
+    claimed = apply_execution_authority_input(
+        created.state,
+        closed.execution,
+        ClaimEffect(
+            input_id=execution_core.AuthorityInputId("provenance-claim"),
+            effect_id=request.effect_id,
+            claim_occurrence_id=ClaimOccurrenceId("provenance-claim-occurrence"),
+        ),
+    )
+    assert claimed.disposition is AuthorityDisposition.APPLIED
+    assert len(claimed.venue_transitions) == 1
+    for transition in claimed.venue_transitions:
+        result = _reduce(
+            module,
+            protection_state,
+            _projection(module, transition, mandate),
+        )
+        protection_state = result.state
+
+    observed = venue_fixtures.apply_venue_recovery_input(
+        claimed.state.venue,
+        closed.execution,
+        RecordTransportOutcome(
+            input_id=VenueInputId("provenance-outcome"),
+            effect_id=request.effect_id,
+            state=BrokerEffectState.OUTCOME_UNKNOWN,
+        ),
+    )
+    final = _reduce(
+        module,
+        protection_state,
+        _projection(module, observed, mandate),
+    )
+    disposition, policy = _required(
+        module,
+        "ProtectionDisposition",
+        "ProtectionPolicy",
+    )
+    assert final.disposition is disposition.APPLIED
+    assert final.state.policy is policy.HARD_BAIL
+    assert final.state._cursor_ordinal == observed._protection_proof.cursor.ordinal
+
+
+def test_m1c_compound_kill_publishes_every_protection_transition_in_order() -> None:
+    module = _protection_module()
+    mandate, closed, protection_state, goal = _emergency_goal_fixture(
+        module,
+        label="goal-m1c-kill-provenance",
+    )
+    request = BrokerEffectRequest(
+        effect_id=EffectId("protection-kill-provenance-effect"),
+        request_occurrence_id=RequestOccurrenceId(
+            "protection-kill-provenance-occurrence"
+        ),
+        mandate_id=goal.mandate_id,
+        kind=EffectKind.SUBMIT,
+        client_order_id=ClientOrderId("protection-kill-provenance-client"),
+        symbol_id=SYMBOL,
+        side=goal.side,
+        quantity=goal.residual,
+        economic_scope=goal.protection_commitment,
+        target_leg_key=None,
+    )
+    authority = _forge_authority_predecessor(
+        closed.book,
+        session_id=goal.session_id,
+    )
+    created = apply_execution_authority_input(
+        authority,
+        closed.execution,
+        CreateBrokerEffect(
+            input_id=execution_core.AuthorityInputId("kill-provenance-create"),
+            session_id=goal.session_id,
+            request=request,
+            manual_flatten_id=None,
+            emergency_grant_id=None,
+        ),
+    )
+    assert created.disposition is AuthorityDisposition.APPLIED
+    for transition in created.venue_transitions:
+        protection_state = _reduce(
+            module,
+            protection_state,
+            _projection(module, transition, mandate),
+        ).state
+
+    killed = apply_execution_authority_input(
+        created.state,
+        closed.execution,
+        EngageKill(
+            input_id=execution_core.AuthorityInputId("kill-provenance-engage"),
+            actor=execution_core.ActorId("kill-provenance-operator"),
+            reason="stand down the unclaimed protection request",
+            evidence_reference=EvidenceReference("kill-provenance-evidence"),
+        ),
+    )
+    assert killed.disposition is AuthorityDisposition.APPLIED
+    assert len(killed.venue_transitions) == 2
+    for transition in killed.venue_transitions:
+        result = _reduce(
+            module,
+            protection_state,
+            _projection(module, transition, mandate),
+        )
+        protection_state = result.state
+    (policy,) = _required(module, "ProtectionPolicy")
+    assert protection_state.policy is policy.HARD_BAIL
+    assert protection_state._cursor_ordinal == (
+        killed.venue_transitions[-1]._protection_proof.cursor.ordinal
+    )
+
+
+def test_m1c_multi_scope_kill_provenance_is_scope_correct_and_gap_free() -> None:
+    module = _protection_module()
+    authority_module = authority_fixtures._authority_module()
+    killed, seeded, _, _ = authority_fixtures._multi_scope_kill_fixture(
+        authority_module,
+        "protection-kill-multi",
+    )
+    (protection_disposition,) = _required(module, "ProtectionDisposition")
+    by_scope: dict[PositionScope, list[object]] = {}
+    mandates: dict[PositionScope, object] = {}
+    states: dict[PositionScope, object] = {}
+    executions: dict[PositionScope, ExecutionSnapshot] = {}
+    for execution, seed_transition in seeded:
+        scope = execution.position.scope
+        mandate_id = seed_transition._protection_proof.cursor.mandate_id
+        assert mandate_id is not None
+        mandate = _mandate(
+            module,
+            mandate_id=mandate_id,
+            position_scope=scope,
+            session_id=execution_core.SessionId("session-1"),
+        )
+        _, _, state = _start(module, seed_transition, mandate)
+        mandates[scope] = mandate
+        states[scope] = state
+        executions[scope] = execution
+
+    for transition in killed.venue_transitions:
+        scope = transition._protection_proof.position_scope
+        by_scope.setdefault(scope, []).append(transition)
+    assert set(by_scope) == set(states)
+
+    for scope, transitions in by_scope.items():
+        assert len(transitions) == 2
+        assert (
+            transitions[1]._protection_proof.predecessor_cursor
+            == transitions[0]._protection_proof.cursor
+        )
+        state = states[scope]
+        mandate = mandates[scope]
+        for transition in transitions:
+            assert transition.execution.position.scope == scope
+            assert transition._protection_proof.lineage_is_authentic
+            projection = _projection(module, transition, mandate)
+            assert projection.predecessor_cursor_ordinal == state._cursor_ordinal
+            assert projection.predecessor_cursor_head == state._cursor_head
+            result = _reduce(module, state, projection)
+            assert result.disposition is protection_disposition.APPLIED
+            assert result.state.raw_quantity == executions[scope].position.raw_quantity
+            state = result.state
+        states[scope] = state
+
+        suffix = scope.symbol_id.value.lower()
+        next_transition = authority_fixtures._private_venue_apply(
+            killed.state.venue,
+            executions[scope],
+            RequestedEffect(
+                input_id=VenueInputId(f"protection-kill-next-{suffix}-input"),
+                effect_id=EffectId(f"protection-kill-next-{suffix}-effect"),
+                request_occurrence_id=RequestOccurrenceId(
+                    f"protection-kill-next-{suffix}-occurrence"
+                ),
+                mandate_id=mandate.mandate_id,
+                kind=EffectKind.SUBMIT,
+                client_order_id=ClientOrderId(f"protection-kill-next-{suffix}-client"),
+                symbol_id=scope.symbol_id,
+                side=ExecutionSide.BUY,
+                quantity=Quantity(1),
+                economic_scope=f"protection-kill-next-{suffix}-scope".encode(),
+                target_leg_key=None,
+            ),
+        )
+        assert next_transition.disposition is VenueRecoveryDisposition.APPLIED
+        next_result = _reduce(
+            module,
+            state,
+            _projection(module, next_transition, mandate),
+        )
+        assert next_result.disposition is protection_disposition.APPLIED
+        assert next_result.state._cursor_ordinal == (
+            next_transition._protection_proof.cursor.ordinal
+        )
+
+
+def test_m1c_multi_scope_kill_publishes_registry_catch_up_before_cleanup() -> None:
+    module = _protection_module()
+    authority_module = authority_fixtures._authority_module()
+    killed, seeded, source_advance, _ = (
+        authority_fixtures._stale_multi_scope_kill_fixture(
+            authority_module,
+            "protection-kill-stale-multi",
+        )
+    )
+    (protection_disposition,) = _required(module, "ProtectionDisposition")
+    states: dict[PositionScope, object] = {}
+    mandates: dict[PositionScope, object] = {}
+    for execution, seed_transition in seeded:
+        scope = execution.position.scope
+        mandate_id = seed_transition._protection_proof.cursor.mandate_id
+        assert mandate_id is not None
+        mandate = _mandate(
+            module,
+            mandate_id=mandate_id,
+            position_scope=scope,
+            session_id=execution_core.SessionId("session-1"),
+        )
+        _, _, state = _start(module, seed_transition, mandate)
+        mandates[scope] = mandate
+        states[scope] = state
+
+    source_scope = source_advance.execution.position.scope
+    source_result = _reduce(
+        module,
+        states[source_scope],
+        _projection(module, source_advance, mandates[source_scope]),
+    )
+    assert source_result.disposition is protection_disposition.APPLIED
+    states[source_scope] = source_result.state
+
+    by_scope: dict[PositionScope, list[object]] = {}
+    for transition in killed.venue_transitions:
+        by_scope.setdefault(
+            transition._protection_proof.position_scope,
+            [],
+        ).append(transition)
+    target_scope = seeded[1][0].position.scope
+    assert len(by_scope[source_scope]) == 2
+    assert len(by_scope[target_scope]) == 3
+
+    for scope, transitions in by_scope.items():
+        state = states[scope]
+        mandate = mandates[scope]
+        for transition in transitions:
+            assert transition.execution.position.scope == scope
+            assert transition._protection_proof.lineage_is_authentic
+            projection = _projection(module, transition, mandate)
+            assert projection.predecessor_cursor_ordinal == state._cursor_ordinal
+            assert projection.predecessor_cursor_head == state._cursor_head
+            result = _reduce(module, state, projection)
+            assert result.disposition is protection_disposition.APPLIED
+            state = result.state
+        states[scope] = state
+
+        suffix = scope.symbol_id.value.lower()
+        next_transition = authority_fixtures._private_venue_apply(
+            killed.state.venue,
+            transitions[-1].execution,
+            RequestedEffect(
+                input_id=VenueInputId(f"protection-stale-next-{suffix}-input"),
+                effect_id=EffectId(f"protection-stale-next-{suffix}-effect"),
+                request_occurrence_id=RequestOccurrenceId(
+                    f"protection-stale-next-{suffix}-occurrence"
+                ),
+                mandate_id=mandate.mandate_id,
+                kind=EffectKind.SUBMIT,
+                client_order_id=ClientOrderId(f"protection-stale-next-{suffix}-client"),
+                symbol_id=scope.symbol_id,
+                side=ExecutionSide.BUY,
+                quantity=Quantity(1),
+                economic_scope=f"protection-stale-next-{suffix}-scope".encode(),
+                target_leg_key=None,
+            ),
+        )
+        assert next_transition.disposition is VenueRecoveryDisposition.APPLIED
+        next_result = _reduce(
+            module,
+            state,
+            _projection(module, next_transition, mandate),
+        )
+        assert next_result.disposition is protection_disposition.APPLIED
+        assert next_result.state._cursor_ordinal == (
+            next_transition._protection_proof.cursor.ordinal
+        )
+
+
+def test_m1c_multi_scope_kill_bridges_registry_current_cursor_lag() -> None:
+    module = _protection_module()
+    authority_module = authority_fixtures._authority_module()
+    killed, seeded, source_advance, target_catch_up, _ = (
+        authority_fixtures._cursor_lag_multi_scope_kill_fixture(
+            authority_module,
+            "protection-kill-cursor-lag",
+        )
+    )
+    (protection_disposition,) = _required(module, "ProtectionDisposition")
+    states: dict[PositionScope, object] = {}
+    mandates: dict[PositionScope, object] = {}
+    for execution, seed_transition in seeded:
+        scope = execution.position.scope
+        mandate_id = seed_transition._protection_proof.cursor.mandate_id
+        assert mandate_id is not None
+        mandate = _mandate(
+            module,
+            mandate_id=mandate_id,
+            position_scope=scope,
+            session_id=execution_core.SessionId("session-1"),
+        )
+        _, _, state = _start(module, seed_transition, mandate)
+        mandates[scope] = mandate
+        states[scope] = state
+
+    for transition in (source_advance, target_catch_up):
+        scope = transition._protection_proof.position_scope
+        result = _reduce(
+            module,
+            states[scope],
+            _projection(module, transition, mandates[scope]),
+        )
+        assert result.disposition is protection_disposition.APPLIED
+        states[scope] = result.state
+
+    by_scope: dict[PositionScope, list[object]] = {}
+    for transition in killed.venue_transitions:
+        by_scope.setdefault(
+            transition._protection_proof.position_scope,
+            [],
+        ).append(transition)
+    assert set(by_scope) == set(states)
+    assert all(len(transitions) == 3 for transitions in by_scope.values())
+
+    for scope, transitions in by_scope.items():
+        state = states[scope]
+        mandate = mandates[scope]
+        for transition in transitions:
+            projection = _projection(module, transition, mandate)
+            assert (
+                projection.predecessor_execution_commitment
+                == state.execution_commitment
+            )
+            result = _reduce(module, state, projection)
+            assert result.disposition is protection_disposition.APPLIED
+            state = result.state
+        states[scope] = state
+
+
+def test_m1c_manual_flatten_provenance_remains_consumable_in_order() -> None:
+    module = _protection_module()
+    mandate, closed, protection_state, goal = _emergency_goal_fixture(
+        module,
+        label="goal-m1c-flatten-provenance",
+    )
+    (protection_disposition,) = _required(module, "ProtectionDisposition")
+
+    def consume(transition: object) -> None:
+        nonlocal protection_state
+        result = _reduce(
+            module,
+            protection_state,
+            _projection(module, transition, mandate),
+        )
+        assert result.disposition is protection_disposition.APPLIED
+        protection_state = result.state
+
+    known_request = BrokerEffectRequest(
+        effect_id=EffectId("protection-flatten-known-effect"),
+        request_occurrence_id=RequestOccurrenceId(
+            "protection-flatten-known-occurrence"
+        ),
+        mandate_id=goal.mandate_id,
+        kind=EffectKind.SUBMIT,
+        client_order_id=ClientOrderId("protection-flatten-known-client"),
+        symbol_id=SYMBOL,
+        side=ExecutionSide.BUY,
+        quantity=Quantity(1),
+        economic_scope=goal.protection_commitment,
+        target_leg_key=None,
+    )
+    authority = _forge_authority_predecessor(
+        closed.book,
+        session_id=goal.session_id,
+    )
+    created = apply_execution_authority_input(
+        authority,
+        closed.execution,
+        CreateBrokerEffect(
+            input_id=execution_core.AuthorityInputId("flatten-known-create"),
+            session_id=goal.session_id,
+            request=known_request,
+            manual_flatten_id=None,
+            emergency_grant_id=None,
+        ),
+    )
+    assert created.disposition is AuthorityDisposition.APPLIED
+    assert len(created.venue_transitions) == 1
+    consume(created.venue_transitions[0])
+
+    claimed = apply_execution_authority_input(
+        created.state,
+        closed.execution,
+        ClaimEffect(
+            input_id=execution_core.AuthorityInputId("flatten-known-claim"),
+            effect_id=known_request.effect_id,
+            claim_occurrence_id=ClaimOccurrenceId("flatten-known-claim-occurrence"),
+        ),
+    )
+    assert claimed.disposition is AuthorityDisposition.APPLIED
+    assert len(claimed.venue_transitions) == 1
+    consume(claimed.venue_transitions[0])
+
+    acknowledged = venue_fixtures.apply_venue_recovery_input(
+        claimed.state.venue,
+        closed.execution,
+        RecordTransportOutcome(
+            input_id=VenueInputId("flatten-known-outcome"),
+            effect_id=known_request.effect_id,
+            state=BrokerEffectState.ACKNOWLEDGED,
+        ),
+    )
+    consume(acknowledged)
+    current_authority = copy(claimed.state)
+    object.__setattr__(current_authority, "venue", acknowledged.book)
+
+    legs = (
+        VenueLegKey(
+            broker=BROKER,
+            environment=ENVIRONMENT,
+            account=ACCOUNT,
+            order_id=OrderId("flatten-known-leg-one"),
+        ),
+        VenueLegKey(
+            broker=BROKER,
+            environment=ENVIRONMENT,
+            account=ACCOUNT,
+            order_id=OrderId("flatten-known-leg-two"),
+        ),
+    )
+    for ordinal, leg_key in enumerate(legs, start=1):
+        discovered = venue_fixtures.apply_venue_recovery_input(
+            current_authority.venue,
+            closed.execution,
+            DiscoverVenueLeg(
+                input_id=VenueInputId(f"flatten-known-discover-{ordinal}"),
+                effect_id=known_request.effect_id,
+                leg_key=leg_key,
+                observation_id=VenueObservationId(
+                    f"flatten-known-observation-{ordinal}"
+                ),
+            ),
+        )
+        consume(discovered)
+        current_authority = copy(current_authority)
+        object.__setattr__(current_authority, "venue", discovered.book)
+
+    local_request = RequestedEffect(
+        input_id=VenueInputId("flatten-local-request"),
+        effect_id=EffectId("protection-flatten-local-effect"),
+        request_occurrence_id=RequestOccurrenceId(
+            "protection-flatten-local-occurrence"
+        ),
+        mandate_id=goal.mandate_id,
+        kind=EffectKind.SUBMIT,
+        client_order_id=ClientOrderId("protection-flatten-local-client"),
+        symbol_id=SYMBOL,
+        side=ExecutionSide.BUY,
+        quantity=Quantity(1),
+        economic_scope=goal.protection_commitment,
+        target_leg_key=None,
+    )
+    local = venue_fixtures.apply_venue_recovery_input(
+        current_authority.venue,
+        closed.execution,
+        local_request,
+    )
+    assert local.disposition is VenueRecoveryDisposition.APPLIED
+    consume(local)
+    current_authority = copy(current_authority)
+    object.__setattr__(current_authority, "venue", local.book)
+
+    reducing = copy(current_authority)
+    object.__setattr__(reducing, "mode", TradingMode.REDUCING)
+    command = execution_core.BeginManualFlatten(
+        input_id=execution_core.AuthorityInputId("flatten-provenance-begin"),
+        flatten_id=execution_core.ManualFlattenId("flatten-provenance"),
+        session_id=goal.session_id,
+        symbol_id=SYMBOL,
+        actor=execution_core.ActorId("flatten-provenance-operator"),
+        reason="stand down local BUY and cancel every known BUY leg",
+        evidence_reference=EvidenceReference("flatten-provenance-evidence"),
+        emergency_grant_id=None,
+    )
+    flattened = apply_execution_authority_input(
+        reducing,
+        closed.execution,
+        command,
+    )
+    assert flattened.disposition is AuthorityDisposition.APPLIED
+    assert len(flattened.created_effect_ids) == 2
+    assert len(flattened.venue_transitions) == 4
+    for ordinal in range(1, len(flattened.venue_transitions)):
+        predecessor = flattened.venue_transitions[ordinal - 1]
+        successor = flattened.venue_transitions[ordinal]
+        assert (
+            successor._protection_proof.predecessor_cursor
+            == predecessor._protection_proof.cursor
+        )
+    for transition, effect_id in zip(
+        flattened.venue_transitions[-2:],
+        flattened.created_effect_ids,
+        strict=True,
+    ):
+        effect = transition.book.effect(effect_id)
+        assert effect is not None
+        assert effect.scope.kind is EffectKind.CANCEL
+    for transition in flattened.venue_transitions:
+        consume(transition)
+    assert protection_state._cursor_ordinal == (
+        flattened.venue_transitions[-1]._protection_proof.cursor.ordinal
+    )
+    assert flattened.venue_transitions[-1].book == flattened.state.venue
+
+    replay = apply_execution_authority_input(
+        flattened.state,
+        closed.execution,
+        command,
+    )
+    assert replay.disposition is AuthorityDisposition.EXACT_REPLAY
+    assert replay.venue_transitions == ()
+
+
+def test_m1c_manual_flatten_retry_provenance_accepts_the_next_projection() -> None:
+    module = _protection_module()
+    authority_module = authority_fixtures._authority_module()
+    retired, execution, _ = authority_fixtures._manual_flatten_retry_fixture(
+        authority_module,
+        "protection-flatten-retry",
+    )
+    assert len(retired.venue_transitions) == 2
+    mandate_id = MandateId("protection-flatten-retry-sell-mandate")
+    mandate = _mandate(
+        module,
+        mandate_id=mandate_id,
+        position_scope=execution.position.scope,
+        session_id=execution_core.SessionId("session-1"),
+    )
+    _, _, state = _start(module, retired.venue_transitions[0], mandate)
+    second = _reduce(
+        module,
+        state,
+        _projection(module, retired.venue_transitions[1], mandate),
+    )
+    (protection_disposition,) = _required(module, "ProtectionDisposition")
+    assert second.disposition is protection_disposition.APPLIED
+    assert second.state._cursor_ordinal == (
+        retired.venue_transitions[1]._protection_proof.cursor.ordinal
+    )
+
+    next_transition = venue_fixtures.apply_venue_recovery_input(
+        retired.state.venue,
+        execution,
+        RequestedEffect(
+            input_id=VenueInputId("protection-flatten-retry-next-input"),
+            effect_id=EffectId("protection-flatten-retry-next-effect"),
+            request_occurrence_id=RequestOccurrenceId(
+                "protection-flatten-retry-next-occurrence"
+            ),
+            mandate_id=mandate_id,
+            kind=EffectKind.SUBMIT,
+            client_order_id=ClientOrderId("protection-flatten-retry-next-client"),
+            symbol_id=execution.position.scope.symbol_id,
+            side=ExecutionSide.BUY,
+            quantity=Quantity(1),
+            economic_scope=b"protection-flatten-retry-next-scope",
+            target_leg_key=None,
+        ),
+    )
+    next_result = _reduce(
+        module,
+        second.state,
+        _projection(module, next_transition, mandate),
+    )
+    assert next_result.disposition is protection_disposition.APPLIED
+    assert next_result.state._cursor_ordinal == (
+        next_transition._protection_proof.cursor.ordinal
+    )
 
 
 def test_value_objects_expose_no_mutating_or_broker_capability_fields() -> None:

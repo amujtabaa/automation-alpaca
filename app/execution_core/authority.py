@@ -40,6 +40,7 @@ from .venue import (
     VenueEffectScope,
     VenueRecoveryBook,
     VenueRecoveryDisposition,
+    VenueRecoveryTransition,
     VenueScope,
     _authority_begin_symbol_flatten,
     _authority_claim_effect,
@@ -480,6 +481,7 @@ class ExecutionAuthorityTransition:
     reason: AuthorityReason | None
     created_effect_ids: tuple[EffectId, ...]
     fresh_claim: _FreshEffectClaim | _FreshQueryClaim | None
+    venue_transitions: tuple[VenueRecoveryTransition, ...]
 
 
 def _new_state(**values: object) -> ExecutionAuthorityState:
@@ -547,8 +549,16 @@ def _result(
     *,
     created: tuple[EffectId, ...] = (),
     claim: _FreshEffectClaim | _FreshQueryClaim | None = None,
+    venue_transitions: tuple[VenueRecoveryTransition, ...] = (),
 ) -> ExecutionAuthorityTransition:
-    return ExecutionAuthorityTransition(state, disposition, reason, created, claim)
+    return ExecutionAuthorityTransition(
+        state,
+        disposition,
+        reason,
+        created,
+        claim,
+        venue_transitions,
+    )
 
 
 def _record_input(
@@ -847,6 +857,7 @@ def _create_effect(
         next_state,
         AuthorityDisposition.APPLIED,
         created=(request.effect_id,),
+        venue_transitions=(venue_transition,),
     )
 
 
@@ -990,6 +1001,7 @@ def _claim_effect(
             effect_scope=_scope_from_request(state, request),
             claim_occurrence_id=item.claim_occurrence_id,
         ),
+        venue_transitions=(venue_transition,),
     )
 
 
@@ -1051,16 +1063,23 @@ def _engage_kill(
     execution: ExecutionSnapshot,
     item: EngageKill,
 ) -> ExecutionAuthorityTransition:
-    venue = _authority_stand_down_account_requested_effects(
+    stand_down = _authority_stand_down_account_requested_effects(
         state.venue,
         execution,
         f"kill:{item.input_id.value}",
     )
-    if venue is None:
+    if stand_down is None:
         venue = state.venue
+        venue_transitions: tuple[VenueRecoveryTransition, ...] = ()
+    else:
+        venue, venue_transitions = stand_down
     next_state = _state_with(state, kill_engaged=True, venue=venue)
     next_state = _record_input(next_state, item)
-    return _result(next_state, AuthorityDisposition.APPLIED)
+    return _result(
+        next_state,
+        AuthorityDisposition.APPLIED,
+        venue_transitions=venue_transitions,
+    )
 
 
 def _begin_manual_flatten(
@@ -1100,7 +1119,7 @@ def _begin_manual_flatten(
         return _result(
             state, AuthorityDisposition.REFUSED, AuthorityReason.VENUE_UNCERTAIN
         )
-    venue, cancel_ids = result
+    venue, cancel_ids, venue_transitions = result
     effect_authority = state._effect_authority_by_id
     for effect_id in cancel_ids:
         effect = venue._current_effect(effect_id)
@@ -1138,6 +1157,7 @@ def _begin_manual_flatten(
         next_state,
         AuthorityDisposition.APPLIED,
         created=cancel_ids,
+        venue_transitions=venue_transitions,
     )
 
 
@@ -1196,18 +1216,19 @@ def _advance_manual_flatten(
         )
         if reason is not None:
             return _result(state, AuthorityDisposition.REFUSED, reason)
-        venue = _authority_stand_down_requested_effect(
+        stand_down = _authority_stand_down_requested_effect(
             state.venue,
             execution,
             sell_effect_id,
             f"manual-flatten-retry:{item.input_id.value}",
         )
-        if venue is None:
+        if stand_down is None:
             return _result(
                 state,
                 AuthorityDisposition.REFUSED,
                 AuthorityReason.VENUE_UNCERTAIN,
             )
+        venue, venue_transitions = stand_down
         ready = _ManualFlatten(
             manual.command,
             _FlattenPhase.READY,
@@ -1223,7 +1244,11 @@ def _advance_manual_flatten(
             ),
         )
         next_state = _record_input(next_state, item)
-        return _result(next_state, AuthorityDisposition.APPLIED)
+        return _result(
+            next_state,
+            AuthorityDisposition.APPLIED,
+            venue_transitions=venue_transitions,
+        )
     if manual.phase is not _FlattenPhase.WAITING:
         return _result(
             state,

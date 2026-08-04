@@ -155,7 +155,9 @@ allowed_paths:
   - app/execution_core/protection.py
   - app/execution_core/identity.py
   - app/execution_core/venue.py
+  - app/execution_core/authority.py
   - app/execution_core/__init__.py
+  - tests/execution_core/test_authority.py
   - tests/execution_core/test_protection.py
   - tests/execution_core/test_protection_stateful.py
   - tests/execution_core/test_import_boundary.py
@@ -166,23 +168,47 @@ allowed_paths:
   - pkl/project/goals.md
   - pkl/architecture/architecture-map.md
   - pkl/log.md
+  - README.md
+  - docs/04_IMPLEMENTATION_PLAN.md
+  - docs/adr/ARCH-RESET-2026-07-RATIFICATION.md
 activation_only_paths:
   - README.md
   - docs/04_IMPLEMENTATION_PLAN.md
   - docs/adr/ARCH-RESET-2026-07-RATIFICATION.md
+closeout_status_only_paths:
+  - README.md
+  - docs/04_IMPLEMENTATION_PLAN.md
+  - docs/adr/ARCH-RESET-2026-07-RATIFICATION.md
+predecessor_interface_repair_paths:
+  - app/execution_core/authority.py
+  - tests/execution_core/test_authority.py
 ```
 
 Everything else is forbidden unless this work order is explicitly re-gated. In particular, do not
-edit `fills.py`, `position.py`, `recovery.py`, `values.py`, `authority.py`, accepted ADR bodies,
+edit `fills.py`, `position.py`, `recovery.py`, `values.py`, accepted ADR bodies,
 staged packet records, the retirement manifest, incumbent `app/protection.py`, stores, events,
 broker/adapter, API/UI, runtime, configuration, or CI workflows.
+
+Ameen's authorization to resolve in-flight M1 findings re-gates the two
+`predecessor_interface_repair_paths` only for one provenance correction: add an immutable ordered
+tuple of already-produced `VenueRecoveryTransition` values to `ExecutionAuthorityTransition`,
+thread it through successful create, claim, kill, and manual-flatten results, and pin that evidence
+in predecessor tests. No admission classifier, final-claim check, mode/kill/fence rule, budget,
+grant, manual-flatten decision, effect meaning, or authority-state mutation may change. The
+production reviewer must validate this narrow predecessor-interface amendment.
 
 ### Scope-check boundary
 
 The activation commit is an immutable eight-path exception: this new work order, the three
 `activation_only_paths`, the three PKL paths, and one append-only ledger reconciliation. After that
 commit, every implementation scope check uses its exact SHA as base and the standard checker over
-`allowed_paths`. Activation-only files may not change again inside the implementation range.
+`allowed_paths`. Activation-only files may not change again during implementation. Ameen's
+authorization to resolve in-flight M1 findings re-gates the three
+`closeout_status_only_paths` solely after an independent exact-candidate `ACCEPT`: update the
+README status paragraph and implementation-plan banner, then append one ratification gate entry.
+No accepted ADR body, authority digest, architecture rule, operational permission, or historical
+activation entry may change. The production reviewer must validate this narrow closeout scope
+before it is used.
 
 ## RED-first proof obligations
 
@@ -959,3 +985,144 @@ authorized feasibility/re-gate hunks, application and test trees are unchanged, 
 functional evidence remains applicable to identical executable inputs. The exact result is
 `RED-FOURTEENTH-RESULT.md`. WO-0148 production implementation may now resume under the active
 allowed paths and completion gates; no production acceptance or later-slice authority is implied.
+
+### Production successor re-gate after accepted-RED reconciliation
+
+Implementation exposed several fixture/oracle contradictions in the accepted RED blobs plus a
+material predecessor-lineage gap and missing same-call economics/market controls. Each changed
+expectation was reconciled to a reproduced failure and the normative contract; no unexplained RED
+edit is retained. Root corrections and failure-capable controls are recorded in
+`work/review/REV-0050/PRODUCTION-SUCCESSOR-REGATE.md`.
+
+Subsequent focused review found two production P1s: halt was not retained for its epoch, and
+step-deviation state was bid-specific rather than shared by eligible BID/TRADE primaries. The root
+repair commits the halt latch, requires a newer epoch to reopen, and retains one last-primary
+price. Exact counterexamples plus the generated market machine cover both directions; independent
+recheck returned `ACCEPT`, P0=0/P1=0/P2=0.
+
+The first downward-rounding and inclusive-trigger mutants survived their selected examples,
+exposing two test-strength gaps. Fractional-average and exact-trigger-boundary controls close them.
+A dedicated overfill control also reaches the named goal boundary rather than stopping at an
+earlier policy assertion. The final matrix kills and restores **17/17** controls, including
+test-local M1C create/final-claim classifier mutants without editing forbidden `authority.py`.
+Exact evidence is `work/review/REV-0050/PRODUCTION-MUTATION-EVIDENCE.md`.
+
+The current working copy collects and passes **308/308** focused tests (287 deterministic, four
+stateful, 17 import/public-boundary). Ruff, format-check, mypy across 86 source files, Python 3.11
+grammar across seven changed Python files, explicit current-scope checking, and
+`git diff --check` pass. A closeout-only status-document scope amendment is recorded above and
+may be used only after independent production `ACCEPT`.
+
+This evidence permits continued pure validation only. Predecessor/R2/full-repository coverage,
+complete candidate-range scope/governance checks, immutable candidate freeze, fresh independent
+production acceptance with zero unresolved P0/P1, and exact-head Python 3.11/3.12 CI remain
+mandatory. The fourteenth RED result does not accept the changed tests or production code by
+continuity.
+
+### Multi-scope protection-provenance root re-gate
+
+The production re-gate found one additional P1 in account-wide kill composition. The venue helper
+stood down every unclaimed request but reused the invoking symbol's `ExecutionSnapshot` for other
+symbols. The resulting cross-symbol transition correctly failed proof authentication, yet its
+venue cursor had already advanced. This is fail-closed, not a safety-invariant violation, and the
+rejected transition is not acceptance evidence.
+
+Ameen's explicit authorization to resolve WO-0148 findings and refinements in flight re-gates only
+the following bounded root correction. `VenueRecoveryBook` may retain one private exact
+`ExecutionSnapshot` per bound position scope, authenticated against its existing binding and
+account-registry high-water. Before an account-wide cleanup mutates another scope, venue must use
+that retained target snapshot directly or monotonically catch it up through the existing
+`CatchUpExecutionRegistry` proof path. Any required catch-up transition must be published before
+the target scope's stand-down/closure transitions. Missing, stale, non-prefix, wrong-scope, or
+binding-inconsistent material aborts the immutable cleanup attempt; kill may still latch with the
+prior venue exactly as before.
+
+This amendment permits only the directly necessary private venue-book state, validation,
+audit-hydration reconciliation, account-wide stand-down helper changes, and failure-capable tests
+inside the already allowed `venue.py`, `authority.py`, `test_authority.py`, `test_protection.py`,
+and `REV-0050` evidence paths. It does not permit an authority-state snapshot cache, classifier or
+admission changes, proof relaxation, scope narrowing, new public capability, persistence/runtime
+wiring, broker activity, database work, M2, merge, deletion, or cleanup. Fresh independent review
+must validate this amendment and the complete resulting transition chain before WO-0148 may close.
+
+### Coupled hydration and predecessor-continuity re-gate
+
+A fresh read-only production review reproduced one remaining P1 family. Slow audit hydration could
+accept a coordinated replacement of a retained per-scope execution snapshot and its private
+protection cursor because the two supplied indexes authenticated only each other. The resulting
+caller-shaped state could then produce a projection whose cursor matched an existing protection
+state while its predecessor execution commitment did not. No broker, database, runtime, or
+operational surface was involved.
+
+The root correction retains an append-only private sequence of advancing
+`_ProtectionTransitionProof` values. Slow hydration reconstructs its sequence commitment, validates
+each exact proof and per-scope predecessor cursor, and pins the current cursor and retained snapshot
+to the terminal proof. Non-genesis transition proofs now require their predecessor cursor's exact
+execution commitment/checkpoint. The protection reducer also requires the advancing projection's
+predecessor execution commitment to equal the current protection state. Non-advancing unresolved
+reconciliation remains an exact protection replay: its private snapshot stays at the last published
+cursor while the existing reconciliation state remains fail-closed. Exact technical replays still
+avoid history scans.
+
+Failure-capable evidence is retained without overwrite:
+
+- `evidence/p1-transition-chain-red-01/junit.xml`: **2/2 expected failures** before the correction;
+  paired hydration replacement did not raise and the reducer returned `APPLIED` across the
+  predecessor discontinuity.
+- `evidence/p1-transition-chain-green-02/junit.xml`: **3/3 pass**, including an internally
+  recomputed proof whose predecessor execution seal contradicts its cursor.
+- `evidence/p1-venue-history-05/junit.xml`: **294/294 pass** across venue ownership, binding
+  recovery, recovery, checkpoint hardening, and provenance hardening.
+- `evidence/p1-regate-09/junit.xml`: **452/452 pass** across authority, deterministic protection,
+  stateful protection, and import/public-boundary controls.
+- `evidence/p1-mutation-14/`: the narrow terminal-snapshot-only mutant survived because the
+  independent terminal-cursor pin still rejected the replacement; the complete ledger-to-current
+  pin mutant then failed the paired hydration control and restored green.
+- `evidence/p1-mutation-15/` and `evidence/p1-mutation-16/`: predecessor-proof and reducer
+  continuity mutants each failed their named control and restored green.
+
+Restored SHA-256 values are
+`09867228BFF78203C38952DE4348B68D4A7B84D9CE3F7D554006F47E1BE4A475` for `venue.py` and
+`AF0A44537721B75308EFD5AF786E3C1E38E15FB69DA7520DF94C68249F08E4E7` for `protection.py`.
+Ruff check/format, mypy over 86 application files, Python 3.11 grammar over all nine changed Python
+files, and `git diff --check` pass. This is working-copy implementation evidence, not acceptance.
+Predecessor, R2, execution-core, full-repository coverage, final scope/governance reconciliation,
+immutable freeze, fresh independent exact-candidate review, and Python 3.11/3.12 exact-head CI
+remain mandatory.
+
+### Final coverage and candidate-freeze pre-flight
+
+The first complete repository gate after the coupled-hydration correction executed 5,616 tests
+with zero failures/errors and 12 skipped or expected outcomes, but raw combined line/branch
+coverage was `92.88836467078332%`. The 93% floor therefore remained red; the run is retained under
+`evidence/full-gate-02/` and is not acceptance evidence.
+
+One bounded test-strength wave adds 35 negative controls for the material ordered-history,
+terminal-authority, snapshot, account-registry, reconciliation-cursor, immutable-update, and
+proof-envelope rejection paths. They cover 70 previously missing line/branch units without
+changing production. Disabling only the ordered-history commitment comparison makes its exact
+case fail because validation does not raise; restoration passes and returns `venue.py` to
+SHA-256 `09867228BFF78203C38952DE4348B68D4A7B84D9CE3F7D554006F47E1BE4A475`.
+
+Fresh final-tree evidence is:
+
+- coverage-strength matrix: **35/35 pass**;
+- affected authority/protection/stateful/import set: **487/487 pass**;
+- predecessor corpus: **745/745 pass**;
+- R2 conformance oracle: **61/61 pass**;
+- complete execution core: **1,063/1,063 pass**;
+- import/public-boundary controls: **17/17 pass**; and
+- full repository: **5,651 tests / 0 failures / 0 errors / 12 skipped or expected outcomes**,
+  with raw combined coverage **93.13120099909804%**, so the configured 93% floor passes.
+
+Final Ruff lint, changed-file Ruff format, mypy over 86 application files, Python 3.11 grammar over
+nine changed Python files, six import contracts, `git diff --check`, activation-base scope,
+install/version/ledger/PKL/disposition, three accepted-ADR digests, and all nine auxiliary
+worktrees pass. The global format scan still identifies ten pre-existing out-of-scope files and is
+not reported as green; none was changed. Exact commands, artifact hashes, candidate file hashes,
+preservation boundaries, and deferred gates are consolidated in
+`work/review/REV-0050/PRODUCTION-ACCEPTANCE-EVIDENCE.md`.
+
+This is pre-freeze implementation evidence, not acceptance. Immutable candidate freeze, fresh
+independent exact-candidate review with P0=0/P1=0, status/ledger/PKL closeout, and unchanged
+Python 3.11/3.12 exact-head CI remain mandatory. WO-0149 remains inactive.

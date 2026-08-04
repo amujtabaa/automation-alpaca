@@ -107,6 +107,16 @@ class MandateId(_ExactIdentity):
 
 
 @dataclass(frozen=True, slots=True)
+class MarketDataSourceId(_ExactIdentity):
+    """Exact immutable market-data source identity."""
+
+
+@dataclass(frozen=True, slots=True)
+class MarketOccurrenceId(_ExactIdentity):
+    """Exact immutable market-data occurrence identity."""
+
+
+@dataclass(frozen=True, slots=True)
 class AuthorityInputId(_ExactIdentity):
     """Exact technical-deduplication identity for one authority input."""
 

@@ -1518,6 +1518,8 @@ def test_create_and_final_claim_are_one_real_reducer_path() -> None:
     assert initial.budget.remaining == 3
     assert created.created_effect_ids == (EffectId("buy-effect"),)
     assert created.fresh_claim is None
+    assert len(created.venue_transitions) == 1
+    assert created.venue_transitions[0].book == created.state.venue
     assert created.state.budget.remaining == 3
 
     create_replay = _authority_apply_twice(
@@ -1529,6 +1531,7 @@ def test_create_and_final_claim_are_one_real_reducer_path() -> None:
     assert create_replay.disposition is disposition_type.EXACT_REPLAY
     assert create_replay.state == created.state
     assert create_replay.created_effect_ids == ()
+    assert create_replay.venue_transitions == ()
 
     changed = replace(
         command,
@@ -1544,6 +1547,7 @@ def test_create_and_final_claim_are_one_real_reducer_path() -> None:
     assert conflict.state == created.state
     assert conflict.created_effect_ids == ()
     assert conflict.fresh_claim is None
+    assert conflict.venue_transitions == ()
 
     claim = claim_type(  # type: ignore[operator]
         input_id=authority_input_type("buy-claim-input"),
@@ -1566,6 +1570,8 @@ def test_create_and_final_claim_are_one_real_reducer_path() -> None:
     assert claimed.disposition is disposition_type.APPLIED
     assert claimed.fresh_claim is not None
     assert claimed.fresh_claim.effect_id == EffectId("buy-effect")
+    assert len(claimed.venue_transitions) == 1
+    assert claimed.venue_transitions[0].book == claimed.state.venue
     assert claimed.state.budget.remaining == 2
 
     replay = _authority_apply_twice(
@@ -1577,6 +1583,7 @@ def test_create_and_final_claim_are_one_real_reducer_path() -> None:
     assert replay.disposition is disposition_type.EXACT_REPLAY
     assert replay.fresh_claim is None
     assert replay.state == claimed.state
+    assert replay.venue_transitions == ()
     assert replay.state.budget.remaining == 2
 
     changed_claim = replace(
@@ -4309,6 +4316,965 @@ def test_manual_flatten_identity_grant_and_phase_guards() -> None:
     assert advance_refused.created_effect_ids == ()
 
 
+def test_manual_flatten_publishes_compound_venue_transitions() -> None:
+    module = _authority_module()
+    disposition_type, authority_input_type, flatten_id_type, begin_type = _required(
+        module,
+        "AuthorityDisposition",
+        "AuthorityInputId",
+        "ManualFlattenId",
+        "BeginManualFlatten",
+    )
+    active = _forge_positive_predecessor(
+        module,
+        mode="ACTIVE",
+        remaining=4,
+        reserve=1,
+    )
+    local = _create_buy(module, active, label="flatten-provenance")
+    assert local.disposition is disposition_type.APPLIED
+    reducing = _forge_positive_predecessor(
+        module,
+        predecessor=local.state,
+        mode="REDUCING",
+        remaining=4,
+        reserve=1,
+    )
+    begin = begin_type(  # type: ignore[operator]
+        input_id=authority_input_type("flatten-provenance-begin"),
+        flatten_id=flatten_id_type("flatten-provenance"),
+        session_id=reducing.session_id,
+        symbol_id=SYMBOL,
+        actor=ActorId("flatten-provenance-operator"),
+        reason="stand down the unclaimed BUY before flatten",
+        evidence_reference=EvidenceReference("flatten-provenance-evidence"),
+        emergency_grant_id=None,
+    )
+    flattened = _authority_apply_twice(module, reducing, EXECUTION, begin)
+    assert flattened.disposition is disposition_type.APPLIED
+    assert len(flattened.venue_transitions) == 2
+    assert (
+        flattened.venue_transitions[1]._protection_proof.predecessor_cursor
+        == flattened.venue_transitions[0]._protection_proof.cursor
+    )
+    assert flattened.venue_transitions[-1].book == flattened.state.venue
+
+
+def _manual_flatten_retry_fixture(
+    module: ModuleType,
+    label: str,
+) -> tuple[object, ExecutionSnapshot, object]:
+    (
+        disposition_type,
+        authority_input_type,
+        flatten_id_type,
+        begin_type,
+        advance_type,
+    ) = _required(
+        module,
+        "AuthorityDisposition",
+        "AuthorityInputId",
+        "ManualFlattenId",
+        "BeginManualFlatten",
+        "AdvanceManualFlatten",
+    )
+    execution = _advanced_same_scope_execution(
+        quantity=3,
+        label=f"{label}-start",
+    )
+    state = _forge_positive_predecessor(
+        module,
+        mode="REDUCING",
+        remaining=5,
+        reserve=1,
+    )
+    flatten_id = flatten_id_type(label)
+    begun = _authority_apply_twice(
+        module,
+        state,
+        execution,
+        begin_type(  # type: ignore[operator]
+            input_id=authority_input_type(f"{label}-begin"),
+            flatten_id=flatten_id,
+            session_id=state.session_id,
+            symbol_id=SYMBOL,
+            actor=ActorId(f"{label}-operator"),
+            reason="begin exact-residual manual flatten",
+            evidence_reference=EvidenceReference(f"{label}-evidence"),
+            emergency_grant_id=None,
+        ),
+    )
+    assert begun.disposition is disposition_type.APPLIED
+    ready = _authority_apply_twice(
+        module,
+        begun.state,
+        execution,
+        advance_type(  # type: ignore[operator]
+            input_id=authority_input_type(f"{label}-ready"),
+            flatten_id=flatten_id,
+        ),
+    )
+    assert ready.disposition is disposition_type.APPLIED
+    created = _create_effect(
+        module,
+        ready.state,
+        execution,
+        label=f"{label}-sell",
+        side=ExecutionSide.SELL,
+        quantity=3,
+        manual_flatten_id=flatten_id,
+    )
+    assert created.disposition is disposition_type.APPLIED
+
+    book, shrunk_execution = _apply_closed_sell_fill(
+        created.state.venue,
+        execution,
+        label=f"{label}-shrink",
+        leg_key=RESIDUAL_LEG,
+    )
+    assert shrunk_execution.position.raw_quantity == 2
+    drifted = _forge_venue_predecessor(created.state, book)
+    retry_command = advance_type(  # type: ignore[operator]
+        input_id=authority_input_type(f"{label}-retire"),
+        flatten_id=flatten_id,
+    )
+    retired = _authority_apply_twice(
+        module,
+        drifted,
+        shrunk_execution,
+        retry_command,
+    )
+    assert retired.disposition is disposition_type.APPLIED
+    return retired, shrunk_execution, retry_command
+
+
+def test_manual_flatten_retry_publishes_retired_sell_transitions() -> None:
+    module = _authority_module()
+    (disposition_type,) = _required(module, "AuthorityDisposition")
+    retired, shrunk_execution, retry_command = _manual_flatten_retry_fixture(
+        module,
+        "flatten-retry",
+    )
+    assert len(retired.venue_transitions) == 2
+    assert (
+        retired.venue_transitions[1]._protection_proof.predecessor_cursor
+        == retired.venue_transitions[0]._protection_proof.cursor
+    )
+    assert retired.venue_transitions[-1].book == retired.state.venue
+    replay = _authority_apply_twice(
+        module,
+        retired.state,
+        shrunk_execution,
+        retry_command,
+    )
+    assert replay.disposition is disposition_type.EXACT_REPLAY
+    assert replay.venue_transitions == ()
+
+
+def _seed_multi_scope_requests(
+    label: str,
+) -> tuple[
+    VenueRecoveryBook,
+    tuple[tuple[ExecutionSnapshot, object], ...],
+    tuple[EffectId, ...],
+]:
+    executions = (
+        ExecutionSnapshot.flat(
+            PositionScope(
+                broker=BROKER,
+                environment=ENVIRONMENT,
+                account=ACCOUNT,
+                symbol_id=SYMBOL,
+            )
+        ),
+        ExecutionSnapshot.flat(
+            PositionScope(
+                broker=BROKER,
+                environment=ENVIRONMENT,
+                account=ACCOUNT,
+                symbol_id=OTHER_SYMBOL,
+            )
+        ),
+    )
+    book = VenueRecoveryBook.empty(VENUE_SCOPE)
+    seeded: list[tuple[ExecutionSnapshot, object]] = []
+    effect_ids: list[EffectId] = []
+    for suffix, execution in zip(("aapl", "msft"), executions, strict=True):
+        effect_label = f"{label}-{suffix}"
+        effect_id = EffectId(f"{effect_label}-effect")
+        requested = _private_venue_apply(
+            book,
+            execution,
+            RequestedEffect(
+                input_id=VenueInputId(f"{effect_label}-request-input"),
+                effect_id=effect_id,
+                request_occurrence_id=RequestOccurrenceId(f"{effect_label}-occurrence"),
+                mandate_id=MandateId(f"{effect_label}-mandate"),
+                kind=EffectKind.SUBMIT,
+                client_order_id=ClientOrderId(f"{effect_label}-client"),
+                symbol_id=execution.position.scope.symbol_id,
+                side=ExecutionSide.BUY,
+                quantity=Quantity(1),
+                economic_scope=f"{effect_label}-scope".encode(),
+                target_leg_key=None,
+            ),
+        )
+        assert requested.disposition is VenueRecoveryDisposition.APPLIED
+        book = requested.book
+        seeded.append((execution, requested))
+        effect_ids.append(effect_id)
+    return book, tuple(seeded), tuple(effect_ids)
+
+
+def _multi_scope_kill_fixture(
+    module: ModuleType,
+    label: str,
+) -> tuple[
+    object,
+    tuple[tuple[ExecutionSnapshot, object], ...],
+    object,
+    tuple[EffectId, ...],
+]:
+    """Return one account-wide kill with an exact seed transition per symbol."""
+
+    disposition_type, authority_input_type, kill_type = _required(
+        module,
+        "AuthorityDisposition",
+        "AuthorityInputId",
+        "EngageKill",
+    )
+    book, seeded, effect_ids = _seed_multi_scope_requests(label)
+    executions = tuple(execution for execution, _ in seeded)
+
+    predecessor = _forge_venue_predecessor(
+        _forge_positive_predecessor(module, remaining=5, reserve=1),
+        book,
+    )
+    command = kill_type(  # type: ignore[operator]
+        input_id=authority_input_type(f"{label}-input"),
+        actor=ActorId(f"{label}-operator"),
+        reason="stand down every account-local unclaimed request",
+        evidence_reference=EvidenceReference(f"{label}-evidence"),
+    )
+    killed = _authority_apply_twice(module, predecessor, executions[0], command)
+    assert killed.disposition is disposition_type.APPLIED
+    return killed, seeded, command, effect_ids
+
+
+def test_kill_publishes_complete_multi_scope_venue_provenance() -> None:
+    module = _authority_module()
+    (disposition_type,) = _required(module, "AuthorityDisposition")
+    killed, seeded, command, effect_ids = _multi_scope_kill_fixture(
+        module,
+        "kill-multi",
+    )
+    execution_by_scope = {
+        execution.position.scope: execution for execution, _ in seeded
+    }
+    assert len(killed.venue_transitions) == 4
+    by_scope: dict[PositionScope, list[object]] = {}
+    for transition in killed.venue_transitions:
+        scope = transition._protection_proof.position_scope
+        by_scope.setdefault(scope, []).append(transition)
+        assert transition._protection_proof.lineage_is_authentic
+        assert transition.execution.position.scope == scope
+    assert set(by_scope) == set(execution_by_scope)
+    for transitions in by_scope.values():
+        assert len(transitions) == 2
+        assert (
+            transitions[1]._protection_proof.predecessor_cursor
+            == transitions[0]._protection_proof.cursor
+        )
+    assert killed.venue_transitions[-1].book == killed.state.venue
+    for effect_id in effect_ids:
+        effect = killed.state.venue.effect(effect_id)
+        assert effect is not None
+        assert effect.state is BrokerEffectState.CANCELED_BEFORE_DISPATCH
+        assert effect.acceptance_set_state is AcceptanceSetState.CLOSED
+
+    replay = _authority_apply_twice(
+        module,
+        killed.state,
+        seeded[0][0],
+        command,
+    )
+    assert replay.disposition is disposition_type.EXACT_REPLAY
+    assert replay.venue_transitions == ()
+
+
+def _advanced_multi_scope_book(
+    label: str,
+) -> tuple[
+    tuple[tuple[ExecutionSnapshot, object], ...],
+    object,
+    tuple[EffectId, ...],
+]:
+    book, seeded, effect_ids = _seed_multi_scope_requests(label)
+    source_execution = _advanced_same_scope_execution(
+        quantity=2,
+        label=f"{label}-source",
+    )
+    prior_count = book.execution_registry_count
+    prior_commitment = book.execution_registry_commitment
+    assert prior_count is not None
+    assert prior_commitment is not None
+    source_advance = _private_venue_apply(
+        book,
+        seeded[0][0],
+        CatchUpExecutionRegistry(
+            input_id=VenueInputId(f"{label}-source-catch-up"),
+            target_checkpoint=VenueExecutionCheckpoint.from_execution(seeded[0][0]),
+            prior_account_registry_count=prior_count,
+            prior_account_registry_commitment=prior_commitment,
+            prior_source_binding=book.execution_binding(seeded[0][0].position.scope),
+            source_execution=source_execution,
+        ),
+    )
+    assert (
+        source_advance.disposition is VenueRecoveryDisposition.RECONCILIATION_REQUIRED
+    )
+    return seeded, source_advance, effect_ids
+
+
+def _stale_multi_scope_kill_fixture(
+    module: ModuleType,
+    label: str,
+) -> tuple[
+    object,
+    tuple[tuple[ExecutionSnapshot, object], ...],
+    object,
+    tuple[EffectId, ...],
+]:
+    disposition_type, authority_input_type, kill_type = _required(
+        module,
+        "AuthorityDisposition",
+        "AuthorityInputId",
+        "EngageKill",
+    )
+    seeded, source_advance, effect_ids = _advanced_multi_scope_book(label)
+    predecessor = _forge_venue_predecessor(
+        _forge_positive_predecessor(module, remaining=5, reserve=1),
+        source_advance.book,
+    )
+    command = kill_type(  # type: ignore[operator]
+        input_id=authority_input_type(f"{label}-kill-input"),
+        actor=ActorId(f"{label}-operator"),
+        reason="stand down requests after one scope advances the account registry",
+        evidence_reference=EvidenceReference(f"{label}-evidence"),
+    )
+    killed = _authority_apply_twice(
+        module,
+        predecessor,
+        source_advance.execution,
+        command,
+    )
+    assert killed.disposition is disposition_type.APPLIED
+    return killed, seeded, source_advance, effect_ids
+
+
+def _cursor_lag_multi_scope_kill_fixture(
+    module: ModuleType,
+    label: str,
+) -> tuple[
+    object,
+    tuple[tuple[ExecutionSnapshot, object], ...],
+    object,
+    object,
+    tuple[EffectId, ...],
+]:
+    disposition_type, authority_input_type, kill_type = _required(
+        module,
+        "AuthorityDisposition",
+        "AuthorityInputId",
+        "EngageKill",
+    )
+    seeded, source_advance, effect_ids = _advanced_multi_scope_book(label)
+    target_execution = seeded[1][0]
+    target_catch_up = _private_venue_apply(
+        source_advance.book,
+        target_execution,
+        CatchUpExecutionRegistry(
+            input_id=VenueInputId(f"{label}-target-catch-up"),
+            target_checkpoint=VenueExecutionCheckpoint.from_execution(target_execution),
+            prior_account_registry_count=(source_advance.book.execution_registry_count),
+            prior_account_registry_commitment=(
+                source_advance.book.execution_registry_commitment
+            ),
+            prior_source_binding=source_advance.book.execution_binding(
+                source_advance.execution.position.scope
+            ),
+            source_execution=source_advance.execution,
+        ),
+    )
+    assert target_catch_up.disposition is VenueRecoveryDisposition.APPLIED
+    predecessor = _forge_venue_predecessor(
+        _forge_positive_predecessor(module, remaining=5, reserve=1),
+        target_catch_up.book,
+    )
+    command = kill_type(  # type: ignore[operator]
+        input_id=authority_input_type(f"{label}-kill-input"),
+        actor=ActorId(f"{label}-operator"),
+        reason="stand down requests after per-scope reconciliation cursors diverge",
+        evidence_reference=EvidenceReference(f"{label}-evidence"),
+    )
+    killed = _authority_apply_twice(
+        module,
+        predecessor,
+        target_catch_up.execution,
+        command,
+    )
+    assert killed.disposition is disposition_type.APPLIED
+    return killed, seeded, source_advance, target_catch_up, effect_ids
+
+
+def test_kill_publishes_scope_catch_up_before_stale_target_cleanup() -> None:
+    module = _authority_module()
+    killed, seeded, source_advance, effect_ids = _stale_multi_scope_kill_fixture(
+        module,
+        "kill-stale-multi",
+    )
+    by_scope: dict[PositionScope, list[object]] = {}
+    for transition in killed.venue_transitions:
+        scope = transition._protection_proof.position_scope
+        by_scope.setdefault(scope, []).append(transition)
+        assert transition._protection_proof.lineage_is_authentic
+        assert transition.execution.position.scope == scope
+    source_scope = source_advance.execution.position.scope
+    target_scope = seeded[1][0].position.scope
+    assert len(by_scope[source_scope]) == 2
+    assert len(by_scope[target_scope]) == 3
+    target_transitions = by_scope[target_scope]
+    assert (
+        target_transitions[
+            0
+        ]._protection_proof.predecessor_execution_checkpoint.registry_count
+        == 0
+    )
+    assert (
+        target_transitions[0]._protection_proof.execution_checkpoint.registry_count
+        == source_advance.execution.seen_facts.count
+    )
+    for ordinal in range(1, len(target_transitions)):
+        assert (
+            target_transitions[ordinal]._protection_proof.predecessor_cursor
+            == target_transitions[ordinal - 1]._protection_proof.cursor
+        )
+    assert killed.venue_transitions[-1].book == killed.state.venue
+    for effect_id in effect_ids:
+        effect = killed.state.venue.effect(effect_id)
+        assert effect is not None
+        assert effect.state is BrokerEffectState.CANCELED_BEFORE_DISPATCH
+        assert effect.acceptance_set_state is AcceptanceSetState.CLOSED
+
+
+def test_kill_publishes_cursor_catch_up_before_registry_current_cleanup() -> None:
+    module = _authority_module()
+    killed, seeded, source_advance, target_catch_up, effect_ids = (
+        _cursor_lag_multi_scope_kill_fixture(
+            module,
+            "kill-cursor-lag-multi",
+        )
+    )
+    prior_cursor_by_scope = {
+        source_advance.execution.position.scope: (
+            source_advance.execution.reconciliation_transition_count
+        ),
+        target_catch_up.execution.position.scope: (
+            target_catch_up.execution.reconciliation_transition_count
+        ),
+    }
+    by_scope: dict[PositionScope, list[object]] = {}
+    for transition in killed.venue_transitions:
+        scope = transition._protection_proof.position_scope
+        by_scope.setdefault(scope, []).append(transition)
+        assert transition._protection_proof.lineage_is_authentic
+        assert transition.execution.position.scope == scope
+    assert set(by_scope) == {execution.position.scope for execution, _ in seeded}
+    for scope, transitions in by_scope.items():
+        assert len(transitions) == 3
+        cursor_catch_up = transitions[0]
+        assert (
+            cursor_catch_up._protection_proof.predecessor_execution_checkpoint.reconciliation_transition_count
+            == prior_cursor_by_scope[scope]
+        )
+        assert (
+            cursor_catch_up._protection_proof.execution_checkpoint.reconciliation_transition_count
+            > prior_cursor_by_scope[scope]
+        )
+        for ordinal in range(1, len(transitions)):
+            assert (
+                transitions[ordinal]._protection_proof.predecessor_cursor
+                == transitions[ordinal - 1]._protection_proof.cursor
+            )
+    assert killed.venue_transitions[-1].book == killed.state.venue
+    for effect_id in effect_ids:
+        effect = killed.state.venue.effect(effect_id)
+        assert effect is not None
+        assert effect.state is BrokerEffectState.CANCELED_BEFORE_DISPATCH
+        assert effect.acceptance_set_state is AcceptanceSetState.CLOSED
+
+
+def test_audit_hydration_rejects_unpublished_scope_snapshot_projection() -> None:
+    import app.execution_core.position as position_module
+    import app.execution_core.venue as venue_module
+
+    seeded, source_advance, _ = _advanced_multi_scope_book("audit-unpublished-snapshot")
+    target_execution = seeded[1][0]
+    invented = position_module._project_execution_registry(
+        target_execution,
+        source_advance.execution,
+        reconciliation_transition_count=(
+            source_advance.execution.reconciliation_transition_count
+        ),
+        reconciliation_transition_head=(
+            source_advance.execution.reconciliation_transition_head
+        ),
+    )
+    forged = copy(source_advance.book)
+    object.__setattr__(
+        forged,
+        "_execution_snapshot_by_scope",
+        source_advance.book._execution_snapshot_by_scope.replace_existing(
+            venue_module._position_scope_index_key(target_execution.position.scope),
+            invented,
+            venue_module._execution_snapshot_value_commitment(invented),
+        ),
+    )
+    with pytest.raises(ValueError, match="snapshot|provenance|cursor"):
+        venue_module._audit_hydrate_book(forged, source_advance.execution)
+
+
+def test_audit_hydration_rejects_coupled_snapshot_and_cursor_substitution() -> None:
+    import app.execution_core.position as position_module
+    import app.execution_core.venue as venue_module
+
+    seeded, source_advance, _ = _advanced_multi_scope_book("audit-coupled-snapshot")
+    target_execution = seeded[1][0]
+    invented = position_module._project_execution_registry(
+        target_execution,
+        source_advance.execution,
+        reconciliation_transition_count=(
+            source_advance.execution.reconciliation_transition_count
+        ),
+        reconciliation_transition_head=(
+            source_advance.execution.reconciliation_transition_head
+        ),
+    )
+    scope_key = venue_module._position_scope_index_key(target_execution.position.scope)
+    retained_cursor = source_advance.book._protection_cursor_by_scope.get(scope_key)
+    assert type(retained_cursor) is venue_module._ProtectionCursor
+    invented_cursor = replace(
+        retained_cursor,
+        execution_commitment=invented.commitment,
+        execution_checkpoint=VenueExecutionCheckpoint.from_execution(invented),
+    )
+    forged = copy(source_advance.book)
+    object.__setattr__(
+        forged,
+        "_execution_snapshot_by_scope",
+        source_advance.book._execution_snapshot_by_scope.replace_existing(
+            scope_key,
+            invented,
+            venue_module._execution_snapshot_value_commitment(invented),
+        ),
+    )
+    object.__setattr__(
+        forged,
+        "_protection_cursor_by_scope",
+        source_advance.book._protection_cursor_by_scope.replace_existing(
+            scope_key,
+            invented_cursor,
+            invented_cursor.commitment,
+        ),
+    )
+
+    with pytest.raises(ValueError, match="transition|provenance|cursor"):
+        venue_module._audit_hydrate_book(forged, source_advance.execution)
+
+
+def _changed_digest(value: bytes) -> bytes:
+    assert len(value) == 32
+    return bytes((value[0] ^ 1,)) + value[1:]
+
+
+@pytest.mark.parametrize(
+    "variant",
+    (
+        "history-type",
+        "cursor-index-type",
+        "proof-type",
+        "non-advancing-proof",
+        "proof-lineage",
+        "history-contiguity",
+        "history-commitment",
+        "cursor-cardinality",
+        "terminal-authority",
+        "snapshot-index-type",
+        "snapshot-type",
+        "registry-absent",
+        "registry-behind",
+        "registry-commitment",
+        "reconciliation-prefix",
+        "reconciliation-head",
+        "snapshot-index-commitment",
+        "cursor-update-proof",
+        "snapshot-update-index",
+    ),
+)
+def test_slow_audit_rejects_unanchored_protection_material(variant: str) -> None:
+    """Each private current-state index remains subordinate to ordered history."""
+
+    import app.execution_core.venue as venue_module
+
+    _, source_advance, _ = _advanced_multi_scope_book(f"audit-history-{variant}")
+    book = source_advance.book
+    book._validated_execution_snapshots()
+    terminal_by_scope = book._validated_protection_transition_history()
+    position_scope, terminal = next(iter(terminal_by_scope.items()))
+    scope_key = venue_module._position_scope_index_key(position_scope)
+    ledger = book._protection_transition_ledger
+    first_proof = ledger.get(0)
+    altered = copy(book)
+    validator = altered._validated_protection_transition_history
+
+    if variant == "history-type":
+        object.__setattr__(altered, "_protection_transition_ledger", ())
+    elif variant == "cursor-index-type":
+        object.__setattr__(altered, "_protection_cursor_by_scope", ())
+    elif variant == "proof-type":
+        object.__setattr__(
+            altered,
+            "_protection_transition_ledger",
+            ledger.set(0, object(), bytes(32)),
+        )
+    elif variant == "non-advancing-proof":
+        non_advance = replace(first_proof, cursor=first_proof.predecessor_cursor)
+        object.__setattr__(
+            altered,
+            "_protection_transition_ledger",
+            ledger.set(0, non_advance, non_advance.commitment),
+        )
+    elif variant == "proof-lineage":
+        broken_lineage = replace(
+            first_proof,
+            command_commitment=_changed_digest(first_proof.command_commitment),
+        )
+        object.__setattr__(
+            altered,
+            "_protection_transition_ledger",
+            ledger.set(0, broken_lineage, broken_lineage.commitment),
+        )
+    elif variant == "history-contiguity":
+        non_genesis = next(
+            ledger.get(index)
+            for index in range(ledger.length)
+            if ledger.get(index).predecessor_cursor.ordinal > 0
+        )
+        object.__setattr__(
+            altered,
+            "_protection_transition_ledger",
+            _PersistentSequence.from_values(
+                (non_genesis,),
+                lambda proof: proof.commitment,
+            ),
+        )
+    elif variant == "history-commitment":
+        object.__setattr__(
+            altered,
+            "_protection_transition_ledger",
+            ledger.set(0, first_proof, _changed_digest(first_proof.commitment)),
+        )
+    elif variant == "cursor-cardinality":
+        object.__setattr__(
+            altered,
+            "_protection_cursor_by_scope",
+            _PersistentKeyMap.empty(),
+        )
+    elif variant == "terminal-authority":
+        summary = book._authority_summary_by_scope.get(scope_key)
+        assert type(summary) is venue_module._SymbolAuthoritySummary
+        changed_summary = replace(
+            summary,
+            blocking_effect_count=summary.blocking_effect_count + 1,
+        )
+        object.__setattr__(
+            altered,
+            "_authority_summary_by_scope",
+            book._authority_summary_by_scope.replace_existing(
+                scope_key,
+                changed_summary,
+                changed_summary.commitment,
+            ),
+        )
+    elif variant == "snapshot-index-type":
+        object.__setattr__(altered, "_execution_snapshot_by_scope", ())
+        validator = altered._validated_execution_snapshots
+    elif variant == "snapshot-type":
+        object.__setattr__(
+            altered,
+            "_execution_snapshot_by_scope",
+            book._execution_snapshot_by_scope.replace_existing(
+                scope_key,
+                object(),
+                bytes(32),
+            ),
+        )
+        validator = altered._validated_execution_snapshots
+    elif variant == "registry-absent":
+        object.__setattr__(altered, "execution_registry_count", None)
+        validator = altered._validated_execution_snapshots
+    elif variant == "registry-behind":
+        object.__setattr__(altered, "execution_registry_count", 0)
+        validator = altered._validated_execution_snapshots
+    elif variant == "registry-commitment":
+        commitment = book.execution_registry_commitment
+        assert commitment is not None
+        object.__setattr__(
+            altered,
+            "execution_registry_commitment",
+            _changed_digest(commitment),
+        )
+        validator = altered._validated_execution_snapshots
+    elif variant == "reconciliation-prefix":
+        object.__setattr__(
+            altered,
+            "_registry_transition_ledger",
+            _PersistentSequence.empty(),
+        )
+        validator = altered._validated_execution_snapshots
+    elif variant == "reconciliation-head":
+        head = book._registry_transition_head_commitment
+        assert head is not None
+        object.__setattr__(
+            altered,
+            "_registry_transition_head_commitment",
+            _changed_digest(head),
+        )
+        validator = altered._validated_execution_snapshots
+    elif variant == "snapshot-index-commitment":
+        snapshot = book._execution_snapshot_by_scope.get(scope_key)
+        assert type(snapshot) is ExecutionSnapshot
+        object.__setattr__(
+            altered,
+            "_execution_snapshot_by_scope",
+            book._execution_snapshot_by_scope.replace_existing(
+                scope_key,
+                snapshot,
+                _changed_digest(snapshot.commitment),
+            ),
+        )
+        validator = altered._validated_execution_snapshots
+    elif variant == "cursor-update-proof":
+        with pytest.raises(ValueError, match="exact advancing proof"):
+            venue_module._with_protection_cursor(
+                book,
+                position_scope,
+                terminal.cursor,
+                object(),
+            )
+        return
+    elif variant == "snapshot-update-index":
+        with pytest.raises(TypeError, match="persistent key map"):
+            venue_module._with_execution_snapshot_index(book, ())
+        return
+    else:  # pragma: no cover - the parameter table is closed above.
+        raise AssertionError(f"unhandled audit variant: {variant}")
+
+    with pytest.raises((TypeError, ValueError), match="protection|snapshot|registry"):
+        validator()
+
+
+@pytest.mark.parametrize(
+    ("field_name", "invalid_value"),
+    (
+        ("position_scope", object()),
+        ("predecessor_cursor", object()),
+        ("cursor", object()),
+        ("predecessor_book_scope", object()),
+        ("book_scope", object()),
+        ("predecessor_execution_checkpoint", object()),
+        ("execution_checkpoint", object()),
+        ("predecessor_summary", object()),
+        ("summary", object()),
+        ("predecessor_binding", object()),
+        ("binding", object()),
+        ("predecessor_execution_commitment", b"short"),
+        ("predecessor_execution_binding_matches", 1),
+        ("disposition", object()),
+        ("quantity_delta", True),
+    ),
+    ids=(
+        "position-scope",
+        "predecessor-cursor",
+        "cursor",
+        "predecessor-book-scope",
+        "book-scope",
+        "predecessor-checkpoint",
+        "execution-checkpoint",
+        "predecessor-summary",
+        "summary",
+        "predecessor-binding",
+        "binding",
+        "digest-length",
+        "flag-type",
+        "disposition-type",
+        "quantity-delta-type",
+    ),
+)
+def test_transition_proof_rejects_malformed_envelope_fields(
+    field_name: str,
+    invalid_value: object,
+) -> None:
+    import app.execution_core.venue as venue_module
+
+    _, source_advance, _ = _advanced_multi_scope_book(
+        f"audit-proof-envelope-{field_name}"
+    )
+    proof = source_advance.book._protection_transition_ledger.get(0)
+    assert proof.lineage_is_authentic
+    malformed = replace(proof, **{field_name: invalid_value})
+
+    assert not venue_module._protection_transition_proof_is_authentic(malformed)
+
+
+def test_transition_proof_rejects_nonproof_value() -> None:
+    import app.execution_core.venue as venue_module
+
+    assert not venue_module._protection_transition_proof_is_authentic(object())
+
+
+@pytest.mark.parametrize("invalid_material", ["missing", "wrong-scope", "ahead"])
+def test_kill_keeps_venue_unchanged_when_scope_snapshot_material_is_invalid(
+    invalid_material: str,
+) -> None:
+    import app.execution_core.position as position_module
+    import app.execution_core.venue as venue_module
+
+    module = _authority_module()
+    disposition_type, authority_input_type, kill_type = _required(
+        module,
+        "AuthorityDisposition",
+        "AuthorityInputId",
+        "EngageKill",
+    )
+    book, seeded, effect_ids = _seed_multi_scope_requests(
+        f"kill-invalid-{invalid_material}"
+    )
+    target_execution = seeded[1][0]
+    if invalid_material == "missing":
+        invalid_index = _PersistentKeyMap.empty()
+    else:
+        replacement = seeded[0][0]
+        if invalid_material == "ahead":
+            advanced_source = _advanced_same_scope_execution(
+                label="kill-invalid-ahead-source"
+            )
+            replacement = position_module._project_execution_registry(
+                target_execution,
+                advanced_source,
+                reconciliation_transition_count=(
+                    target_execution.reconciliation_transition_count
+                ),
+                reconciliation_transition_head=(
+                    target_execution.reconciliation_transition_head
+                ),
+            )
+        invalid_index = book._execution_snapshot_by_scope.replace_existing(
+            venue_module._position_scope_index_key(target_execution.position.scope),
+            replacement,
+            venue_module._execution_snapshot_value_commitment(replacement),
+        )
+    invalid_book = copy(book)
+    object.__setattr__(
+        invalid_book,
+        "_execution_snapshot_by_scope",
+        invalid_index,
+    )
+    with pytest.raises((TypeError, ValueError)):
+        venue_module._audit_hydrate_book(invalid_book, seeded[0][0])
+
+    predecessor = _forge_venue_predecessor(
+        _forge_positive_predecessor(module, remaining=5, reserve=1),
+        invalid_book,
+    )
+    killed = _authority_apply_twice(
+        module,
+        predecessor,
+        seeded[0][0],
+        kill_type(  # type: ignore[operator]
+            input_id=authority_input_type(f"kill-invalid-{invalid_material}-input"),
+            actor=ActorId(f"kill-invalid-{invalid_material}-operator"),
+            reason="latch kill without partial venue cleanup",
+            evidence_reference=EvidenceReference(
+                f"kill-invalid-{invalid_material}-evidence"
+            ),
+        ),
+    )
+    assert killed.disposition is disposition_type.APPLIED
+    assert killed.state.kill_engaged is True
+    assert killed.state.venue == invalid_book
+    assert killed.venue_transitions == ()
+    for effect_id in effect_ids:
+        effect = killed.state.venue.effect(effect_id)
+        assert effect is not None
+        assert effect.state is BrokerEffectState.REQUESTED
+        assert effect.acceptance_set_state is AcceptanceSetState.OPEN
+
+
+def test_account_cleanup_rejects_cross_scope_execution_before_mutation() -> None:
+    import app.execution_core.venue as venue_module
+
+    book, seeded, effect_ids = _seed_multi_scope_requests("cleanup-cross-scope-refusal")
+    refused = venue_module._authority_stand_down_requested_effect(
+        book,
+        seeded[0][0],
+        effect_ids[1],
+        "cleanup-cross-scope-refusal",
+    )
+    assert refused is None
+    target = book.effect(effect_ids[1])
+    assert target is not None
+    assert target.state is BrokerEffectState.REQUESTED
+    assert target.acceptance_set_state is AcceptanceSetState.OPEN
+
+
+def test_kill_keeps_venue_when_invoking_execution_registry_is_not_current() -> None:
+    module = _authority_module()
+    disposition_type, authority_input_type, kill_type = _required(
+        module,
+        "AuthorityDisposition",
+        "AuthorityInputId",
+        "EngageKill",
+    )
+    created = _create_effect(
+        module,
+        _forge_positive_predecessor(module, remaining=5, reserve=1),
+        EXECUTION,
+        label="kill-caller-registry-ahead",
+        side=ExecutionSide.BUY,
+    )
+    assert created.disposition is disposition_type.APPLIED
+    advanced_execution = _advanced_same_scope_execution(
+        quantity=1,
+        label="kill-caller-registry-ahead",
+    )
+    killed = _authority_apply_twice(
+        module,
+        created.state,
+        advanced_execution,
+        kill_type(  # type: ignore[operator]
+            input_id=authority_input_type("kill-caller-registry-ahead-input"),
+            actor=ActorId("kill-caller-registry-ahead-operator"),
+            reason="latch kill without cleaning from an unregistered caller snapshot",
+            evidence_reference=EvidenceReference("kill-caller-registry-ahead-evidence"),
+        ),
+    )
+    assert killed.disposition is disposition_type.APPLIED
+    assert killed.state.kill_engaged is True
+    assert killed.state.venue == created.state.venue
+    assert killed.venue_transitions == ()
+
+
 def test_kill_releases_unclaimed_cancel_reservation_and_allows_retry() -> None:
     module = _authority_module()
     disposition_type, authority_input_type, kill_type = _required(
@@ -4346,6 +5312,12 @@ def test_kill_releases_unclaimed_cancel_reservation_and_allows_retry() -> None:
     assert killed.disposition is disposition_type.APPLIED
     assert killed.state.kill_engaged is True
     assert killed.state.budget == first.state.budget
+    assert len(killed.venue_transitions) == 2
+    assert (
+        killed.venue_transitions[1]._protection_proof.predecessor_cursor
+        == killed.venue_transitions[0]._protection_proof.cursor
+    )
+    assert killed.venue_transitions[-1].book == killed.state.venue
     stood_down = killed.state.venue.effect(EffectId("kill-cancel-first-effect"))
     assert stood_down is not None
     assert stood_down.state is BrokerEffectState.CANCELED_BEFORE_DISPATCH

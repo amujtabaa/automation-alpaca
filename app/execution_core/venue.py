@@ -51,6 +51,7 @@ from .identity import (
     VenueObservationId,
 )
 from .position import (
+    BasisAuthority,
     ExecutionSnapshot,
     PositionIntegrity,
     _RECONCILIATION_GENESIS_HEAD,
@@ -1195,6 +1196,7 @@ def _validate_registry_outcome_common(
     resulting_registry_count: int,
     resulting_registry_commitment: bytes,
     reason: str,
+    allow_equal_registry_count: bool = False,
 ) -> None:
     _require("input_id", input_id, VenueInputId)
     _require_digest("command_commitment", command_commitment)
@@ -1202,16 +1204,25 @@ def _validate_registry_outcome_common(
         raise TypeError(
             "target_checkpoint must be the exact VenueExecutionCheckpoint type"
         )
-    if (
-        type(resulting_registry_count) is not int
-        or resulting_registry_count <= target_checkpoint.registry_count
+    if type(resulting_registry_count) is not int or (
+        resulting_registry_count < target_checkpoint.registry_count
+        if allow_equal_registry_count
+        else resulting_registry_count <= target_checkpoint.registry_count
     ):
+        relation = "precede" if allow_equal_registry_count else "strictly exceed"
         raise ValueError(
-            "resulting_registry_count must strictly exceed the target checkpoint"
+            f"resulting_registry_count must not {relation} the target checkpoint"
+            if allow_equal_registry_count
+            else "resulting_registry_count must strictly exceed the target checkpoint"
         )
     _require_digest("resulting_registry_commitment", resulting_registry_commitment)
     if type(reason) is not str or not reason.strip():
         raise ValueError("reason must be a nonblank string")
+
+
+class _ResolvedProjectionKind(Enum):
+    REGISTRY_ADVANCE = "REGISTRY_ADVANCE"
+    RECONCILIATION_CURSOR_ADVANCE = "RECONCILIATION_CURSOR_ADVANCE"
 
 
 @dataclass(frozen=True, slots=True)
@@ -1225,8 +1236,13 @@ class _ResolvedRegistryProjectionOutcome:
     resulting_registry_count: int
     resulting_registry_commitment: bytes
     reason: str
+    projection_kind: _ResolvedProjectionKind = _ResolvedProjectionKind.REGISTRY_ADVANCE
 
     def __post_init__(self) -> None:
+        if type(self.projection_kind) is not _ResolvedProjectionKind:
+            raise TypeError(
+                "projection_kind must be the exact resolved projection kind"
+            )
         _validate_registry_outcome_common(
             input_id=self.input_id,
             command_commitment=self.command_commitment,
@@ -1234,7 +1250,23 @@ class _ResolvedRegistryProjectionOutcome:
             resulting_registry_count=self.resulting_registry_count,
             resulting_registry_commitment=self.resulting_registry_commitment,
             reason=self.reason,
+            allow_equal_registry_count=(
+                self.projection_kind
+                is _ResolvedProjectionKind.RECONCILIATION_CURSOR_ADVANCE
+            ),
         )
+        if (
+            self.projection_kind
+            is _ResolvedProjectionKind.RECONCILIATION_CURSOR_ADVANCE
+        ):
+            if (
+                self.resulting_registry_count != self.target_checkpoint.registry_count
+                or self.resulting_registry_commitment
+                != self.target_checkpoint.registry_commitment
+            ):
+                raise ValueError(
+                    "cursor projection must preserve the exact target registry"
+                )
         if type(self.source_binding) is not VenueExecutionBinding:
             raise TypeError(
                 "source_binding must be the exact VenueExecutionBinding type"
@@ -1387,6 +1419,7 @@ ExecutionRegistryReconciliationRecord = (
 
 class _RegistryTransitionKind(Enum):
     RESOLVED_TARGET_PROJECTION = "RESOLVED_TARGET_PROJECTION"
+    RESOLVED_CURSOR_PROJECTION = "RESOLVED_CURSOR_PROJECTION"
     UNRESOLVED_SOURCE_ADVANCE = "UNRESOLVED_SOURCE_ADVANCE"
 
 
@@ -1433,7 +1466,12 @@ def _registry_transition_proof_for(
     if item.prior_source_binding is None:
         raise ValueError("admitted CatchUp transition requires a prior source binding")
     if type(outcome) is _ResolvedRegistryProjectionOutcome:
-        kind = _RegistryTransitionKind.RESOLVED_TARGET_PROJECTION
+        kind = (
+            _RegistryTransitionKind.RESOLVED_CURSOR_PROJECTION
+            if outcome.projection_kind
+            is _ResolvedProjectionKind.RECONCILIATION_CURSOR_ADVANCE
+            else _RegistryTransitionKind.RESOLVED_TARGET_PROJECTION
+        )
         resulting_source_binding = outcome.source_binding
         if (
             item.prior_account_registry_count != outcome.resulting_registry_count
@@ -1442,6 +1480,14 @@ def _registry_transition_proof_for(
             or item.prior_source_binding != resulting_source_binding
         ):
             raise ValueError("resolved projection contradicts its exact prior heads")
+        if (
+            outcome.projection_kind
+            is _ResolvedProjectionKind.RECONCILIATION_CURSOR_ADVANCE
+            and (item.target_checkpoint.reconciliation_transition_count >= ordinal - 1)
+        ):
+            raise ValueError(
+                "same-registry projection requires a strict reconciliation-cursor prefix"
+            )
         resulting_target_binding = item.target_checkpoint.binding
     elif type(outcome) is _UnresolvedRegistryAdvanceOutcome:
         kind = _RegistryTransitionKind.UNRESOLVED_SOURCE_ADVANCE
@@ -1529,12 +1575,93 @@ def _validate_registry_transition_chain(
         raise ValueError("registry transition chain head does not close exactly")
 
 
+@dataclass(frozen=True, slots=True)
+class _ProtectionCursor:
+    """Per-position predecessor-linked protection projection cursor."""
+
+    ordinal: int
+    head: bytes
+    mandate_id: MandateId | None
+    execution_commitment: bytes | None
+    execution_checkpoint: VenueExecutionCheckpoint | None
+
+    def __post_init__(self) -> None:
+        if type(self.ordinal) is not int or self.ordinal < 0:
+            raise ValueError("protection cursor ordinal must be a non-negative integer")
+        _require_digest("protection cursor head", self.head)
+        if self.mandate_id is not None and type(self.mandate_id) is not MandateId:
+            raise TypeError("protection cursor mandate_id must be MandateId or None")
+        if (self.execution_commitment is None) != (self.execution_checkpoint is None):
+            raise ValueError(
+                "protection cursor execution seal must be wholly present or absent"
+            )
+        if self.execution_commitment is not None:
+            _require_digest(
+                "protection cursor execution commitment",
+                self.execution_commitment,
+            )
+            if type(self.execution_checkpoint) is not VenueExecutionCheckpoint:
+                raise TypeError("protection cursor execution checkpoint must be exact")
+
+    @property
+    def commitment(self) -> bytes:
+        return _commit_parts(
+            b"execution-core/protection-cursor/v2",
+            _canonical_value_commitment(self.ordinal),
+            self.head,
+            _canonical_value_commitment(self.mandate_id),
+            _canonical_value_commitment(self.execution_commitment),
+            _canonical_value_commitment(self.execution_checkpoint),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class _ProtectionTransitionProof:
+    """Bounded proof of one venue transition's protection projection inputs."""
+
+    position_scope: PositionScope
+    predecessor_cursor: _ProtectionCursor
+    cursor: _ProtectionCursor
+    predecessor_book_scope: VenueScope
+    book_scope: VenueScope
+    predecessor_book_commitment: bytes
+    book_commitment: bytes
+    predecessor_execution_commitment: bytes
+    execution_commitment: bytes
+    predecessor_execution_checkpoint: VenueExecutionCheckpoint
+    execution_checkpoint: VenueExecutionCheckpoint
+    predecessor_summary: _SymbolAuthoritySummary
+    summary: _SymbolAuthoritySummary
+    predecessor_binding: VenueExecutionBinding | None
+    binding: VenueExecutionBinding | None
+    predecessor_execution_binding_matches: bool
+    execution_binding_matches: bool
+    predecessor_account_reconciliation_clear: bool
+    account_reconciliation_clear: bool
+    command_commitment: bytes
+    disposition: VenueRecoveryDisposition
+    quantity_delta: int
+
+    @property
+    def commitment(self) -> bytes:
+        return _commit_parts(
+            b"execution-core/protection-transition-proof/v1",
+            _canonical_value_commitment(self),
+        )
+
+    @property
+    def lineage_is_authentic(self) -> bool:
+        return _protection_transition_proof_is_authentic(self)
+
+
 @dataclass(frozen=True, slots=True, init=False)
 class VenueRecoveryTransition:
     book: VenueRecoveryBook
     execution: ExecutionSnapshot
     disposition: VenueRecoveryDisposition
     quantity_delta: int
+    _protection_proof: _ProtectionTransitionProof
+    _protection_proof_commitment: bytes
 
     def __init__(self, *args: object, **kwargs: object) -> None:
         del args, kwargs
@@ -1867,6 +1994,15 @@ class VenueRecoveryBook:
     _binding_by_scope: _PersistentKeyMap[VenueExecutionBinding] = field(
         default_factory=_PersistentKeyMap.empty
     )
+    _execution_snapshot_by_scope: _PersistentKeyMap[ExecutionSnapshot] = field(
+        default_factory=_PersistentKeyMap.empty
+    )
+    _protection_cursor_by_scope: _PersistentKeyMap[_ProtectionCursor] = field(
+        default_factory=_PersistentKeyMap.empty
+    )
+    _protection_transition_ledger: _PersistentSequence[_ProtectionTransitionProof] = (
+        field(default_factory=_PersistentSequence.empty)
+    )
 
     def __init__(self, *args: object, **kwargs: object) -> None:
         del args, kwargs
@@ -1877,6 +2013,12 @@ class VenueRecoveryBook:
     def __init_subclass__(cls, **kwargs: object) -> None:
         del cls, kwargs
         raise TypeError("VenueRecoveryBook is opaque and cannot be subclassed")
+
+    @property
+    def _protection_commitment(self) -> bytes:
+        """Return the bounded envelope commitment used by protection projection."""
+
+        return _protection_book_commitment(self)
 
     def _authority_epoch(self, position_scope: PositionScope) -> int:
         retained = self._authority_epoch_by_scope.get(
@@ -2304,6 +2446,167 @@ class VenueRecoveryBook:
             raise ValueError(
                 "effect checkpoints require one account execution-registry commitment"
             )
+
+    def _validated_protection_transition_history(
+        self,
+    ) -> dict[PositionScope, _ProtectionTransitionProof]:
+        """Authenticate each retained per-scope cursor from ordered proofs."""
+
+        if type(self._protection_transition_ledger) is not type(
+            _PersistentSequence.empty()
+        ):
+            raise TypeError("protection transition history must be persistent")
+        if type(self._protection_cursor_by_scope) is not type(
+            _PersistentKeyMap.empty()
+        ):
+            raise TypeError("protection cursor index must be a persistent key map")
+
+        rebuilt: _PersistentSequence[_ProtectionTransitionProof] = (
+            _PersistentSequence.empty()
+        )
+        head_by_scope: dict[PositionScope, _ProtectionCursor] = {}
+        terminal_by_scope: dict[PositionScope, _ProtectionTransitionProof] = {}
+        for index in range(self._protection_transition_ledger.length):
+            proof: _ProtectionTransitionProof = self._protection_transition_ledger.get(
+                index
+            )
+            if type(proof) is not _ProtectionTransitionProof:
+                raise TypeError("retained protection transition proof must be exact")
+            if proof.cursor == proof.predecessor_cursor:
+                raise ValueError("protection transition history retained a non-advance")
+            if not proof.lineage_is_authentic:
+                raise ValueError("protection transition history is not authentic")
+            expected = head_by_scope.get(
+                proof.position_scope,
+                _protection_genesis_cursor(),
+            )
+            if proof.predecessor_cursor != expected:
+                raise ValueError("protection transition history is not contiguous")
+            head_by_scope[proof.position_scope] = proof.cursor
+            terminal_by_scope[proof.position_scope] = proof
+            rebuilt = rebuilt.append(proof, proof.commitment)
+
+        if rebuilt.commitment != self._protection_transition_ledger.commitment:
+            raise ValueError(
+                "protection transition history commitment is not authentic"
+            )
+
+        bound_scopes = {binding.position_scope for binding in self.execution_bindings}
+        if set(head_by_scope) != bound_scopes:
+            raise ValueError(
+                "every execution binding requires exact protection checkpoint continuity"
+            )
+        if self._protection_cursor_by_scope.size != len(bound_scopes):
+            raise ValueError("every execution binding requires one protection cursor")
+        for binding in self.execution_bindings:
+            scope = binding.position_scope
+            scope_key = _position_scope_index_key(scope)
+            cursor = self._protection_cursor_by_scope.get(scope_key)
+            terminal = terminal_by_scope[scope]
+            summary = (
+                self._authority_summary_by_scope.get(scope_key)
+                or _SymbolAuthoritySummary()
+            )
+            if type(cursor) is not _ProtectionCursor or cursor != terminal.cursor:
+                raise ValueError(
+                    "protection cursor lacks its exact terminal transition proof"
+                )
+            unresolved_for_scope = (
+                self._unresolved_execution_reconciliation_count_by_scope.get(scope_key)
+                or 0
+            )
+            if terminal.summary != summary or (
+                terminal.binding != binding and unresolved_for_scope == 0
+            ):
+                raise ValueError(
+                    "terminal protection proof contradicts current venue authority"
+                )
+        return terminal_by_scope
+
+    def _validated_execution_snapshots(self) -> None:
+        """Validate private scope material against retained transition history."""
+
+        terminal_by_scope = self._validated_protection_transition_history()
+
+        if type(self._execution_snapshot_by_scope) is not type(
+            _PersistentKeyMap.empty()
+        ):
+            raise TypeError("execution snapshot index must be a persistent key map")
+        bindings = self.execution_bindings
+        if self._execution_snapshot_by_scope.size != len(bindings):
+            raise ValueError(
+                "every execution binding requires one retained exact snapshot"
+            )
+        rebuilt: _PersistentKeyMap[ExecutionSnapshot] = _PersistentKeyMap.empty()
+        for binding in bindings:
+            scope_key = _position_scope_index_key(binding.position_scope)
+            snapshot = self._execution_snapshot_by_scope.get(scope_key)
+            if type(snapshot) is not ExecutionSnapshot:
+                raise TypeError("retained execution snapshot must be exact")
+            cursor = self._protection_cursor_by_scope.get(scope_key)
+            if (
+                type(cursor) is not _ProtectionCursor
+                or cursor.execution_commitment != snapshot.commitment
+                or cursor.execution_checkpoint
+                != VenueExecutionCheckpoint.from_execution(snapshot)
+            ):
+                raise ValueError(
+                    "retained execution snapshot lacks its exact transition-cursor provenance"
+                )
+            terminal = terminal_by_scope[binding.position_scope]
+            if (
+                terminal.execution_commitment != snapshot.commitment
+                or terminal.execution_checkpoint
+                != VenueExecutionCheckpoint.from_execution(snapshot)
+            ):
+                raise ValueError(
+                    "retained execution snapshot lacks its terminal transition proof"
+                )
+            _require_execution_components(
+                snapshot.position,
+                snapshot.integrity,
+                snapshot.root_heads,
+                snapshot.seen_facts,
+            )
+            unresolved_for_scope = (
+                self._unresolved_execution_reconciliation_count_by_scope.get(scope_key)
+                or 0
+            )
+            if (
+                not _binding_matches_execution(binding, snapshot)
+                and unresolved_for_scope == 0
+            ):
+                raise ValueError(
+                    "retained execution snapshot contradicts its symbol binding"
+                )
+            if self.execution_registry_count is None:
+                raise ValueError(
+                    "retained execution snapshot requires account registry"
+                )
+            if snapshot.seen_facts.count > self.execution_registry_count:
+                raise ValueError("retained execution snapshot exceeds account registry")
+            if (
+                snapshot.seen_facts.count == self.execution_registry_count
+                and snapshot.seen_facts.commitment != self.execution_registry_commitment
+            ):
+                raise ValueError(
+                    "current retained snapshot contradicts account registry"
+                )
+            if not self._execution_reconciliation_cursor_is_prefix(snapshot):
+                raise ValueError(
+                    "retained snapshot reconciliation cursor is not a book prefix"
+                )
+            if (
+                snapshot.reconciliation_transition_count
+                == self._registry_transition_ledger.length
+                and not self._execution_reconciliation_cursor_matches(snapshot)
+            ):
+                raise ValueError(
+                    "current retained snapshot contradicts reconciliation state"
+                )
+            rebuilt = _upsert_execution_snapshot_value(rebuilt, snapshot)
+        if rebuilt.commitment != self._execution_snapshot_by_scope.commitment:
+            raise ValueError("execution snapshot index commitment is not authentic")
 
     def _validated_claims(
         self, effects: dict[EffectId, BrokerEffect]
@@ -3945,6 +4248,9 @@ class VenueRecoveryBook:
             ("execution_registry_commitment", None),
             ("_binding_order", _PersistentSequence.empty()),
             ("_binding_by_scope", _PersistentKeyMap.empty()),
+            ("_execution_snapshot_by_scope", _PersistentKeyMap.empty()),
+            ("_protection_cursor_by_scope", _PersistentKeyMap.empty()),
+            ("_protection_transition_ledger", _PersistentSequence.empty()),
         ):
             object.__setattr__(result, name, value)
         return result
@@ -4662,6 +4968,391 @@ def _venue_authority_view(
     )
 
 
+def _protection_genesis_cursor() -> _ProtectionCursor:
+    return _ProtectionCursor(
+        ordinal=0,
+        head=_commit_parts(b"execution-core/protection-cursor-genesis/v1"),
+        mandate_id=None,
+        execution_commitment=None,
+        execution_checkpoint=None,
+    )
+
+
+def _protection_book_commitment(book: VenueRecoveryBook) -> bytes:
+    """Commit compact book roots while excluding derived protection proofs."""
+
+    if type(book) is not VenueRecoveryBook:
+        raise TypeError("protection book commitment requires VenueRecoveryBook")
+    parts: list[bytes] = []
+    for retained in fields(book):
+        if retained.name in {
+            "_protection_cursor_by_scope",
+            "_protection_transition_ledger",
+        }:
+            continue
+        value = getattr(book, retained.name)
+        parts.append(_encode_text(retained.name))
+        if retained.name in {
+            "scope",
+            "_account_authority_epoch",
+            "_account_unclaimed_requested_effect_ids",
+            "_registry_transition_head_commitment",
+            "_unresolved_account_execution_reconciliation_count",
+            "execution_registry_count",
+            "execution_registry_commitment",
+        }:
+            parts.append(_canonical_value_commitment(value))
+        else:
+            parts.append(value.commitment)
+    return _commit_parts(b"execution-core/protection-book-envelope/v1", *parts)
+
+
+def _protection_position_scope(
+    book: VenueRecoveryBook,
+    execution: ExecutionSnapshot,
+    item: object,
+) -> PositionScope:
+    if type(item) is CatchUpExecutionRegistry:
+        return item.target_scope
+    if type(item) is RequestedEffect:
+        return PositionScope(
+            broker=book.scope.broker,
+            environment=book.scope.environment,
+            account=book.scope.account,
+            symbol_id=item.symbol_id,
+        )
+    effect_id = getattr(item, "effect_id", None)
+    effect = book._current_effect(effect_id) if type(effect_id) is EffectId else None
+    if effect is not None:
+        return effect.scope.position_scope
+    leg_key = getattr(item, "leg_key", None)
+    owner = book.owner(leg_key) if type(leg_key) is VenueLegKey else None
+    if owner is not None:
+        owned_effect = book._current_effect(owner.effect_id)
+        if owned_effect is not None:
+            return owned_effect.scope.position_scope
+    return execution.position.scope
+
+
+def _protection_mandate_id(
+    book: VenueRecoveryBook,
+    item: object,
+) -> MandateId | None:
+    if type(item) is RequestedEffect:
+        return item.mandate_id
+    effect_id = getattr(item, "effect_id", None)
+    effect = book._current_effect(effect_id) if type(effect_id) is EffectId else None
+    if effect is not None:
+        return effect.scope.mandate_id
+    leg_key = getattr(item, "leg_key", None)
+    owner = book.owner(leg_key) if type(leg_key) is VenueLegKey else None
+    if owner is not None:
+        owned_effect = book._current_effect(owner.effect_id)
+        if owned_effect is not None:
+            return owned_effect.scope.mandate_id
+    return None
+
+
+def _protection_scope_values(
+    book: VenueRecoveryBook,
+    execution: ExecutionSnapshot,
+    position_scope: PositionScope,
+) -> tuple[
+    _SymbolAuthoritySummary,
+    VenueExecutionBinding | None,
+    _ProtectionCursor,
+    bool,
+    bool,
+]:
+    scope_key = _position_scope_index_key(position_scope)
+    summary = (
+        book._authority_summary_by_scope.get(scope_key) or _SymbolAuthoritySummary()
+    )
+    binding = book._binding_by_scope.get(scope_key)
+    cursor = (
+        book._protection_cursor_by_scope.get(scope_key) or _protection_genesis_cursor()
+    )
+    view = _venue_authority_view(book, execution, position_scope, None)
+    return (
+        summary,
+        binding,
+        cursor,
+        view.execution_binding_matches,
+        view.account_reconciliation_clear,
+    )
+
+
+def _set_protection_cursor(
+    retained: _PersistentKeyMap[_ProtectionCursor],
+    position_scope: PositionScope,
+    cursor: _ProtectionCursor,
+) -> _PersistentKeyMap[_ProtectionCursor]:
+    scope_key = _position_scope_index_key(position_scope)
+    if retained.get(scope_key) is None:
+        return retained.insert_new(scope_key, cursor, cursor.commitment)
+    return retained.replace_existing(scope_key, cursor, cursor.commitment)
+
+
+def _with_protection_cursor(
+    book: VenueRecoveryBook,
+    position_scope: PositionScope,
+    cursor: _ProtectionCursor,
+    proof: _ProtectionTransitionProof,
+) -> VenueRecoveryBook:
+    if (
+        type(proof) is not _ProtectionTransitionProof
+        or proof.position_scope != position_scope
+        or proof.cursor != cursor
+        or proof.predecessor_cursor == cursor
+        or not proof.lineage_is_authentic
+    ):
+        raise ValueError("protection cursor requires its exact advancing proof")
+    cursor_by_scope = _set_protection_cursor(
+        book._protection_cursor_by_scope,
+        position_scope,
+        cursor,
+    )
+    transition_ledger = book._protection_transition_ledger.append(
+        proof,
+        proof.commitment,
+    )
+    result = object.__new__(VenueRecoveryBook)
+    for retained in fields(book):
+        value: object
+        if retained.name == "_protection_cursor_by_scope":
+            value = cursor_by_scope
+        elif retained.name == "_protection_transition_ledger":
+            value = transition_ledger
+        else:
+            value = getattr(book, retained.name)
+        object.__setattr__(result, retained.name, value)
+    return result
+
+
+def _with_execution_snapshot_index(
+    book: VenueRecoveryBook,
+    snapshots: _PersistentKeyMap[ExecutionSnapshot],
+) -> VenueRecoveryBook:
+    """Replace only the private snapshot index on an immutable book."""
+
+    if type(snapshots) is not type(_PersistentKeyMap.empty()):
+        raise TypeError("execution snapshot index must be a persistent key map")
+    result = object.__new__(VenueRecoveryBook)
+    for retained in fields(book):
+        value = (
+            snapshots
+            if retained.name == "_execution_snapshot_by_scope"
+            else getattr(book, retained.name)
+        )
+        object.__setattr__(result, retained.name, value)
+    return result
+
+
+def _protection_command_commitment(item: object) -> bytes:
+    return _commit_parts(
+        b"execution-core/protection-command/v1",
+        *_input_command_identity(item, include_input_id=True),
+    )
+
+
+def _next_protection_cursor(
+    predecessor: _ProtectionCursor,
+    position_scope: PositionScope,
+    mandate_id: MandateId | None,
+    predecessor_book_scope: VenueScope,
+    book_scope: VenueScope,
+    predecessor_book_commitment: bytes,
+    book_commitment: bytes,
+    predecessor_execution_commitment: bytes,
+    execution_commitment: bytes,
+    predecessor_execution_checkpoint: VenueExecutionCheckpoint,
+    execution_checkpoint: VenueExecutionCheckpoint,
+    predecessor_summary: _SymbolAuthoritySummary,
+    summary: _SymbolAuthoritySummary,
+    predecessor_binding: VenueExecutionBinding | None,
+    binding: VenueExecutionBinding | None,
+    predecessor_execution_binding_matches: bool,
+    execution_binding_matches: bool,
+    predecessor_account_reconciliation_clear: bool,
+    account_reconciliation_clear: bool,
+    command_commitment: bytes,
+    disposition: VenueRecoveryDisposition,
+    quantity_delta: int,
+) -> _ProtectionCursor:
+    return _ProtectionCursor(
+        ordinal=predecessor.ordinal + 1,
+        head=_commit_parts(
+            b"execution-core/protection-cursor-head/v2",
+            predecessor.commitment,
+            _canonical_value_commitment(position_scope),
+            _canonical_value_commitment(mandate_id),
+            _canonical_value_commitment(predecessor_book_scope),
+            _canonical_value_commitment(book_scope),
+            predecessor_book_commitment,
+            book_commitment,
+            predecessor_execution_commitment,
+            execution_commitment,
+            _canonical_value_commitment(predecessor_execution_checkpoint),
+            _canonical_value_commitment(execution_checkpoint),
+            _canonical_value_commitment(predecessor_summary),
+            _canonical_value_commitment(summary),
+            _canonical_value_commitment(predecessor_binding),
+            _canonical_value_commitment(binding),
+            _canonical_value_commitment(predecessor_execution_binding_matches),
+            _canonical_value_commitment(execution_binding_matches),
+            _canonical_value_commitment(predecessor_account_reconciliation_clear),
+            _canonical_value_commitment(account_reconciliation_clear),
+            command_commitment,
+            _canonical_value_commitment(disposition),
+            _canonical_value_commitment(quantity_delta),
+        ),
+        mandate_id=mandate_id,
+        execution_commitment=execution_commitment,
+        execution_checkpoint=execution_checkpoint,
+    )
+
+
+def _protection_transition_proof_is_authentic(
+    proof: _ProtectionTransitionProof,
+) -> bool:
+    """Re-derive one bounded protection cursor from its complete proof envelope."""
+
+    if type(proof) is not _ProtectionTransitionProof:
+        return False
+    if type(proof.position_scope) is not PositionScope:
+        return False
+    if type(proof.predecessor_cursor) is not _ProtectionCursor:
+        return False
+    if type(proof.cursor) is not _ProtectionCursor:
+        return False
+    if type(proof.predecessor_book_scope) is not VenueScope:
+        return False
+    if type(proof.book_scope) is not VenueScope:
+        return False
+    if type(proof.predecessor_execution_checkpoint) is not VenueExecutionCheckpoint:
+        return False
+    if type(proof.execution_checkpoint) is not VenueExecutionCheckpoint:
+        return False
+    if type(proof.predecessor_summary) is not _SymbolAuthoritySummary:
+        return False
+    if type(proof.summary) is not _SymbolAuthoritySummary:
+        return False
+    if (
+        proof.predecessor_binding is not None
+        and type(proof.predecessor_binding) is not VenueExecutionBinding
+    ):
+        return False
+    if proof.binding is not None and type(proof.binding) is not VenueExecutionBinding:
+        return False
+    for digest in (
+        proof.predecessor_book_commitment,
+        proof.book_commitment,
+        proof.predecessor_execution_commitment,
+        proof.execution_commitment,
+        proof.command_commitment,
+    ):
+        if type(digest) is not bytes or len(digest) != 32:
+            return False
+    for flag in (
+        proof.predecessor_execution_binding_matches,
+        proof.execution_binding_matches,
+        proof.predecessor_account_reconciliation_clear,
+        proof.account_reconciliation_clear,
+    ):
+        if type(flag) is not bool:
+            return False
+    if type(proof.disposition) is not VenueRecoveryDisposition:
+        return False
+    if type(proof.quantity_delta) is not int:
+        return False
+    if proof.predecessor_book_scope != proof.book_scope:
+        return False
+    if proof.predecessor_execution_checkpoint.position_scope != proof.position_scope:
+        return False
+    if proof.execution_checkpoint.position_scope != proof.position_scope:
+        return False
+    if (
+        proof.predecessor_binding is not None
+        and proof.predecessor_binding.position_scope != proof.position_scope
+    ):
+        return False
+    if (
+        proof.binding is not None
+        and proof.binding.position_scope != proof.position_scope
+    ):
+        return False
+    scope = proof.position_scope
+    if (
+        proof.book_scope.broker != scope.broker
+        or proof.book_scope.environment != scope.environment
+        or proof.book_scope.account != scope.account
+    ):
+        return False
+    predecessor = proof.predecessor_cursor
+    cursor = proof.cursor
+    if predecessor.ordinal == 0:
+        if predecessor != _protection_genesis_cursor():
+            return False
+    elif (
+        predecessor.execution_commitment != proof.predecessor_execution_commitment
+        or predecessor.execution_checkpoint != proof.predecessor_execution_checkpoint
+    ):
+        return False
+    if (
+        predecessor.mandate_id is not None
+        and cursor.mandate_id != predecessor.mandate_id
+    ):
+        return False
+    advances = cursor != predecessor
+    if not advances:
+        return proof.disposition is not VenueRecoveryDisposition.APPLIED
+    if proof.disposition not in {
+        VenueRecoveryDisposition.APPLIED,
+        VenueRecoveryDisposition.RECONCILIATION_REQUIRED,
+    }:
+        return False
+    expected = _next_protection_cursor(
+        predecessor,
+        proof.position_scope,
+        cursor.mandate_id,
+        proof.predecessor_book_scope,
+        proof.book_scope,
+        proof.predecessor_book_commitment,
+        proof.book_commitment,
+        proof.predecessor_execution_commitment,
+        proof.execution_commitment,
+        proof.predecessor_execution_checkpoint,
+        proof.execution_checkpoint,
+        proof.predecessor_summary,
+        proof.summary,
+        proof.predecessor_binding,
+        proof.binding,
+        proof.predecessor_execution_binding_matches,
+        proof.execution_binding_matches,
+        proof.predecessor_account_reconciliation_clear,
+        proof.account_reconciliation_clear,
+        proof.command_commitment,
+        proof.disposition,
+        proof.quantity_delta,
+    )
+    return cursor == expected
+
+
+def _extract_protection_transition(
+    transition: VenueRecoveryTransition,
+) -> tuple[
+    _SymbolAuthoritySummary | None,
+    VenueExecutionBinding | None,
+    _ProtectionCursor | None,
+]:
+    scope_key = _position_scope_index_key(transition._protection_proof.position_scope)
+    return (
+        transition.book._authority_summary_by_scope.get(scope_key),
+        transition.book._binding_by_scope.get(scope_key),
+        transition.book._protection_cursor_by_scope.get(scope_key),
+    )
+
+
 def _coverage_value_commitment(coverage: object) -> bytes:
     return _commit_parts(
         b"execution-core/venue-coverage-value/v1",
@@ -4722,6 +5413,21 @@ def _binding_value_commitment(binding: VenueExecutionBinding) -> bytes:
     return _commit_parts(
         b"execution-core/venue-execution-binding-value/v1",
         _canonical_value_commitment(binding),
+    )
+
+
+def _execution_snapshot_value_commitment(execution: ExecutionSnapshot) -> bytes:
+    if type(execution) is not ExecutionSnapshot:
+        raise TypeError("execution snapshot value must be exact")
+    _require_execution_components(
+        execution.position,
+        execution.integrity,
+        execution.root_heads,
+        execution.seen_facts,
+    )
+    return _commit_parts(
+        b"execution-core/venue-execution-snapshot-value/v1",
+        execution.commitment,
     )
 
 
@@ -5158,6 +5864,17 @@ def _upsert_binding_value(
             by_scope.insert_new(key, binding, commitment),
         )
     return order, by_scope.replace_existing(key, binding, commitment)
+
+
+def _upsert_execution_snapshot_value(
+    retained: _PersistentKeyMap[ExecutionSnapshot],
+    execution: ExecutionSnapshot,
+) -> _PersistentKeyMap[ExecutionSnapshot]:
+    commitment = _execution_snapshot_value_commitment(execution)
+    key = _position_scope_index_key(execution.position.scope)
+    if retained.get(key) is None:
+        return retained.insert_new(key, execution, commitment)
+    return retained.replace_existing(key, execution, commitment)
 
 
 def _closure_is_finalization_ready(
@@ -6256,6 +6973,21 @@ def _audit_hydrate_book(
     )
     object.__setattr__(result, "_binding_order", binding_order)
     object.__setattr__(result, "_binding_by_scope", binding_by_scope)
+    object.__setattr__(
+        result,
+        "_execution_snapshot_by_scope",
+        book._execution_snapshot_by_scope,
+    )
+    object.__setattr__(
+        result,
+        "_protection_cursor_by_scope",
+        book._protection_cursor_by_scope,
+    )
+    object.__setattr__(
+        result,
+        "_protection_transition_ledger",
+        book._protection_transition_ledger,
+    )
     object.__setattr__(result, "_closure_ledger", closure_ledger)
     object.__setattr__(result, "_closure_by_id", closure_by_id)
     object.__setattr__(result, "_closure_head_by_leg", closure_heads_by_leg)
@@ -6657,6 +7389,20 @@ def _audit_hydrate_book(
                 raise ValueError(
                     "owned broker observation lacks one exact external source origin"
                 )
+    result._validated_execution_snapshots()
+    for binding in result.execution_bindings:
+        retained_snapshot = result._execution_snapshot_by_scope.get(
+            _position_scope_index_key(binding.position_scope)
+        )
+        if type(retained_snapshot) is not ExecutionSnapshot or not (
+            execution.seen_facts.has_prefix(
+                retained_snapshot.seen_facts.count,
+                retained_snapshot.seen_facts.commitment,
+            )
+        ):
+            raise ValueError(
+                "retained execution snapshot is not an account-registry prefix"
+            )
     if _audit_checkpoint_projection(result) != _audit_checkpoint_projection(book):
         raise ValueError(
             "M1 audit hydration requires an exact reconstruction of the supplied "
@@ -7597,7 +8343,15 @@ def _apply_execution_registry_catch_up(
         )
 
     if source.seen_facts.count == book.execution_registry_count:
-        if target.seen_facts.count == source.seen_facts.count:
+        target_registry_is_current = bool(
+            target.seen_facts.count == source.seen_facts.count
+            and target.seen_facts.commitment == source.seen_facts.commitment
+        )
+        target_cursor_is_current = bool(
+            target.reconciliation_transition_count == book_transition_count
+            and target.reconciliation_transition_head == book_transition_head
+        )
+        if target_registry_is_current and target_cursor_is_current:
             return transition(
                 book,
                 target,
@@ -7613,7 +8367,16 @@ def _apply_execution_registry_catch_up(
             source_binding=source_binding,
             resulting_registry_count=source.seen_facts.count,
             resulting_registry_commitment=source.seen_facts.commitment,
-            reason="target registry projection retained exact source and binding proof",
+            reason=(
+                "target reconciliation cursor advanced from an exact registry prefix"
+                if target_registry_is_current
+                else "target registry projection retained exact source and binding proof"
+            ),
+            projection_kind=(
+                _ResolvedProjectionKind.RECONCILIATION_CURSOR_ADVANCE
+                if target_registry_is_current
+                else _ResolvedProjectionKind.REGISTRY_ADVANCE
+            ),
         )
         projection_proof = _registry_transition_proof_for(
             ordinal=book_transition_count + 1,
@@ -8163,6 +8926,21 @@ def _apply_venue_input(
                 binding,
             )
 
+        execution_snapshot_by_scope = current._execution_snapshot_by_scope
+        snapshot_upserts: tuple[ExecutionSnapshot, ...] = (resulting_execution,)
+        for snapshot in snapshot_upserts:
+            binding = binding_by_scope.get(
+                _position_scope_index_key(snapshot.position.scope)
+            )
+            if binding is None or not _binding_matches_execution(binding, snapshot):
+                raise ValueError(
+                    "execution snapshot upsert requires its exact resulting binding"
+                )
+            execution_snapshot_by_scope = _upsert_execution_snapshot_value(
+                execution_snapshot_by_scope,
+                snapshot,
+            )
+
         coverage_provenance_by_scope = _evolve_coverage_provenance(
             current._coverage_provenance_by_scope,
             prior_execution,
@@ -8219,6 +8997,21 @@ def _apply_venue_input(
         )
         object.__setattr__(result, "_binding_order", binding_order)
         object.__setattr__(result, "_binding_by_scope", binding_by_scope)
+        object.__setattr__(
+            result,
+            "_execution_snapshot_by_scope",
+            execution_snapshot_by_scope,
+        )
+        object.__setattr__(
+            result,
+            "_protection_cursor_by_scope",
+            current._protection_cursor_by_scope,
+        )
+        object.__setattr__(
+            result,
+            "_protection_transition_ledger",
+            current._protection_transition_ledger,
+        )
         object.__setattr__(result, "_closure_ledger", closure_ledger)
         object.__setattr__(result, "_closure_by_id", closure_by_id)
         object.__setattr__(result, "_closure_head_by_leg", closure_heads_by_leg)
@@ -8437,6 +9230,16 @@ def _apply_venue_input(
             RecordBrokerFillEvidence,
             RecordBrokerRevisionEvidence,
         }
+        if (
+            economic_command
+            and disposition is VenueRecoveryDisposition.APPLIED
+            and (
+                resulting_execution.position.raw_quantity < 0
+                or resulting_execution.position.basis_authority
+                is BasisAuthority.BASIS_RECONCILIATION_PENDING
+            )
+        ):
+            disposition = VenueRecoveryDisposition.RECONCILIATION_REQUIRED
         derived_delta = 0
         if economic_command and disposition in {
             VenueRecoveryDisposition.APPLIED,
@@ -8458,11 +9261,163 @@ def _apply_venue_input(
                 "usable venue transition requires its exact book/execution pair"
             )
 
+        position_scope = _protection_position_scope(
+            book,
+            resulting_execution,
+            item,
+        )
+        retained_predecessor = book._execution_snapshot_by_scope.get(
+            _position_scope_index_key(position_scope)
+        )
+        proof_predecessor_execution = prior_execution
+        if (
+            retained_predecessor is not None
+            and disposition is not VenueRecoveryDisposition.EXACT_REPLAY
+        ):
+            if type(retained_predecessor) is not ExecutionSnapshot:
+                raise TypeError("retained predecessor execution must be exact")
+            proof_predecessor_execution = retained_predecessor
+        (
+            predecessor_summary,
+            predecessor_binding,
+            predecessor_cursor,
+            predecessor_binding_matches,
+            predecessor_reconciliation_clear,
+        ) = _protection_scope_values(book, prior_execution, position_scope)
+        (
+            summary,
+            binding,
+            retained_cursor,
+            binding_matches,
+            reconciliation_clear,
+        ) = _protection_scope_values(
+            resulting_book,
+            resulting_execution,
+            position_scope,
+        )
+        if retained_cursor != predecessor_cursor:
+            raise ValueError(
+                "resulting book changed the protection cursor outside transition"
+            )
+        predecessor_book_commitment = _protection_book_commitment(book)
+        predecessor_execution_checkpoint = VenueExecutionCheckpoint.from_execution(
+            proof_predecessor_execution
+        )
+        execution_checkpoint = VenueExecutionCheckpoint.from_execution(
+            resulting_execution
+        )
+        command_commitment = _protection_command_commitment(item)
+        command_mandate_id = _protection_mandate_id(book, item)
+        mandate_id = (
+            predecessor_cursor.mandate_id
+            if predecessor_cursor.mandate_id is not None
+            else command_mandate_id
+        )
+        projection_changed = bool(
+            prior_execution.position.raw_quantity
+            != resulting_execution.position.raw_quantity
+            or prior_execution.position.basis_authority
+            != resulting_execution.position.basis_authority
+            or prior_execution.position.cost_basis
+            != resulting_execution.position.cost_basis
+            or prior_execution.position.basis_price_metadata
+            != resulting_execution.position.basis_price_metadata
+            or predecessor_summary.blocking_effect_count
+            != summary.blocking_effect_count
+            or predecessor_summary.blocking_buy_effect_count
+            != summary.blocking_buy_effect_count
+            or predecessor_binding_matches != binding_matches
+            or predecessor_reconciliation_clear != reconciliation_clear
+        )
+        advance_cursor = bool(
+            disposition is VenueRecoveryDisposition.APPLIED
+            or (
+                disposition is VenueRecoveryDisposition.RECONCILIATION_REQUIRED
+                and projection_changed
+            )
+        )
+        if (
+            not advance_cursor
+            and retained_predecessor is not None
+            and resulting_book._execution_snapshot_by_scope.commitment
+            != book._execution_snapshot_by_scope.commitment
+        ):
+            resulting_book = _with_execution_snapshot_index(
+                resulting_book,
+                book._execution_snapshot_by_scope,
+            )
+        book_commitment = _protection_book_commitment(resulting_book)
+        cursor = (
+            _next_protection_cursor(
+                predecessor_cursor,
+                position_scope,
+                mandate_id,
+                book.scope,
+                resulting_book.scope,
+                predecessor_book_commitment,
+                book_commitment,
+                proof_predecessor_execution.commitment,
+                resulting_execution.commitment,
+                predecessor_execution_checkpoint,
+                execution_checkpoint,
+                predecessor_summary,
+                summary,
+                predecessor_binding,
+                binding,
+                predecessor_binding_matches,
+                binding_matches,
+                predecessor_reconciliation_clear,
+                reconciliation_clear,
+                command_commitment,
+                disposition,
+                derived_delta,
+            )
+            if advance_cursor
+            else predecessor_cursor
+        )
+        protection_proof = _ProtectionTransitionProof(
+            position_scope=position_scope,
+            predecessor_cursor=predecessor_cursor,
+            cursor=cursor,
+            predecessor_book_scope=book.scope,
+            book_scope=resulting_book.scope,
+            predecessor_book_commitment=predecessor_book_commitment,
+            book_commitment=book_commitment,
+            predecessor_execution_commitment=proof_predecessor_execution.commitment,
+            execution_commitment=resulting_execution.commitment,
+            predecessor_execution_checkpoint=predecessor_execution_checkpoint,
+            execution_checkpoint=execution_checkpoint,
+            predecessor_summary=predecessor_summary,
+            summary=summary,
+            predecessor_binding=predecessor_binding,
+            binding=binding,
+            predecessor_execution_binding_matches=predecessor_binding_matches,
+            execution_binding_matches=binding_matches,
+            predecessor_account_reconciliation_clear=predecessor_reconciliation_clear,
+            account_reconciliation_clear=reconciliation_clear,
+            command_commitment=command_commitment,
+            disposition=disposition,
+            quantity_delta=derived_delta,
+        )
+        if advance_cursor:
+            resulting_book = _with_protection_cursor(
+                resulting_book,
+                position_scope,
+                cursor,
+                protection_proof,
+            )
+
         result = object.__new__(VenueRecoveryTransition)
         object.__setattr__(result, "book", resulting_book)
         object.__setattr__(result, "execution", resulting_execution)
         object.__setattr__(result, "disposition", disposition)
         object.__setattr__(result, "quantity_delta", derived_delta)
+        object.__setattr__(result, "_protection_proof", protection_proof)
+        object.__setattr__(
+            result,
+            "_protection_proof_commitment",
+            protection_proof.commitment,
+        )
         return result
 
     input_id = _require_input_id("item.input_id", getattr(item, "input_id", None))
@@ -8498,17 +9453,10 @@ def _apply_venue_input(
     ):
         target_effect = book._current_effect(target_effect_id)
         assert target_effect is not None
-        cross_symbol_local_authority = bool(
-            type(item) is CancelBeforeDispatch
-            or (
-                type(item) is CloseAcceptanceSet
-                and item.proof.kind is AcceptanceProofKind.NEVER_DISPATCHED
-            )
-        )
         if (
             execution.position.scope != target_effect.scope.position_scope
-            and not cross_symbol_local_authority
-        ) or not book._execution_pair_matches_fast(execution):
+            or not book._execution_pair_matches_fast(execution)
+        ):
             return transition(
                 book,
                 execution,
@@ -8809,12 +9757,102 @@ def _require_authority_namespace(namespace: object) -> str:
     return cast(str, namespace)
 
 
+def _authority_registry_source_is_current(
+    book: VenueRecoveryBook,
+    execution: ExecutionSnapshot,
+) -> bool:
+    binding = book.execution_binding(execution.position.scope)
+    return bool(
+        binding is not None
+        and _binding_matches_execution(binding, execution)
+        and book.execution_registry_count == execution.seen_facts.count
+        and book.execution_registry_commitment == execution.seen_facts.commitment
+        and book._execution_reconciliation_cursor_is_prefix(execution)
+    )
+
+
+def _authority_execution_for_scope(
+    book: VenueRecoveryBook,
+    source_execution: ExecutionSnapshot | None,
+    position_scope: PositionScope,
+    namespace: str,
+) -> (
+    tuple[
+        VenueRecoveryBook,
+        ExecutionSnapshot,
+        tuple[VenueRecoveryTransition, ...],
+    ]
+    | None
+):
+    """Return one exact current target snapshot, publishing registry catch-up."""
+
+    retained = book._execution_snapshot_by_scope.get(
+        _position_scope_index_key(position_scope)
+    )
+    binding = book.execution_binding(position_scope)
+    if (
+        type(retained) is not ExecutionSnapshot
+        or binding is None
+        or not _binding_matches_execution(binding, retained)
+        or not book._execution_reconciliation_cursor_is_prefix(retained)
+        or book.execution_registry_count is None
+        or book.execution_registry_commitment is None
+        or retained.seen_facts.count > book.execution_registry_count
+    ):
+        return None
+
+    transition_count, transition_head = book._reconciliation_cursor()
+    target_registry_is_current = bool(
+        retained.seen_facts.count == book.execution_registry_count
+        and retained.seen_facts.commitment == book.execution_registry_commitment
+    )
+    if target_registry_is_current and (
+        retained.reconciliation_transition_count == transition_count
+        and retained.reconciliation_transition_head == transition_head
+    ):
+        if not book._execution_matches(retained, position_scope):
+            return None
+        return book, retained, ()
+
+    if source_execution is None or not _authority_registry_source_is_current(
+        book,
+        source_execution,
+    ):
+        return None
+    if not source_execution.seen_facts.has_prefix(
+        retained.seen_facts.count,
+        retained.seen_facts.commitment,
+    ):
+        return None
+    catch_up = CatchUpExecutionRegistry(
+        input_id=VenueInputId(
+            f"{namespace}:execution-catch-up:{position_scope.symbol_id.value}"
+        ),
+        target_checkpoint=VenueExecutionCheckpoint.from_execution(retained),
+        prior_account_registry_count=book.execution_registry_count,
+        prior_account_registry_commitment=book.execution_registry_commitment,
+        prior_source_binding=book.execution_binding(source_execution.position.scope),
+        source_execution=source_execution,
+    )
+    caught_up = _apply_venue_input(book, retained, catch_up)
+    if (
+        caught_up.disposition is not VenueRecoveryDisposition.APPLIED
+        or caught_up.execution.position.scope != position_scope
+        or not caught_up.book._execution_matches(
+            caught_up.execution,
+            position_scope,
+        )
+    ):
+        return None
+    return caught_up.book, caught_up.execution, (caught_up,)
+
+
 def _authority_stand_down_requested_effect(
     book: VenueRecoveryBook,
     execution: ExecutionSnapshot,
     effect_id: EffectId,
     namespace: str,
-) -> VenueRecoveryBook | None:
+) -> tuple[VenueRecoveryBook, tuple[VenueRecoveryTransition, ...]] | None:
     """Atomically stand down and close one exact never-dispatched request."""
 
     if type(book) is not VenueRecoveryBook:
@@ -8866,18 +9904,20 @@ def _authority_stand_down_requested_effect(
     closed = _apply_venue_input(stood_down.book, execution, close)
     if closed.disposition is not VenueRecoveryDisposition.APPLIED:
         return None
-    return closed.book
+    return closed.book, (stood_down, closed)
 
 
 def _authority_stand_down_account_requested_effects(
     book: VenueRecoveryBook,
     execution: ExecutionSnapshot,
     namespace: str,
-) -> VenueRecoveryBook | None:
+) -> tuple[VenueRecoveryBook, tuple[VenueRecoveryTransition, ...]] | None:
     """Atomically stand down every account request that never gained a claim."""
 
     namespace = _require_authority_namespace(namespace)
     candidates = book._account_unclaimed_requested_effect_ids
+    grouped: list[tuple[PositionScope, list[EffectId]]] = []
+    group_index: dict[PositionScope, int] = {}
     for effect_id in candidates:
         effect = book._current_effect(effect_id)
         if (
@@ -8889,24 +9929,51 @@ def _authority_stand_down_account_requested_effects(
             or book._has_effect_reconciliation(effect_id)
         ):
             return None
+        position_scope = effect.scope.position_scope
+        index = group_index.get(position_scope)
+        if index is None:
+            group_index[position_scope] = len(grouped)
+            grouped.append((position_scope, [effect_id]))
+        else:
+            grouped[index][1].append(effect_id)
         for input_id in (
             VenueInputId(f"{namespace}:stand-down:{effect_id.value}"),
             VenueInputId(f"{namespace}:close:{effect_id.value}"),
         ):
             if book._input_record(input_id) is not None:
                 return None
+    source_execution = (
+        execution if _authority_registry_source_is_current(book, execution) else None
+    )
+    if source_execution is None:
+        return None
     current = book
-    for effect_id in candidates:
-        updated = _authority_stand_down_requested_effect(
+    transitions: list[VenueRecoveryTransition] = []
+    for position_scope, effect_ids in grouped:
+        resolved = _authority_execution_for_scope(
             current,
-            execution,
-            effect_id,
+            source_execution,
+            position_scope,
             namespace,
         )
-        if updated is None:
+        if resolved is None:
             return None
-        current = updated
-    return current
+        current, target_execution, catch_up_transitions = resolved
+        transitions.extend(catch_up_transitions)
+        if target_execution.position.scope == source_execution.position.scope:
+            source_execution = target_execution
+        for effect_id in effect_ids:
+            updated = _authority_stand_down_requested_effect(
+                current,
+                target_execution,
+                effect_id,
+                namespace,
+            )
+            if updated is None:
+                return None
+            current, applied = updated
+            transitions.extend(applied)
+    return current, tuple(transitions)
 
 
 def _authority_cancel_request_for_leg(
@@ -8951,7 +10018,14 @@ def _authority_begin_symbol_flatten(
     position_scope: PositionScope,
     mandate_id: MandateId,
     namespace: str,
-) -> tuple[VenueRecoveryBook, tuple[EffectId, ...]] | None:
+) -> (
+    tuple[
+        VenueRecoveryBook,
+        tuple[EffectId, ...],
+        tuple[VenueRecoveryTransition, ...],
+    ]
+    | None
+):
     """Apply one all-or-none safely-local stand-down and known-leg cancel set."""
 
     if type(position_scope) is not PositionScope:
@@ -9006,6 +10080,7 @@ def _authority_begin_symbol_flatten(
                 return None
 
     current = book
+    transitions: list[VenueRecoveryTransition] = []
     for effect_id in summary.stand_downable_buy_effect_ids:
         updated = _authority_stand_down_requested_effect(
             current,
@@ -9015,15 +10090,17 @@ def _authority_begin_symbol_flatten(
         )
         if updated is None:
             return None
-        current = updated
+        current, applied = updated
+        transitions.extend(applied)
     created: list[EffectId] = []
     for request in cancel_requests:
         transition = _authority_request_effect(current, execution, request)
         if transition.disposition is not VenueRecoveryDisposition.APPLIED:
             return None
         current = transition.book
+        transitions.append(transition)
         created.append(request.effect_id)
-    return current, tuple(created)
+    return current, tuple(created), tuple(transitions)
 
 
 def _authority_symbol_flatten_ready(

@@ -2894,7 +2894,10 @@ def test_protection_canonical_private_imports_preserve_exact_public_surface() ->
     assert _protection_call_binding_violations(feasible_tree, path) == []
 
     namespace: dict[str, object] = {}
-    exec(compile(feasible_tree, str(path), "exec"), namespace)
+    exec(
+        compile(feasible_tree, "<synthetic_protection_import_contract>", "exec"),
+        namespace,
+    )
     public_names = {name for name in namespace if not name.startswith("_")}
     assert public_names == set(namespace["__all__"])
     assert namespace["Value"].__annotations__ == {
@@ -3063,7 +3066,10 @@ def test_protection_canonical_private_imports_preserve_exact_public_surface() ->
         "    policy: Policy\n"
     )
     leaking_namespace: dict[str, object] = {}
-    exec(compile(leaking_source, str(path), "exec"), leaking_namespace)
+    exec(
+        compile(leaking_source, "<synthetic_protection_import_contract_leak>", "exec"),
+        leaking_namespace,
+    )
     leaking_public_names = {
         name for name in leaking_namespace if not name.startswith("_")
     }
