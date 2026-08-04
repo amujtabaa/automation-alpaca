@@ -1,6 +1,6 @@
 # WO-0148 RED contract correction workflow
 
-Status: **CORRECTION VERIFIED — IMMUTABLE EXACT-COMMIT REVIEW REQUIRED**
+Status: **ELEVENTH FINDING REMEDIATED — NEW EXACT-COMMIT REVIEW REQUIRED**
 
 Exact starting candidate: `5c5bee9543b78fc2fa8f612c61d75d4fdbf52bae`
 
@@ -93,12 +93,14 @@ fable_gate:
    venue entrypoint exposes the runtime string `_VenueRecoveryTransition`, and optional-field
    replacement resolution recognizes `_ReportedPrice`, `_Decimal`, and `_Fraction` without
    accepting the corresponding public imported names.
-7. Restrict annotation expressions to loaded names, PEP 604 unions, `None`, and exact
-   `frozenset[...]`, `tuple[...]`, or `type[...]` forms. Permit `...` only as the second element of
-   a two-item homogeneous tuple annotation. Reject explicit string constants so deferred runtime
-   metadata remains tied to the inspected names rather than gaining another quoting layer.
-8. Exercise every accepted annotation branch in one static positive sample and reject a malformed
-   tuple with an extra element before `...`.
+7. Restrict annotation expressions to loaded names, PEP 604 unions, `None`, exact
+   `frozenset[...]` and `type[...]` forms, fixed multi-element tuples, and homogeneous
+   `tuple[T, ...]`. Reject one-element tuple annotations in both `tuple[T]` and `tuple[T,]`
+   spellings, and permit `...` only as the second element of a two-item homogeneous tuple
+   annotation. Reject explicit string constants so deferred runtime metadata remains tied to the
+   inspected names rather than gaining another quoting layer.
+8. Exercise every accepted annotation branch in one static positive sample and directly reject a
+   one-element tuple plus a malformed tuple with an extra element before `...`.
 9. Update production-shaped altered-source samples where necessary so each continues to test its
    named rule rather than failing earlier for import spelling.
 
@@ -146,11 +148,27 @@ The pre-flight is a functional-conformance review, not independent acceptance.
 - Ruff check/format-check, Python 3.11 grammar parsing for both changed Python files,
   `git diff --check`, activation-base scope, accepted ADR digests, eight-file current-source effect
   scan, and production absence pass.
-- All nine auxiliary registered worktrees are clean. The main worktree contains only the five
-  intended successor files, the preserved untracked tenth request, and preserved unrelated
-  untracked evidence.
+- All nine auxiliary registered worktrees are clean. Successor candidate paths reconcile against
+  WO-0148's allowed paths; the preserved untracked tenth request and unrelated retained evidence
+  remain outside each candidate commit.
 - Final critical current-worktree pre-flight verdict: **ACCEPT, P0=0, P1=0**. This does not replace
   the required fresh independent exact-commit verdict.
+
+## Eleventh exact-review correction
+
+Independent review of exact commit `8d441d6bbbf90c634e073337ea28b2a758070bc4` returned
+`BLOCK`, P0=0/P1=1. The accepted one-element `tuple[T]` branch had neither a production requirement
+nor a direct control, and removing only that branch left the owning positive controls green.
+
+The successor narrows the grammar instead of adding unused capability: both `tuple[T]` and its
+trailing-comma-equivalent `tuple[T,]` are refused. Direct altered-source controls fail before each
+owning grammar correction and pass afterward. The complete focus remains **292 collected / 233
+expected RED failures / 59 passes**. Production remains absent. The eleventh result is preserved
+unchanged, and a new immutable successor requires a fresh independent exact-commit verdict.
+
+Final post-eleventh current-worktree pre-flight is **ACCEPT, P0=0/P1=0/P2=0**. A live expression
+matrix passes 6 accepted and 8 refused forms, and independent in-memory restorations prove both
+one-item tuple controls can fail. This is re-freeze evidence only.
 
 ## Continuity checkpoint
 

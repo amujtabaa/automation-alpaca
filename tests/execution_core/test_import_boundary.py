@@ -686,13 +686,15 @@ def _supported_annotation_expression(node: ast.AST) -> bool:
             node.slice, ast.Tuple
         ) and _supported_annotation_expression(node.slice)
     if not isinstance(node.slice, ast.Tuple):
-        return _supported_annotation_expression(node.slice)
+        return False
     elements = node.slice.elts
     if not elements:
         return False
     if isinstance(elements[-1], ast.Constant) and elements[-1].value is Ellipsis:
         return len(elements) == 2 and _supported_annotation_expression(elements[0])
-    return all(_supported_annotation_expression(element) for element in elements)
+    return len(elements) >= 2 and all(
+        _supported_annotation_expression(element) for element in elements
+    )
 
 
 def _protection_write_effect_violations(
@@ -2244,6 +2246,32 @@ def test_protection_canonical_private_imports_preserve_exact_public_surface() ->
         "unsupported annotation expression" in item
         for item in _protection_call_binding_violations(
             malformed_tuple_annotation,
+            path,
+        )
+    )
+
+    one_element_tuple_annotation = ast.parse(
+        "from .fills import ExecutionSide as _ExecutionSide\n"
+        "def classify(value: tuple[_ExecutionSide]):\n"
+        "    return value\n"
+    )
+    assert any(
+        "unsupported annotation expression" in item
+        for item in _protection_call_binding_violations(
+            one_element_tuple_annotation,
+            path,
+        )
+    )
+
+    trailing_comma_tuple_annotation = ast.parse(
+        "from .fills import ExecutionSide as _ExecutionSide\n"
+        "def classify(value: tuple[_ExecutionSide,]):\n"
+        "    return value\n"
+    )
+    assert any(
+        "unsupported annotation expression" in item
+        for item in _protection_call_binding_violations(
+            trailing_comma_tuple_annotation,
             path,
         )
     )

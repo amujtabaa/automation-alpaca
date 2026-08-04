@@ -857,3 +857,29 @@ The final current-worktree critical pre-flight verdict is `ACCEPT`, P0=0/P1=0. T
 immutable exact-commit acceptance. Production remains absent and barred until the corrected
 successor is frozen and a fresh independent functional-conformance review returns `ACCEPT` with
 zero unresolved P0/P1.
+
+### Eleventh exact review and tuple-grammar narrowing
+
+Independent review of exact candidate `8d441d6bbbf90c634e073337ea28b2a758070bc4` reproduced the
+292-test RED classification, all 698 predecessor tests, and the static evidence. It returned
+`BLOCK`, P0=0/P1=1: the grammar accepted the distinct one-element `tuple[T]` annotation form even
+though no requirement or production-shaped sample needed it, and removing only that branch left
+the owning positive controls green.
+
+The finding is accepted and repaired by narrowing. One-element tuple annotations are now refused
+in both `tuple[T]` and runtime-equivalent `tuple[T,]` spellings; accepted tuple annotations are
+fixed multi-element tuples and the exact homogeneous `tuple[T, ...]` form. Direct altered-source
+controls reproduced each missing refusal before its owning grammar change and pass afterward. The
+existing positive construction continues to exercise both retained tuple forms, and the malformed
+extra-element ellipsis form remains refused.
+
+Fresh affected evidence is 2/2 focused controls passed, while the complete focus remains **292
+collected / 233 expected RED failures / 59 passes**. Ruff check/format-check pass and production
+remains absent. A fresh correctly excluded predecessor run passes **698/698** in 172.26 seconds;
+its sole warning is the pre-existing inability to write `.pytest_cache`, which did not affect
+collection or execution. The exact eleventh result is preserved unchanged in
+`RED-ELEVENTH-RESULT.md`; author disposition is separate in `RED-ELEVENTH-DISPOSITION.md`.
+Final post-eleventh current-worktree pre-flight is `ACCEPT`, P0=0/P1=0/P2=0; its live expression
+matrix passes 6 accepted and 8 refused forms, and independent in-memory restorations prove both
+one-item tuple controls can fail. Production remains barred pending a new immutable successor and
+fresh independent exact-commit `ACCEPT` with zero unresolved P0/P1.
