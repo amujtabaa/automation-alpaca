@@ -9,6 +9,7 @@ from fractions import Fraction as _Fraction
 from .fills import (
     ExecutionSide as _ExecutionSide,
     PositionScope as _PositionScope,
+    _PersistentKeyMap,
     _commit_parts,
     _encode_fraction,
     _encode_int,
@@ -297,8 +298,7 @@ class PositionProtectionState:
     _stream_source_time: int
     _stream_evaluation_time: int
     _stream_halted: bool
-    _last_occurrence_id: bytes
-    _last_occurrence_payload: bytes
+    _seen_occurrence_receipts: _PersistentKeyMap
     _last_primary_present: bool
     _last_primary_units: int
     _hard_bid_count: int
@@ -445,8 +445,7 @@ def _new_position_protection_state(
     _stream_source_time: int,
     _stream_evaluation_time: int,
     _stream_halted: bool,
-    _last_occurrence_id: bytes,
-    _last_occurrence_payload: bytes,
+    _seen_occurrence_receipts: _PersistentKeyMap,
     _last_primary_present: bool,
     _last_primary_units: int,
     _hard_bid_count: int,
@@ -482,8 +481,7 @@ def _new_position_protection_state(
     object.__setattr__(result, "_stream_source_time", _stream_source_time)
     object.__setattr__(result, "_stream_evaluation_time", _stream_evaluation_time)
     object.__setattr__(result, "_stream_halted", _stream_halted)
-    object.__setattr__(result, "_last_occurrence_id", _last_occurrence_id)
-    object.__setattr__(result, "_last_occurrence_payload", _last_occurrence_payload)
+    object.__setattr__(result, "_seen_occurrence_receipts", _seen_occurrence_receipts)
     object.__setattr__(result, "_last_primary_present", _last_primary_present)
     object.__setattr__(result, "_last_primary_units", _last_primary_units)
     object.__setattr__(result, "_hard_bid_count", _hard_bid_count)
@@ -725,8 +723,7 @@ def _state_commitment(
     stream_source_time: int,
     stream_evaluation_time: int,
     stream_halted: bool,
-    last_occurrence_id: bytes,
-    last_occurrence_payload: bytes,
+    seen_occurrence_receipts: _PersistentKeyMap,
     last_primary_present: bool,
     last_primary_units: int,
     hard_bid_count: int,
@@ -744,7 +741,7 @@ def _state_commitment(
     exit_provenance: bytes,
 ) -> bytes:
     return _commit_parts(
-        b"execution-core/position-protection-state/v2",
+        b"execution-core/position-protection-state/v3",
         _encode_text(policy.value),
         _commit_mandate(mandate),
         _encode_int(raw_quantity),
@@ -762,8 +759,7 @@ def _state_commitment(
         _encode_int(stream_source_time),
         _encode_int(stream_evaluation_time),
         _encode_int(1 if stream_halted else 0),
-        last_occurrence_id,
-        last_occurrence_payload,
+        seen_occurrence_receipts.commitment,
         _encode_int(1 if last_primary_present else 0),
         _encode_int(last_primary_units),
         _encode_int(hard_bid_count),
@@ -783,7 +779,10 @@ def _state_commitment(
 
 
 def _state_is_authentic(state: PositionProtectionState) -> bool:
-    if type(state.commitment) is not bytes:
+    if (
+        type(state.commitment) is not bytes
+        or type(state._seen_occurrence_receipts) is not _PersistentKeyMap
+    ):
         return False
     return state.commitment == _state_commitment(
         state.policy,
@@ -803,8 +802,7 @@ def _state_is_authentic(state: PositionProtectionState) -> bool:
         state._stream_source_time,
         state._stream_evaluation_time,
         state._stream_halted,
-        state._last_occurrence_id,
-        state._last_occurrence_payload,
+        state._seen_occurrence_receipts,
         state._last_primary_present,
         state._last_primary_units,
         state._hard_bid_count,
@@ -902,8 +900,7 @@ def _rebuild_state(
     stream_source_time: int,
     stream_evaluation_time: int,
     stream_halted: bool,
-    last_occurrence_id: bytes,
-    last_occurrence_payload: bytes,
+    seen_occurrence_receipts: _PersistentKeyMap,
     last_primary_present: bool,
     last_primary_units: int,
     hard_bid_count: int,
@@ -938,8 +935,7 @@ def _rebuild_state(
         stream_source_time,
         stream_evaluation_time,
         stream_halted,
-        last_occurrence_id,
-        last_occurrence_payload,
+        seen_occurrence_receipts,
         last_primary_present,
         last_primary_units,
         hard_bid_count,
@@ -975,8 +971,7 @@ def _rebuild_state(
         stream_source_time,
         stream_evaluation_time,
         stream_halted,
-        last_occurrence_id,
-        last_occurrence_payload,
+        seen_occurrence_receipts,
         last_primary_present,
         last_primary_units,
         hard_bid_count,
@@ -1090,6 +1085,21 @@ def _new_state_from_projection(
         trail = None
     waiting = projection.blocking_buy_effect_count > 0
     genesis = _market_genesis()
+    seen_occurrence_receipts = (
+        _PersistentKeyMap.empty() if prior is None else prior._seen_occurrence_receipts
+    )
+    if prior is None:
+        stream_epoch = -1
+        stream_sequence = -1
+        stream_source_time = -1
+        stream_evaluation_time = -1
+        stream_halted = False
+    else:
+        stream_epoch = prior._stream_epoch
+        stream_sequence = prior._stream_sequence
+        stream_source_time = prior._stream_source_time
+        stream_evaluation_time = prior._stream_evaluation_time
+        stream_halted = prior._stream_halted
     reset_all = (
         prior is None
         or not formula_available
@@ -1098,13 +1108,6 @@ def _new_state_from_projection(
         or (prior is not None and not prior.formula_available)
     )
     if reset_all:
-        stream_epoch = -1
-        stream_sequence = -1
-        stream_source_time = -1
-        stream_evaluation_time = -1
-        stream_halted = False
-        last_occurrence_id = genesis
-        last_occurrence_payload = genesis
         last_primary_present = False
         last_primary_units = 0
         hard_bid_count = 0
@@ -1122,13 +1125,6 @@ def _new_state_from_projection(
     else:
         if prior is None:
             raise TypeError("retained prior state is required")
-        stream_epoch = prior._stream_epoch
-        stream_sequence = prior._stream_sequence
-        stream_source_time = prior._stream_source_time
-        stream_evaluation_time = prior._stream_evaluation_time
-        stream_halted = prior._stream_halted
-        last_occurrence_id = prior._last_occurrence_id
-        last_occurrence_payload = prior._last_occurrence_payload
         last_primary_present = prior._last_primary_present
         last_primary_units = prior._last_primary_units
         hard_bid_count = prior._hard_bid_count
@@ -1187,8 +1183,7 @@ def _new_state_from_projection(
         stream_source_time,
         stream_evaluation_time,
         stream_halted,
-        last_occurrence_id,
-        last_occurrence_payload,
+        seen_occurrence_receipts,
         last_primary_present,
         last_primary_units,
         hard_bid_count,
@@ -1335,11 +1330,68 @@ def _market_inert_transition(
     return ProtectionTransition(state, disposition, goal, alert)
 
 
+def _state_with_occurrence_receipts(
+    state: PositionProtectionState,
+    receipts: _PersistentKeyMap,
+) -> PositionProtectionState:
+    return _rebuild_state(
+        state.policy,
+        state.mandate,
+        state.raw_quantity,
+        state.execution_commitment,
+        state.formula_available,
+        state.armed_hard_bail_trigger,
+        state.activation_price,
+        state.high_watermark,
+        state.trail,
+        state.waiting_buy_resolution,
+        state._cursor_ordinal,
+        state._cursor_head,
+        state._stream_epoch,
+        state._stream_sequence,
+        state._stream_source_time,
+        state._stream_evaluation_time,
+        state._stream_halted,
+        receipts,
+        state._last_primary_present,
+        state._last_primary_units,
+        state._hard_bid_count,
+        state._hard_bid_sequence,
+        state._hard_bid_source_time,
+        state._hard_bid_identity,
+        state._trade_present,
+        state._trade_source_time,
+        state._trade_identity,
+        state._trade_units,
+        state._trail_bid_count,
+        state._trail_bid_sequence,
+        state._trail_bid_source_time,
+        state._trail_bid_identity,
+        state._exit_provenance,
+    )
+
+
+def _recorded_market_inert_transition(
+    state: PositionProtectionState,
+    receipts: _PersistentKeyMap,
+    projection: ProtectionVenueProjection,
+    advanced: bool,
+    alert: ProtectionAlert | None,
+) -> ProtectionTransition:
+    next_state = _state_with_occurrence_receipts(state, receipts)
+    goal = _goal_for_state(next_state, projection) if advanced else None
+    return ProtectionTransition(
+        next_state,
+        ProtectionDisposition.APPLIED,
+        goal,
+        alert,
+    )
+
+
 def _state_after_market_halt(
     state: PositionProtectionState,
     occurrence: MarketOccurrence,
-    identity: bytes,
-    payload: bytes,
+    receipts: _PersistentKeyMap,
 ) -> PositionProtectionState:
     genesis = _market_genesis()
     stream_sequence = (
@@ -1369,8 +1421,7 @@ def _state_after_market_halt(
         occurrence.source_time,
         occurrence.evaluation_time,
         True,
-        identity,
-        payload,
+        receipts,
         False,
         0,
         0,
@@ -1396,36 +1447,55 @@ def _reduce_market_occurrence(
     advanced: bool,
     alert: ProtectionAlert | None,
 ) -> ProtectionTransition:
+    if (
+        occurrence.position_scope != state.mandate.position_scope
+        or occurrence.source_id != state.mandate.evidence_policy.source_id
+        or occurrence.session_id != state.mandate.session_id
+        or occurrence.market_epoch < state._stream_epoch
+    ):
+        return _market_inert_transition(state, projection, advanced, alert)
     identity = _occurrence_identity(occurrence)
     payload = _occurrence_payload(occurrence)
-    if identity == state._last_occurrence_id:
+    retained_payload = _PersistentKeyMap.get(
+        state._seen_occurrence_receipts,
+        identity,
+    )
+    if retained_payload is not None:
         if advanced:
             return _market_inert_transition(state, projection, True, alert)
-        if payload == state._last_occurrence_payload:
+        if retained_payload != payload:
             return ProtectionTransition(
                 state,
-                ProtectionDisposition.EXACT_REPLAY,
+                ProtectionDisposition.REFUSED,
                 None,
                 alert,
             )
         return ProtectionTransition(
             state,
-            ProtectionDisposition.REFUSED,
+            ProtectionDisposition.EXACT_REPLAY,
             None,
             alert,
         )
+    receipts = _PersistentKeyMap.insert_new(
+        state._seen_occurrence_receipts,
+        identity,
+        payload,
+        payload,
+    )
     if (
         not state.formula_available
         or state.policy is ProtectionPolicy.FLAT
-        or occurrence.position_scope != state.mandate.position_scope
-        or occurrence.source_id != state.mandate.evidence_policy.source_id
-        or occurrence.session_id != state.mandate.session_id
         or occurrence.source_time > occurrence.evaluation_time
         or occurrence.evaluation_time - occurrence.source_time
         > state.mandate.evidence_policy.max_age
-        or occurrence.market_epoch < state._stream_epoch
     ):
-        return _market_inert_transition(state, projection, advanced, alert)
+        return _recorded_market_inert_transition(
+            state,
+            receipts,
+            projection,
+            advanced,
+            alert,
+        )
     new_epoch = occurrence.market_epoch > state._stream_epoch
     if not new_epoch and (
         occurrence.source_time < state._stream_source_time
@@ -1436,11 +1506,23 @@ def _reduce_market_occurrence(
             and occurrence.source_sequence <= state._stream_sequence
         )
     ):
-        return _market_inert_transition(state, projection, advanced, alert)
+        return _recorded_market_inert_transition(
+            state,
+            receipts,
+            projection,
+            advanced,
+            alert,
+        )
     if state._stream_halted and not new_epoch:
-        return _market_inert_transition(state, projection, advanced, alert)
+        return _recorded_market_inert_transition(
+            state,
+            receipts,
+            projection,
+            advanced,
+            alert,
+        )
     if occurrence.halted:
-        next_state = _state_after_market_halt(state, occurrence, identity, payload)
+        next_state = _state_after_market_halt(state, occurrence, receipts)
         return ProtectionTransition(
             next_state,
             ProtectionDisposition.APPLIED,
@@ -1455,7 +1537,13 @@ def _reduce_market_occurrence(
             or not _market_price_matches(occurrence.best_ask, state.mandate.tick)
             or occurrence.best_bid.exact_value > occurrence.best_ask.exact_value
         ):
-            return _market_inert_transition(state, projection, advanced, alert)
+            return _recorded_market_inert_transition(
+                state,
+                receipts,
+                projection,
+                advanced,
+                alert,
+            )
         primary = occurrence.best_bid
     else:
         if type(
@@ -1463,10 +1551,22 @@ def _reduce_market_occurrence(
         ) is not _ReportedPrice or not _market_price_matches(
             occurrence.trade_price, state.mandate.tick
         ):
-            return _market_inert_transition(state, projection, advanced, alert)
+            return _recorded_market_inert_transition(
+                state,
+                receipts,
+                projection,
+                advanced,
+                alert,
+            )
         primary = occurrence.trade_price
     if not new_epoch and not _step_is_eligible(state, primary.units.value):
-        return _market_inert_transition(state, projection, advanced, alert)
+        return _recorded_market_inert_transition(
+            state,
+            receipts,
+            projection,
+            advanced,
+            alert,
+        )
 
     genesis = _market_genesis()
     stream_sequence = (
@@ -1664,8 +1764,7 @@ def _reduce_market_occurrence(
         occurrence.source_time,
         occurrence.evaluation_time,
         False,
-        identity,
-        payload,
+        receipts,
         last_primary_present,
         last_primary_units,
         hard_bid_count,

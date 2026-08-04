@@ -731,6 +731,95 @@ class ProtectionMarketMachine(RuleBasedStateMachine):
         assert successor_result.goal is not None
         assert successor_result.critical_alert is None
 
+    @precondition(
+        lambda self: (
+            self.policy == "FLOOR_ONLY"
+            and self.hard_count == 0
+            and self.buy_stage == "NONE"
+        )
+    )
+    @rule(first_kind=st.sampled_from(("BEST_BID", "TRADE")))
+    def nonlast_sequence_less_replay_survives_restart_as_an_exact_noop(
+        self,
+        first_kind: str,
+    ) -> None:
+        """An interruption cannot make an older accepted identity authoritative again."""
+        case = self.sequence + 1
+        shared_source_time = self.source_time + 6
+        first = protection_fixtures._occurrence(
+            self.module,
+            f"stateful-nonlast-replay-{first_kind.lower()}-{case}-a",
+            kind=first_kind,
+            bid=92 if first_kind == "BEST_BID" else None,
+            ask=93 if first_kind == "BEST_BID" else None,
+            trade=92 if first_kind == "TRADE" else None,
+            sequence=None,
+            source_time=shared_source_time,
+            evaluation_time=shared_source_time + 4,
+            market_epoch=self.market_epoch,
+        )
+        first_result = self._deliver(first)
+        interrupted_occurrence = protection_fixtures._occurrence(
+            self.module,
+            f"stateful-nonlast-replay-{first_kind.lower()}-{case}-b",
+            bid=95,
+            ask=96,
+            sequence=None,
+            source_time=shared_source_time,
+            evaluation_time=shared_source_time + 5,
+            market_epoch=self.market_epoch,
+        )
+        interrupted = protection_fixtures._reduce(
+            self.module,
+            first_result.state,
+            self.projection,
+            interrupted_occurrence,
+        )
+        restarted_state = protection_fixtures._clone_opaque(interrupted.state)
+        replay = protection_fixtures._reduce(
+            self.module,
+            restarted_state,
+            self.projection,
+            replace(first, evaluation_time=shared_source_time + 6),
+        )
+        disposition, policy = protection_fixtures._required(
+            self.module,
+            "ProtectionDisposition",
+            "ProtectionPolicy",
+        )
+        assert replay.disposition is disposition.EXACT_REPLAY
+        assert replay.state == restarted_state
+        assert replay.goal is None
+
+        successor_source_time = shared_source_time + 6
+        successor = protection_fixtures._occurrence(
+            self.module,
+            f"stateful-nonlast-replay-{first_kind.lower()}-{case}-c",
+            bid=91,
+            ask=92,
+            sequence=None,
+            source_time=successor_source_time,
+            evaluation_time=successor_source_time + 4,
+            market_epoch=self.market_epoch,
+        )
+        successor_result = protection_fixtures._reduce(
+            self.module,
+            replay.state,
+            self.projection,
+            successor,
+        )
+        assert successor_result.state.policy is policy.FLOOR_ONLY
+        assert successor_result.goal is None
+
+        self.sequence += 4
+        self.source_time = successor_source_time
+        self.last_accepted_source_time = successor_source_time
+        self.state = successor_result.state
+        self.last_occurrence = successor
+        self.last_bid = 91
+        self.hard_count = 1
+        self.last_result = successor_result
+
     @rule()
     def crossed_quote_is_ineligible(self) -> None:
         self.sequence += 1
@@ -747,8 +836,12 @@ class ProtectionMarketMachine(RuleBasedStateMachine):
         )
         before = self.state
         result = self._deliver(occurrence)
-        assert result.state == before
-        assert result.goal is None
+        protection_fixtures._assert_recorded_market_inert(
+            self.module,
+            before,
+            result,
+        )
+        self.state = result.state
 
     @precondition(lambda self: self.last_occurrence is not None)
     @rule()
@@ -766,8 +859,12 @@ class ProtectionMarketMachine(RuleBasedStateMachine):
         )
         before = self.state
         result = self._deliver(occurrence)
-        assert result.state == before
-        assert result.goal is None
+        protection_fixtures._assert_recorded_market_inert(
+            self.module,
+            before,
+            result,
+        )
+        self.state = result.state
 
     @precondition(
         lambda self: (
@@ -781,7 +878,10 @@ class ProtectionMarketMachine(RuleBasedStateMachine):
         self.source_time += 6
         occurrence = protection_fixtures._occurrence(
             self.module,
-            f"stateful-nonadvancing-{self.market_epoch}-{self.sequence}",
+            (
+                f"stateful-nonadvancing-{self.market_epoch}-"
+                f"{self.sequence}-{self.source_time}"
+            ),
             bid=92,
             ask=93,
             sequence=self.last_accepted_sequence,
@@ -791,8 +891,12 @@ class ProtectionMarketMachine(RuleBasedStateMachine):
         )
         before = self.state
         result = self._deliver(occurrence)
-        assert result.state == before
-        assert result.goal is None
+        protection_fixtures._assert_recorded_market_inert(
+            self.module,
+            before,
+            result,
+        )
+        self.state = result.state
 
     @precondition(
         lambda self: (
@@ -852,8 +956,12 @@ class ProtectionMarketMachine(RuleBasedStateMachine):
         )
         before_reuse = self.state
         reused_result = self._deliver(reused)
-        assert reused_result.state == before_reuse
-        assert reused_result.goal is None
+        protection_fixtures._assert_recorded_market_inert(
+            self.module,
+            before_reuse,
+            reused_result,
+        )
+        self.state = reused_result.state
 
         self.source_time += 6
         first_fresh = protection_fixtures._occurrence(
@@ -916,8 +1024,12 @@ class ProtectionMarketMachine(RuleBasedStateMachine):
         )
         before = self.state
         result = self._deliver(occurrence)
-        assert result.state == before
-        assert result.goal is None
+        protection_fixtures._assert_recorded_market_inert(
+            self.module,
+            before,
+            result,
+        )
+        self.state = result.state
 
     @precondition(
         lambda self: (
@@ -933,15 +1045,16 @@ class ProtectionMarketMachine(RuleBasedStateMachine):
         first_kind: str,
     ) -> None:
         """A large trade/bid discontinuity cannot become corroboration."""
+        first_units = self.last_bid
         self.sequence += 1
         self.source_time += 6
         first = protection_fixtures._occurrence(
             self.module,
             f"stateful-cross-kind-first-{first_kind.lower()}-{self.sequence}",
             kind=first_kind,
-            bid=92 if first_kind == "BEST_BID" else None,
-            ask=93 if first_kind == "BEST_BID" else None,
-            trade=1 if first_kind == "TRADE" else None,
+            bid=first_units if first_kind == "BEST_BID" else None,
+            ask=first_units + 1 if first_kind == "BEST_BID" else None,
+            trade=first_units if first_kind == "TRADE" else None,
             sequence=self.sequence,
             source_time=self.source_time,
             evaluation_time=self.source_time + 4,
@@ -955,13 +1068,14 @@ class ProtectionMarketMachine(RuleBasedStateMachine):
         self.sequence += 1
         self.source_time += 6
         second_kind = "TRADE" if first_kind == "BEST_BID" else "BEST_BID"
+        second_units = max(160, first_units * 2)
         second = protection_fixtures._occurrence(
             self.module,
             f"stateful-cross-kind-second-{second_kind.lower()}-{self.sequence}",
             kind=second_kind,
-            bid=92 if second_kind == "BEST_BID" else None,
-            ask=93 if second_kind == "BEST_BID" else None,
-            trade=1 if second_kind == "TRADE" else None,
+            bid=second_units if second_kind == "BEST_BID" else None,
+            ask=second_units + 1 if second_kind == "BEST_BID" else None,
+            trade=second_units if second_kind == "TRADE" else None,
             sequence=self.sequence,
             source_time=self.source_time,
             evaluation_time=self.source_time + 4,
@@ -969,8 +1083,12 @@ class ProtectionMarketMachine(RuleBasedStateMachine):
         )
         before = self.state
         rejected = self._deliver(second)
-        assert rejected.state == before
-        assert rejected.goal is None
+        protection_fixtures._assert_recorded_market_inert(
+            self.module,
+            before,
+            rejected,
+        )
+        self.state = rejected.state
 
         self.market_epoch += 1
         self.sequence = 1
@@ -1086,8 +1204,12 @@ class ProtectionMarketMachine(RuleBasedStateMachine):
         )
         before_reopen = self.state
         not_reopened = self._deliver(same_epoch)
-        assert not_reopened.state == before_reopen
-        assert not_reopened.goal is None
+        protection_fixtures._assert_recorded_market_inert(
+            self.module,
+            before_reopen,
+            not_reopened,
+        )
+        self.state = not_reopened.state
         self.market_epoch += 1
         self.sequence = 1
         self.source_time += 6

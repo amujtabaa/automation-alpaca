@@ -8,6 +8,7 @@ code exists.  No clock, database, broker, adapter, or runtime fixture is used.
 
 from __future__ import annotations
 
+import __future__
 import ast
 import builtins
 from collections.abc import Callable
@@ -56,6 +57,7 @@ from app.execution_core.fills import (
     ExecutionScope,
     ExecutionSide,
     PositionScope,
+    _PersistentKeyMap,
 )
 from app.execution_core.position import (
     ExecutionSnapshot,
@@ -1014,6 +1016,7 @@ class _LeafMutation:
 def _is_retained_leaf(value: object) -> bool:
     return (
         value is None
+        or type(value) is _PersistentKeyMap
         or any(
             type(value) is allowed
             for allowed in (bool, bytes, int, str, Decimal, Fraction)
@@ -1024,6 +1027,16 @@ def _is_retained_leaf(value: object) -> bool:
 
 def _leaf_mutation_candidates(value: object) -> tuple[object, ...]:
     """Return deterministic unequal candidates without traversing arbitrary values."""
+    if type(value) is _PersistentKeyMap:
+        return (
+            _PersistentKeyMap.insert_new(
+                value,
+                b"\xfc" * 32,
+                b"\xfd" * 32,
+                b"\xfd" * 32,
+            ),
+            _LEAF_MUTATION_SENTINEL,
+        )
     if type(value) is bool:
         return (not value, _LEAF_MUTATION_SENTINEL)
     if type(value) is int:
@@ -1049,6 +1062,12 @@ def _leaf_mutation_candidates(value: object) -> tuple[object, ...]:
 
 def _leaf_sort_key(value: object) -> tuple[object, ...]:
     """Canonicalize only the bounded passive grammar used by leaf mutations."""
+    if type(value) is _PersistentKeyMap:
+        return (
+            "persistent-key-map",
+            value.size,
+            value.commitment.hex(),
+        )
     if value is None:
         return ("none",)
     if type(value) is bool:
@@ -1852,10 +1871,21 @@ def _assert_function_matches_inspected_source(
     message: str,
 ) -> None:
     """Tie executable bytecode to the exact source inspected by a static oracle."""
+    module_path = Path(function.__code__.co_filename).resolve()
+    module_source = module_path.read_text(encoding="utf-8")
+    import_prelude = "\n".join(
+        ast.unparse(statement)
+        for statement in ast.parse(module_source, filename=str(module_path)).body
+        if isinstance(statement, (ast.Import, ast.ImportFrom))
+        and not (
+            isinstance(statement, ast.ImportFrom) and statement.module == "__future__"
+        )
+    )
     compiled = compile(
-        source,
+        f"{import_prelude}\n{source}",
         "<inspected-function-source>",
         "exec",
+        flags=function.__code__.co_flags & __future__.annotations.compiler_flag,
         dont_inherit=True,
     )
     source_codes = [
@@ -1867,6 +1897,12 @@ def _assert_function_matches_inspected_source(
     assert _passive_code_signature(
         function.__code__, include_location=False
     ) == _passive_code_signature(source_codes[0], include_location=False), message
+
+
+def _imported_class_method_provenance_probe(
+    retained: _PersistentKeyMap[bytes],
+) -> bytes | None:
+    return _PersistentKeyMap.get(retained, b"\x01")
 
 
 def _canonical_function_source(
@@ -3705,6 +3741,37 @@ def _assert_stale_unchanged(
     assert result.critical_alert is None
 
 
+def _assert_recorded_market_inert(
+    module: ModuleType,
+    before: object,
+    result: object,
+) -> None:
+    """Prove a well-routed ineligible occurrence adds only its durable receipt."""
+    after = result.state
+    assert type(after) is type(before)
+    retained_fields = {field.name for field in fields(before)}
+    assert {"commitment", "_seen_occurrence_receipts"} <= retained_fields
+    for field_name in retained_fields - {
+        "commitment",
+        "_seen_occurrence_receipts",
+    }:
+        assert getattr(after, field_name) == getattr(before, field_name), field_name
+
+    before_receipts = before._seen_occurrence_receipts
+    after_receipts = after._seen_occurrence_receipts
+    assert type(before_receipts) is _PersistentKeyMap
+    assert type(after_receipts) is _PersistentKeyMap
+    assert after_receipts.size == before_receipts.size + 1
+    assert after_receipts.commitment != before_receipts.commitment
+    assert after.commitment != before.commitment
+    assert after != before
+
+    (disposition,) = _required(module, "ProtectionDisposition")
+    assert result.disposition is disposition.APPLIED
+    assert result.goal is None
+    assert result.critical_alert is None
+
+
 def _sync_transitions(
     module: ModuleType,
     state: object,
@@ -5111,6 +5178,34 @@ def test_passive_lifecycle_rejects_source_and_bytecode_provenance_split() -> Non
     _LIFECYCLE_SOURCE_SWAP_CALLS.clear()
 
 
+def test_source_attestation_preserves_imported_class_method_codegen() -> None:
+    owner_module = inspect.getmodule(_imported_class_method_provenance_probe)
+    assert owner_module is not None
+    source = _canonical_function_source(
+        owner_module,
+        "_imported_class_method_provenance_probe",
+    )
+    _assert_function_matches_inspected_source(
+        _imported_class_method_provenance_probe,
+        source,
+        message="imported-class method bytecode does not match inspected source",
+    )
+
+    mutant = ast.parse(source)
+    (function,) = mutant.body
+    assert isinstance(function, ast.FunctionDef)
+    function.body = [ast.Return(value=ast.Constant(value=None))]
+    with pytest.raises(
+        AssertionError,
+        match="imported-class method bytecode does not match inspected source",
+    ):
+        _assert_function_matches_inspected_source(
+            _imported_class_method_provenance_probe,
+            ast.unparse(mutant),
+            message="imported-class method bytecode does not match inspected source",
+        )
+
+
 def test_mandate_is_frozen_exact_and_rejects_subclasses() -> None:
     module = _protection_module()
     mandate = _mandate(module)
@@ -6465,12 +6560,26 @@ def test_late_owned_buy_after_flat_restores_hard_bail_and_alert() -> None:
     fill = _owned_fill_transition(quantity=4)
     mandate, _, state = _start(module, fill)
     buy_terminal, buy_closed = _close_base_parent(fill)
-    state, _, _ = _sync_transitions(
+    state, pre_flat_projection, _ = _sync_transitions(
         module,
         state,
         mandate,
         (buy_terminal, buy_closed),
     )
+    pre_flat_occurrence = _occurrence(
+        module,
+        "protection-late-pre-flat-occurrence",
+        bid=100,
+        ask=101,
+        sequence=None,
+    )
+    pre_flat_seen = _reduce(
+        module,
+        state,
+        pre_flat_projection,
+        pre_flat_occurrence,
+    )
+    state = pre_flat_seen.state
     sell_chain, sell_effect, sell_leg, _ = _append_needs_review_effect(
         buy_closed,
         prefix="protection-late-flat-sell",
@@ -6516,9 +6625,26 @@ def test_late_owned_buy_after_flat_restores_hard_bail_and_alert() -> None:
         effect_id=sell_effect,
         label="protection-late-flat-sell",
     )
-    flat = _reduce(module, state, _projection(module, sell_closed, mandate))
+    flat_projection = _projection(module, sell_closed, mandate)
+    flat = _reduce(module, state, flat_projection)
     policy, alert = _required(module, "ProtectionPolicy", "ProtectionAlert")
     assert flat.state.policy is policy.FLAT
+    flat_occurrence = _occurrence(
+        module,
+        "protection-late-flat-occurrence",
+        bid=92,
+        ask=93,
+        sequence=None,
+        source_time=106,
+        evaluation_time=110,
+    )
+    flat_seen = _reduce(
+        module,
+        flat.state,
+        flat_projection,
+        flat_occurrence,
+    )
+    _assert_recorded_market_inert(module, flat.state, flat_seen)
     late_chain, late_effect, late_leg, _ = _append_needs_review_effect(
         sell_closed,
         prefix="protection-late-buy",
@@ -6527,7 +6653,7 @@ def test_late_owned_buy_after_flat_restores_hard_bail_and_alert() -> None:
     )
     state, _, _ = _sync_transitions(
         module,
-        flat.state,
+        flat_seen.state,
         mandate,
         late_chain,
     )
@@ -6551,17 +6677,29 @@ def test_late_owned_buy_after_flat_restores_hard_bail_and_alert() -> None:
             evidence_digest=b"\x96" * 32,
         ),
     )
-    recovered = _reduce(
-        module,
-        state,
-        _projection(module, late, mandate),
-    )
+    late_projection = _projection(module, late, mandate)
+    recovered = _reduce(module, state, late_projection)
     assert recovered.state.raw_quantity == 2
     assert recovered.state.policy is policy.HARD_BAIL
     assert recovered.state.mandate == mandate
     assert recovered.state.waiting_buy_resolution is True
     assert recovered.critical_alert is alert.LATE_POSITIVE_AFTER_FLAT
     assert recovered.goal is None
+
+    (disposition,) = _required(module, "ProtectionDisposition")
+    for replayed_occurrence in (pre_flat_occurrence, flat_occurrence):
+        replayed = _reduce(
+            module,
+            recovered.state,
+            late_projection,
+            replace(
+                replayed_occurrence,
+                evaluation_time=replayed_occurrence.evaluation_time + 100,
+            ),
+        )
+        assert replayed.disposition is disposition.EXACT_REPLAY
+        assert replayed.state == recovered.state
+        assert replayed.goal is None
 
 
 @pytest.mark.parametrize("revision_kind", ["correction", "bust"])
@@ -7387,6 +7525,15 @@ def test_venue_advancement_releases_goal_when_optional_market_input_is_inert(
     assert released.state.waiting_buy_resolution is False
     assert released.state.execution_commitment == closed.execution.commitment
     assert released.goal is not None
+    if case == "ineligible":
+        assert released.state._seen_occurrence_receipts.size == (
+            terminal_result.state._seen_occurrence_receipts.size + 1
+        )
+    else:
+        assert (
+            released.state._seen_occurrence_receipts
+            == terminal_result.state._seen_occurrence_receipts
+        )
 
 
 def test_correction_and_bust_apply_economics_before_protection_policy() -> None:
@@ -7864,17 +8011,18 @@ def test_formula_loss_discards_market_evidence_and_restores_a_fresh_branch() -> 
         mandate,
         (terminal, closed),
     )
+    activation_occurrence = _occurrence(
+        module,
+        "formula-loss-activation",
+        bid=120,
+        ask=121,
+        sequence=1,
+    )
     activated = _reduce(
         module,
         state,
         projection,
-        _occurrence(
-            module,
-            "formula-loss-activation",
-            bid=120,
-            ask=121,
-            sequence=1,
-        ),
+        activation_occurrence,
     )
     (policy,) = _required(module, "ProtectionPolicy")
     assert activated.state.policy is policy.TRAIL_ACTIVE
@@ -7906,20 +8054,23 @@ def test_formula_loss_discards_market_evidence_and_restores_a_fresh_branch() -> 
     assert unavailable.goal is None
     state = unavailable.state
     projection = _projection(module, unavailable_transition, mandate)
+    ignored_occurrences = []
     for index, bid in enumerate((92, 91), start=2):
+        occurrence = _occurrence(
+            module,
+            f"formula-loss-ignored-{index}",
+            bid=bid,
+            ask=bid + 1,
+            sequence=index,
+            source_time=94 + index * 6,
+            evaluation_time=98 + index * 6,
+        )
+        ignored_occurrences.append(occurrence)
         ignored = _reduce(
             module,
             state,
             projection,
-            _occurrence(
-                module,
-                f"formula-loss-ignored-{index}",
-                bid=bid,
-                ask=bid + 1,
-                sequence=index,
-                source_time=94 + index * 6,
-                evaluation_time=98 + index * 6,
-            ),
+            occurrence,
         )
         state = ignored.state
         assert state.formula_available is False
@@ -7951,6 +8102,21 @@ def test_formula_loss_discards_market_evidence_and_restores_a_fresh_branch() -> 
     assert restored.state.trail.exact_value == Fraction(111)
     assert restored.state.policy is policy.HARD_BAIL
     assert restored.goal is None
+
+    (disposition,) = _required(module, "ProtectionDisposition")
+    for replayed_occurrence in (activation_occurrence, ignored_occurrences[0]):
+        replayed = _reduce(
+            module,
+            restored.state,
+            restored_projection,
+            replace(
+                replayed_occurrence,
+                evaluation_time=replayed_occurrence.evaluation_time + 100,
+            ),
+        )
+        assert replayed.disposition is disposition.EXACT_REPLAY
+        assert replayed.state == restored.state
+        assert replayed.goal is None
 
     fresh_first = _reduce(
         module,
@@ -8189,11 +8355,8 @@ def test_nonadvancing_sequence_does_not_corroborate() -> None:
         ),
     )
     (policy,) = _required(module, "ProtectionPolicy")
-    assert equal_sequence.state == first.state
-    assert equal_sequence.state.commitment == first.state.commitment
+    _assert_recorded_market_inert(module, first.state, equal_sequence)
     assert equal_sequence.state.policy is policy.FLOOR_ONLY
-    assert equal_sequence.goal is None
-    assert equal_sequence.critical_alert is None
 
 
 def test_sequence_absence_does_not_erase_the_last_present_high_water() -> None:
@@ -8245,8 +8408,7 @@ def test_sequence_absence_does_not_erase_the_last_present_high_water() -> None:
             evaluation_time=116,
         ),
     )
-    assert reused.state == sequence_absent.state
-    assert reused.goal is None
+    _assert_recorded_market_inert(module, sequence_absent.state, reused)
 
     first_fresh = _reduce(
         module,
@@ -8428,11 +8590,18 @@ def test_trigger_ratchet_cannot_reuse_evidence_from_the_old_trigger() -> None:
     module = _protection_module()
     fill = _owned_fill_transition(quantity=2, units=100)
     mandate, projection, state = _start(module, fill)
+    old_occurrence = _occurrence(
+        module,
+        "old-trigger-branch",
+        bid=92,
+        ask=93,
+        sequence=1,
+    )
     old_branch = _reduce(
         module,
         state,
         projection,
-        _occurrence(module, "old-trigger-branch", bid=92, ask=93, sequence=1),
+        old_occurrence,
     )
     higher = _advance_owned_fill(
         fill,
@@ -8447,9 +8616,19 @@ def test_trigger_ratchet_cannot_reuse_evidence_from_the_old_trigger() -> None:
         _projection(module, higher, mandate),
     )
     assert synced.state.armed_hard_bail_trigger.exact_value == Fraction(102)
-    first_new = _reduce(
+    ratchet_replay = _reduce(
         module,
         synced.state,
+        _projection(module, higher, mandate),
+        replace(old_occurrence, evaluation_time=110),
+    )
+    (disposition,) = _required(module, "ProtectionDisposition")
+    assert ratchet_replay.disposition is disposition.EXACT_REPLAY
+    assert ratchet_replay.state == synced.state
+    assert ratchet_replay.goal is None
+    first_new = _reduce(
+        module,
+        ratchet_replay.state,
         _projection(module, higher, mandate),
         _occurrence(
             module,
@@ -8515,25 +8694,407 @@ def test_sequence_absent_requires_distinct_stable_occurrence_ids() -> None:
     assert second.goal is not None
 
 
-def test_source_time_regression_and_halt_reopen_start_fresh_branches() -> None:
+@pytest.mark.parametrize("first_kind", ["BEST_BID", "TRADE"])
+def test_nonlast_sequence_absent_replay_cannot_rebuild_hard_bail_evidence(
+    first_kind: str,
+) -> None:
     module = _protection_module()
-    fill = _owned_fill_transition()
+    fill = _owned_fill_transition(label=f"nonlast-hard-replay-{first_kind.lower()}")
     mandate, _, state = _start(module, fill)
     terminal, closed = _close_base_parent(fill)
     state, projection, _ = _sync_transitions(module, state, mandate, (terminal, closed))
+    first_occurrence = _occurrence(
+        module,
+        f"nonlast-hard-replay-{first_kind.lower()}-a",
+        kind=first_kind,
+        bid=92 if first_kind == "BEST_BID" else None,
+        ask=93 if first_kind == "BEST_BID" else None,
+        trade=92 if first_kind == "TRADE" else None,
+        sequence=None,
+        source_time=100,
+        evaluation_time=104,
+    )
+    first = _reduce(module, state, projection, first_occurrence)
+    interrupted = _reduce(
+        module,
+        first.state,
+        projection,
+        _occurrence(
+            module,
+            f"nonlast-hard-replay-{first_kind.lower()}-b",
+            bid=95,
+            ask=96,
+            sequence=None,
+            source_time=100,
+            evaluation_time=105,
+        ),
+    )
+    restarted_state = _clone_opaque(interrupted.state)
+    replay = _reduce(
+        module,
+        restarted_state,
+        projection,
+        replace(first_occurrence, evaluation_time=106),
+    )
+    disposition, policy = _required(
+        module,
+        "ProtectionDisposition",
+        "ProtectionPolicy",
+    )
+    assert replay.disposition is disposition.EXACT_REPLAY
+    assert replay.state == restarted_state
+    assert replay.goal is None
+    assert replay.critical_alert is None
+
+    successor = _reduce(
+        module,
+        replay.state,
+        projection,
+        _occurrence(
+            module,
+            f"nonlast-hard-replay-{first_kind.lower()}-c",
+            bid=91,
+            ask=92,
+            sequence=None,
+            source_time=106,
+            evaluation_time=110,
+        ),
+    )
+    assert successor.state.policy is policy.FLOOR_ONLY
+    assert successor.goal is None
+
+
+def test_nonlast_occurrence_identity_equivocation_is_refused() -> None:
+    module = _protection_module()
+    fill = _owned_fill_transition(label="nonlast-identity-equivocation")
+    mandate, _, state = _start(module, fill)
+    terminal, closed = _close_base_parent(fill)
+    state, projection, _ = _sync_transitions(module, state, mandate, (terminal, closed))
+    shared_id = "nonlast-identity-equivocation-a"
     first = _reduce(
         module,
         state,
         projection,
         _occurrence(
             module,
-            "time-before-halt",
+            shared_id,
             bid=92,
             ask=93,
             sequence=None,
             source_time=100,
+            evaluation_time=104,
+        ),
+    )
+    interrupted = _reduce(
+        module,
+        first.state,
+        projection,
+        _occurrence(
+            module,
+            "nonlast-identity-equivocation-b",
+            bid=95,
+            ask=96,
+            sequence=None,
+            source_time=100,
             evaluation_time=105,
         ),
+    )
+    equivocated = _reduce(
+        module,
+        interrupted.state,
+        projection,
+        _occurrence(
+            module,
+            shared_id,
+            bid=91,
+            ask=92,
+            sequence=None,
+            source_time=100,
+            evaluation_time=106,
+        ),
+    )
+    disposition, policy = _required(
+        module,
+        "ProtectionDisposition",
+        "ProtectionPolicy",
+    )
+    assert equivocated.disposition is disposition.REFUSED
+    assert equivocated.state == interrupted.state
+    assert equivocated.state.policy is policy.FLOOR_ONLY
+    assert equivocated.goal is None
+    assert equivocated.critical_alert is None
+
+
+def test_nonlast_sequence_absent_replay_cannot_rebuild_trail_exit_evidence() -> None:
+    module = _protection_module()
+    fill = _owned_fill_transition(label="nonlast-trail-replay")
+    mandate, _, state = _start(module, fill)
+    terminal, closed = _close_base_parent(fill)
+    state, projection, _ = _sync_transitions(module, state, mandate, (terminal, closed))
+    activated = _reduce(
+        module,
+        state,
+        projection,
+        _occurrence(
+            module,
+            "nonlast-trail-replay-activation",
+            bid=110,
+            ask=111,
+            sequence=1,
+            source_time=100,
+            evaluation_time=104,
+        ),
+    )
+    assert activated.state.trail.exact_value == Fraction(102)
+    first_occurrence = _occurrence(
+        module,
+        "nonlast-trail-replay-a",
+        bid=101,
+        ask=102,
+        sequence=None,
+        source_time=106,
+        evaluation_time=110,
+    )
+    first = _reduce(module, activated.state, projection, first_occurrence)
+    interrupted = _reduce(
+        module,
+        first.state,
+        projection,
+        _occurrence(
+            module,
+            "nonlast-trail-replay-b",
+            bid=105,
+            ask=106,
+            sequence=None,
+            source_time=106,
+            evaluation_time=111,
+        ),
+    )
+    restarted_state = _clone_opaque(interrupted.state)
+    replay = _reduce(
+        module,
+        restarted_state,
+        projection,
+        replace(first_occurrence, evaluation_time=112),
+    )
+    disposition, policy = _required(
+        module,
+        "ProtectionDisposition",
+        "ProtectionPolicy",
+    )
+    assert replay.disposition is disposition.EXACT_REPLAY
+    assert replay.state == restarted_state
+    assert replay.goal is None
+
+    successor = _reduce(
+        module,
+        replay.state,
+        projection,
+        _occurrence(
+            module,
+            "nonlast-trail-replay-c",
+            bid=100,
+            ask=101,
+            sequence=None,
+            source_time=112,
+            evaluation_time=116,
+        ),
+    )
+    assert successor.state.policy is policy.TRAIL_ACTIVE
+    assert successor.goal is None
+
+
+def test_stale_first_delivery_cannot_become_fresh_when_redelivered() -> None:
+    module = _protection_module()
+    fill = _owned_fill_transition(label="stale-first-delivery-replay")
+    mandate, _, state = _start(module, fill)
+    terminal, closed = _close_base_parent(fill)
+    state, projection, _ = _sync_transitions(module, state, mandate, (terminal, closed))
+    stale = _occurrence(
+        module,
+        "stale-first-delivery-replay-a",
+        bid=92,
+        ask=93,
+        sequence=None,
+        source_time=100,
+        evaluation_time=111,
+    )
+    first_delivery = _reduce(module, state, projection, stale)
+    interruption = _reduce(
+        module,
+        first_delivery.state,
+        projection,
+        _occurrence(
+            module,
+            "stale-first-delivery-replay-b",
+            bid=95,
+            ask=96,
+            sequence=None,
+            source_time=100,
+            evaluation_time=105,
+        ),
+    )
+    replay = _reduce(
+        module,
+        interruption.state,
+        projection,
+        replace(stale, evaluation_time=106),
+    )
+    disposition, policy = _required(
+        module,
+        "ProtectionDisposition",
+        "ProtectionPolicy",
+    )
+    assert first_delivery.disposition is disposition.APPLIED
+    assert first_delivery.goal is None
+    assert replay.disposition is disposition.EXACT_REPLAY
+    assert replay.state == interruption.state
+    assert replay.state.policy is policy.FLOOR_ONLY
+    assert replay.goal is None
+
+
+def test_step_invalid_first_delivery_cannot_become_eligible_after_anchor_moves() -> (
+    None
+):
+    module = _protection_module()
+    fill = _owned_fill_transition(label="step-first-delivery-replay")
+    mandate, _, state = _start(module, fill)
+    terminal, closed = _close_base_parent(fill)
+    state, projection, _ = _sync_transitions(module, state, mandate, (terminal, closed))
+    anchored = _reduce(
+        module,
+        state,
+        projection,
+        _occurrence(
+            module,
+            "step-first-delivery-anchor",
+            bid=100,
+            ask=101,
+            sequence=None,
+            source_time=100,
+            evaluation_time=104,
+        ),
+    )
+    step_invalid = _occurrence(
+        module,
+        "step-first-delivery-replay-a",
+        bid=160,
+        ask=161,
+        sequence=None,
+        source_time=106,
+        evaluation_time=110,
+    )
+    first_delivery = _reduce(module, anchored.state, projection, step_invalid)
+    moved_anchor = _reduce(
+        module,
+        first_delivery.state,
+        projection,
+        _occurrence(
+            module,
+            "step-first-delivery-replay-b",
+            bid=120,
+            ask=121,
+            sequence=None,
+            source_time=106,
+            evaluation_time=111,
+        ),
+    )
+    replay = _reduce(
+        module,
+        moved_anchor.state,
+        projection,
+        replace(step_invalid, evaluation_time=112),
+    )
+    disposition, policy = _required(
+        module,
+        "ProtectionDisposition",
+        "ProtectionPolicy",
+    )
+    assert first_delivery.disposition is disposition.APPLIED
+    assert first_delivery.goal is None
+    assert replay.disposition is disposition.EXACT_REPLAY
+    assert replay.state == moved_anchor.state
+    assert replay.state.policy is policy.TRAIL_ACTIVE
+    assert replay.state.high_watermark.exact_value == Fraction(120)
+    assert replay.goal is None
+
+
+def test_crossed_first_delivery_reserves_identity_against_payload_correction() -> None:
+    module = _protection_module()
+    fill = _owned_fill_transition(label="crossed-first-delivery-equivocation")
+    mandate, _, state = _start(module, fill)
+    terminal, closed = _close_base_parent(fill)
+    state, projection, _ = _sync_transitions(module, state, mandate, (terminal, closed))
+    shared_id = "crossed-first-delivery-equivocation-a"
+    crossed = _reduce(
+        module,
+        state,
+        projection,
+        _occurrence(
+            module,
+            shared_id,
+            bid=101,
+            ask=100,
+            sequence=None,
+            source_time=100,
+            evaluation_time=104,
+        ),
+    )
+    interrupted = _reduce(
+        module,
+        crossed.state,
+        projection,
+        _occurrence(
+            module,
+            "crossed-first-delivery-equivocation-b",
+            bid=95,
+            ask=96,
+            sequence=None,
+            source_time=100,
+            evaluation_time=105,
+        ),
+    )
+    corrected = _reduce(
+        module,
+        interrupted.state,
+        projection,
+        _occurrence(
+            module,
+            shared_id,
+            bid=92,
+            ask=93,
+            sequence=None,
+            source_time=100,
+            evaluation_time=106,
+        ),
+    )
+    (disposition,) = _required(module, "ProtectionDisposition")
+    assert crossed.disposition is disposition.APPLIED
+    assert corrected.disposition is disposition.REFUSED
+    assert corrected.state == interrupted.state
+    assert corrected.goal is None
+
+
+def test_source_time_regression_and_halt_reopen_start_fresh_branches() -> None:
+    module = _protection_module()
+    fill = _owned_fill_transition()
+    mandate, _, state = _start(module, fill)
+    terminal, closed = _close_base_parent(fill)
+    state, projection, _ = _sync_transitions(module, state, mandate, (terminal, closed))
+    first_occurrence = _occurrence(
+        module,
+        "time-before-halt",
+        bid=92,
+        ask=93,
+        sequence=None,
+        source_time=100,
+        evaluation_time=105,
+    )
+    first = _reduce(
+        module,
+        state,
+        projection,
+        first_occurrence,
     )
     regressed = _reduce(
         module,
@@ -8565,9 +9126,19 @@ def test_source_time_regression_and_halt_reopen_start_fresh_branches() -> None:
         ),
     )
     assert halted.state != regressed.state
-    same_epoch = _reduce(
+    halted_replay = _reduce(
         module,
         halted.state,
+        projection,
+        replace(first_occurrence, evaluation_time=111),
+    )
+    (disposition,) = _required(module, "ProtectionDisposition")
+    assert halted_replay.disposition is disposition.EXACT_REPLAY
+    assert halted_replay.state == halted.state
+    assert halted_replay.goal is None
+    same_epoch = _reduce(
+        module,
+        halted_replay.state,
         projection,
         _occurrence(
             module,
@@ -8579,8 +9150,7 @@ def test_source_time_regression_and_halt_reopen_start_fresh_branches() -> None:
             evaluation_time=116,
         ),
     )
-    assert same_epoch.state == halted.state
-    assert same_epoch.goal is None
+    _assert_recorded_market_inert(module, halted.state, same_epoch)
     reopened_first = _reduce(
         module,
         same_epoch.state,
@@ -8657,9 +9227,8 @@ def test_cross_kind_market_step_limit_uses_the_last_eligible_primary(
         ),
     )
     (policy,) = _required(module, "ProtectionPolicy")
-    assert second.state == first.state
+    _assert_recorded_market_inert(module, first.state, second)
     assert second.state.policy is policy.FLOOR_ONLY
-    assert second.goal is None
 
 
 @pytest.mark.parametrize(
@@ -8716,7 +9285,7 @@ def test_evaluation_time_is_monotone_nondecreasing_per_market_stream(
     assert (second.state.policy is policy.HARD_BAIL) is triggers
     assert (second.goal is not None) is triggers
     if not triggers:
-        assert second.state == first.state
+        _assert_recorded_market_inert(module, first.state, second)
 
 
 def test_new_market_epoch_owns_a_fresh_evaluation_time_watermark() -> None:
@@ -8794,8 +9363,7 @@ def test_new_market_epoch_owns_a_fresh_evaluation_time_watermark() -> None:
             market_epoch=1,
         ),
     )
-    assert regressed.state == reopened.state
-    assert regressed.goal is None
+    _assert_recorded_market_inert(module, reopened.state, regressed)
 
     valid_second = _reduce(
         module,
@@ -8851,8 +9419,12 @@ def test_ineligible_market_data_cannot_change_policy_or_emit_goal(case: str) -> 
         projection,
         _occurrence(module, f"ineligible-{case}", **kwargs),
     )
-    assert result.state == state
-    assert result.goal is None
+    if case in {"stale", "crossed"}:
+        _assert_recorded_market_inert(module, state, result)
+    else:
+        assert result.state == state
+        assert result.goal is None
+        assert result.critical_alert is None
 
 
 @pytest.mark.parametrize(
@@ -8915,9 +9487,12 @@ def test_capital_relevant_market_eligibility_failures_are_inert(case: str) -> No
     elif case == "future_source_time":
         occurrence = replace(occurrence, source_time=110, evaluation_time=105)
     result = _reduce(module, state, projection, occurrence)
-    assert result.state == state
-    assert result.goal is None
-    assert result.critical_alert is None
+    if case == "wrong_session":
+        assert result.state == state
+        assert result.goal is None
+        assert result.critical_alert is None
+    else:
+        _assert_recorded_market_inert(module, state, result)
 
 
 @pytest.mark.parametrize(
@@ -8955,8 +9530,7 @@ def test_invalid_trade_price_cannot_supply_hard_bail_corroboration(case: str) ->
             trade_price=_price(92, tick_units=2),
         )
     ignored = _reduce(module, state, projection, invalid_trade)
-    assert ignored.state == state
-    assert ignored.goal is None
+    _assert_recorded_market_inert(module, state, ignored)
 
     second = _reduce(
         module,
@@ -11654,6 +12228,7 @@ def test_value_objects_expose_no_mutating_or_broker_capability_fields() -> None:
             Quantity,
             ReportedPrice,
             TickMetadata,
+            _PersistentKeyMap,
             market_source_type,
             occurrence_id_type,
             session_type,

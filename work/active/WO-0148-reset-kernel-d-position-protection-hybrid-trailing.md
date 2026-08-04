@@ -1126,3 +1126,59 @@ preservation boundaries, and deferred gates are consolidated in
 This is pre-freeze implementation evidence, not acceptance. Immutable candidate freeze, fresh
 independent exact-candidate review with P0=0/P1=0, status/ledger/PKL closeout, and unchanged
 Python 3.11/3.12 exact-head CI remain mandatory. WO-0149 remains inactive.
+
+### First exact-candidate review P1 and occurrence-receipt successor re-gate
+
+The first immutable production candidate at `34eb7f4aeea96c60522c4a8ca1b4575de41ffa39`
+received `ACCEPT-WITH-CHANGES` in `work/review/REV-0050/result.md`: P0=0, P1=1,
+P2=0. The P1 showed that retaining only the most recent market-occurrence identity allowed a
+non-last `A -> B -> replay(A) -> C` sequence to rebuild hard-bail or trailing corroboration, and
+allowed changed-payload reuse of a non-last identity to escape refusal. The original request and
+result remain unchanged and are not treated as acceptance of the successor.
+
+The owning invariant now uses an immutable, authenticated occurrence-identity-to-payload receipt
+map. A well-routed occurrence is receipted before contextual eligibility is evaluated; exact
+replays are inert, changed-payload reuse is refused, and receipts survive formula resets, flat
+resets, ratchets, halts, restarts, and same-call projection advancement. `evaluation_time` is
+excluded from the occurrence payload, projection economics remain authoritative when the same
+call advances the projection, and the receipt-map commitment is bound into the authenticated
+protection-state commitment. Public contracts remain unchanged and the implementation remains
+pure and unwired.
+
+Focused controls cover non-last replay/equivocation for hard bail and trailing, stale/step-invalid/
+crossed first delivery, lifecycle retention, restart hydration, same-call projection advancement,
+and exact passive-object authentication. The imported-class source-attestation oracle was also
+corrected to compile with the canonical module import prelude and deferred-annotations flag; two
+stateful generators were corrected so their preconditions express the intended fresh-identity and
+oversized-step cases. These are test-oracle corrections, not production relaxations.
+
+Five temporary mutation groups independently proved failure for: latest-only retention (4/4),
+discarding contextually ineligible receipts (3/3), clearing receipts on resets (3/3), including
+evaluation context in the payload (6/6), and omitting the receipt map from the state commitment
+(1/1). Every mutant was restored and the recorded production/test hashes were reverified.
+
+Fresh successor-tree evidence is:
+
+- affected authority/protection/stateful/import set: **495/495 pass**;
+- predecessor corpus: **745/745 pass**;
+- R2 conformance oracle: **61/61 pass**;
+- complete execution core: **1,071/1,071 pass**; and
+- full repository: **5,659 tests / 0 failures / 0 errors / 12 skipped or expected outcomes**,
+  with raw combined coverage **93.14745457067555%**, so the configured 93% floor passes.
+
+Ruff lint and changed-file format, mypy over 86 application files, Python 3.11 grammar over the
+nine changed Python files, six import contracts, `git diff --check`, activation-base scope,
+install/version/ledger/PKL/disposition, accepted-ADR digests, and all nine auxiliary worktrees pass.
+The first worktree probe was rejected as inadmissible because Git reported dubious ownership; the
+replacement used command-local `safe.directory` values, checked every exit code, made no global
+configuration change, and proved all nine auxiliary worktrees clean. No broker, network, Alpaca,
+or persistent-database activity occurred; authorized mock/disposable fixtures only were used.
+
+Exact commands, artifact hashes, candidate file hashes, and preservation boundaries are recorded
+in `work/review/REV-0050/REPLAY-RETENTION-REGATE.md`,
+`work/review/REV-0050/REPLAY-RETENTION-MUTATION-EVIDENCE.md`, and
+`work/review/REV-0050/REPLAY-RETENTION-SUCCESSOR-EVIDENCE.md`.
+
+This remains pre-freeze successor evidence. A new immutable candidate commit, fresh independent
+exact-candidate review with P0=0/P1=0, closeout reconciliation, and unchanged Python 3.11/3.12
+exact-head CI remain mandatory. WO-0149 remains inactive.
