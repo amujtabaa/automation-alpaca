@@ -1474,3 +1474,31 @@ This remains author-side pre-freeze evidence. Commit the exact application/evide
 obtain one fresh independent exact-candidate production review with zero unresolved P0/P1 before
 any closeout or CI claim. No deferred runtime, persistence, database, broker, network, credential,
 M2, master-merge, deletion, or cleanup surface is authorized or implemented.
+
+### GREEN application review P1 and pre-fill lifecycle successor
+
+Independent review of immutable application candidate
+`629ffaa3f9a93ce2cc44ba38197f2ed8428cc11d` returned `ACCEPT-WITH-CHANGES`,
+P0=0/P1=1/P2=0. A reproduced genuine pre-fill BUY chain initialized zero quantity as
+`HARD_BAIL` with formula-loss provenance; its first canonical 4 @ 100 fill therefore remained
+`HARD_BAIL` despite positive exact formula authority, instead of arming required `FLOOR_ONLY`.
+
+Rejecting all zero-quantity initialization was disproved by three existing multi-scope kill and
+catch-up contracts. The root correction instead derives pre-exposure from the authenticated venue
+execution checkpoint: the private projection now binds exact execution-fact count, and an internal
+committed pre-exposure provenance exists only while quantity and fact count are both zero. First
+positive economics replaces it with ordinary exit genesis. Zero after any execution history,
+formula loss after positive exposure, true `FLAT`, and late positive after true flat remain distinct
+and fail closed under their existing policy/alert rules. No public field, function, caller flag, or
+runtime authority is added.
+
+The real venue-chain control failed against the reviewed candidate and passes after correction. A
+second control proves zero quantity with fill/bust history cannot re-enter pre-exposure and a later
+positive correction remains `HARD_BAIL`. The exact eight-case lifecycle/projection focus passes
+8/8; the complete direct/stateful/import set passes 511/511; Ruff, format, mypy over 86 application
+files, all six import contracts, and diff checks pass. Exact evidence and hashes are at
+`work/review/REV-0050/adr023-green-successor/GREEN-SUCCESSOR-EVIDENCE.md`.
+
+Freeze and independently review this bounded successor delta. The prior review P1 is closed only
+if the successor receives exact-delta `ACCEPT` with P0=0/P1=0; broader closeout and exact-head CI
+remain pending.

@@ -6662,6 +6662,7 @@ def test_reducer_rejects_predecessor_execution_discontinuity() -> None:
             forged._position_scope,
             forged._mandate_commitment,
             forged._raw_quantity,
+            forged._execution_fact_count,
             forged._basis_available,
             forged._cost_basis,
             forged._basis_metadata_available,
@@ -8036,6 +8037,161 @@ def test_first_owned_fill_arms_only_its_exact_mandate_after_economics() -> None:
             _mandate(module, mandate_id=MandateId("unrelated-mandate")),
         )
     assert projection.execution_commitment == venue_transition.execution.commitment
+
+
+def test_prefill_state_tracks_venue_chain_before_first_fill_arms_floor() -> None:
+    module = _protection_module()
+    mandate = _mandate(module)
+    book = VenueRecoveryBook.empty(VENUE_SCOPE)
+    execution = ExecutionSnapshot.flat(POSITION_SCOPE)
+    commands = (
+        RequestedEffect(
+            input_id=VenueInputId("protection-prefill-request"),
+            effect_id=BASE_EFFECT,
+            request_occurrence_id=venue_fixtures.REQUEST,
+            mandate_id=MANDATE_ID,
+            kind=EffectKind.SUBMIT,
+            client_order_id=venue_fixtures.CLIENT,
+            symbol_id=SYMBOL,
+            side=ExecutionSide.BUY,
+            quantity=Quantity(20),
+            economic_scope=b"AAPL|BUY-or-SELL|fixed-order-capacity",
+        ),
+        RecordDispatchClaim(
+            input_id=VenueInputId("protection-prefill-claim"),
+            effect_id=BASE_EFFECT,
+            claim_occurrence_id=BASE_CLAIM,
+        ),
+        RecordTransportOutcome(
+            input_id=VenueInputId("protection-prefill-unknown"),
+            effect_id=BASE_EFFECT,
+            state=BrokerEffectState.OUTCOME_UNKNOWN,
+        ),
+        DiscoverVenueLeg(
+            input_id=VenueInputId("protection-prefill-discover"),
+            effect_id=BASE_EFFECT,
+            leg_key=BASE_LEG,
+            observation_id=VenueObservationId("protection-prefill-accept"),
+        ),
+        ObserveVenueStatus(
+            input_id=VenueInputId("protection-prefill-review"),
+            leg_key=BASE_LEG,
+            status=VenueAttemptState.NEEDS_REVIEW,
+            observation_id=VenueObservationId("protection-prefill-review-observation"),
+            cumulative_quantity=Quantity(0),
+        ),
+        RecordTransportOutcome(
+            input_id=VenueInputId("protection-prefill-needs-review"),
+            effect_id=BASE_EFFECT,
+            state=BrokerEffectState.NEEDS_REVIEW,
+        ),
+    )
+    (initialize,) = _required(module, "initialize_position_protection")
+    state = None
+    for command in commands:
+        transition = venue_fixtures.apply_venue_recovery_input(
+            book,
+            execution,
+            command,
+        )
+        assert transition.disposition is VenueRecoveryDisposition.APPLIED
+        projection = _projection(module, transition, mandate)
+        assert projection._execution_fact_count == 0
+        if state is None:
+            state = initialize(mandate, projection)
+        else:
+            advanced = _reduce(module, state, projection)
+            (disposition,) = _required(module, "ProtectionDisposition")
+            assert advanced.disposition is disposition.APPLIED
+            assert advanced.goal is None
+            state = advanced.state
+        assert state.raw_quantity == 0
+        assert state.formula_available is False
+        book = transition.book
+        execution = transition.execution
+
+    fact = venue_fixtures._broker_fill(
+        "protection-prefill-source",
+        "protection-prefill-root",
+        quantity=4,
+        units=100,
+    )
+    filled = venue_fixtures.apply_venue_recovery_input(
+        book,
+        execution,
+        RecordBrokerFillEvidence(
+            input_id=VenueInputId("protection-prefill-fill"),
+            effect_id=BASE_EFFECT,
+            leg_key=BASE_LEG,
+            prior_cumulative_quantity=Quantity(0),
+            resulting_cumulative_quantity=Quantity(4),
+            fact=fact,
+            evidence_digest=b"\x91" * 32,
+        ),
+    )
+    assert filled.disposition is VenueRecoveryDisposition.APPLIED
+    assert state is not None
+    filled_projection = _projection(module, filled, mandate)
+    assert filled_projection._execution_fact_count == 1
+    first_fill = _reduce(module, state, filled_projection)
+    policy, disposition = _required(
+        module,
+        "ProtectionPolicy",
+        "ProtectionDisposition",
+    )
+    assert first_fill.disposition is disposition.APPLIED
+    assert first_fill.state.raw_quantity == 4
+    assert first_fill.state.formula_available is True
+    assert first_fill.state.policy is policy.FLOOR_ONLY
+    assert first_fill.state.armed_hard_bail_trigger == _price(93)
+    assert first_fill.state.activation_price == _price(108)
+    assert first_fill.critical_alert is None
+    assert first_fill.goal is None
+
+
+def test_zero_projection_with_execution_history_is_not_prefill() -> None:
+    module = _protection_module()
+    _, _, fill_command, fill = _owned_fill_fixture(
+        label="protection-zero-history-fill",
+        quantity=4,
+        units=100,
+    )
+    mandate = _mandate(module)
+    _, busted = _bust_owned_root(
+        fill,
+        label="protection-zero-history-bust",
+        root_fill_id=fill_command.fact.root_fill_id,
+        predecessor_source_event_id=fill_command.fact.key.source_event_id,
+        prior_root_quantity=4,
+        prior_venue_cumulative=4,
+    )
+    projection = _projection(module, busted, mandate)
+    assert projection._raw_quantity == 0
+    assert projection._execution_fact_count == 2
+    (initialize,) = _required(module, "initialize_position_protection")
+    state = initialize(mandate, projection)
+    (pre_exposure_origin,) = _required(module, "_pre_exposure_origin")
+    assert state._exit_provenance != pre_exposure_origin()
+
+    _, restored = _correct_owned_root(
+        busted,
+        label="protection-zero-history-restored",
+        root_fill_id=fill_command.fact.root_fill_id,
+        predecessor_source_event_id=SourceEventId(
+            "protection-zero-history-bust-source"
+        ),
+        prior_root_quantity=0,
+        resulting_quantity=4,
+        units=100,
+        prior_venue_cumulative=0,
+    )
+    result = _reduce(module, state, _projection(module, restored, mandate))
+    (policy,) = _required(module, "ProtectionPolicy")
+    assert result.state.raw_quantity == 4
+    assert result.state.formula_available is True
+    assert result.state.policy is policy.HARD_BAIL
+    assert result.critical_alert is None
+    assert result.goal is None
 
 
 def test_authentic_projection_rejects_changed_mandate_authority_and_scope() -> None:
