@@ -2568,6 +2568,68 @@ def _protection_write_effect_violations(
             and value.keywords[0].value.value is False
         )
 
+    def exact_occurrence_identity_setter(node: ast.AST) -> bool:
+        if not (
+            isinstance(node, ast.Call)
+            and _static_attribute_path(node.func) == ("object", "__setattr__")
+            and len(node.args) == 3
+            and not node.keywords
+            and isinstance(node.args[0], ast.Name)
+            and node.args[0].id == "self"
+            and isinstance(node.args[1], ast.Constant)
+            and node.args[1].value == "occurrence_id"
+            and isinstance(node.args[2], ast.Call)
+        ):
+            return False
+        constructor = node.args[2]
+        if not (
+            isinstance(constructor.func, ast.Name)
+            and constructor.func.id == "_MarketOccurrenceId"
+            and len(constructor.args) == 1
+            and not constructor.keywords
+            and isinstance(constructor.args[0], ast.Call)
+        ):
+            return False
+        digest = constructor.args[0]
+        if not (
+            isinstance(digest.func, ast.Attribute)
+            and digest.func.attr == "hexdigest"
+            and not digest.args
+            and not digest.keywords
+            and isinstance(digest.func.value, ast.Call)
+        ):
+            return False
+        hash_call = digest.func.value
+        if not (
+            isinstance(hash_call.func, ast.Name)
+            and hash_call.func.id == "_sha256"
+            and len(hash_call.args) == 1
+            and not hash_call.keywords
+            and isinstance(hash_call.args[0], ast.Name)
+            and hash_call.args[0].id == "preimage"
+        ):
+            return False
+        statement = parents.get(node)
+        function = parents.get(statement) if statement is not None else None
+        owner = parents.get(function) if function is not None else None
+        return bool(
+            isinstance(statement, ast.Expr)
+            and isinstance(function, ast.FunctionDef)
+            and function.name == "__post_init__"
+            and not function.decorator_list
+            and not function.args.posonlyargs
+            and len(function.args.args) == 1
+            and function.args.args[0].arg == "self"
+            and not function.args.defaults
+            and not function.args.kwonlyargs
+            and function.args.vararg is None
+            and function.args.kwarg is None
+            and isinstance(function.returns, ast.Constant)
+            and function.returns.value is None
+            and isinstance(owner, ast.ClassDef)
+            and owner.name == "MarketOccurrence"
+        )
+
     for owner in (
         tree,
         *(node for node in tree.body if isinstance(node, ast.ClassDef)),
@@ -2899,6 +2961,25 @@ def _protection_write_effect_violations(
         class_fields[class_name] = tuple(fields)
 
     authenticated_calls: set[ast.Call] = set()
+    occurrence_identity_setters = {
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and exact_occurrence_identity_setter(node)
+    }
+    occurrence_post_init_present = any(
+        isinstance(node, ast.FunctionDef)
+        and node.name == "__post_init__"
+        and isinstance(parents.get(node), ast.ClassDef)
+        and parents[node].name == "MarketOccurrence"
+        for node in ast.walk(tree)
+    )
+    if (require_complete or occurrence_post_init_present) and len(
+        occurrence_identity_setters
+    ) != 1:
+        violations.append(
+            f"{_display(path, tree)} derived occurrence identity setter is not exact"
+        )
+    authenticated_calls.update(occurrence_identity_setters)
     factory_names: dict[str, str] = {}
     for function in (node for node in tree.body if isinstance(node, ast.FunctionDef)):
         special_calls = {
@@ -4935,6 +5016,70 @@ def test_guarded_lifecycle_calls_require_exact_source_context() -> None:
         violations = _protection_call_binding_violations(tree, path)
         matching = [item for item in violations if expected in item]
         assert len(matching) == 1, label
+
+
+def test_market_occurrence_identity_setter_is_narrow_and_failure_capable() -> None:
+    """Only the exact derived-id post-init write escapes opaque-state rejection."""
+
+    path = _PACKAGE_ROOT / "synthetic_protection_occurrence_setter.py"
+    accepted_source = (
+        "class MarketOccurrence:\n"
+        "    occurrence_id: _MarketOccurrenceId = _field(init=False)\n"
+        "    def __post_init__(self) -> None:\n"
+        "        preimage = b'canonical'\n"
+        "        object.__setattr__(\n"
+        "            self,\n"
+        "            'occurrence_id',\n"
+        "            _MarketOccurrenceId(_sha256(preimage).hexdigest()),\n"
+        "        )\n"
+    )
+    accepted = ast.parse(accepted_source)
+    assert _protection_write_effect_violations(accepted, path) == []
+
+    mutants = {
+        "wrong class": accepted_source.replace(
+            "class MarketOccurrence:",
+            "class OtherOccurrence:",
+        ),
+        "wrong lifecycle": accepted_source.replace(
+            "def __post_init__(self)",
+            "def derive(self)",
+        ),
+        "wrong receiver": accepted_source.replace(
+            "            self,\n",
+            "            other,\n",
+        ),
+        "wrong field": accepted_source.replace(
+            "            'occurrence_id',\n",
+            "            'source_id',\n",
+        ),
+        "wrong constructor": accepted_source.replace(
+            "_MarketOccurrenceId(_sha256(preimage).hexdigest())",
+            "_MarketDataSourceId(_sha256(preimage).hexdigest())",
+        ),
+        "wrong hash input": accepted_source.replace(
+            "_sha256(preimage)",
+            "_sha256(other)",
+        ),
+        "duplicate setter": accepted_source.replace(
+            "        )\n",
+            "        )\n"
+            "        object.__setattr__(\n"
+            "            self,\n"
+            "            'occurrence_id',\n"
+            "            _MarketOccurrenceId(_sha256(preimage).hexdigest()),\n"
+            "        )\n",
+            1,
+        ),
+    }
+    for label, source in mutants.items():
+        violations = _protection_write_effect_violations(ast.parse(source), path)
+        assert violations, label
+        assert any(
+            "unauthenticated opaque construction" in item
+            or "derived occurrence identity setter is not exact" in item
+            for item in violations
+        ), label
 
 
 def test_market_occurrence_identity_field_call_is_narrow_and_failure_capable() -> None:

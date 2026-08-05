@@ -1367,3 +1367,26 @@ The request and result are retained under
 `work/review/REV-0050/adr023-r1-red-successor/`. This acceptance closes the sole first-review P1
 and releases only the already authorized WO-0148 pure application implementation gate. It does not
 accept production behavior, close WO-0148, or authorize any deferred surface.
+
+### GREEN hostile pre-flight derived-field setter correction
+
+The first GREEN structural pass exposed one new material RED-contract contradiction. Ratified
+ADR-023 R1, the exact dataclass-field pin, and the runtime identity pins require frozen
+`MarketOccurrence.occurrence_id` to be derived into its sole `init=False` slot. Python can perform
+that initialization only with `object.__setattr__` during `__post_init__`, while the accepted
+write-effect oracle rejected every such call outside the two opaque-state factories. The target
+was therefore structurally impossible even though the required operation is deterministic and
+does not grant a caller or runtime capability.
+
+The root correction admits exactly one call shape: inside exact
+`MarketOccurrence.__post_init__(self) -> None`, assign only `occurrence_id` from
+`MarketOccurrenceId(sha256(preimage).hexdigest())`. Wrong owner, lifecycle, receiver, field,
+constructor, hash input, and duplicate-setter variants remain rejected by a direct
+failure-capable control. The complete public-role, bounded-state, bounded-market-closure,
+call-binding/effect-boundary, and side-effect-free import focus passes 7/7 with the correction.
+This changes no ADR meaning, public surface, execution policy, persistence, or runtime authority.
+
+Treat this as an in-scope P1 RED-oracle feasibility repair discovered by hostile GREEN pre-flight.
+Freeze and independently review its exact test/work-order delta before relying on it for final
+WO-0148 acceptance. The partially implemented application state remains uncommitted during that
+review and is not evidence that the corrected oracle is valid.
