@@ -1419,3 +1419,33 @@ suites. Ruff lint/format and `git diff --check` pass. Application files remain u
 not evidence for this test correction. Freeze this exact test/work-order successor and obtain one
 materiality-bounded independent exact-delta review with P0=0/P1=0 before relying on the RED contract
 for production acceptance.
+
+### ADR-023 R1 proof-isolation successor and coordinated identity pin
+
+The independent review of `1d015ff41102a46a7a23e078220a3df763062c59` returned
+`ACCEPT-WITH-CHANGES`, P0=0/P1=2/P2=0. First, a complete fragment containing the exact derived
+occurrence field could omit or rename the lifecycle and thereby skip the setter-cardinality
+diagnostic. The corrected rule requires the exact setter when a complete fragment contains that
+field, or when a focused fragment contains the lifecycle; unrelated complete fragments and the
+standalone non-complete field fixture remain valid. Direct omitted/renamed lifecycle controls pin
+the distinction.
+
+Second, the exit-provenance sensitivity case changed the current market cursor as well as
+provenance, so it could not prove independent commitment binding. The fixture now changes only the
+first corroborating bid and asserts that the resulting states differ in exactly `commitment` and
+`_exit_provenance`. A static negative variant also omits the provenance commitment part and must
+fail the exact 15-part state-commitment rule.
+
+The separate GREEN functional pre-flight then reproduced one production-relevant P1 not covered by
+single-leaf mutation checks: changing an identity's text and recomputing its seal while retaining
+different cached bytes left state authentication green but changed exact-replay classification
+into a coordinate conflict. A new failure-first control covers coordinated text-plus-seal and
+bytes-plus-seal changes and the end-to-end replay result. It failed against the pre-correction
+implementation as required. The root target is one canonical identity invariant binding exact
+lowercase text, its exact 32-byte decoding, and the seal; protection may call only that exact
+identity-owned helper.
+
+The focused proof-isolation and canonical-identity set passes 27/27 with the in-progress
+implementation; Ruff lint/format and diff checks pass. Freeze this test/work-order successor with
+application files excluded, obtain one independent exact-delta review, and then rely on the
+already-authorized application candidate only after the successor has no unresolved P0/P1.

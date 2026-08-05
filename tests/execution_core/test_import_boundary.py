@@ -182,6 +182,7 @@ _PROTECTION_ALLOWED_INTERNAL_IMPORTED_CALLS = {
     ("app.execution_core.fills", "_pack_parts"),
     ("app.execution_core.identity", "MarketOccurrenceId"),
     ("app.execution_core.identity", "MarketStreamGenerationId"),
+    ("app.execution_core.identity", "_market_identity_is_canonical"),
     ("app.execution_core.values", "PriceScale"),
     ("app.execution_core.values", "PriceUnits"),
     ("app.execution_core.values", "Quantity"),
@@ -2966,6 +2967,16 @@ def _protection_write_effect_violations(
         for node in ast.walk(tree)
         if isinstance(node, ast.Call) and exact_occurrence_identity_setter(node)
     }
+    occurrence_identity_field_present = any(
+        exact_occurrence_identity_field(statement, owner)
+        for owner in (
+            node
+            for node in tree.body
+            if isinstance(node, ast.ClassDef) and node.name == "MarketOccurrence"
+        )
+        for statement in owner.body
+        if isinstance(statement, ast.AnnAssign)
+    )
     occurrence_post_init_present = any(
         isinstance(node, ast.FunctionDef)
         and node.name == "__post_init__"
@@ -2973,7 +2984,10 @@ def _protection_write_effect_violations(
         and parents[node].name == "MarketOccurrence"
         for node in ast.walk(tree)
     )
-    if occurrence_post_init_present and len(occurrence_identity_setters) != 1:
+    if (
+        occurrence_post_init_present
+        or (require_complete and occurrence_identity_field_present)
+    ) and len(occurrence_identity_setters) != 1:
         violations.append(
             f"{_display(path, tree)} derived occurrence identity setter is not exact"
         )
@@ -5102,6 +5116,21 @@ def test_market_occurrence_identity_field_call_is_narrow_and_failure_capable() -
 
     accepted = source_with("_field(init=False)")
     assert _protection_call_binding_violations(accepted, path) == []
+    for label, incomplete in {
+        "omitted lifecycle": accepted,
+        "renamed lifecycle": ast.parse(
+            ast.unparse(accepted) + "\n    def derive(self) -> None:\n        pass\n"
+        ),
+    }.items():
+        violations = _protection_call_binding_violations(
+            incomplete,
+            path,
+            require_complete=True,
+        )
+        assert any(
+            "derived occurrence identity setter is not exact" in item
+            for item in violations
+        ), label
 
     mutants = {
         "missing init": source_with("_field()"),

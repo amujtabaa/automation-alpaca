@@ -4271,7 +4271,6 @@ def _emergency_goal_fixture(
     *,
     label: str,
     mandate: object | None = None,
-    market_label: str | None = None,
     fill_quantity: int = 4,
     fill_units: int = 100,
     tick_units: int = 1,
@@ -4280,7 +4279,7 @@ def _emergency_goal_fixture(
     first_bid: int = 92,
     second_bid: int = 91,
 ) -> tuple[object, object, object, object]:
-    occurrence_label = market_label or label
+    occurrence_label = label
     current_mandate = (
         mandate
         if mandate is not None
@@ -4356,8 +4355,8 @@ def _emergency_goal_fixture(
             bid=second_bid,
             ask=second_bid + tick_units,
             sequence=2 if sequence_mode == "SEQUENCED" else None,
-            source_time=107 if market_label is not None else 106,
-            evaluation_time=111 if market_label is not None else 110,
+            source_time=106,
+            evaluation_time=110,
             tick_units=tick_units,
             scale=scale,
             source_id=current_mandate.evidence_policy.source_id,
@@ -6327,6 +6326,98 @@ def test_every_reducer_owned_state_field_is_authenticated_before_advancement() -
             assert result.state == mutation.forged, mutation.path
             assert result.goal is None, mutation.path
             assert result.critical_alert is None, mutation.path
+
+
+def test_market_identity_authenticity_binds_text_to_cached_bytes() -> None:
+    module = _protection_module()
+    occurrence_id_type, generation_id_type = _required(
+        execution_core,
+        "MarketOccurrenceId",
+        "MarketStreamGenerationId",
+    )
+    occurrence_is_authentic, generation_is_authentic = _required(
+        module,
+        "_market_occurrence_identity_is_authentic",
+        "_market_generation_is_authentic",
+    )
+
+    for identity_type, is_authentic in (
+        (occurrence_id_type, occurrence_is_authentic),
+        (generation_id_type, generation_is_authentic),
+    ):
+        canonical = identity_type("11" * 32)
+        forged = copy(canonical)
+        object.__setattr__(forged, "value", "22" * 32)
+        encoded = forged.value.encode("ascii")
+        object.__setattr__(
+            forged,
+            "_seal",
+            sha256(len(encoded).to_bytes(8, "big") + encoded + forged._bytes).digest(),
+        )
+
+        assert canonical.value == canonical._bytes.hex()
+        assert forged.value != forged._bytes.hex()
+        assert is_authentic(canonical) is True
+        assert is_authentic(forged) is False
+
+        forged_bytes = copy(canonical)
+        object.__setattr__(forged_bytes, "_bytes", b"\x22" * 32)
+        canonical_encoded = forged_bytes.value.encode("ascii")
+        object.__setattr__(
+            forged_bytes,
+            "_seal",
+            sha256(
+                len(canonical_encoded).to_bytes(8, "big")
+                + canonical_encoded
+                + forged_bytes._bytes
+            ).digest(),
+        )
+        assert forged_bytes.value != forged_bytes._bytes.hex()
+        assert is_authentic(forged_bytes) is False
+
+    fill = _owned_fill_transition(label="protection-coordinated-identity-forgery")
+    _, projection, state = _start(module, fill)
+    occurrence = _occurrence(
+        module,
+        "protection-coordinated-identity-forgery-current",
+        bid=101,
+        ask=102,
+        sequence=1,
+    )
+    applied = _reduce(module, state, projection, occurrence)
+    (disposition,) = _required(module, "ProtectionDisposition")
+    replay = _reduce(
+        module,
+        applied.state,
+        projection,
+        replace(occurrence, evaluation_time=occurrence.evaluation_time + 1),
+    )
+    assert replay.disposition is disposition.EXACT_REPLAY
+
+    forged_identity = copy(applied.state._market_occurrence_identity)
+    object.__setattr__(forged_identity, "value", "ff" * 32)
+    forged_encoded = forged_identity.value.encode("ascii")
+    object.__setattr__(
+        forged_identity,
+        "_seal",
+        sha256(
+            len(forged_encoded).to_bytes(8, "big")
+            + forged_encoded
+            + forged_identity._bytes
+        ).digest(),
+    )
+    forged_state = copy(applied.state)
+    object.__setattr__(
+        forged_state,
+        "_market_occurrence_identity",
+        forged_identity,
+    )
+    (state_is_authentic,) = _required(module, "_state_is_authentic")
+    assert state_is_authentic(forged_state) is False
+    refused = _reduce(module, forged_state, projection, occurrence)
+    assert refused.disposition is disposition.REFUSED
+    assert refused.state is forged_state
+    assert refused.goal is None
 
 
 def test_every_projection_field_is_sealed_against_single_field_forgery() -> None:
@@ -11908,7 +11999,6 @@ def test_protection_commitment_binds_each_retained_authority_independently(
     )
     mandate_kwargs: dict[str, object] = {}
     fixture_kwargs: dict[str, object] = {}
-    market_label: str | None = None
     if binding == "mandate_id":
         mandate_kwargs["mandate_id"] = MandateId("protection-mandate-v2")
     elif binding == "position_scope":
@@ -11990,14 +12080,13 @@ def test_protection_commitment_binds_each_retained_authority_independently(
     elif binding == "execution_price":
         fixture_kwargs["fill_units"] = 102
     else:
-        market_label = "goal-binding-sensitivity-other-exit"
+        fixture_kwargs["first_bid"] = 93
 
     changed_mandate = _mandate(module, **mandate_kwargs)
     _, changed_closed, changed_state, changed_goal = _emergency_goal_fixture(
         module,
         label="goal-binding-sensitivity",
         mandate=changed_mandate,
-        market_label=market_label,
         **fixture_kwargs,
     )
     assert baseline_goal.execution_commitment == baseline_closed.execution.commitment
@@ -12008,6 +12097,14 @@ def test_protection_commitment_binds_each_retained_authority_independently(
     else:
         assert changed_goal.execution_commitment == baseline_goal.execution_commitment
     assert changed_goal.protection_commitment == changed_state.commitment
+    if binding == "exit_provenance":
+        changed_fields = {
+            retained.name
+            for retained in fields(baseline_state)
+            if getattr(baseline_state, retained.name)
+            != getattr(changed_state, retained.name)
+        }
+        assert changed_fields == {"commitment", "_exit_provenance"}
     assert changed_goal.protection_commitment != baseline_goal.protection_commitment
     assert changed_goal.side is ExecutionSide.SELL
     assert changed_goal.residual == Quantity(changed_state.raw_quantity)
@@ -14292,10 +14389,12 @@ def test_state_cursor_digest_binding_oracle_is_failure_capable() -> None:
         parameter_source: str = parameters,
         decorator: str = "",
         leading_parts: tuple[str, ...] = canonical_leading_parts,
+        provenance_part: str = "exit_provenance",
     ) -> str:
         suffix = f", {extra_part}" if extra_part else ""
         preparation = "".join(f"    {statement}\n" for statement in prelude)
         prepared_parts = ",\n".join(f"        {source}" for source in leading_parts)
+        prepared_provenance = f"        {provenance_part},\n" if provenance_part else ""
         return (
             f"{decorator}def _state_commitment({parameter_source}):\n"
             f"{preparation}"
@@ -14303,7 +14402,7 @@ def test_state_cursor_digest_binding_oracle_is_failure_capable() -> None:
             "        b'execution-core/position-protection-state/v4',\n"
             f"{prepared_parts},\n"
             f"        {cursor_part}{suffix},\n"
-            "        exit_provenance,\n"
+            f"{prepared_provenance}"
             "    )\n"
         )
 
@@ -14459,8 +14558,12 @@ def test_state_cursor_digest_binding_oracle_is_failure_capable() -> None:
                 *canonical_leading_parts[3:],
             ),
         ),
+        "omitted exit provenance": source_with(
+            exact_part,
+            provenance_part="",
+        ),
     }
-    assert len(mutants) == 26
+    assert len(mutants) == 27
     expected_findings = {
         "explicit cursor slot swap": "cursor digest slot stream_generation",
         "constant cursor slot substitution": "cursor digest slot occurrence_epoch",
@@ -14488,6 +14591,7 @@ def test_state_cursor_digest_binding_oracle_is_failure_capable() -> None:
         "omitted retained part": "exactly 15 ordered commitment arguments",
         "reordered retained parts": "part 8 differs",
         "duplicated retained part": "exactly 15 ordered commitment arguments",
+        "omitted exit provenance": "exactly 15 ordered commitment arguments",
     }
     for label, source in mutants.items():
         violations = _state_cursor_digest_binding_violations(source)
