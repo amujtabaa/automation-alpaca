@@ -164,3 +164,7 @@
   in-scope remediation, evidence reconciliation, branch push, unchanged exact-head CI, and mock /
   disposable-test SQLite fixtures. Runtime, persistent database, broker/network, credentials, M2,
   merge, deletion, and cleanup remain excluded.
+- 2026-08-05: Froze the WO-0149 public contract before RED: distinct dual-mandate identities,
+  one opaque acquisition/currentness reducer, bounded venue projections, sealed acquisition and
+  protection-exit authority commands, and unchanged native-replace prohibition. This is a pure,
+  unwired M1E interface freeze; no source or test implementation had started at this gate.

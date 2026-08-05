@@ -295,6 +295,62 @@ P0/P1.
 
 ## Required RED contract and future proof obligations
 
+## Frozen WO-0149 public contract - 2026-08-05
+
+This is the complete new M1E public surface. No alternate constructor, raw currentness factory,
+private venue accessor, or compatibility alias is allowed.
+
+1. `identity.py` adds exact immutable `AcquisitionMandateId` and `DualMandateBinding`. The latter
+   retains distinct acquisition/protection IDs and full 32-byte commitments; it is not an
+   `economic_scope` encoding and does not authenticate an actor.
+2. `acquisition.py` adds:
+   - `AcquisitionOrderType` and exact immutable `AcquisitionEffectTerms(effect_id,
+     request_occurrence_id, client_order_id, quantity, limit_price, order_type,
+     evaluation_time)`;
+   - exact immutable `AcquisitionMandate(acquisition_mandate_id, position_scope, session_id,
+     configuration_version, maximum_quantity, maximum_notional, maximum_entry_price,
+     allowed_order_types, expiry, deadline, fixed_child_cap, certified_participation_cap,
+     cancel_reprice_budget, protection_mandate)`;
+   - opaque, non-subclassable `AcquisitionState`, `AcquisitionCurrentness`,
+     `AcquisitionAuthorization`, and `ProtectionExitProjection`;
+   - `AcquisitionDisposition` and exact immutable `AcquisitionTransition(state,
+     protection_state, currentness, authorization, exit_projection, disposition)`; and
+   - only `initialize_acquisition(mandate, venue_projection)`,
+     `apply_acquisition_integration(state, venue_projection)`,
+     `reduce_acquisition_market(state, occurrence)`, and
+     `authorize_acquisition_effect(currentness, terms)`.
+     The composite reducer, not a caller-supplied `ProtectionTransition` or `ExecutionGoal`, is
+     the only mint for `ProtectionExitProjection`. It owns the linked protection state and calls
+     the accepted M1D reducers exactly once per authenticated venue projection.
+3. `venue.py` adds opaque `AcquisitionVenueProjection` and
+   `VenueBuyPreemptionProjection`, plus only
+   `project_acquisition_venue(transition, binding)`,
+   `project_next_buy_preemption(book, execution, effect_id, binding)`, and
+   `build_acquisition_cancel_request(projection, input_id, effect_id,
+   request_occurrence_id)`. A projection carries one exact current leg or no leg, never a
+   materialized history/tuple. `RequestedEffect` and `VenueEffectScope` may retain an optional
+   `DualMandateBinding`; legacy effects retain `None`. An M1E BUY effect must retain it.
+4. `authority.py` adds exact immutable `RegisterAcquisitionCurrentness(input_id, currentness)`,
+   `CreateAcquisitionEffect(input_id, session_id, authorization)`,
+   `BeginProtectionPreemption(input_id, exit_projection)`, and
+   `CreateProtectionExitEffect(input_id, session_id, exit_projection, effect_id,
+   request_occurrence_id, client_order_id)`. `ClaimEffect` keeps its existing signature.
+   Generic `CreateBrokerEffect` cannot create an exposure-increasing BUY. For a scope with a
+   registered M1E currentness, generic BUY cancellation and generic protection SELL creation are
+   also refused; the sealed routes alone may create them. Existing non-M1E inherited cancellation
+   and reduction behavior remains intact.
+5. `__init__.py` exports only these named values and reducers. `EffectKind.REPLACE` remains
+   `NATIVE_REPLACE_DISABLED`; no M1E code enables native replace.
+
+`RegisterAcquisitionCurrentness` records a strictly advancing composite head keyed by exact scope.
+`CreateAcquisitionEffect` accepts only a registered, non-preempted, term-bound authorization and
+internally builds the existing broker-neutral request with its `DualMandateBinding`. The stored
+effect authorization and `ClaimEffect` must compare the exact registered head and binding again.
+`BeginProtectionPreemption` accepts only the matching opaque exit projection, latches the scope,
+stands down at most safely-local unclaimed M1E work, and creates at most one exact target cancel.
+`CreateProtectionExitEffect` remains blocked until that preemption projection reports every
+relevant BUY parent exactly `CLOSED`.
+
 Before any production implementation:
 
 1. Freeze exact public names/signatures, then write RED tests first. The public surface must expose
