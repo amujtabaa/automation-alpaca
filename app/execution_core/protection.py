@@ -377,7 +377,7 @@ class ProtectionVenueProjection:
     _position_scope: _PositionScope
     _mandate_commitment: bytes
     _raw_quantity: int
-    _execution_fact_count: int
+    _position_root_count: int
     _basis_available: bool
     _cost_basis: _Fraction
     _basis_metadata_available: bool
@@ -553,7 +553,7 @@ def _new_protection_venue_projection(
     _position_scope: _PositionScope,
     _mandate_commitment: bytes,
     _raw_quantity: int,
-    _execution_fact_count: int,
+    _position_root_count: int,
     _basis_available: bool,
     _cost_basis: _Fraction,
     _basis_metadata_available: bool,
@@ -603,7 +603,7 @@ def _new_protection_venue_projection(
     object.__setattr__(result, "_position_scope", _position_scope)
     object.__setattr__(result, "_mandate_commitment", _mandate_commitment)
     object.__setattr__(result, "_raw_quantity", _raw_quantity)
-    object.__setattr__(result, "_execution_fact_count", _execution_fact_count)
+    object.__setattr__(result, "_position_root_count", _position_root_count)
     object.__setattr__(result, "_basis_available", _basis_available)
     object.__setattr__(result, "_cost_basis", _cost_basis)
     object.__setattr__(result, "_basis_metadata_available", _basis_metadata_available)
@@ -660,7 +660,7 @@ def _projection_commitment(
     position_scope: _PositionScope,
     mandate_commitment: bytes,
     raw_quantity: int,
-    execution_fact_count: int,
+    position_root_count: int,
     basis_available: bool,
     cost_basis: _Fraction,
     basis_metadata_available: bool,
@@ -668,7 +668,7 @@ def _projection_commitment(
     integrity: _PositionIntegrity,
 ) -> bytes:
     return _commit_parts(
-        b"execution-core/protection-venue-projection/v2",
+        b"execution-core/protection-venue-projection/v3",
         _encode_int(predecessor_cursor_ordinal),
         predecessor_cursor_head,
         _encode_int(cursor_ordinal),
@@ -686,7 +686,7 @@ def _projection_commitment(
         _encode_position_scope(position_scope),
         mandate_commitment,
         _encode_int(raw_quantity),
-        _encode_int(execution_fact_count),
+        _encode_int(position_root_count),
         _encode_int(1 if basis_available else 0),
         _encode_fraction(cost_basis),
         _encode_int(1 if basis_metadata_available else 0),
@@ -716,7 +716,7 @@ def _projection_is_authentic(projection: ProtectionVenueProjection) -> bool:
         projection._position_scope,
         projection._mandate_commitment,
         projection._raw_quantity,
-        projection._execution_fact_count,
+        projection._position_root_count,
         projection._basis_available,
         projection._cost_basis,
         projection._basis_metadata_available,
@@ -1276,7 +1276,7 @@ def _new_state_from_projection(
     )
     pre_exposure_zero = (
         raw_quantity == 0
-        and projection._execution_fact_count == 0
+        and projection._position_root_count == 0
         and (
             prior is None
             or (
@@ -1320,8 +1320,8 @@ def _new_state_from_projection(
         policy = ProtectionPolicy.EXIT_NORMAL
     elif (
         prior is not None
-        and prior.raw_quantity > 0
         and prior.policy is ProtectionPolicy.HARD_BAIL
+        and prior._exit_provenance != _pre_exposure_origin()
     ):
         policy = ProtectionPolicy.HARD_BAIL
     else:
@@ -1394,7 +1394,11 @@ def _new_state_from_projection(
         exit_provenance = _pre_exposure_origin()
     elif flat_ready:
         exit_provenance = _flat_origin()
-    elif raw_quantity == 0 and prior is not None:
+    elif (
+        raw_quantity == 0
+        and prior is not None
+        and prior._exit_provenance != _pre_exposure_origin()
+    ):
         exit_provenance = prior._exit_provenance
     elif late_positive:
         exit_provenance = _late_positive_origin()
@@ -2389,7 +2393,7 @@ def project_protection_venue(
         proof.position_scope,
         mandate_commitment,
         raw_quantity,
-        proof.execution_checkpoint.registry_count,
+        position.root_count,
         basis_available,
         cost_basis,
         basis_metadata_available,
@@ -2414,7 +2418,7 @@ def project_protection_venue(
         proof.position_scope,
         mandate_commitment,
         raw_quantity,
-        proof.execution_checkpoint.registry_count,
+        position.root_count,
         basis_available,
         cost_basis,
         basis_metadata_available,

@@ -1502,3 +1502,34 @@ files, all six import contracts, and diff checks pass. Exact evidence and hashes
 Freeze and independently review this bounded successor delta. The prior review P1 is closed only
 if the successor receives exact-delta `ACCEPT` with P0=0/P1=0; broader closeout and exact-head CI
 remain pending.
+
+### GREEN review adjudication and position-local root successor
+
+The exact-delta review of `2848b8540645dbd6c58e62dffa867e666b0c32f9` returned
+`ACCEPT-WITH-CHANGES`, P0=0/P1=1/P2=0. It reproduced a mismatch between the documented
+pre-exposure count predicate and generic zero-quantity provenance preservation. Its proposed
+correction, however, treated the venue checkpoint's account-wide seen-fact count as if it were
+position-local exposure. Hostile disproof showed the count advanced only because AAPL filled;
+MSFT retained zero position roots and remained genuinely never exposed. Applying the proposed
+account-global rule would make MSFT's own first fill `HARD_BAIL`, contradicting ADR-021.
+
+The root successor instead seals exact `position.root_count` into the private protection
+projection under commitment domain v3. Pre-exposure requires zero raw quantity and zero roots for
+that exact position. Foreign-symbol registry history cannot revoke it; a fill/bust root for the
+position can never recreate it. A separate real sequential control then exposed the material
+same-position gap: fill -> bust to zero -> valid correction restored `FLOOR_ONLY`. The owning
+policy rule now keeps `HARD_BAIL` sticky whenever the prior state is not pre-exposure, leaving
+pre-exposure as the sole first-fill exception. The stateful oracle is reconciled to that rule.
+
+The sequential control failed before the policy correction. A controlled account-global
+substitution made the cross-scope control fail and was restored hash-exact. Fresh evidence is
+4/4 critical lifecycle, 10/10 hostile lifecycle/seal focus, 513/513 complete
+protection/stateful/import, and 1,258/1,258 complete execution core. Ruff, exact-file format,
+mypy over 86 application files, all six import contracts, Python 3.11 grammar for all three
+changed files, and diff checks pass. Exact evidence and hashes are retained at
+`work/review/REV-0050/adr023-green-root-successor/GREEN-ROOT-SUCCESSOR-EVIDENCE.md`.
+
+Freeze and independently review this exact bounded root successor. The review finding is closed
+only if the successor receives `ACCEPT` with P0=0/P1=0. R2, full-repository coverage, atomic
+closeout, push, and exact-head Python 3.11/3.12 CI remain pending and were not run because their
+existing fixtures execute SQLite SQL/DDL, which the latest authorization expressly prohibits.

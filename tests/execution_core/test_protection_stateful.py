@@ -627,8 +627,14 @@ class ProtectionEconomicsMachine(RuleBasedStateMachine):
         self.root_quantity = 0
         self.raw_quantity = 0
         self.total_cost = Fraction(0)
+        (policy,) = protection_fixtures._required(
+            self.module,
+            "ProtectionPolicy",
+        )
         assert busted_result.state.raw_quantity == 0
+        assert busted_result.state.policy is policy.HARD_BAIL
         assert busted_result.goal is None
+        self.expected_policy = "HARD_BAIL"
 
         restore_label = f"stateful-revision-restore-{self.next_identity}"
         _, restored = protection_fixtures._correct_owned_root(
@@ -655,6 +661,9 @@ class ProtectionEconomicsMachine(RuleBasedStateMachine):
         self.formula_expected = True
         assert restored_result.state.raw_quantity == self.raw_quantity
         assert restored_result.state.formula_available is True
+        assert restored_result.state.policy is policy.HARD_BAIL
+        assert restored_result.critical_alert is None
+        assert restored_result.goal is None
 
     @precondition(
         lambda self: (

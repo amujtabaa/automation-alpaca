@@ -6662,7 +6662,7 @@ def test_reducer_rejects_predecessor_execution_discontinuity() -> None:
             forged._position_scope,
             forged._mandate_commitment,
             forged._raw_quantity,
-            forged._execution_fact_count,
+            forged._position_root_count,
             forged._basis_available,
             forged._cost_basis,
             forged._basis_metadata_available,
@@ -8096,7 +8096,7 @@ def test_prefill_state_tracks_venue_chain_before_first_fill_arms_floor() -> None
         )
         assert transition.disposition is VenueRecoveryDisposition.APPLIED
         projection = _projection(module, transition, mandate)
-        assert projection._execution_fact_count == 0
+        assert projection._position_root_count == 0
         if state is None:
             state = initialize(mandate, projection)
         else:
@@ -8132,7 +8132,7 @@ def test_prefill_state_tracks_venue_chain_before_first_fill_arms_floor() -> None
     assert filled.disposition is VenueRecoveryDisposition.APPLIED
     assert state is not None
     filled_projection = _projection(module, filled, mandate)
-    assert filled_projection._execution_fact_count == 1
+    assert filled_projection._position_root_count == 1
     first_fill = _reduce(module, state, filled_projection)
     policy, disposition = _required(
         module,
@@ -8167,7 +8167,7 @@ def test_zero_projection_with_execution_history_is_not_prefill() -> None:
     )
     projection = _projection(module, busted, mandate)
     assert projection._raw_quantity == 0
-    assert projection._execution_fact_count == 2
+    assert projection._position_root_count == 1
     (initialize,) = _required(module, "initialize_position_protection")
     state = initialize(mandate, projection)
     (pre_exposure_origin,) = _required(module, "_pre_exposure_origin")
@@ -8192,6 +8192,309 @@ def test_zero_projection_with_execution_history_is_not_prefill() -> None:
     assert result.state.policy is policy.HARD_BAIL
     assert result.critical_alert is None
     assert result.goal is None
+
+
+def test_fill_bust_to_zero_then_correction_remains_hard_bail() -> None:
+    module = _protection_module()
+    _, _, fill_command, fill = _owned_fill_fixture(
+        label="protection-sequential-zero-history-fill",
+        quantity=4,
+        units=100,
+    )
+    mandate, _, state = _start(module, fill)
+    policy, disposition = _required(
+        module,
+        "ProtectionPolicy",
+        "ProtectionDisposition",
+    )
+    assert state.policy is policy.FLOOR_ONLY
+
+    _, busted = _bust_owned_root(
+        fill,
+        label="protection-sequential-zero-history-bust",
+        root_fill_id=fill_command.fact.root_fill_id,
+        predecessor_source_event_id=fill_command.fact.key.source_event_id,
+        prior_root_quantity=4,
+        prior_venue_cumulative=4,
+    )
+    bust_result = _reduce(module, state, _projection(module, busted, mandate))
+    assert bust_result.disposition is disposition.APPLIED
+    assert bust_result.state.raw_quantity == 0
+    assert bust_result.state.formula_available is False
+    assert bust_result.state.policy is policy.HARD_BAIL
+
+    _, restored = _correct_owned_root(
+        busted,
+        label="protection-sequential-zero-history-restored",
+        root_fill_id=fill_command.fact.root_fill_id,
+        predecessor_source_event_id=SourceEventId(
+            "protection-sequential-zero-history-bust-source"
+        ),
+        prior_root_quantity=0,
+        resulting_quantity=4,
+        units=100,
+        prior_venue_cumulative=0,
+    )
+    corrected = _reduce(
+        module,
+        bust_result.state,
+        _projection(module, restored, mandate),
+    )
+    assert corrected.disposition is disposition.APPLIED
+    assert corrected.state.raw_quantity == 4
+    assert corrected.state.formula_available is True
+    assert corrected.state.policy is policy.HARD_BAIL
+    assert corrected.critical_alert is None
+    assert corrected.goal is None
+
+
+def test_cross_scope_registry_catch_up_preserves_prefill_until_first_owned_fill() -> (
+    None
+):
+    module = _protection_module()
+    book, seeded, effect_ids = authority_fixtures._seed_multi_scope_requests(
+        "protection-prefill-cross-scope"
+    )
+    source_execution, _ = seeded[0]
+    target_execution, seed_transition = seeded[1]
+    mandate_id = seed_transition._protection_proof.cursor.mandate_id
+    assert mandate_id is not None
+    mandate = _mandate(
+        module,
+        mandate_id=mandate_id,
+        position_scope=target_execution.position.scope,
+        session_id=execution_core.SessionId("session-1"),
+    )
+    _, seed_projection, state = _start(module, seed_transition, mandate)
+    pre_exposure_origin, formula_loss_origin = _required(
+        module,
+        "_pre_exposure_origin",
+        "_formula_loss_origin",
+    )
+    assert seed_projection._raw_quantity == 0
+    assert seed_projection._position_root_count == 0
+    assert state._exit_provenance == pre_exposure_origin()
+
+    def prefill_commands(
+        prefix: str,
+        effect_id: EffectId,
+        claim_id: ClaimOccurrenceId,
+        leg_key: VenueLegKey,
+    ) -> tuple[object, ...]:
+        return (
+            RecordDispatchClaim(
+                input_id=VenueInputId(f"{prefix}-claim-input"),
+                effect_id=effect_id,
+                claim_occurrence_id=claim_id,
+            ),
+            RecordTransportOutcome(
+                input_id=VenueInputId(f"{prefix}-unknown"),
+                effect_id=effect_id,
+                state=BrokerEffectState.OUTCOME_UNKNOWN,
+            ),
+            DiscoverVenueLeg(
+                input_id=VenueInputId(f"{prefix}-discover"),
+                effect_id=effect_id,
+                leg_key=leg_key,
+                observation_id=VenueObservationId(f"{prefix}-accept"),
+            ),
+            ObserveVenueStatus(
+                input_id=VenueInputId(f"{prefix}-review"),
+                leg_key=leg_key,
+                status=VenueAttemptState.NEEDS_REVIEW,
+                observation_id=VenueObservationId(f"{prefix}-review-observation"),
+                cumulative_quantity=Quantity(0),
+            ),
+            RecordTransportOutcome(
+                input_id=VenueInputId(f"{prefix}-needs-review"),
+                effect_id=effect_id,
+                state=BrokerEffectState.NEEDS_REVIEW,
+            ),
+        )
+
+    source_effect = effect_ids[0]
+    source_scope = source_execution.position.scope
+    source_leg = VenueLegKey(
+        broker=source_scope.broker,
+        environment=source_scope.environment,
+        account=source_scope.account,
+        order_id=OrderId("protection-prefill-cross-scope-source-order"),
+    )
+    for command in prefill_commands(
+        "protection-prefill-cross-scope-source",
+        source_effect,
+        ClaimOccurrenceId("protection-prefill-cross-scope-source-claim"),
+        source_leg,
+    ):
+        source_transition = authority_fixtures._private_venue_apply(
+            book,
+            source_execution,
+            command,
+        )
+        assert source_transition.disposition is VenueRecoveryDisposition.APPLIED, type(
+            command
+        ).__name__
+        book = source_transition.book
+        source_execution = source_transition.execution
+    source_fact = replace(
+        venue_fixtures._broker_fill(
+            "protection-prefill-cross-scope-source-fill-source",
+            "protection-prefill-cross-scope-source-fill-root",
+            leg_key=source_leg,
+            quantity=1,
+            units=100,
+        ),
+        key=ExecutionFactKey(
+            broker=source_scope.broker,
+            environment=source_scope.environment,
+            account=source_scope.account,
+            source_event_id=SourceEventId(
+                "protection-prefill-cross-scope-source-fill-source"
+            ),
+        ),
+        scope=ExecutionScope(
+            broker=source_scope.broker,
+            environment=source_scope.environment,
+            account=source_scope.account,
+            order_id=source_leg.order_id,
+            symbol_id=source_scope.symbol_id,
+            side=ExecutionSide.BUY,
+        ),
+    )
+    source_filled = authority_fixtures._private_venue_apply(
+        book,
+        source_execution,
+        RecordBrokerFillEvidence(
+            input_id=VenueInputId("protection-prefill-cross-scope-source-fill-input"),
+            effect_id=source_effect,
+            leg_key=source_leg,
+            prior_cumulative_quantity=Quantity(0),
+            resulting_cumulative_quantity=Quantity(1),
+            fact=source_fact,
+            evidence_digest=b"\x7a" * 32,
+        ),
+    )
+    assert source_filled.disposition is VenueRecoveryDisposition.APPLIED
+    book = source_filled.book
+    source_execution = source_filled.execution
+    assert source_execution.position.root_count == 1
+    assert source_execution.seen_facts.count == 1
+    assert book.execution_registry_count == 1
+    assert book._unresolved_account_execution_reconciliation_count == 0
+
+    target_catch_up = authority_fixtures._private_venue_apply(
+        book,
+        target_execution,
+        CatchUpExecutionRegistry(
+            input_id=VenueInputId("protection-prefill-cross-scope-target-catch-up"),
+            target_checkpoint=VenueExecutionCheckpoint.from_execution(target_execution),
+            prior_account_registry_count=book.execution_registry_count,
+            prior_account_registry_commitment=book.execution_registry_commitment,
+            prior_source_binding=book.execution_binding(
+                source_execution.position.scope
+            ),
+            source_execution=source_execution,
+        ),
+    )
+    assert target_catch_up.disposition is VenueRecoveryDisposition.APPLIED
+    catch_up_projection = _projection(module, target_catch_up, mandate)
+    assert catch_up_projection._raw_quantity == 0
+    assert catch_up_projection._position_root_count == 0
+    result = _reduce(module, state, catch_up_projection)
+    (disposition,) = _required(module, "ProtectionDisposition")
+    assert result.disposition is disposition.APPLIED
+    assert result.state.raw_quantity == 0
+    assert result.state.formula_available is False
+    assert result.state._exit_provenance == pre_exposure_origin()
+    assert result.state._exit_provenance != formula_loss_origin()
+    assert result.goal is None
+
+    target_effect = effect_ids[1]
+    target_claim = ClaimOccurrenceId("protection-prefill-history-target-claim")
+    target_scope = target_execution.position.scope
+    target_leg = VenueLegKey(
+        broker=target_scope.broker,
+        environment=target_scope.environment,
+        account=target_scope.account,
+        order_id=OrderId("protection-prefill-history-target-order"),
+    )
+    book = target_catch_up.book
+    execution = target_catch_up.execution
+    state = result.state
+    for command in prefill_commands(
+        "protection-prefill-history-target",
+        target_effect,
+        target_claim,
+        target_leg,
+    ):
+        transition = authority_fixtures._private_venue_apply(
+            book,
+            execution,
+            command,
+        )
+        assert transition.disposition is VenueRecoveryDisposition.APPLIED, type(
+            command
+        ).__name__
+        advanced = _reduce(module, state, _projection(module, transition, mandate))
+        assert advanced.disposition is disposition.APPLIED
+        assert advanced.state._exit_provenance == pre_exposure_origin()
+        state = advanced.state
+        book = transition.book
+        execution = transition.execution
+
+    target_fact = replace(
+        venue_fixtures._broker_fill(
+            "protection-prefill-history-target-fill-source",
+            "protection-prefill-history-target-fill-root",
+            leg_key=target_leg,
+            quantity=1,
+            units=100,
+        ),
+        key=ExecutionFactKey(
+            broker=target_scope.broker,
+            environment=target_scope.environment,
+            account=target_scope.account,
+            source_event_id=SourceEventId(
+                "protection-prefill-history-target-fill-source"
+            ),
+        ),
+        scope=ExecutionScope(
+            broker=target_scope.broker,
+            environment=target_scope.environment,
+            account=target_scope.account,
+            order_id=target_leg.order_id,
+            symbol_id=target_scope.symbol_id,
+            side=ExecutionSide.BUY,
+        ),
+    )
+    filled = authority_fixtures._private_venue_apply(
+        book,
+        execution,
+        RecordBrokerFillEvidence(
+            input_id=VenueInputId("protection-prefill-history-target-fill-input"),
+            effect_id=target_effect,
+            leg_key=target_leg,
+            prior_cumulative_quantity=Quantity(0),
+            resulting_cumulative_quantity=Quantity(1),
+            fact=target_fact,
+            evidence_digest=b"\x7b" * 32,
+        ),
+    )
+    assert filled.disposition is VenueRecoveryDisposition.APPLIED
+    filled_projection = _projection(module, filled, mandate)
+    assert filled_projection._position_root_count == 1
+    first_fill = _reduce(module, state, filled_projection)
+    policy, disposition = _required(
+        module,
+        "ProtectionPolicy",
+        "ProtectionDisposition",
+    )
+    assert first_fill.disposition is disposition.APPLIED
+    assert first_fill.state.raw_quantity == 1
+    assert first_fill.state.formula_available is True
+    assert first_fill.state.policy is policy.FLOOR_ONLY
+    assert first_fill.critical_alert is None
+    assert first_fill.goal is None
 
 
 def test_authentic_projection_rejects_changed_mandate_authority_and_scope() -> None:
