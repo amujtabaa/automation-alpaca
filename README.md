@@ -9,9 +9,10 @@
 > behavior. The first three pure reset slices, `WO-0145` through `WO-0147`, are closed after
 > independent review and exact-head dual-version CI. Pure position-protection slice `WO-0148` is
 > effectively `CLOSED`: its immutable closeout `2462fb557172dd28a7475a763eca0b440c0298e3` passed
-> unchanged GitHub Actions push run #693 on Python 3.11 and 3.12. Pure `WO-0149` is active only as
-> an independently preflighted acquisition/cross-side specification; it authorizes no application or
-> test implementation. M2 remains inactive. None of these slices runs the frozen application.
+> unchanged GitHub Actions push run #693 on Python 3.11 and 3.12. Pure `WO-0149` is now authorized
+> only for its bounded, unwired acquisition/cross-side implementation and verification; it does not
+> authorize runtime wiring, persistence cutover, broker activity, M2, or master landing. None of
+> these slices runs the frozen application.
 
 A browser-operated, **paper-first** automated trading cockpit: a FastAPI backend
 (the durable engine that owns and persists all truth) + a thin Streamlit cockpit

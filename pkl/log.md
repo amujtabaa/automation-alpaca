@@ -157,3 +157,10 @@
   final `REV-0052` static preflight/addendum returned `ACCEPT`, P0=0/P1=0. No application/test,
   SQL/DDL, database, runtime, broker/Alpaca/network, credential, M2, merge, deletion, or cleanup
   authority was added.
+- 2026-08-05: Published documentation-only WO-0149 activation
+  `a74998dbe34fabcf47467deb16f34180234fac3f` after independently accepted final frozen preflight
+  `0936E114642F5B531A9996EB5685F39024B2982BB1F5BD348FF8048DBB13086D`. A later explicit user
+  authorization now permits only this active work order's pure M1E application/test implementation,
+  in-scope remediation, evidence reconciliation, branch push, unchanged exact-head CI, and mock /
+  disposable-test SQLite fixtures. Runtime, persistent database, broker/network, credentials, M2,
+  merge, deletion, and cleanup remain excluded.

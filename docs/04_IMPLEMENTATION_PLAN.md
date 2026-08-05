@@ -7,8 +7,8 @@
 > through `WO-0147` are closed after independent review and exact-head Python 3.11/3.12 gates.
 > Pure position-protection/hybrid-trailing `WO-0148` is effectively `CLOSED` after immutable
 > closeout `2462fb557172dd28a7475a763eca0b440c0298e3` passed unchanged push run #693 on both
-> versions. `WO-0149` is active only as a pure-M1E specification/preflight record; it authorizes no
-> application/test implementation. M2 remains inactive.
+> versions. `WO-0149` is active for its bounded, pure-M1E acquisition/cross-side implementation and
+> verification only; M2 remains inactive.
 
 The build sequence, with persistence promoted into the foundation rather than
 deferred. Each phase ends with passing tests and preserved safety invariants

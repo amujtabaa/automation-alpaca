@@ -23,10 +23,10 @@ evidence, not the reset foundation. M0 and pure M1A/M1B/M1C `WO-0145` through `W
 effective `CLOSED` after independent acceptance and exact-head Python 3.11/3.12 CI. Pure M1D
 `WO-0148` is effectively `CLOSED`: immutable SHA
 `2462fb557172dd28a7475a763eca0b440c0298e3` passed unchanged GitHub Actions push run
-`30996686588` (#693) on Python 3.11 and 3.12. Pure M1E `WO-0149` is active only as a frozen,
-documentation/specification work order for acquisition and cross-side integration; its
-`implementation_authority` is `NOT_GRANTED`. M2 and every runtime/persistence/cutover slice remain
-inactive.
+`30996686588` (#693) on Python 3.11 and 3.12. Pure M1E `WO-0149` is active for its bounded,
+unwired acquisition/cross-side implementation and verification under recorded authority at
+activation commit `a74998dbe34fabcf47467deb16f34180234fac3f`. M2 and every
+runtime/persistence/cutover slice remain inactive.
 
 ## Rules / facts
 
@@ -40,9 +40,9 @@ inactive.
 - The permanent safety core lives verbatim in `CLAUDE.md` and is never overridden by tooling or convenience defaults.
 - Reset implementation advances only through independently reviewed work orders explicitly
   activated after their predecessor gates. `WO-0145` through `WO-0148` are effective `CLOSED`;
-  `WO-0149` is active only to preserve its pure-M1E specification and preflight evidence. No
-  WO-0149 source/test implementation, M2, runtime, persistence, broker, database, credential,
-  merge, deletion, or cleanup work may begin from this documentation-only activation.
+  `WO-0149` alone is active for its pure-M1E application/test implementation, evidence, and
+  verification. Runtime wiring, persistent database work, broker/network activity, credentials,
+  M2, merge, deletion, and cleanup remain outside its authority.
 
 ## Rationale
 

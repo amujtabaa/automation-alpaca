@@ -14,8 +14,9 @@ base_sha: 2462fb557172dd28a7475a763eca0b440c0298e3
 staged_source: work/queue/ARCH-RESET-2026-07/06-roadmap.md#M1--Pure-reference-kernel
 predecessor: WO-0148
 activation_ci: "GitHub Actions push run 30996686588 (#693): Python 3.11 job 92275345844 SUCCESS; Python 3.12 job 92275345943 SUCCESS"
-implementation_authority: NOT_GRANTED
+implementation_authority: AUTHORIZED_2026-08-05
 activated: 2026-08-05
+activation_commit: a74998dbe34fabcf47467deb16f34180234fac3f
 activation_preflight: "REV-0052 result identified the prior candidate P1; result-addendum-01 accepted its root correction and result-addendum-02 accepted frozen candidate SHA-256 0936E114642F5B531A9996EB5685F39024B2982BB1F5BD348FF8048DBB13086D, final P0=0/P1=0"
 ---
 
@@ -31,13 +32,21 @@ This work order is active only because the immutable predecessor closeout
 `92275345943` both concluded `SUCCESS`. WO-0145 through WO-0148 are therefore effectively
 `CLOSED`. Failed run #691 remains negative evidence only and is not an acceptance input.
 
-The activation is documentation/specification only. **No WO-0149 application or test implementation
-is authorized by this work order's activation.** A later explicit authorization must name the
-implementation and test boundary before a source or test file changes. Until then, no credential
-discovery/use, Alpaca or broker activity, network/broker I/O, SQL/DDL, database initialization,
-persistent database change, runtime wiring, CI-workflow change, PR/merge, deletion, cleanup,
-WO-0150/later activation, or M2 work is allowed. The prohibited R1 DDL incident remains
-inadmissible for every claim.
+The documentation/specification-only activation was published at
+`a74998dbe34fabcf47467deb16f34180234fac3f`. It did not itself authorize application or test
+implementation. The following recorded authority is the only basis for implementation under this
+active work order. The prohibited R1 DDL incident remains inadmissible for every claim.
+
+## Recorded implementation authority - 2026-08-05
+
+The user explicitly authorizes WO-0149 application and test implementation within the allowed
+paths; necessary documentation/evidence reconciliation; in-scope remediation; branch commits and
+pushes; unchanged exact-head Python 3.11/3.12 CI; and existing fixtures with `BROKER_ADAPTER=mock`
+and SQL/DDL only against disposable test-only SQLite files. This authorizes no credential use,
+Alpaca/broker/network activity, persistent application-database change, runtime wiring,
+CI-workflow change, PR/merge, deletion/cleanup, rebase/force-push, later work-order activation,
+M2, or master landing. Test-only SQLite evidence never establishes a persistent-schema or
+operational claim.
 
 ## Goal
 
@@ -92,8 +101,8 @@ fable_gate:
     - "Reuse manual-flatten private helpers as the M1E API: rejected because that would make a private, differently-gated control flow the new acquisition/protection authority."
     - "Build broker child-price selection, authentication, persistence, or runtime serving now: rejected as M2-M6 scope."
   out_of_scope:
-    - "WO-0149 application or test implementation until separate recorded authority names the boundary"
-    - "SQL/DDL, database initialization or persistent-database work, runtime wiring, broker/Alpaca/network activity, credentials, CI workflow changes, PR/merge, deletion, cleanup, M2, and later work-order activation"
+    - "Runtime wiring, persistent application-database work, credentials, Alpaca/broker/network activity, CI workflow changes, PR/merge, deletion, cleanup, rebase/force-push, M2, and later work-order activation"
+    - "SQL/DDL or database initialization outside existing BROKER_ADAPTER=mock fixtures against disposable test-only SQLite files"
   done_when:
     - behavior: "The active work order accurately records WO-0148's immutable external closeout and specifies one pure M1E acquisition/preemption boundary without granting implementation authority."
       test: "One final independent static planning preflight (`REV-0052`) issues ACCEPT with no unresolved P0/P1 against the exact frozen candidate."
@@ -343,6 +352,7 @@ allowed_paths:
   - work/completed/keep/WO-0148-reset-kernel-d-position-protection-hybrid-trailing.md
   - work/review/REV-0051/**
   - work/review/REV-0052/**
+  - work/review/REV-0053/**
   - work/ledger.jsonl
   - pkl/project/goals.md
   - pkl/architecture/architecture-map.md
@@ -371,11 +381,13 @@ reset packet, branch-retirement manifest, any store/event/broker/adapter/API/UI/
 `.github/workflows/**`, or retained artifacts. The sole retained-record exception is one append-only
 WO-0148 external-success addendum required by this activation; it may state the run #693 provenance
 but may not rewrite historical closeout text or alter retained evidence. `activation_only_paths`
-are unavailable to later application/test implementation unless a separate work order explicitly
-re-gates them. Future use of existing mock/disposable SQLite fixtures, SQL, or DDL is not authorized
-by this activation and requires explicit recorded authority.
+are unavailable for changing M1E application/test semantics. The recorded implementation authority
+above re-gates them only for necessary status, evidence, and closeout reconciliation under this same
+work order. The WO-0148 addendum exception has been consumed; no further retained-WO-0148 body
+change is permitted. Existing fixtures may use `BROKER_ADAPTER=mock` and SQL/DDL only against
+disposable test-only SQLite files; no persistent application-database result may be created or used.
 
-## Required commands after a separately authorized implementation
+## Required commands under recorded implementation authority
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest -q tests/execution_core/test_acquisition.py tests/execution_core/test_acquisition_stateful.py
@@ -385,16 +397,16 @@ ruff check app/execution_core tests/execution_core
 ruff format --check app/execution_core tests/execution_core
 .\.venv\Scripts\python.exe -m mypy app
 lint-imports
-git diff --name-only <activation-commit-sha>..HEAD | .\.venv\Scripts\python.exe .ai-os\scripts\check_work_order_scope.py work/active/WO-0149-reset-kernel-e-acquisition-cross-side-integration.md
+git diff --name-only a74998dbe34fabcf47467deb16f34180234fac3f..HEAD | .\.venv\Scripts\python.exe .ai-os\scripts\check_work_order_scope.py work/active/WO-0149-reset-kernel-e-acquisition-cross-side-integration.md
 .\.venv\Scripts\python.exe .ai-os\scripts\check_work_order_disposition.py
 .\.venv\Scripts\python.exe .ai-os\scripts\check_ledger.py
 .\.venv\Scripts\python.exe .ai-os\scripts\check_pkl.py
 git diff --check
 ```
 
-The implementation start gate must replace `<activation-commit-sha>` with the exact
-documentation-only activation commit in the piped `git diff` invocation. It must not start while
-that SHA, the RED contract, or the preflight packet is missing.
+The implementation start gate is fixed to the exact documentation-only activation commit
+`a74998dbe34fabcf47467deb16f34180234fac3f`. It must not start while that SHA, the RED contract, or
+the preflight packet is missing.
 
 ## Stop conditions
 
@@ -426,8 +438,9 @@ Stop and return `BLOCKED` before implementation if any of the following occurs:
   preflight returns `ACCEPT` with P0=0/P1=0.
 - [x] AC-06: WO-0148 current status is reconciled atomically from run #693 without rewriting its
   historical conditional closeout or using #691 as a success claim.
-- [x] AC-07: The active work order explicitly bars all application/test implementation pending
-  separate authorization and preserves all earlier exclusions.
+- [x] AC-07: At documentation activation, the active work order barred all application/test
+  implementation pending separate authorization and preserved all earlier exclusions. The later
+  recorded implementation authority above supersedes only that activation-time limitation.
 
 ## Completion disposition
 

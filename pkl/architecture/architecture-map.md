@@ -29,9 +29,9 @@ dual-version green, and unwired: `WO-0145` owns immutable execution facts and po
 execution authority, and atomic final claim. Pure `WO-0148` adds the separate formula-bound
 position-protection, bounded market-occurrence, hybrid-trailing, wait/flat/late-fill, and typed SELL-
 goal semantic center; its exact closeout `2462fb557172dd28a7475a763eca0b440c0298e3` is now
-dual-version CI green and effective `CLOSED`. Pure `WO-0149` is active only as the independently
-preflighted acquisition/cross-side-integration specification. It is not implementation authority:
-M2 and all runtime/persistence work remain inactive until separately gated.
+dual-version CI green and effective `CLOSED`. Pure `WO-0149` is active for bounded, unwired
+acquisition/cross-side implementation under its recorded authority. M2 and all
+runtime/persistence work remain inactive until separately gated.
 
 ## Rules / facts
 
@@ -68,10 +68,11 @@ M2 and all runtime/persistence work remain inactive until separately gated.
   coordinate retained in a constant-size authenticated cursor. Projection, market, and invalidation
   transitions are structurally separate. No lifetime receipt collection, history scan, runtime
   wiring, persistence, adapter fence, or broker authority is part of this pure M1 boundary.
-- WO-0149 specifies, but does not implement, the next pure semantic center: distinct immutable
-  acquisition/protection authority, sealed currentness at BUY create/final claim, one-fold first-fill
-  protection integration, and current-index cross-side preemption. Its activation grants no source,
-  test, SQL/DDL, database, runtime, broker, credential, or M2 authority.
+- WO-0149 implements the next pure semantic center: distinct immutable acquisition/protection
+  authority, sealed currentness at BUY create/final claim, one-fold first-fill protection
+  integration, and current-index cross-side preemption. It remains unwired: no runtime, persistent
+  database, broker, credential, or M2 authority is granted; test-only mock/disposable SQLite
+  fixtures are permitted only for authorized verification.
 
 ## Rationale
 

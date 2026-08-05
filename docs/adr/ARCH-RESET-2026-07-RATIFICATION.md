@@ -203,8 +203,11 @@ candidate; its fresh Sol rerun found four P1 specification gaps, all resolved at
 root correction, and the independent `result-addendum-02.md` accepted the final frozen candidate
 SHA-256 `0936E114642F5B531A9996EB5685F39024B2982BB1F5BD348FF8048DBB13086D` with P0=0/P1=0.
 
-This authorizes only documentation/specification activation of WO-0149. Its
-`implementation_authority` remains `NOT_GRANTED`; no application/test implementation, SQL/DDL,
-database, runtime wiring, broker/Alpaca/network activity, credentials, M2, master merge, deletion,
-or cleanup authority is added. No accepted ADR body changes or new architectural decision are
-required by this activation.
+The documentation/specification activation was published at
+`a74998dbe34fabcf47467deb16f34180234fac3f`. A later explicit user authorization records bounded
+WO-0149 application/test implementation, necessary evidence reconciliation, in-scope remediation,
+commits/pushes, unchanged exact-head CI, and `BROKER_ADAPTER=mock` SQL/DDL only against disposable
+test-only SQLite files. It grants no credentials, Alpaca/broker/network activity, persistent
+application-database change, runtime wiring, CI-workflow change, PR/merge, deletion/cleanup,
+rebase/force-push, M2, or master landing. No accepted ADR body changes or new architectural
+decision are required.
