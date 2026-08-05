@@ -1261,3 +1261,26 @@ explicit fixed-cardinality state-leaf model. The final materiality-scoped delta 
 This is still pre-freeze evidence. Application code remains unchanged and barred. The exact RED and
 evidence set must be committed immutably and receive fresh independent exact-commit `ACCEPT` with
 zero unresolved P0/P1 before production implementation may begin.
+
+### ADR-023 exact RED acceptance and GREEN-feasibility stop
+
+The immutable replacement RED commit
+`e886fead41dca94e86e666a993f4f976507ece8d` received fresh independent exact-commit
+`ACCEPT`, P0=0/P1=0/P2=0. The reviewer verified the exact parent and six-file scope, unchanged
+application tree, accepted ADR hash, honest 410-fail/94-pass structural RED classification, 24
+failure-capability controls, 745/745 predecessor tests, Ruff lint/format, and Python 3.11 grammar.
+The request and result are retained under `work/review/REV-0050/adr023-red-freeze/`.
+
+The required production pre-flight then found two material implementability contradictions. The
+frozen state retains only an irreversible SHA-256 commitment of the prior eligible primary while
+the cross-kind maximum-step rule needs that prior numeric price. Separately, the public contract
+requires derived `occurrence_id` dataclass metadata with `init=False`, while the import grammar
+forbids the standard `dataclasses.field(init=False)` mechanism.
+
+No production edit may work around either contradiction. Exact static evidence and the smallest
+bounded correction are recorded in
+`work/review/REV-0050/adr023-green-feasibility/`. Because the first correction amends accepted
+ADR-023 retained-state text, implementation stops pending exact human ratification. Ordinary
+implementation and review activity resumes after one replacement RED candidate proves the two
+corrections without changing the 19-part/480-byte cursor, constant-history bounds, or any other
+ADR-023 behavior.
