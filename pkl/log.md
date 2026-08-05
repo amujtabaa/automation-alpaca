@@ -149,3 +149,11 @@
   aware. Its exact regression focus passed 8/8, author/reviewer affected sets passed 704/704 and
   642/642, R2 passed 61/61, and the full 5,848-test gate passed with zero failures/errors at
   `93.01194919026261%`. A new exact-head dual-version run remains mandatory; WO-0149/M2 stay inactive.
+- 2026-08-05: The repaired immutable WO-0148 closeout
+  `2462fb557172dd28a7475a763eca0b440c0298e3` passed unchanged GitHub Actions push run #693
+  (`30996686588`): Python 3.11 job `92275345844` and Python 3.12 job `92275345943` both succeeded.
+  This closes WO-0148's external gate. Run #691 remains negative-only provenance and no prohibited
+  or superseded result is used. Activated only frozen WO-0149 documentation/specification after the
+  final `REV-0052` static preflight/addendum returned `ACCEPT`, P0=0/P1=0. No application/test,
+  SQL/DDL, database, runtime, broker/Alpaca/network, credential, M2, merge, deletion, or cleanup
+  authority was added.

@@ -5,9 +5,10 @@
 > The immutable staged `RESET-WO-01` was canonicalized and separately activated as pure-kernel
 > `WO-0145` after accepted M0 review, explicit human authority, and dual-version CI. `WO-0145`
 > through `WO-0147` are closed after independent review and exact-head Python 3.11/3.12 gates.
-> Pure position-protection/hybrid-trailing `WO-0148` is filed as an independently accepted,
-> locally green conditional closeout and remains effectively `REVIEW` pending unchanged exact-head
-> dual-version CI. No reset work order is active; `WO-0149` and M2 remain inactive.
+> Pure position-protection/hybrid-trailing `WO-0148` is effectively `CLOSED` after immutable
+> closeout `2462fb557172dd28a7475a763eca0b440c0298e3` passed unchanged push run #693 on both
+> versions. `WO-0149` is active only as a pure-M1E specification/preflight record; it authorizes no
+> application/test implementation. M2 remains inactive.
 
 The build sequence, with persistence promoted into the foundation rather than
 deferred. Each phase ends with passing tests and preserved safety invariants

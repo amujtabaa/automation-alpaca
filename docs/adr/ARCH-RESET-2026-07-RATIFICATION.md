@@ -186,3 +186,25 @@ and `93.01194919026261%` raw combined coverage.
 The repaired closeout `HEAD` remains effectively `REVIEW` until one new unchanged exact-head
 Python 3.11/3.12 run passes both jobs. No workflow, production, runtime, persistence, credential,
 broker/Alpaca/network, PR/merge, deletion, cleanup, WO-0149, or M2 authority was added.
+
+## WO-0148 external gate passed and WO-0149 documentation activation - filed 2026-08-05
+
+The repaired immutable WO-0148 closeout `2462fb557172dd28a7475a763eca0b440c0298e3` passed
+unchanged GitHub Actions push run `30996686588` (#693): Python 3.11 job `92275345844` and Python
+3.12 job `92275345943` both concluded `SUCCESS`. This satisfies the exact-head external-success
+condition recorded above. Run #691 remains negative evidence only and cannot satisfy any closeout
+or activation claim. No prohibited R1 DDL result, persistent database result, or superseded result
+was relied on.
+
+WO-0145 through WO-0148 are consequently effective `CLOSED`. The smallest complete pure-M1E
+WO-0149 specification was independently preflighted. `REV-0051` is retained for its original
+candidate; its fresh Sol rerun found four P1 specification gaps, all resolved at the root.
+`REV-0052/result.md` identified one P1 in its prior target; `result-addendum-01.md` accepted the
+root correction, and the independent `result-addendum-02.md` accepted the final frozen candidate
+SHA-256 `0936E114642F5B531A9996EB5685F39024B2982BB1F5BD348FF8048DBB13086D` with P0=0/P1=0.
+
+This authorizes only documentation/specification activation of WO-0149. Its
+`implementation_authority` remains `NOT_GRANTED`; no application/test implementation, SQL/DDL,
+database, runtime wiring, broker/Alpaca/network activity, credentials, M2, master merge, deletion,
+or cleanup authority is added. No accepted ADR body changes or new architectural decision are
+required by this activation.

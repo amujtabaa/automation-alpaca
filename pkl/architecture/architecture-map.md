@@ -4,7 +4,7 @@ title: Architecture Map (reset target and frozen Spine v2 evidence)
 status: active
 authority: high
 owner: Ameen
-last_verified: 2026-08-04
+last_verified: 2026-08-05
 tags: [architecture, boundaries, layers]
 source_refs: [docs/adr/ADR-020-current-state-execution-kernel.md, docs/adr/ADR-021-position-protection-liquidity-execution.md, docs/adr/ADR-022-reset-beta-scope-cutover-governance.md, docs/adr/ADR-023-bounded-market-occurrence-authority.md, docs/adr/ARCH-RESET-2026-07-RATIFICATION.md, docs/01_ARCHITECTURE.md]
 supersedes: []
@@ -26,11 +26,12 @@ The first three reset M1 semantic centers are implemented, independently accepte
 dual-version green, and unwired: `WO-0145` owns immutable execution facts and position truth;
 `WO-0146` owns venue effects, concrete acceptances, closure, ambiguity, and ADR-012 recovery; and
 `WO-0147` owns deny-by-default trading mode, manual controls, shared request budgets, symbol-wide
-execution authority, and atomic final claim. Pure `WO-0148` now adds the separate formula-bound
+execution authority, and atomic final claim. Pure `WO-0148` adds the separate formula-bound
 position-protection, bounded market-occurrence, hybrid-trailing, wait/flat/late-fill, and typed SELL-
-goal semantic center. Its independently accepted local closeout remains effectively `REVIEW` until
-exact-head dual-version CI succeeds. No reset work order is active; acquisition integration,
-`WO-0149`, M2, and all runtime/persistence work remain inactive until separately gated.
+goal semantic center; its exact closeout `2462fb557172dd28a7475a763eca0b440c0298e3` is now
+dual-version CI green and effective `CLOSED`. Pure `WO-0149` is active only as the independently
+preflighted acquisition/cross-side-integration specification. It is not implementation authority:
+M2 and all runtime/persistence work remain inactive until separately gated.
 
 ## Rules / facts
 
@@ -67,6 +68,10 @@ exact-head dual-version CI succeeds. No reset work order is active; acquisition 
   coordinate retained in a constant-size authenticated cursor. Projection, market, and invalidation
   transitions are structurally separate. No lifetime receipt collection, history scan, runtime
   wiring, persistence, adapter fence, or broker authority is part of this pure M1 boundary.
+- WO-0149 specifies, but does not implement, the next pure semantic center: distinct immutable
+  acquisition/protection authority, sealed currentness at BUY create/final claim, one-fold first-fill
+  protection integration, and current-index cross-side preemption. Its activation grants no source,
+  test, SQL/DDL, database, runtime, broker, credential, or M2 authority.
 
 ## Rationale
 
@@ -133,3 +138,8 @@ Seam discipline is what makes the safety invariants structurally enforceable rat
   successor uses one complete alias-aware explicit-stack graph fingerprint across authority,
   stateful authority, and protection reducers. Fresh R2 and 5,848-test coverage gates are green;
   the repaired closeout remains effectively `REVIEW` pending new exact-head dual-version CI.
+- 2026-08-05: Exact WO-0148 closeout `2462fb557172dd28a7475a763eca0b440c0298e3` passed GitHub
+  Actions push run #693 on Python 3.11 and 3.12, closing its external gate. Activated only
+  documentation/specification `WO-0149` after final independent exact-candidate preflight returned
+  `ACCEPT` with no P0/P1. The new acquisition/cross-side semantics remain unimplemented and unwired;
+  M2, persistence, runtime, broker, credentials, merge, deletion, and cleanup remain inactive.

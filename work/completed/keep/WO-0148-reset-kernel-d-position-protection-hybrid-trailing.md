@@ -1676,3 +1676,19 @@ WO-0148 is retained with `[PKL_UPDATED, RESULT_SUMMARY_KEPT]`. No accepted ADR b
 runtime, persistence, broker, credential, branch/worktree, or retained evidence artifact was
 mutated or removed. The prohibited R1 DDL result was not used for any design, test, review, or
 acceptance conclusion.
+
+## External exact-head success and effective closeout - filed 2026-08-05
+
+The immutable closeout `2462fb557172dd28a7475a763eca0b440c0298e3` passed unchanged GitHub Actions
+push run `30996686588` (#693): Python 3.11 job `92275345844` and Python 3.12 job `92275345943`
+both concluded `SUCCESS`. This satisfies the external exact-head condition in the preceding done
+criteria, so WO-0148 is effective `CLOSED`.
+
+The earlier #691 result remains retained negative evidence only. It did not supply an acceptance,
+schema, operational, or safety conclusion; no prohibited R1 DDL result, persistent database,
+credential, broker/Alpaca/network, runtime, or superseded result was relied upon. The independent
+WO-0148 review evidence remains as recorded above with no unresolved P0/P1.
+
+Only the successor's documentation/specification WO-0149 may now be active. This addendum grants no
+source/test implementation, SQL/DDL, database, runtime, broker, credential, M2, merge, deletion, or
+cleanup authority.

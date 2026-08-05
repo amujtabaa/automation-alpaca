@@ -4,7 +4,7 @@ title: Project Goals and Current Posture
 status: active
 authority: high
 owner: Ameen
-last_verified: 2026-08-04
+last_verified: 2026-08-05
 tags: [goals, posture, roadmap]
 source_refs: [docs/adr/ADR-020-current-state-execution-kernel.md, docs/adr/ADR-021-position-protection-liquidity-execution.md, docs/adr/ADR-022-reset-beta-scope-cutover-governance.md, docs/adr/ADR-023-bounded-market-occurrence-authority.md, docs/adr/ARCH-RESET-2026-07-RATIFICATION.md]
 supersedes: []
@@ -21,10 +21,12 @@ one SQLite production store, transactional current state/outbox, and broker-neut
 side-symmetric liquidity execution. The integrated Spine v2 application and R6 branch are frozen
 evidence, not the reset foundation. M0 and pure M1A/M1B/M1C `WO-0145` through `WO-0147` are
 effective `CLOSED` after independent acceptance and exact-head Python 3.11/3.12 CI. Pure M1D
-`WO-0148` is filed as an independently accepted, locally green conditional closeout for position
-protection and hybrid trailing; its effective lifecycle remains `REVIEW` until its immutable exact
-SHA passes the unchanged dual-version workflow. No reset implementation work order is active.
-`WO-0149`, M2, and every runtime/persistence/cutover slice remain inactive.
+`WO-0148` is effectively `CLOSED`: immutable SHA
+`2462fb557172dd28a7475a763eca0b440c0298e3` passed unchanged GitHub Actions push run
+`30996686588` (#693) on Python 3.11 and 3.12. Pure M1E `WO-0149` is active only as a frozen,
+documentation/specification work order for acquisition and cross-side integration; its
+`implementation_authority` is `NOT_GRANTED`. M2 and every runtime/persistence/cutover slice remain
+inactive.
 
 ## Rules / facts
 
@@ -37,9 +39,10 @@ SHA passes the unchanged dual-version workflow. No reset implementation work ord
   use transactional current state under ADR-020.
 - The permanent safety core lives verbatim in `CLAUDE.md` and is never overridden by tooling or convenience defaults.
 - Reset implementation advances only through independently reviewed work orders explicitly
-  activated after their predecessor gates. `WO-0145` through `WO-0147` are effective `CLOSED`;
-  `WO-0148` is a proposed `CLOSED` closeout but remains effectively `REVIEW` pending exact-head CI.
-  No reset work order is active, and neither `WO-0149` nor M2 may begin from the local closeout.
+  activated after their predecessor gates. `WO-0145` through `WO-0148` are effective `CLOSED`;
+  `WO-0149` is active only to preserve its pure-M1E specification and preflight evidence. No
+  WO-0149 source/test implementation, M2, runtime, persistence, broker, database, credential,
+  merge, deletion, or cleanup work may begin from this documentation-only activation.
 
 ## Rationale
 
@@ -120,3 +123,9 @@ Roadmapping against an unverified codebase state repeats the failure mode Fable 
   complete explicit-stack successor received independent `ACCEPT` with no P0/P1, then passed 61/61
   R2 cases and 5,848 repository tests at `93.01194919026261%`. Effective lifecycle remains `REVIEW`
   pending a new unchanged dual-version exact-head run; WO-0149 and M2 remain inactive.
+- 2026-08-05: Immutable WO-0148 closeout `2462fb557172dd28a7475a763eca0b440c0298e3` passed
+  GitHub Actions push run #693 (`30996686588`): Python 3.11 job `92275345844` and Python 3.12 job
+  `92275345943` both concluded `SUCCESS`. This satisfies its external effectiveness gate; failed
+  #691 remains negative evidence only. Activated only the frozen, pure-M1E WO-0149 specification
+  after `REV-0052` exact-candidate review and addendum returned `ACCEPT` with P0=0/P1=0. No
+  application/test implementation or operational authority was added.

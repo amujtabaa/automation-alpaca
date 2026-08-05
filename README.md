@@ -7,10 +7,11 @@
 > [`ADR-022`](docs/adr/ADR-022-reset-beta-scope-cutover-governance.md), with acceptance recorded in
 > the [ratification index](docs/adr/ARCH-RESET-2026-07-RATIFICATION.md). M0 changes no runtime
 > behavior. The first three pure reset slices, `WO-0145` through `WO-0147`, are closed after
-> independent review and exact-head dual-version CI. Pure position-protection slice `WO-0148` has
-> an independently accepted, locally green conditional closeout and remains effectively `REVIEW`
-> until its exact closeout SHA passes the unchanged dual-version workflow. No reset work order is
-> active; `WO-0149` and M2 remain inactive. None of these slices runs the frozen application.
+> independent review and exact-head dual-version CI. Pure position-protection slice `WO-0148` is
+> effectively `CLOSED`: its immutable closeout `2462fb557172dd28a7475a763eca0b440c0298e3` passed
+> unchanged GitHub Actions push run #693 on Python 3.11 and 3.12. Pure `WO-0149` is active only as
+> an independently preflighted acquisition/cross-side specification; it authorizes no application or
+> test implementation. M2 remains inactive. None of these slices runs the frozen application.
 
 A browser-operated, **paper-first** automated trading cockpit: a FastAPI backend
 (the durable engine that owns and persists all truth) + a thin Streamlit cockpit
