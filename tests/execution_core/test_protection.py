@@ -946,11 +946,17 @@ def _reduce_projection(
     projection: object,
 ) -> object:
     (reducer,) = _required(module, "reduce_position_protection")
-    before = (state, projection)
+    before = authority_fixtures._iterative_value_fingerprint(state, projection)
     first = reducer(state, projection)
     second = reducer(state, projection)
-    assert first == second
-    assert before == (state, projection)
+    authority_fixtures._assert_iterative_value_equal(
+        second,
+        first,
+        "the protection reducer produced structurally divergent transitions",
+    )
+    assert before == authority_fixtures._iterative_value_fingerprint(
+        state, projection
+    ), "the protection reducer mutated an input graph"
     return first
 
 
@@ -961,11 +967,19 @@ def _reduce_market(
     occurrence: object,
 ) -> object:
     (reducer,) = _required(module, "reduce_position_protection_market")
-    before = (state, projection, occurrence)
+    before = authority_fixtures._iterative_value_fingerprint(
+        state, projection, occurrence
+    )
     first = reducer(state, projection, occurrence)
     second = reducer(state, projection, occurrence)
-    assert first == second
-    assert before == (state, projection, occurrence)
+    authority_fixtures._assert_iterative_value_equal(
+        second,
+        first,
+        "the protection market reducer produced structurally divergent transitions",
+    )
+    assert before == authority_fixtures._iterative_value_fingerprint(
+        state, projection, occurrence
+    ), "the protection market reducer mutated an input graph"
     return first
 
 
@@ -975,11 +989,17 @@ def _invalidate_market(
     projection: object,
 ) -> object:
     (invalidate,) = _required(module, "invalidate_position_protection_market")
-    before = (state, projection)
+    before = authority_fixtures._iterative_value_fingerprint(state, projection)
     first = invalidate(state, projection)
     second = invalidate(state, projection)
-    assert first == second
-    assert before == (state, projection)
+    authority_fixtures._assert_iterative_value_equal(
+        second,
+        first,
+        "the market invalidation reducer produced structurally divergent transitions",
+    )
+    assert before == authority_fixtures._iterative_value_fingerprint(
+        state, projection
+    ), "the market invalidation reducer mutated an input graph"
     return first
 
 

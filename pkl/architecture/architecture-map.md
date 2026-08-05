@@ -128,3 +128,8 @@ Seam discipline is what makes the safety invariants structurally enforceable rat
   `93.01194919026261%` raw combined coverage. The local metadata is proposed `CLOSED`, but effective
   lifecycle remains `REVIEW` until unchanged exact-head Python 3.11/3.12 CI succeeds. No reset work
   order is active; WO-0149, acquisition, M2, runtime, and persistence remain inactive.
+- 2026-08-04: Exact-head Python 3.11 exposed recursive whole-graph equality in shared WO-0148 test
+  helpers; Python 3.12 passed and production behavior was not implicated. The accepted tests-only
+  successor uses one complete alias-aware explicit-stack graph fingerprint across authority,
+  stateful authority, and protection reducers. Fresh R2 and 5,848-test coverage gates are green;
+  the repaired closeout remains effectively `REVIEW` pending new exact-head dual-version CI.

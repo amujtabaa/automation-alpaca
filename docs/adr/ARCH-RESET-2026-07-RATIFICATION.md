@@ -167,3 +167,22 @@ The filed `CLOSED` metadata remains effectively `REVIEW` until the immutable clo
 both unchanged exact-head workflow jobs. No reset work order is active while that gate is pending;
 `WO-0149` and M2 remain inactive, and a failed, canceled, incomplete, or mismatched-head run reopens
 WO-0148 rather than activating a successor.
+
+## WO-0148 Python 3.11 oracle successor - filed 2026-08-04
+
+The first conditional closeout `9f696dc4142f9876d0292afc029d6d561671e7b5` failed its exact-
+head effectiveness gate. Push run `30989580232` (#691) passed Python 3.12 job `92252257437` and
+failed Python 3.11 job `92252257396`: seven tests recursively rendered complete retained radix
+graphs through generated dataclass equality after 5,828 other cases passed. No production reducer,
+database fixture, or execution/protection decision raised. The result is negative evidence only.
+
+Under Ameen's standing in-flight remediation authority, WO-0148 re-gated only its authority-
+stateful test path and replaced shared recursive whole-graph test equality with one test-only,
+alias-aware explicit-stack fingerprint. Independent successor review ended `ACCEPT`, P0=0/P1=0/
+P2=0, after exact regression, deep-leaf, alias, and cycle controls. Fresh post-review evidence is
+61/61 R2 cases and 5,848 repository tests with zero failures/errors, 11 skips, one expected failure,
+and `93.01194919026261%` raw combined coverage.
+
+The repaired closeout `HEAD` remains effectively `REVIEW` until one new unchanged exact-head
+Python 3.11/3.12 run passes both jobs. No workflow, production, runtime, persistence, credential,
+broker/Alpaca/network, PR/merge, deletion, cleanup, WO-0149, or M2 authority was added.

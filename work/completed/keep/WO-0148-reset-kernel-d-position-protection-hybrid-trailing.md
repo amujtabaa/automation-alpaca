@@ -158,6 +158,7 @@ allowed_paths:
   - app/execution_core/authority.py
   - app/execution_core/__init__.py
   - tests/execution_core/test_authority.py
+  - tests/execution_core/test_authority_stateful.py
   - tests/execution_core/test_protection.py
   - tests/execution_core/test_protection_stateful.py
   - tests/execution_core/test_import_boundary.py
@@ -1599,6 +1600,46 @@ lifecycle remains `REVIEW`; no reset work order is active, and `WO-0149` and M2 
 failed, canceled, incomplete, or mismatched-head run reopens this same WO. No post-success
 evidence-only closeout successor is permitted.
 
+## Exact-head Python 3.11 test-oracle successor
+
+The first immutable closeout candidate `9f696dc4142f9876d0292afc029d6d561671e7b5`
+did not satisfy its effectiveness gate. Push-triggered GitHub Actions run `30989580232`
+(#691) passed Python 3.12 job `92252257437`, but Python 3.11 job `92252257396`
+failed seven cases after 5,828 other cases passed. Every failure terminated in a shared
+test-helper `assert second == first`: generated dataclass equality recursively descended the
+retained persistent radix graph until Python 3.11 raised `RecursionError`. No production reducer,
+SQLite fixture, broker path, or protection decision raised the exception. The separate PR
+merge-ref run reproduced the same symptom but is not exact-head evidence.
+
+This failure reopens WO-0148 and invalidates the candidate's external-success condition; WO-0149
+and M2 remain inactive. Ameen's standing authorization to resolve findings discovered in flight
+re-gates `tests/execution_core/test_authority_stateful.py` alongside the already allowed authority
+and protection test paths solely to replace recursive whole-graph test equality with one complete,
+alias-aware explicit-stack fingerprint, following the accepted WO-0146 repair pattern. A deep
+failure-capable control must distinguish an equal graph, a deep changed leaf, and shared versus
+duplicated child topology. Production code, recursion limits, CI workflows, runtime wiring,
+persistence, broker/network behavior, and every other path remain unchanged.
+
+The exact tests-only successor received bounded independent `ACCEPT`, P0=0/P1=0/P2=0, at
+`work/review/REV-0050/py311-test-oracle-successor/result.md`. Review reproduced the exact eight-case
+regression focus, 642/642 bounded affected cases, deep-leaf and alias-blind counterfactual failures,
+and terminating divergent cyclic graphs. The author-side complete five-file affected set passed
+704/704. Ruff, Python 3.11 grammar, mypy over 86 application files, six import contracts, exact-base
+scope, diff, and all AI-OS checks passed.
+
+Fresh post-review evidence is 61/61 R2 cases and 5,848 repository tests with zero failures/errors,
+11 skips and one expected failure. The full run covered 19,985/21,081 statements and 7,181/8,126
+branches, or `93.01194919026261%` raw combined coverage against the unchanged 93% floor. Exact
+counts and hashes are retained under
+`work/review/REV-0050/evidence/py311-oracle-successor-r2-01/` and
+`work/review/REV-0050/evidence/py311-oracle-successor-full-01/`. The failed #691 result is retained
+only as negative evidence and cannot satisfy any completion claim.
+
+This repaired atomic closeout candidate still requires one new unchanged exact-head Python
+3.11/3.12 run. Its filed `CLOSED` metadata remains effectively `REVIEW` until both jobs succeed;
+WO-0149 and M2 remain inactive. Any failed, canceled, incomplete, or mismatched-head successor run
+reopens WO-0148 again.
+
 ## Reconciled done criteria
 
 ```yaml
@@ -1613,10 +1654,10 @@ fable_done:
       evidence: "The final tests-only review reports ACCEPT after exact bytes-subclass controls killed weaker proof-commitment, projection-seal, and state-commitment guards."
     - item: "Fresh R2 and repository-wide branch-coverage gates pass under the authorized mock/disposable-test path."
       status: MET
-      evidence: "61 R2 cases and 5,847 repository tests passed with zero failures/errors; raw combined coverage is 93.01194919026261% against the unchanged 93% floor."
+      evidence: "After the Python 3.11 oracle repair, 61 R2 cases and 5,848 repository tests passed with zero failures/errors; raw combined coverage is 93.01194919026261% against the unchanged 93% floor."
     - item: "Independent review has no unresolved P0/P1."
       status: MET
-      evidence: "Both the application root-successor review and bounded final tests-only addendum end ACCEPT with P0=0 and P1=0."
+      evidence: "The application root-successor, runtime-envelope, and Python 3.11 explicit-stack oracle reviews all end ACCEPT with P0=0 and P1=0."
     - item: "Allowed paths and operational exclusions remain respected."
       status: MET
       evidence: "Only pure application/test, retained review/evidence, and authorized closeout records changed. No credentials, Alpaca/broker/network activity, persistent application database, runtime wiring, CI-workflow edit, PR/merge, deletion, cleanup, WO-0149, M2, or prohibited-R1-DDL reliance occurred."

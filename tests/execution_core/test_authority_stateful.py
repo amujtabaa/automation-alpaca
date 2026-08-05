@@ -76,6 +76,10 @@ from app.execution_core.venue import (
     apply_venue_recovery_input,
 )
 from tests.execution_core import test_venue_recovery as recovery_fixtures
+from tests.execution_core.test_authority import (
+    _assert_iterative_value_equal,
+    _iterative_value_fingerprint,
+)
 
 
 BROKER = BrokerId("alpaca")
@@ -316,11 +320,17 @@ def _create_effect(
         manual_flatten_id=manual_flatten_id,
         emergency_grant_id=None,
     )
-    before = (state, execution, item)
+    before = _iterative_value_fingerprint(state, execution, item)
     first = module.apply_execution_authority_input(state, execution, item)
     second = module.apply_execution_authority_input(state, execution, item)
-    assert second == first
-    assert before == (state, execution, item)
+    _assert_iterative_value_equal(
+        second,
+        first,
+        "the authority reducer produced structurally divergent transitions",
+    )
+    assert before == _iterative_value_fingerprint(state, execution, item), (
+        "the authority reducer mutated an input graph"
+    )
     return first
 
 
@@ -330,11 +340,17 @@ def _authority_apply_twice(
     execution: ExecutionSnapshot,
     item: object,
 ) -> object:
-    before = (state, execution, item)
+    before = _iterative_value_fingerprint(state, execution, item)
     first = module.apply_execution_authority_input(state, execution, item)
     second = module.apply_execution_authority_input(state, execution, item)
-    assert second == first
-    assert before == (state, execution, item)
+    _assert_iterative_value_equal(
+        second,
+        first,
+        "the authority reducer produced structurally divergent transitions",
+    )
+    assert before == _iterative_value_fingerprint(state, execution, item), (
+        "the authority reducer mutated an input graph"
+    )
     return first
 
 
@@ -367,11 +383,17 @@ def _venue_apply_twice(
         if internal or type(item) is CloseAcceptanceSet
         else apply_venue_recovery_input
     )
-    before = (book, execution, item)
+    before = _iterative_value_fingerprint(book, execution, item)
     first = reducer(book, execution, item)
     second = reducer(book, execution, item)
-    assert second == first
-    assert before == (book, execution, item)
+    _assert_iterative_value_equal(
+        second,
+        first,
+        "the venue reducer produced structurally divergent transitions",
+    )
+    assert before == _iterative_value_fingerprint(book, execution, item), (
+        "the venue reducer mutated an input graph"
+    )
     assert first.disposition is VenueRecoveryDisposition.APPLIED
     return first
 
@@ -725,11 +747,17 @@ class ClaimAuthorityMachine(RuleBasedStateMachine):
         self._next_input = 0
 
     def _apply_twice(self, predecessor: object, item: object) -> object:
-        before = (predecessor, EXECUTION, item)
+        before = _iterative_value_fingerprint(predecessor, EXECUTION, item)
         first = self.reducer(predecessor, EXECUTION, item)
         second = self.reducer(predecessor, EXECUTION, item)
-        assert second == first
-        assert before == (predecessor, EXECUTION, item)
+        _assert_iterative_value_equal(
+            second,
+            first,
+            "the authority reducer produced structurally divergent transitions",
+        )
+        assert before == _iterative_value_fingerprint(predecessor, EXECUTION, item), (
+            "the authority reducer mutated an input graph"
+        )
         return first
 
     @precondition(lambda self: not self.claimed and not self.killed)
@@ -1041,11 +1069,17 @@ class SymbolGateMachine(RuleBasedStateMachine):
             if internal or type(item) is CloseAcceptanceSet
             else apply_venue_recovery_input
         )
-        before = (self.book, self.execution, item)
+        before = _iterative_value_fingerprint(self.book, self.execution, item)
         first = reducer(self.book, self.execution, item)
         second = reducer(self.book, self.execution, item)
-        assert second == first
-        assert before == (self.book, self.execution, item)
+        _assert_iterative_value_equal(
+            second,
+            first,
+            "the venue reducer produced structurally divergent transitions",
+        )
+        assert before == _iterative_value_fingerprint(
+            self.book, self.execution, item
+        ), "the venue reducer mutated an input graph"
         assert first.disposition is expected
         self.book = first.book
         self.execution = first.execution
@@ -1334,11 +1368,17 @@ class ManualFlattenMachine(RuleBasedStateMachine):
         expected: object,
         update: bool = True,
     ) -> object:
-        before = (self.state, self.execution, item)
+        before = _iterative_value_fingerprint(self.state, self.execution, item)
         first = self.reducer(self.state, self.execution, item)
         second = self.reducer(self.state, self.execution, item)
-        assert second == first
-        assert before == (self.state, self.execution, item)
+        _assert_iterative_value_equal(
+            second,
+            first,
+            "the authority reducer produced structurally divergent transitions",
+        )
+        assert before == _iterative_value_fingerprint(
+            self.state, self.execution, item
+        ), "the authority reducer mutated an input graph"
         assert first.disposition is expected
         if update:
             self.state = first.state
@@ -1357,11 +1397,17 @@ class ManualFlattenMachine(RuleBasedStateMachine):
             if type(item) is CloseAcceptanceSet
             else apply_venue_recovery_input
         )
-        before = (self.state.venue, self.execution, item)
+        before = _iterative_value_fingerprint(self.state.venue, self.execution, item)
         first = reducer(self.state.venue, self.execution, item)
         second = reducer(self.state.venue, self.execution, item)
-        assert second == first
-        assert before == (self.state.venue, self.execution, item)
+        _assert_iterative_value_equal(
+            second,
+            first,
+            "the venue reducer produced structurally divergent transitions",
+        )
+        assert before == _iterative_value_fingerprint(
+            self.state.venue, self.execution, item
+        ), "the venue reducer mutated an input graph"
         assert first.disposition is expected
         self.state = _forge_venue(self.state, first.book)
         self.execution = first.execution

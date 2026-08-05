@@ -142,3 +142,10 @@
   Effective lifecycle remains `REVIEW` until the immutable closeout SHA passes unchanged exact-head
   Python 3.11/3.12 CI. No reset work order is active; WO-0149, M2, credentials, broker/Paper,
   persistent application database, runtime wiring, PR/merge, deletion, and cleanup remain inactive.
+
+- 2026-08-04: Preserved failed exact-head run #691 as negative evidence: Python 3.12 passed, while
+  seven Python 3.11 cases exhausted recursion only in shared test equality after 5,828 passes. The
+  independently accepted root correction is test-only, explicit-stack, complete, and alias/cycle
+  aware. Its exact regression focus passed 8/8, author/reviewer affected sets passed 704/704 and
+  642/642, R2 passed 61/61, and the full 5,848-test gate passed with zero failures/errors at
+  `93.01194919026261%`. A new exact-head dual-version run remains mandatory; WO-0149/M2 stay inactive.

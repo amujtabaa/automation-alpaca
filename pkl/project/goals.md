@@ -115,3 +115,8 @@ Roadmapping against an unverified codebase state repeats the failure mode Fable 
   lifecycle remains `REVIEW` until the immutable closeout SHA passes unchanged Python 3.11/3.12 CI.
   No reset work order is active; `WO-0149`, M2, runtime/persistence, broker/network, credentials,
   merge, deletion, and cleanup remain inactive.
+- 2026-08-04: Exact-head run #691 invalidated the first WO-0148 closeout only on Python 3.11's
+  recursive test-oracle equality; Python 3.12 passed and no production reducer failed. A test-only
+  complete explicit-stack successor received independent `ACCEPT` with no P0/P1, then passed 61/61
+  R2 cases and 5,848 repository tests at `93.01194919026261%`. Effective lifecycle remains `REVIEW`
+  pending a new unchanged dual-version exact-head run; WO-0149 and M2 remain inactive.

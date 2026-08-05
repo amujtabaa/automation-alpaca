@@ -8,7 +8,7 @@ production exposes no hydrate, promote, refill, grant, or test-state factory.
 from __future__ import annotations
 
 from copy import copy
-from dataclasses import fields, replace
+from dataclasses import dataclass, fields, is_dataclass, replace
 from decimal import Decimal
 import importlib
 from types import ModuleType
@@ -138,17 +138,123 @@ def _required(module: ModuleType, *names: str) -> tuple[object, ...]:
     return tuple(getattr(module, name) for name in names)
 
 
+def _iterative_value_fingerprint(*roots: object) -> tuple[object, ...]:
+    """Flatten a complete immutable value graph without Python recursion."""
+
+    pending = list(reversed(roots))
+    fingerprint: list[object] = []
+    seen_containers: dict[int, int] = {}
+    while pending:
+        value = pending.pop()
+        if is_dataclass(value) and not isinstance(value, type):
+            object_id = id(value)
+            if object_id in seen_containers:
+                fingerprint.append(("reference", seen_containers[object_id]))
+                continue
+            ordinal = len(seen_containers)
+            seen_containers[object_id] = ordinal
+            value_fields = fields(value)
+            value_type = type(value)
+            fingerprint.append(
+                (
+                    "dataclass",
+                    ordinal,
+                    value_type.__module__,
+                    value_type.__qualname__,
+                    tuple(field.name for field in value_fields),
+                )
+            )
+            pending.extend(
+                getattr(value, field.name) for field in reversed(value_fields)
+            )
+        elif type(value) is tuple:
+            object_id = id(value)
+            if object_id in seen_containers:
+                fingerprint.append(("reference", seen_containers[object_id]))
+                continue
+            ordinal = len(seen_containers)
+            seen_containers[object_id] = ordinal
+            fingerprint.append(("tuple", ordinal, len(value)))
+            pending.extend(reversed(value))
+        elif isinstance(value, (list, dict, set, frozenset, bytearray)):
+            raise TypeError(
+                "iterative fingerprint does not accept mutable or unordered "
+                f"container {type(value).__qualname__}"
+            )
+        else:
+            value_type = type(value)
+            fingerprint.append(
+                (
+                    "leaf",
+                    value_type.__module__,
+                    value_type.__qualname__,
+                    repr(value),
+                )
+            )
+    return tuple(fingerprint)
+
+
+def _assert_iterative_value_equal(
+    actual: object,
+    expected: object,
+    message: str,
+) -> None:
+    if _iterative_value_fingerprint(actual) != _iterative_value_fingerprint(expected):
+        pytest.fail(message)
+
+
+@dataclass(frozen=True)
+class _FingerprintNode:
+    value: int
+    children: tuple["_FingerprintNode", ...]
+
+
+def _deep_fingerprint_chain(leaf_value: int) -> _FingerprintNode:
+    current = _FingerprintNode(leaf_value, ())
+    for value in range(1_200):
+        current = _FingerprintNode(value, (current,))
+    return current
+
+
+def test_iterative_value_fingerprint_is_deep_complete_and_alias_aware() -> None:
+    same_left = _deep_fingerprint_chain(7)
+    same_right = _deep_fingerprint_chain(7)
+    changed_leaf = _deep_fingerprint_chain(8)
+    assert _iterative_value_fingerprint(same_left) == _iterative_value_fingerprint(
+        same_right
+    )
+    assert _iterative_value_fingerprint(same_left) != _iterative_value_fingerprint(
+        changed_leaf
+    )
+
+    shared_leaf = _FingerprintNode(9, ())
+    shared = _FingerprintNode(10, (shared_leaf, shared_leaf))
+    duplicated = _FingerprintNode(
+        10,
+        (_FingerprintNode(9, ()), _FingerprintNode(9, ())),
+    )
+    assert _iterative_value_fingerprint(shared) != _iterative_value_fingerprint(
+        duplicated
+    )
+
+
 def _authority_apply_twice(
     module: ModuleType,
     state: object,
     execution: ExecutionSnapshot,
     item: object,
 ) -> object:
-    before = (state, execution, item)
+    before = _iterative_value_fingerprint(state, execution, item)
     first = module.apply_execution_authority_input(state, execution, item)
     second = module.apply_execution_authority_input(state, execution, item)
-    assert second == first
-    assert before == (state, execution, item)
+    _assert_iterative_value_equal(
+        second,
+        first,
+        "the authority reducer produced structurally divergent transitions",
+    )
+    assert before == _iterative_value_fingerprint(state, execution, item), (
+        "the authority reducer mutated an input graph"
+    )
     return first
 
 
@@ -162,11 +268,17 @@ def _public_venue_apply_twice(
         if type(item) is CloseAcceptanceSet
         else apply_venue_recovery_input
     )
-    before = (book, execution, item)
+    before = _iterative_value_fingerprint(book, execution, item)
     first = reducer(book, execution, item)
     second = reducer(book, execution, item)
-    assert second == first
-    assert before == (book, execution, item)
+    _assert_iterative_value_equal(
+        second,
+        first,
+        "the venue reducer produced structurally divergent transitions",
+    )
+    assert before == _iterative_value_fingerprint(book, execution, item), (
+        "the venue reducer mutated an input graph"
+    )
     return first
 
 
@@ -391,7 +503,7 @@ def _private_venue_apply(
     import app.execution_core.venue as venue
 
     assert hasattr(venue, "_apply_venue_input")
-    before = (book, execution, item)
+    before = _iterative_value_fingerprint(book, execution, item)
     if (
         type(item) is CloseAcceptanceSet
         and item.proof.kind is not AcceptanceProofKind.NEVER_DISPATCHED
@@ -402,8 +514,14 @@ def _private_venue_apply(
     else:
         first = venue._apply_venue_input(book, execution, item)
         second = venue._apply_venue_input(book, execution, item)
-    assert second == first
-    assert before == (book, execution, item)
+    _assert_iterative_value_equal(
+        second,
+        first,
+        "the private venue reducer produced structurally divergent transitions",
+    )
+    assert before == _iterative_value_fingerprint(book, execution, item), (
+        "the private venue reducer mutated an input graph"
+    )
     return first
 
 
