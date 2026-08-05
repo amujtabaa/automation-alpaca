@@ -17,6 +17,7 @@ from dataclasses import (
     MISSING,
     FrozenInstanceError,
     dataclass,
+    field,
     fields,
     is_dataclass,
     make_dataclass,
@@ -129,6 +130,25 @@ BASE_CLAIM = venue_fixtures.CLAIM
 SCALE = PriceScale(Decimal("1"))
 TICK = TickMetadata(tick_units=PriceUnits(1), scale=SCALE)
 _U64_MAX = (1 << 64) - 1
+_MARKET_OCCURRENCE_FIELDS = (
+    "occurrence_id",
+    "source_id",
+    "stream_generation",
+    "position_scope",
+    "session_id",
+    "market_epoch",
+    "source_sequence",
+    "source_time",
+    "evaluation_time",
+    "kind",
+    "best_bid",
+    "best_ask",
+    "trade_price",
+    "atr_distance",
+    "structure_trail",
+    "halted",
+)
+_MARKET_OCCURRENCE_INIT_FIELDS = _MARKET_OCCURRENCE_FIELDS[1:]
 _ADR023_MARKET_CURSOR_FIELD_ORDER = (
     "_market_occurrence_epoch",
     "_market_committed_epoch",
@@ -2644,6 +2664,8 @@ def _assert_generated_special_matches(
 def _assert_passive_dataclass_metadata(
     value_type: type[object],
     expected_shape: tuple[str, ...] | None = None,
+    *,
+    expected_init_fields: tuple[str, ...] | None = None,
 ) -> tuple[str, ...]:
     """Pin dataclass metadata before any helper or descriptor is allowed to read it."""
     assert type(value_type) is type, "dataclass has a custom metaclass"
@@ -2675,6 +2697,13 @@ def _assert_passive_dataclass_metadata(
     if expected_shape is not None:
         assert field_names == expected_shape, "passive value field inventory changed"
     assert tuple(annotations) == field_names, "dataclass annotation inventory changed"
+    init_field_names = (
+        field_names if expected_init_fields is None else expected_init_fields
+    )
+    assert (
+        tuple(name for name in field_names if name in init_field_names)
+        == init_field_names
+    ), "dataclass field init inventory changed"
     for name, retained in raw_fields.items():
         assert type(retained) is _PASSIVE_FIELD_METADATA_TYPE
         assert object.__getattribute__(retained, "name") == name
@@ -2685,7 +2714,9 @@ def _assert_passive_dataclass_metadata(
         assert object.__getattribute__(retained, "default_factory") is MISSING
         assert object.__getattribute__(retained, "repr") is True
         assert object.__getattribute__(retained, "hash") is None
-        assert object.__getattribute__(retained, "init") is True
+        assert object.__getattribute__(retained, "init") is (
+            name in init_field_names
+        ), "dataclass field init inventory changed"
         assert object.__getattribute__(retained, "compare") is True
         assert object.__getattribute__(retained, "kw_only") is False
         assert object.__getattribute__(retained, "_field_type") is _PASSIVE_FIELD_KIND
@@ -2722,7 +2753,7 @@ def _assert_passive_dataclass_metadata(
     slots = namespace.get("__slots__")
     assert type(slots) is tuple and slots == field_names
     match_args = namespace.get("__match_args__")
-    assert type(match_args) is tuple and match_args == field_names
+    assert type(match_args) is tuple and match_args == init_field_names
 
     reference_namespace: dict[str, object] = {}
     if "__post_init__" in namespace:
@@ -2733,7 +2764,12 @@ def _assert_passive_dataclass_metadata(
         reference_namespace["__post_init__"] = __post_init__
     reference_type = make_dataclass(
         "_PassiveDataclassReference",
-        [(name, object) for name in field_names],
+        [
+            (name, object)
+            if name in init_field_names
+            else (name, object, field(init=False))
+            for name in field_names
+        ],
         namespace=reference_namespace,
         init=parameter_values["init"],
         repr=True,
@@ -3267,9 +3303,14 @@ def _assert_opaque_lifecycle(
 def _assert_passive_lifecycle(
     value_type: type[object],
     owner_module: ModuleType,
+    *,
+    expected_init_fields: tuple[str, ...] | None = None,
 ) -> None:
     """Constrain lifecycle code to exact opaque or sequential validation forms."""
-    field_names = _assert_passive_dataclass_metadata(value_type)
+    field_names = _assert_passive_dataclass_metadata(
+        value_type,
+        expected_init_fields=expected_init_fields,
+    )
     _assert_passive_slot_descriptors(value_type, field_names)
     for name in _retained_behavior_names(value_type) & _DATACLASS_LIFECYCLE_SPECIALS:
         raw_lifecycle = inspect.getattr_static(value_type, name)
@@ -3311,6 +3352,7 @@ def _assert_passive_value_graph(
     value: object,
     *,
     allowed_shapes: dict[type[object], tuple[str, ...]],
+    allowed_init_shapes: dict[type[object], tuple[str, ...]] | None = None,
     trusted_leaf_types: frozenset[type[object]] = frozenset(),
     allowed_enum_shapes: dict[type[Enum], tuple[str, ...]] | None = None,
 ) -> None:
@@ -3372,9 +3414,15 @@ def _assert_passive_value_graph(
             f"{current_type.__name__}"
         )
         assert inspect.getmro(current_type) == (current_type, object)
+        expected_init_fields = (
+            None
+            if allowed_init_shapes is None
+            else allowed_init_shapes.get(current_type)
+        )
         actual_fields = _assert_passive_dataclass_metadata(
             current_type,
             expected_shape,
+            expected_init_fields=expected_init_fields,
         )
         _assert_passive_slot_descriptors(current_type, actual_fields)
         behavior = _retained_behavior_names(current_type)
@@ -3383,7 +3431,11 @@ def _assert_passive_value_graph(
         )
         owner_module = inspect.getmodule(current_type)
         assert owner_module is not None
-        _assert_passive_lifecycle(current_type, owner_module)
+        _assert_passive_lifecycle(
+            current_type,
+            owner_module,
+            expected_init_fields=expected_init_fields,
+        )
         pending.extend(object.__getattribute__(current, name) for name in actual_fields)
 
 
@@ -4647,7 +4699,13 @@ def test_public_entrypoint_argument_types_are_unconditionally_sealed() -> None:
         owner_module = inspect.getmodule(value_type)
         assert owner_module is not None, label
         assert "__init_subclass__" in _retained_behavior_names(value_type), label
-        _assert_passive_lifecycle(value_type, owner_module)
+        _assert_passive_lifecycle(
+            value_type,
+            owner_module,
+            expected_init_fields=(
+                _MARKET_OCCURRENCE_INIT_FIELDS if label == "occurrence" else None
+            ),
+        )
         with pytest.raises(TypeError):
             type(f"Forged{label.title()}", (value_type,), {"__slots__": ()})
 
@@ -4760,24 +4818,7 @@ def test_public_value_shapes_and_enum_members_are_exact() -> None:
             "maximum_goal_rate",
             "deadline",
         ),
-        "MarketOccurrence": (
-            "occurrence_id",
-            "source_id",
-            "stream_generation",
-            "position_scope",
-            "session_id",
-            "market_epoch",
-            "source_sequence",
-            "source_time",
-            "evaluation_time",
-            "kind",
-            "best_bid",
-            "best_ask",
-            "trade_price",
-            "atr_distance",
-            "structure_trail",
-            "halted",
-        ),
+        "MarketOccurrence": _MARKET_OCCURRENCE_FIELDS,
         "PositionProtectionState": (
             "policy",
             "mandate",
@@ -4853,7 +4894,13 @@ def test_public_value_shapes_and_enum_members_are_exact() -> None:
         (value_type,) = _required(module, name)
         assert type(value_type) is type
         assert inspect.getmro(value_type) == (value_type, object)
-        actual_fields = _assert_passive_dataclass_metadata(value_type)
+        expected_init_fields = (
+            _MARKET_OCCURRENCE_INIT_FIELDS if name == "MarketOccurrence" else None
+        )
+        actual_fields = _assert_passive_dataclass_metadata(
+            value_type,
+            expected_init_fields=expected_init_fields,
+        )
         assert (
             tuple(
                 field_name
@@ -4870,7 +4917,11 @@ def test_public_value_shapes_and_enum_members_are_exact() -> None:
             assert behavior == {"__init__", "__init_subclass__"}
         else:
             assert behavior <= _DATACLASS_LIFECYCLE_SPECIALS
-        _assert_passive_lifecycle(value_type, module)
+        _assert_passive_lifecycle(
+            value_type,
+            module,
+            expected_init_fields=expected_init_fields,
+        )
 
 
 def test_public_behavior_seal_detects_inherited_capability_mutant() -> None:
@@ -4951,6 +5002,42 @@ def test_passive_enum_seal_rejects_capability_method_mutant() -> None:
             _CapabilityEnum.SAFE,
             allowed_shapes={},
             allowed_enum_shapes={_CapabilityEnum: ("SAFE",)},
+        )
+
+
+def test_passive_dataclass_seal_pins_one_derived_identity_field() -> None:
+    """Only the named derived field may be absent from constructor metadata."""
+
+    @dataclass(frozen=True, slots=True)
+    class _DerivedIdentityProbe:
+        occurrence_id: object = field(init=False)
+        source_id: object
+
+    @dataclass(frozen=True, slots=True)
+    class _ExtraDerivedFieldMutant:
+        occurrence_id: object = field(init=False)
+        source_id: object = field(init=False)
+
+    shape = ("occurrence_id", "source_id")
+    assert (
+        _assert_passive_dataclass_metadata(
+            _DerivedIdentityProbe,
+            shape,
+            expected_init_fields=("source_id",),
+        )
+        == shape
+    )
+    with pytest.raises(AssertionError, match="field init inventory changed"):
+        _assert_passive_dataclass_metadata(
+            _DerivedIdentityProbe,
+            shape,
+            expected_init_fields=shape,
+        )
+    with pytest.raises(AssertionError, match="field init inventory changed"):
+        _assert_passive_dataclass_metadata(
+            _ExtraDerivedFieldMutant,
+            shape,
+            expected_init_fields=("source_id",),
         )
 
 
@@ -12728,6 +12815,9 @@ def test_value_objects_expose_no_mutating_or_broker_capability_fields() -> None:
         _assert_passive_value_graph(
             retained,
             allowed_shapes=allowed_shapes,
+            allowed_init_shapes={
+                type(occurrence): _MARKET_OCCURRENCE_INIT_FIELDS,
+            },
             trusted_leaf_types=trusted_leaf_types,
             allowed_enum_shapes=allowed_enum_shapes,
         )

@@ -1330,3 +1330,26 @@ This is pre-freeze evidence only. Application code remains unchanged and barred 
 replacement RED candidate is committed immutably and receives one fresh materiality-bounded
 independent exact-delta `ACCEPT` with P0=0 and P1=0. No broader review cycle is required absent a
 new material contradiction.
+
+### ADR-023 R1 first exact review and metadata-seal successor
+
+The independent review of immutable replacement RED commit
+`7e0b869c852b66a6744b447429f4bf0eca756b5b` returned `ACCEPT-WITH-CHANGES`, P0=0,
+P1=1, P2=0. The sole P1 was an internal test-contract contradiction: the generic passive-dataclass
+seal required every field to be constructor-initialized even though ratified R1 and two dedicated
+runtime pins require `MarketOccurrence.occurrence_id` to be derived with `init=False`.
+
+The owning helper now accepts an explicit exact constructor-field inventory, validates each field's
+`init` flag and constructor-only `__match_args__`, and builds its independent reference dataclass
+with the same metadata. Only `MarketOccurrence.occurrence_id` is excluded. A new failure-capable
+control proves that omitting the exception or excluding any additional field fails.
+
+The passive helper selection passes 17/17 and focused R1 controls pass 5/5. The successor RED
+classification is 506 total, 410 intentional structural failures, 96 passing controls, zero errors,
+and zero skips. Predecessor collection remains exactly 745; no predecessor or application file
+changed, and the preserved fresh 745/745 artifact remains hash-identical. Exact evidence is in
+`work/review/REV-0050/adr023-r1-red-freeze/RED-SUCCESSOR-EVIDENCE.md`.
+
+Production remains unchanged and barred. Freeze this bounded successor and review only the exact
+P1 correction. Application work may begin only after that immutable successor receives `ACCEPT`
+with P0=0 and P1=0.
