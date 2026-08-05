@@ -2973,9 +2973,7 @@ def _protection_write_effect_violations(
         and parents[node].name == "MarketOccurrence"
         for node in ast.walk(tree)
     )
-    if (require_complete or occurrence_post_init_present) and len(
-        occurrence_identity_setters
-    ) != 1:
+    if occurrence_post_init_present and len(occurrence_identity_setters) != 1:
         violations.append(
             f"{_display(path, tree)} derived occurrence identity setter is not exact"
         )

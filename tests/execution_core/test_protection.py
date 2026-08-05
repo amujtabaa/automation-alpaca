@@ -3300,6 +3300,71 @@ def _assert_opaque_lifecycle(
     )
 
 
+def _market_occurrence_validation_prefix(
+    statements: list[ast.stmt],
+) -> list[ast.stmt]:
+    """Remove one exact deterministic derived-id tail from passive validation."""
+
+    assert len(statements) >= 2
+    assignment = statements[-2]
+    assert isinstance(assignment, ast.Assign)
+    assert len(assignment.targets) == 1
+    assert isinstance(assignment.targets[0], ast.Name)
+    assert assignment.targets[0].id == "preimage"
+    assert isinstance(assignment.value, ast.Call)
+    assert isinstance(assignment.value.func, ast.Name)
+    assert assignment.value.func.id == "_market_occurrence_preimage"
+    assert not assignment.value.args
+    assert all(keyword.arg is not None for keyword in assignment.value.keywords)
+    observed = tuple(
+        (keyword.arg, ast.unparse(keyword.value))
+        for keyword in assignment.value.keywords
+    )
+    assert observed == (
+        ("source_id", "self.source_id.value"),
+        ("position_scope", "self.position_scope"),
+        ("session_id", "self.session_id.value"),
+        ("stream_generation", "self.stream_generation._bytes"),
+        ("market_epoch", "self.market_epoch"),
+        ("source_sequence", "self.source_sequence"),
+        ("source_time", "self.source_time"),
+        ("kind", "self.kind.value"),
+        ("best_bid", "self.best_bid"),
+        ("best_ask", "self.best_ask"),
+        ("trade_price", "self.trade_price"),
+        ("atr_distance", "self.atr_distance"),
+        ("structure_trail", "self.structure_trail"),
+        ("halted", "self.halted"),
+    )
+
+    statement = statements[-1]
+    assert isinstance(statement, ast.Expr)
+    setter = statement.value
+    assert isinstance(setter, ast.Call)
+    assert _lifecycle_attribute_path(setter.func) == ("object", "__setattr__")
+    assert len(setter.args) == 3 and not setter.keywords
+    assert isinstance(setter.args[0], ast.Name) and setter.args[0].id == "self"
+    assert isinstance(setter.args[1], ast.Constant)
+    assert setter.args[1].value == "occurrence_id"
+    constructor = setter.args[2]
+    assert isinstance(constructor, ast.Call)
+    assert isinstance(constructor.func, ast.Name)
+    assert constructor.func.id == "_MarketOccurrenceId"
+    assert len(constructor.args) == 1 and not constructor.keywords
+    digest = constructor.args[0]
+    assert isinstance(digest, ast.Call)
+    assert _lifecycle_attribute_path(digest.func) is None
+    assert isinstance(digest.func, ast.Attribute) and digest.func.attr == "hexdigest"
+    assert not digest.args and not digest.keywords
+    hash_call = digest.func.value
+    assert isinstance(hash_call, ast.Call)
+    assert isinstance(hash_call.func, ast.Name) and hash_call.func.id == "_sha256"
+    assert len(hash_call.args) == 1 and not hash_call.keywords
+    assert isinstance(hash_call.args[0], ast.Name)
+    assert hash_call.args[0].id == "preimage"
+    return statements[:-2]
+
+
 def _assert_passive_lifecycle(
     value_type: type[object],
     owner_module: ModuleType,
@@ -3340,8 +3405,11 @@ def _assert_passive_lifecycle(
         assert function.args.vararg is None and function.args.kwarg is None
         assert not function.args.kwonlyargs
         assert not function.args.defaults and not function.args.kw_defaults
+        statements = function.body
+        if value_type.__name__ == "MarketOccurrence":
+            statements = _market_occurrence_validation_prefix(statements)
         _assert_passive_post_init_statements(
-            function.body,
+            statements,
             lifecycle=lifecycle,
             field_names=frozenset(field_names),
             guarded_types={},
@@ -4288,8 +4356,8 @@ def _emergency_goal_fixture(
             bid=second_bid,
             ask=second_bid + tick_units,
             sequence=2 if sequence_mode == "SEQUENCED" else None,
-            source_time=106,
-            evaluation_time=110,
+            source_time=107 if market_label is not None else 106,
+            evaluation_time=111 if market_label is not None else 110,
             tick_units=tick_units,
             scale=scale,
             source_id=current_mandate.evidence_policy.source_id,
@@ -5257,6 +5325,95 @@ def test_passive_value_graph_rejects_capability_and_forged_dataclass_metadata() 
         )
     mutable.value = 2
     assert mutable.value == 2
+
+
+def test_passive_lifecycle_derived_identity_tail_is_failure_capable() -> None:
+    module = _protection_module()
+    lifecycle = module.MarketOccurrence.__post_init__
+    source = textwrap.dedent(inspect.getsource(lifecycle))
+
+    def statements_from(candidate: str) -> list[ast.stmt]:
+        tree = ast.parse(candidate)
+        function = tree.body[0]
+        assert isinstance(function, ast.FunctionDef)
+        return function.body
+
+    def validate(candidate: str) -> None:
+        statements = _market_occurrence_validation_prefix(statements_from(candidate))
+        _assert_passive_post_init_statements(
+            statements,
+            lifecycle=lifecycle,
+            field_names=frozenset(
+                retained_field.name
+                for retained_field in fields(module.MarketOccurrence)
+            ),
+            guarded_types={},
+        )
+
+    validate(source)
+    setter = source[source.index("    object.__setattr__(") :]
+    mutants = {
+        "wrong local": source.replace("preimage =", "other =", 1),
+        "wrong helper": source.replace(
+            "_market_occurrence_preimage(",
+            "_other_preimage(",
+            1,
+        ),
+        "wrong source": source.replace(
+            "source_id=self.source_id.value",
+            "source_id=self.session_id.value",
+            1,
+        ),
+        "wrong receiver": source.replace(
+            '        self,\n        "occurrence_id",',
+            '        other,\n        "occurrence_id",',
+            1,
+        ),
+        "wrong field": source.replace('"occurrence_id",', '"source_id",', 1),
+        "wrong constructor": source.replace(
+            "_MarketOccurrenceId(",
+            "_MarketDataSourceId(",
+            1,
+        ),
+        "wrong hash input": source.replace(
+            "_sha256(preimage)",
+            "_sha256(other)",
+            1,
+        ),
+        "duplicate setter": source + setter,
+        "self rebinding": source.replace(
+            "    preimage = _market_occurrence_preimage(",
+            "    self = other\n    preimage = _market_occurrence_preimage(",
+            1,
+        ),
+        "dependency rebinding": source.replace(
+            "    preimage = _market_occurrence_preimage(",
+            "    _sha256 = other\n    preimage = _market_occurrence_preimage(",
+            1,
+        ),
+        "preimage rebinding": source.replace(
+            "    object.__setattr__(",
+            "    preimage = other\n    object.__setattr__(",
+            1,
+        ),
+        "reordered preimage": source.replace(
+            "        source_id=self.source_id.value,\n"
+            "        position_scope=self.position_scope,",
+            "        position_scope=self.position_scope,\n"
+            "        source_id=self.source_id.value,",
+            1,
+        ),
+        "unrelated assignment": source.replace(
+            "    preimage = _market_occurrence_preimage(",
+            "    unrelated = other\n    preimage = _market_occurrence_preimage(",
+            1,
+        ),
+        "trailing statement": source + "    pass\n",
+    }
+    for label, mutant in mutants.items():
+        assert mutant != source, label
+        with pytest.raises(AssertionError):
+            validate(mutant)
 
 
 def test_passive_lifecycle_accepts_exact_sequential_validation() -> None:
@@ -7179,7 +7336,10 @@ def test_late_owned_buy_after_flat_restores_hard_bail_and_alert() -> None:
     assert recovered.goal is None
 
     (disposition,) = _required(module, "ProtectionDisposition")
-    for replayed_occurrence in (pre_flat_occurrence, flat_occurrence):
+    for replayed_occurrence, expected_disposition in (
+        (pre_flat_occurrence, disposition.STALE),
+        (flat_occurrence, disposition.EXACT_REPLAY),
+    ):
         replayed = _reduce(
             module,
             recovered.state,
@@ -7189,7 +7349,7 @@ def test_late_owned_buy_after_flat_restores_hard_bail_and_alert() -> None:
                 evaluation_time=replayed_occurrence.evaluation_time + 100,
             ),
         )
-        assert replayed.disposition is disposition.EXACT_REPLAY
+        assert replayed.disposition is expected_disposition
         assert replayed.state == recovered.state
         assert replayed.goal is None
 
@@ -8631,7 +8791,7 @@ def test_formula_loss_discards_market_evidence_and_restores_a_fresh_branch() -> 
                 evaluation_time=replayed_occurrence.evaluation_time + 100,
             ),
         )
-        assert replayed.disposition is disposition.EXACT_REPLAY
+        assert replayed.disposition is disposition.STALE
         assert replayed.state == restored.state
         assert replayed.goal is None
 
@@ -9705,13 +9865,12 @@ def test_cross_kind_market_step_limit_uses_the_last_eligible_primary(
             kind=first_kind,
             bid=92 if first_kind == "BEST_BID" else None,
             ask=93 if first_kind == "BEST_BID" else None,
-            trade=1 if first_kind == "TRADE" else None,
+            trade=92 if first_kind == "TRADE" else None,
             sequence=1,
         ),
     )
-    expected_primary = 92 if first_kind == "BEST_BID" else 1
     assert type(first.state._market_last_primary) is ReportedPrice
-    assert first.state._market_last_primary == _price(expected_primary)
+    assert first.state._market_last_primary == _price(92)
     second_kind = "TRADE" if first_kind == "BEST_BID" else "BEST_BID"
     second = _reduce(
         module,
@@ -9721,8 +9880,8 @@ def test_cross_kind_market_step_limit_uses_the_last_eligible_primary(
             module,
             f"protection-cross-kind-step-{first_kind}-second",
             kind=second_kind,
-            bid=92 if second_kind == "BEST_BID" else None,
-            ask=93 if second_kind == "BEST_BID" else None,
+            bid=1 if second_kind == "BEST_BID" else None,
+            ask=2 if second_kind == "BEST_BID" else None,
             trade=1 if second_kind == "TRADE" else None,
             sequence=2,
             source_time=106,

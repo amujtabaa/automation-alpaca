@@ -1390,3 +1390,32 @@ Treat this as an in-scope P1 RED-oracle feasibility repair discovered by hostile
 Freeze and independently review its exact test/work-order delta before relying on it for final
 WO-0148 acceptance. The partially implemented application state remains uncommitted during that
 review and is not evidence that the corrected oracle is valid.
+
+### ADR-023 R1 lifecycle-oracle successor correction
+
+The independent exact-delta review of `157c7d43c11c9323cd9e7aba7ed5168cc0f8132e`
+returned `ACCEPT-WITH-CHANGES`, P0=0/P1=1/P2=0. The admitted write call was exact, but a
+separate passive-lifecycle oracle still rejected the required adjacent preimage binding and setter
+expression. That left the complete RED contract structurally unsatisfiable.
+
+The owning lifecycle oracle now recognizes one complete canonical tail only: the exact ordered
+`_market_occurrence_preimage(...)` input inventory followed immediately by the exact derived
+`occurrence_id` setter. Fourteen direct variants prove that wrong local/helper/source/receiver/
+field/constructor/hash input, duplication, rebinding, keyword reordering, unrelated assignment,
+and trailing work remain refused. The import-boundary rule was also corrected at its source so the
+setter requirement applies only when a module actually defines `MarketOccurrence.__post_init__`;
+unrelated complete-grammar fixtures and the standalone field-call fixture no longer produce false
+positives, while malformed lifecycle setters still fail.
+
+The same successor reconciles three pre-amendment expectations with the ratified bounded cursor:
+a current derived identity remains `EXACT_REPLAY` while a non-current lower coordinate is `STALE`;
+the cross-kind maximum-step example begins with an admissible first primary relative to the
+recovery baseline; and the exit-provenance independence fixture now changes a genuine immutable
+occurrence input rather than a discarded test label.
+
+Fresh author-side evidence is 34/34 for the originally failing and failure-capability focus,
+446/446 for the complete pure protection contract, and 62/62 for the stateful plus import-boundary
+suites. Ruff lint/format and `git diff --check` pass. Application files remain uncommitted and are
+not evidence for this test correction. Freeze this exact test/work-order successor and obtain one
+materiality-bounded independent exact-delta review with P0=0/P1=0 before relying on the RED contract
+for production acceptance.
