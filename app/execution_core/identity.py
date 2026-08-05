@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from hashlib import sha256
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,6 +115,78 @@ class MarketDataSourceId(_ExactIdentity):
 @dataclass(frozen=True, slots=True)
 class MarketOccurrenceId(_ExactIdentity):
     """Exact immutable market-data occurrence identity."""
+
+    _bytes: bytes = field(init=False, repr=False)
+    _seal: bytes = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        _ExactIdentity.__post_init__(self)
+        if len(self.value) != 64 or any(
+            character not in "0123456789abcdef" for character in self.value
+        ):
+            raise ValueError(
+                "market occurrence identity must be lowercase SHA-256 hexadecimal text"
+            )
+        decoded = bytes.fromhex(self.value)
+        encoded = self.value.encode("ascii")
+        object.__setattr__(self, "_bytes", decoded)
+        object.__setattr__(
+            self,
+            "_seal",
+            sha256(int.to_bytes(len(encoded), 8, "big") + encoded + decoded).digest(),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class MarketStreamGenerationId(_ExactIdentity):
+    """Exact immutable market-data stream-generation identity."""
+
+    _bytes: bytes = field(init=False, repr=False)
+    _seal: bytes = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        _ExactIdentity.__post_init__(self)
+        if len(self.value) != 64 or any(
+            character not in "0123456789abcdef" for character in self.value
+        ):
+            raise ValueError(
+                "market stream generation identity must be lowercase SHA-256 "
+                "hexadecimal text"
+            )
+        decoded = bytes.fromhex(self.value)
+        encoded = self.value.encode("ascii")
+        object.__setattr__(self, "_bytes", decoded)
+        object.__setattr__(
+            self,
+            "_seal",
+            sha256(int.to_bytes(len(encoded), 8, "big") + encoded + decoded).digest(),
+        )
+
+
+def _market_identity_is_canonical(
+    value: MarketOccurrenceId | MarketStreamGenerationId,
+) -> bool:
+    """Re-derive the complete text, byte-cache, and seal relationship."""
+
+    if (
+        type(value) is not MarketOccurrenceId
+        and type(value) is not MarketStreamGenerationId
+    ):
+        return False
+    return (
+        type(value.value) is str
+        and type(value._bytes) is bytes
+        and len(value._bytes) == 32
+        and value.value == value._bytes.hex()
+        and type(value._seal) is bytes
+        and len(value._seal) == 32
+        and value._seal
+        == sha256(
+            int.to_bytes(len(value.value.encode("ascii")), 8, "big")
+            + value.value.encode("ascii")
+            + value._bytes
+        ).digest()
+    )
 
 
 @dataclass(frozen=True, slots=True)

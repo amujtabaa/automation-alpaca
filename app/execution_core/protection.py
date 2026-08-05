@@ -3,25 +3,29 @@
 from __future__ import annotations as _annotations
 
 from dataclasses import dataclass as _dataclass
+from dataclasses import field as _field
 from enum import Enum as _Enum
 from fractions import Fraction as _Fraction
+from hashlib import sha256 as _sha256
 
 from .fills import (
     ExecutionSide as _ExecutionSide,
     PositionScope as _PositionScope,
-    _PersistentKeyMap,
     _commit_parts,
     _encode_fraction,
     _encode_int,
     _encode_position_scope,
     _encode_reported_price,
     _encode_text,
+    _pack_parts,
 )
 from .identity import (
     MandateId as _MandateId,
     MarketDataSourceId as _MarketDataSourceId,
     MarketOccurrenceId as _MarketOccurrenceId,
+    MarketStreamGenerationId as _MarketStreamGenerationId,
     SessionId as _SessionId,
+    _market_identity_is_canonical,
 )
 from .position import (
     BasisAuthority as _BasisAuthority,
@@ -50,6 +54,11 @@ class MarketKind(_Enum):
     TRADE = "TRADE"
 
 
+class MarketSequenceMode(_Enum):
+    SEQUENCED = "SEQUENCED"
+    SOURCE_TIME = "SOURCE_TIME"
+
+
 class ProtectionPolicy(_Enum):
     FLOOR_ONLY = "FLOOR_ONLY"
     TRAIL_ACTIVE = "TRAIL_ACTIVE"
@@ -72,11 +81,15 @@ class ProtectionDisposition(_Enum):
 
 class ProtectionAlert(_Enum):
     LATE_POSITIVE_AFTER_FLAT = "LATE_POSITIVE_AFTER_FLAT"
+    MARKET_BASELINE_REQUIRED = "MARKET_BASELINE_REQUIRED"
+    MARKET_COORDINATE_EXHAUSTED = "MARKET_COORDINATE_EXHAUSTED"
 
 
 @_dataclass(frozen=True, slots=True)
 class EvidencePolicy:
     source_id: _MarketDataSourceId
+    stream_generation: _MarketStreamGenerationId
+    sequence_mode: MarketSequenceMode
     max_age: int
     corroboration_window: int
     max_step_fraction: _Fraction
@@ -84,6 +97,10 @@ class EvidencePolicy:
     def __post_init__(self) -> None:
         if type(self.source_id) is not _MarketDataSourceId:
             raise TypeError("source_id must be MarketDataSourceId")
+        if type(self.stream_generation) is not _MarketStreamGenerationId:
+            raise TypeError("stream_generation must be MarketStreamGenerationId")
+        if type(self.sequence_mode) is not MarketSequenceMode:
+            raise TypeError("sequence_mode must be MarketSequenceMode")
         if type(self.max_age) is not int:
             raise TypeError("max_age must be an exact integer")
         if self.max_age <= 0:
@@ -196,8 +213,9 @@ class ProtectionMandate:
 
 @_dataclass(frozen=True, slots=True)
 class MarketOccurrence:
-    occurrence_id: _MarketOccurrenceId
+    occurrence_id: _MarketOccurrenceId = _field(init=False)
     source_id: _MarketDataSourceId
+    stream_generation: _MarketStreamGenerationId
     position_scope: _PositionScope
     session_id: _SessionId
     market_epoch: int
@@ -213,31 +231,31 @@ class MarketOccurrence:
     halted: bool
 
     def __post_init__(self) -> None:
-        if type(self.occurrence_id) is not _MarketOccurrenceId:
-            raise TypeError("occurrence_id must be MarketOccurrenceId")
         if type(self.source_id) is not _MarketDataSourceId:
             raise TypeError("source_id must be MarketDataSourceId")
+        if type(self.stream_generation) is not _MarketStreamGenerationId:
+            raise TypeError("stream_generation must be MarketStreamGenerationId")
         if type(self.position_scope) is not _PositionScope:
             raise TypeError("position_scope must be PositionScope")
         if type(self.session_id) is not _SessionId:
             raise TypeError("session_id must be SessionId")
         if type(self.market_epoch) is not int:
             raise TypeError("market_epoch must be an exact integer")
-        if self.market_epoch < 0:
-            raise ValueError("market_epoch must be non-negative")
+        if self.market_epoch < 0 or self.market_epoch > 18446744073709551615:
+            raise ValueError("market_epoch must be an unsigned 64-bit integer")
         if self.source_sequence is not None:
             if type(self.source_sequence) is not int:
                 raise TypeError("source_sequence must be an exact integer or None")
-            if self.source_sequence < 0:
-                raise ValueError("source_sequence must be non-negative")
+            if self.source_sequence < 0 or self.source_sequence > 18446744073709551615:
+                raise ValueError("source_sequence must be an unsigned 64-bit integer")
         if type(self.source_time) is not int:
             raise TypeError("source_time must be an exact integer")
-        if self.source_time < 0:
-            raise ValueError("source_time must be non-negative")
+        if self.source_time < 0 or self.source_time > 18446744073709551615:
+            raise ValueError("source_time must be an unsigned 64-bit integer")
         if type(self.evaluation_time) is not int:
             raise TypeError("evaluation_time must be an exact integer")
-        if self.evaluation_time < 0:
-            raise ValueError("evaluation_time must be non-negative")
+        if self.evaluation_time < 0 or self.evaluation_time > 18446744073709551615:
+            raise ValueError("evaluation_time must be an unsigned 64-bit integer")
         if type(self.kind) is not MarketKind:
             raise TypeError("kind must be MarketKind")
         if self.best_bid is not None and type(self.best_bid) is not _ReportedPrice:
@@ -273,6 +291,27 @@ class MarketOccurrence:
                 raise ValueError("TRADE cannot retain bid or ask")
             if self.atr_distance is not None or self.structure_trail is not None:
                 raise ValueError("TRADE cannot retain trailing components")
+        preimage = _market_occurrence_preimage(
+            source_id=self.source_id.value,
+            position_scope=self.position_scope,
+            session_id=self.session_id.value,
+            stream_generation=self.stream_generation._bytes,
+            market_epoch=self.market_epoch,
+            source_sequence=self.source_sequence,
+            source_time=self.source_time,
+            kind=self.kind.value,
+            best_bid=self.best_bid,
+            best_ask=self.best_ask,
+            trade_price=self.trade_price,
+            atr_distance=self.atr_distance,
+            structure_trail=self.structure_trail,
+            halted=self.halted,
+        )
+        object.__setattr__(
+            self,
+            "occurrence_id",
+            _MarketOccurrenceId(_sha256(preimage).hexdigest()),
+        )
 
     def __init_subclass__(cls, **kwargs: object) -> None:
         raise TypeError("MarketOccurrence cannot be subclassed")
@@ -293,26 +332,23 @@ class PositionProtectionState:
     commitment: bytes
     _cursor_ordinal: int
     _cursor_head: bytes
-    _stream_epoch: int
-    _stream_sequence: int
-    _stream_source_time: int
-    _stream_evaluation_time: int
-    _stream_halted: bool
-    _seen_occurrence_receipts: _PersistentKeyMap
-    _last_primary_present: bool
-    _last_primary_units: int
-    _hard_bid_count: int
-    _hard_bid_sequence: int
-    _hard_bid_source_time: int
-    _hard_bid_identity: bytes
-    _trade_present: bool
-    _trade_source_time: int
-    _trade_identity: bytes
-    _trade_units: int
-    _trail_bid_count: int
-    _trail_bid_sequence: int
-    _trail_bid_source_time: int
-    _trail_bid_identity: bytes
+    _market_occurrence_epoch: int | None
+    _market_committed_epoch: int | None
+    _market_expected_epoch: int | None
+    _market_source_sequence: int | None
+    _market_source_time: int | None
+    _market_evaluation_time: int | None
+    _market_occurrence_identity: _MarketOccurrenceId | None
+    _market_halted: bool
+    _market_baseline_required: bool
+    _market_exhausted: bool
+    _market_last_primary: _ReportedPrice | None
+    _hard_bid_identity: _MarketOccurrenceId | None
+    _hard_bid_source_time: int | None
+    _trade_identity: _MarketOccurrenceId | None
+    _trade_source_time: int | None
+    _trail_bid_identity: _MarketOccurrenceId | None
+    _trail_bid_source_time: int | None
     _exit_provenance: bytes
 
     def __init__(self, *args: object, **kwargs: object) -> None:
@@ -440,26 +476,23 @@ def _new_position_protection_state(
     commitment: bytes,
     _cursor_ordinal: int,
     _cursor_head: bytes,
-    _stream_epoch: int,
-    _stream_sequence: int,
-    _stream_source_time: int,
-    _stream_evaluation_time: int,
-    _stream_halted: bool,
-    _seen_occurrence_receipts: _PersistentKeyMap,
-    _last_primary_present: bool,
-    _last_primary_units: int,
-    _hard_bid_count: int,
-    _hard_bid_sequence: int,
-    _hard_bid_source_time: int,
-    _hard_bid_identity: bytes,
-    _trade_present: bool,
-    _trade_source_time: int,
-    _trade_identity: bytes,
-    _trade_units: int,
-    _trail_bid_count: int,
-    _trail_bid_sequence: int,
-    _trail_bid_source_time: int,
-    _trail_bid_identity: bytes,
+    _market_occurrence_epoch: int | None,
+    _market_committed_epoch: int | None,
+    _market_expected_epoch: int | None,
+    _market_source_sequence: int | None,
+    _market_source_time: int | None,
+    _market_evaluation_time: int | None,
+    _market_occurrence_identity: _MarketOccurrenceId | None,
+    _market_halted: bool,
+    _market_baseline_required: bool,
+    _market_exhausted: bool,
+    _market_last_primary: _ReportedPrice | None,
+    _hard_bid_identity: _MarketOccurrenceId | None,
+    _hard_bid_source_time: int | None,
+    _trade_identity: _MarketOccurrenceId | None,
+    _trade_source_time: int | None,
+    _trail_bid_identity: _MarketOccurrenceId | None,
+    _trail_bid_source_time: int | None,
     _exit_provenance: bytes,
 ) -> PositionProtectionState:
     result = object.__new__(PositionProtectionState)
@@ -476,26 +509,27 @@ def _new_position_protection_state(
     object.__setattr__(result, "commitment", commitment)
     object.__setattr__(result, "_cursor_ordinal", _cursor_ordinal)
     object.__setattr__(result, "_cursor_head", _cursor_head)
-    object.__setattr__(result, "_stream_epoch", _stream_epoch)
-    object.__setattr__(result, "_stream_sequence", _stream_sequence)
-    object.__setattr__(result, "_stream_source_time", _stream_source_time)
-    object.__setattr__(result, "_stream_evaluation_time", _stream_evaluation_time)
-    object.__setattr__(result, "_stream_halted", _stream_halted)
-    object.__setattr__(result, "_seen_occurrence_receipts", _seen_occurrence_receipts)
-    object.__setattr__(result, "_last_primary_present", _last_primary_present)
-    object.__setattr__(result, "_last_primary_units", _last_primary_units)
-    object.__setattr__(result, "_hard_bid_count", _hard_bid_count)
-    object.__setattr__(result, "_hard_bid_sequence", _hard_bid_sequence)
-    object.__setattr__(result, "_hard_bid_source_time", _hard_bid_source_time)
+    object.__setattr__(result, "_market_occurrence_epoch", _market_occurrence_epoch)
+    object.__setattr__(result, "_market_committed_epoch", _market_committed_epoch)
+    object.__setattr__(result, "_market_expected_epoch", _market_expected_epoch)
+    object.__setattr__(result, "_market_source_sequence", _market_source_sequence)
+    object.__setattr__(result, "_market_source_time", _market_source_time)
+    object.__setattr__(result, "_market_evaluation_time", _market_evaluation_time)
+    object.__setattr__(
+        result,
+        "_market_occurrence_identity",
+        _market_occurrence_identity,
+    )
+    object.__setattr__(result, "_market_halted", _market_halted)
+    object.__setattr__(result, "_market_baseline_required", _market_baseline_required)
+    object.__setattr__(result, "_market_exhausted", _market_exhausted)
+    object.__setattr__(result, "_market_last_primary", _market_last_primary)
     object.__setattr__(result, "_hard_bid_identity", _hard_bid_identity)
-    object.__setattr__(result, "_trade_present", _trade_present)
-    object.__setattr__(result, "_trade_source_time", _trade_source_time)
+    object.__setattr__(result, "_hard_bid_source_time", _hard_bid_source_time)
     object.__setattr__(result, "_trade_identity", _trade_identity)
-    object.__setattr__(result, "_trade_units", _trade_units)
-    object.__setattr__(result, "_trail_bid_count", _trail_bid_count)
-    object.__setattr__(result, "_trail_bid_sequence", _trail_bid_sequence)
-    object.__setattr__(result, "_trail_bid_source_time", _trail_bid_source_time)
+    object.__setattr__(result, "_trade_source_time", _trade_source_time)
     object.__setattr__(result, "_trail_bid_identity", _trail_bid_identity)
+    object.__setattr__(result, "_trail_bid_source_time", _trail_bid_source_time)
     object.__setattr__(result, "_exit_provenance", _exit_provenance)
     return result
 
@@ -594,6 +628,8 @@ def _commit_mandate(mandate: ProtectionMandate) -> bytes:
         _encode_text(mandate.emergency_guard.guard_id),
         mandate.emergency_guard.policy_commitment,
         _encode_text(mandate.evidence_policy.source_id.value),
+        _encode_text(mandate.evidence_policy.stream_generation.value),
+        _encode_text(mandate.evidence_policy.sequence_mode.value),
         _encode_int(mandate.evidence_policy.max_age),
         _encode_int(mandate.evidence_policy.corroboration_window),
         _encode_fraction(mandate.evidence_policy.max_step_fraction),
@@ -705,6 +741,151 @@ def _execution_matches_checkpoint(
     )
 
 
+def _u64_bytes(value: int) -> bytes:
+    if type(value) is not int:
+        raise TypeError("coordinate must be an exact integer")
+    if value < 0 or value > 18446744073709551615:
+        raise ValueError("coordinate must be an unsigned 64-bit integer")
+    return int.to_bytes(value, 8, "big")
+
+
+def _optional_u64(value: int | None) -> bytes:
+    if value is None:
+        return b"\x00" + b"\x00" * 8
+    return b"\x01" + _u64_bytes(value)
+
+
+def _optional_32(value: bytes | None) -> bytes:
+    if value is None:
+        return b"\x00" + b"\x00" * 32
+    if type(value) is not bytes:
+        raise TypeError("optional commitment must be bytes or None")
+    return b"\x01" + value
+
+
+def _market_occurrence_preimage(
+    source_id: str,
+    position_scope: _PositionScope,
+    session_id: str,
+    stream_generation: bytes,
+    market_epoch: int,
+    source_sequence: int | None,
+    source_time: int,
+    kind: str,
+    best_bid: _ReportedPrice | None,
+    best_ask: _ReportedPrice | None,
+    trade_price: _ReportedPrice | None,
+    atr_distance: _ReportedPrice | None,
+    structure_trail: _ReportedPrice | None,
+    halted: bool,
+) -> bytes:
+    if type(source_id) is not str:
+        raise TypeError("source_id must be a string")
+    if type(position_scope) is not _PositionScope:
+        raise TypeError("position_scope must be PositionScope")
+    if type(session_id) is not str:
+        raise TypeError("session_id must be a string")
+    if type(stream_generation) is not bytes:
+        raise TypeError("stream_generation must be bytes")
+    if source_sequence is not None and type(source_sequence) is not int:
+        raise TypeError("source_sequence must be an exact integer or None")
+    if type(kind) is not str:
+        raise TypeError("kind must be a string")
+    if type(halted) is not bool:
+        raise TypeError("halted must be bool")
+    sequence_present = source_sequence is not None
+    return _pack_parts(
+        b"execution-core/market-occurrence/v1",
+        _encode_text(source_id),
+        _encode_position_scope(position_scope),
+        _encode_text(session_id),
+        stream_generation,
+        _u64_bytes(market_epoch),
+        b"\x01" if sequence_present else b"\x00",
+        _u64_bytes(source_sequence) if source_sequence is not None else b"\x00" * 8,
+        _u64_bytes(source_time),
+        _encode_text(kind),
+        _encode_reported_price(best_bid),
+        _encode_reported_price(best_ask),
+        _encode_reported_price(trade_price),
+        _encode_reported_price(atr_distance),
+        _encode_reported_price(structure_trail),
+        b"\x01" if halted else b"\x00",
+    )
+
+
+def _protection_market_cursor_preimage(
+    stream_generation: bytes,
+    sequence_mode: int,
+    occurrence_epoch: int | None,
+    committed_epoch: int | None,
+    expected_epoch: int | None,
+    source_sequence: int | None,
+    source_time: int | None,
+    evaluation_time: int | None,
+    occurrence_identity: bytes | None,
+    halted: bool,
+    baseline_required: bool,
+    exhausted: bool,
+    last_primary_commitment: bytes | None,
+    hard_bid_identity: bytes | None,
+    hard_bid_source_time: int | None,
+    trade_identity: bytes | None,
+    trade_source_time: int | None,
+    trail_bid_identity: bytes | None,
+    trail_bid_source_time: int | None,
+) -> bytes:
+    if type(stream_generation) is not bytes:
+        raise TypeError("stream_generation must be bytes")
+    if type(sequence_mode) is not int:
+        raise TypeError("sequence_mode must be an exact integer")
+    if sequence_mode != 0 and sequence_mode != 1:
+        raise ValueError("sequence_mode must be 0 or 1")
+    if type(halted) is not bool:
+        raise TypeError("halted must be bool")
+    if type(baseline_required) is not bool:
+        raise TypeError("baseline_required must be bool")
+    if type(exhausted) is not bool:
+        raise TypeError("exhausted must be bool")
+    if (occurrence_epoch is None) != (occurrence_identity is None):
+        raise ValueError("occurrence epoch and identity presence must match")
+    if (hard_bid_identity is None) != (hard_bid_source_time is None):
+        raise ValueError("hard-bid identity and source-time presence must match")
+    if (trade_identity is None) != (trade_source_time is None):
+        raise ValueError("trade identity and source-time presence must match")
+    if (trail_bid_identity is None) != (trail_bid_source_time is None):
+        raise ValueError("trail-bid identity and source-time presence must match")
+    return _pack_parts(
+        b"execution-core/protection-market-cursor/v1",
+        stream_generation,
+        b"\x00" if sequence_mode == 0 else b"\x01",
+        _optional_u64(occurrence_epoch),
+        _optional_u64(committed_epoch),
+        _optional_u64(expected_epoch),
+        _optional_u64(source_sequence),
+        _optional_u64(source_time),
+        _optional_u64(evaluation_time),
+        _optional_32(occurrence_identity),
+        b"\x01" if halted else b"\x00",
+        b"\x01" if baseline_required else b"\x00",
+        b"\x01" if exhausted else b"\x00",
+        _optional_32(last_primary_commitment),
+        _optional_32(hard_bid_identity),
+        _optional_u64(hard_bid_source_time),
+        _optional_32(trade_identity),
+        _optional_u64(trade_source_time),
+        _optional_32(trail_bid_identity),
+        _optional_u64(trail_bid_source_time),
+    )
+
+
+def _next_market_epoch(committed_epoch: int) -> int | None:
+    _u64_bytes(committed_epoch)
+    if committed_epoch == 18446744073709551615:
+        return None
+    return committed_epoch + 1
+
+
 def _state_commitment(
     policy: ProtectionPolicy,
     mandate: ProtectionMandate,
@@ -718,30 +899,29 @@ def _state_commitment(
     waiting_buy_resolution: bool,
     cursor_ordinal: int,
     cursor_head: bytes,
-    stream_epoch: int,
-    stream_sequence: int,
-    stream_source_time: int,
-    stream_evaluation_time: int,
-    stream_halted: bool,
-    seen_occurrence_receipts: _PersistentKeyMap,
-    last_primary_present: bool,
-    last_primary_units: int,
-    hard_bid_count: int,
-    hard_bid_sequence: int,
-    hard_bid_source_time: int,
-    hard_bid_identity: bytes,
-    trade_present: bool,
-    trade_source_time: int,
-    trade_identity: bytes,
-    trade_units: int,
-    trail_bid_count: int,
-    trail_bid_sequence: int,
-    trail_bid_source_time: int,
-    trail_bid_identity: bytes,
+    stream_generation: bytes,
+    sequence_mode: int,
+    occurrence_epoch: int | None,
+    committed_epoch: int | None,
+    expected_epoch: int | None,
+    source_sequence: int | None,
+    source_time: int | None,
+    evaluation_time: int | None,
+    occurrence_identity: bytes | None,
+    halted: bool,
+    baseline_required: bool,
+    exhausted: bool,
+    last_primary: _ReportedPrice | None,
+    hard_bid_identity: bytes | None,
+    hard_bid_source_time: int | None,
+    trade_identity: bytes | None,
+    trade_source_time: int | None,
+    trail_bid_identity: bytes | None,
+    trail_bid_source_time: int | None,
     exit_provenance: bytes,
 ) -> bytes:
     return _commit_parts(
-        b"execution-core/position-protection-state/v3",
+        b"execution-core/position-protection-state/v4",
         _encode_text(policy.value),
         _commit_mandate(mandate),
         _encode_int(raw_quantity),
@@ -754,35 +934,85 @@ def _state_commitment(
         _encode_int(1 if waiting_buy_resolution else 0),
         _encode_int(cursor_ordinal),
         cursor_head,
-        _encode_int(stream_epoch),
-        _encode_int(stream_sequence),
-        _encode_int(stream_source_time),
-        _encode_int(stream_evaluation_time),
-        _encode_int(1 if stream_halted else 0),
-        seen_occurrence_receipts.commitment,
-        _encode_int(1 if last_primary_present else 0),
-        _encode_int(last_primary_units),
-        _encode_int(hard_bid_count),
-        _encode_int(hard_bid_sequence),
-        _encode_int(hard_bid_source_time),
-        hard_bid_identity,
-        _encode_int(1 if trade_present else 0),
-        _encode_int(trade_source_time),
-        trade_identity,
-        _encode_int(trade_units),
-        _encode_int(trail_bid_count),
-        _encode_int(trail_bid_sequence),
-        _encode_int(trail_bid_source_time),
-        trail_bid_identity,
+        _sha256(
+            _protection_market_cursor_preimage(
+                stream_generation=stream_generation,
+                sequence_mode=sequence_mode,
+                occurrence_epoch=occurrence_epoch,
+                committed_epoch=committed_epoch,
+                expected_epoch=expected_epoch,
+                source_sequence=source_sequence,
+                source_time=source_time,
+                evaluation_time=evaluation_time,
+                occurrence_identity=occurrence_identity,
+                halted=halted,
+                baseline_required=baseline_required,
+                exhausted=exhausted,
+                last_primary_commitment=(
+                    None
+                    if last_primary is None
+                    else _encode_reported_price(last_primary)
+                ),
+                hard_bid_identity=hard_bid_identity,
+                hard_bid_source_time=hard_bid_source_time,
+                trade_identity=trade_identity,
+                trade_source_time=trade_source_time,
+                trail_bid_identity=trail_bid_identity,
+                trail_bid_source_time=trail_bid_source_time,
+            )
+        ).digest(),
         exit_provenance,
     )
 
 
+def _identity_bytes(value: _MarketOccurrenceId | None) -> bytes | None:
+    if value is None:
+        return None
+    if type(value) is not _MarketOccurrenceId:
+        raise TypeError("market identity must be MarketOccurrenceId or None")
+    return value._bytes
+
+
+def _market_occurrence_identity_is_authentic(
+    value: _MarketOccurrenceId | None,
+) -> bool:
+    if value is None:
+        return True
+    return type(value) is _MarketOccurrenceId and _market_identity_is_canonical(value)
+
+
+def _market_generation_is_authentic(value: _MarketStreamGenerationId) -> bool:
+    return type(value) is _MarketStreamGenerationId and _market_identity_is_canonical(
+        value
+    )
+
+
 def _state_is_authentic(state: PositionProtectionState) -> bool:
-    if (
-        type(state.commitment) is not bytes
-        or type(state._seen_occurrence_receipts) is not _PersistentKeyMap
+    if type(state) is not PositionProtectionState:
+        return False
+    if type(state.commitment) is not bytes:
+        return False
+    if not _market_generation_is_authentic(
+        state.mandate.evidence_policy.stream_generation
     ):
+        return False
+    if not _market_occurrence_identity_is_authentic(state._market_occurrence_identity):
+        return False
+    if not _market_occurrence_identity_is_authentic(state._hard_bid_identity):
+        return False
+    if not _market_occurrence_identity_is_authentic(state._trade_identity):
+        return False
+    if not _market_occurrence_identity_is_authentic(state._trail_bid_identity):
+        return False
+    if (state._market_occurrence_epoch is None) != (
+        state._market_occurrence_identity is None
+    ):
+        return False
+    if (state._hard_bid_identity is None) != (state._hard_bid_source_time is None):
+        return False
+    if (state._trade_identity is None) != (state._trade_source_time is None):
+        return False
+    if (state._trail_bid_identity is None) != (state._trail_bid_source_time is None):
         return False
     return state.commitment == _state_commitment(
         state.policy,
@@ -797,26 +1027,27 @@ def _state_is_authentic(state: PositionProtectionState) -> bool:
         state.waiting_buy_resolution,
         state._cursor_ordinal,
         state._cursor_head,
-        state._stream_epoch,
-        state._stream_sequence,
-        state._stream_source_time,
-        state._stream_evaluation_time,
-        state._stream_halted,
-        state._seen_occurrence_receipts,
-        state._last_primary_present,
-        state._last_primary_units,
-        state._hard_bid_count,
-        state._hard_bid_sequence,
+        state.mandate.evidence_policy.stream_generation._bytes,
+        0
+        if state.mandate.evidence_policy.sequence_mode is MarketSequenceMode.SEQUENCED
+        else 1,
+        state._market_occurrence_epoch,
+        state._market_committed_epoch,
+        state._market_expected_epoch,
+        state._market_source_sequence,
+        state._market_source_time,
+        state._market_evaluation_time,
+        _identity_bytes(state._market_occurrence_identity),
+        state._market_halted,
+        state._market_baseline_required,
+        state._market_exhausted,
+        state._market_last_primary,
+        _identity_bytes(state._hard_bid_identity),
         state._hard_bid_source_time,
-        state._hard_bid_identity,
-        state._trade_present,
+        _identity_bytes(state._trade_identity),
         state._trade_source_time,
-        state._trade_identity,
-        state._trade_units,
-        state._trail_bid_count,
-        state._trail_bid_sequence,
+        _identity_bytes(state._trail_bid_identity),
         state._trail_bid_source_time,
-        state._trail_bid_identity,
         state._exit_provenance,
     )
 
@@ -895,26 +1126,23 @@ def _rebuild_state(
     waiting_buy_resolution: bool,
     cursor_ordinal: int,
     cursor_head: bytes,
-    stream_epoch: int,
-    stream_sequence: int,
-    stream_source_time: int,
-    stream_evaluation_time: int,
-    stream_halted: bool,
-    seen_occurrence_receipts: _PersistentKeyMap,
-    last_primary_present: bool,
-    last_primary_units: int,
-    hard_bid_count: int,
-    hard_bid_sequence: int,
-    hard_bid_source_time: int,
-    hard_bid_identity: bytes,
-    trade_present: bool,
-    trade_source_time: int,
-    trade_identity: bytes,
-    trade_units: int,
-    trail_bid_count: int,
-    trail_bid_sequence: int,
-    trail_bid_source_time: int,
-    trail_bid_identity: bytes,
+    market_occurrence_epoch: int | None,
+    market_committed_epoch: int | None,
+    market_expected_epoch: int | None,
+    market_source_sequence: int | None,
+    market_source_time: int | None,
+    market_evaluation_time: int | None,
+    market_occurrence_identity: _MarketOccurrenceId | None,
+    market_halted: bool,
+    market_baseline_required: bool,
+    market_exhausted: bool,
+    market_last_primary: _ReportedPrice | None,
+    hard_bid_identity: _MarketOccurrenceId | None,
+    hard_bid_source_time: int | None,
+    trade_identity: _MarketOccurrenceId | None,
+    trade_source_time: int | None,
+    trail_bid_identity: _MarketOccurrenceId | None,
+    trail_bid_source_time: int | None,
     exit_provenance: bytes,
 ) -> PositionProtectionState:
     commitment = _state_commitment(
@@ -930,26 +1158,27 @@ def _rebuild_state(
         waiting_buy_resolution,
         cursor_ordinal,
         cursor_head,
-        stream_epoch,
-        stream_sequence,
-        stream_source_time,
-        stream_evaluation_time,
-        stream_halted,
-        seen_occurrence_receipts,
-        last_primary_present,
-        last_primary_units,
-        hard_bid_count,
-        hard_bid_sequence,
+        mandate.evidence_policy.stream_generation._bytes,
+        0
+        if mandate.evidence_policy.sequence_mode is MarketSequenceMode.SEQUENCED
+        else 1,
+        market_occurrence_epoch,
+        market_committed_epoch,
+        market_expected_epoch,
+        market_source_sequence,
+        market_source_time,
+        market_evaluation_time,
+        _identity_bytes(market_occurrence_identity),
+        market_halted,
+        market_baseline_required,
+        market_exhausted,
+        market_last_primary,
+        _identity_bytes(hard_bid_identity),
         hard_bid_source_time,
-        hard_bid_identity,
-        trade_present,
+        _identity_bytes(trade_identity),
         trade_source_time,
-        trade_identity,
-        trade_units,
-        trail_bid_count,
-        trail_bid_sequence,
+        _identity_bytes(trail_bid_identity),
         trail_bid_source_time,
-        trail_bid_identity,
         exit_provenance,
     )
     return _new_position_protection_state(
@@ -966,26 +1195,23 @@ def _rebuild_state(
         commitment,
         cursor_ordinal,
         cursor_head,
-        stream_epoch,
-        stream_sequence,
-        stream_source_time,
-        stream_evaluation_time,
-        stream_halted,
-        seen_occurrence_receipts,
-        last_primary_present,
-        last_primary_units,
-        hard_bid_count,
-        hard_bid_sequence,
-        hard_bid_source_time,
+        market_occurrence_epoch,
+        market_committed_epoch,
+        market_expected_epoch,
+        market_source_sequence,
+        market_source_time,
+        market_evaluation_time,
+        market_occurrence_identity,
+        market_halted,
+        market_baseline_required,
+        market_exhausted,
+        market_last_primary,
         hard_bid_identity,
-        trade_present,
-        trade_source_time,
+        hard_bid_source_time,
         trade_identity,
-        trade_units,
-        trail_bid_count,
-        trail_bid_sequence,
-        trail_bid_source_time,
+        trade_source_time,
         trail_bid_identity,
+        trail_bid_source_time,
         exit_provenance,
     )
 
@@ -1084,22 +1310,29 @@ def _new_state_from_projection(
         high_watermark = None
         trail = None
     waiting = projection.blocking_buy_effect_count > 0
-    genesis = _market_genesis()
-    seen_occurrence_receipts = (
-        _PersistentKeyMap.empty() if prior is None else prior._seen_occurrence_receipts
-    )
+    market_expected_epoch: int | None
     if prior is None:
-        stream_epoch = -1
-        stream_sequence = -1
-        stream_source_time = -1
-        stream_evaluation_time = -1
-        stream_halted = False
+        market_occurrence_epoch = None
+        market_committed_epoch = None
+        market_expected_epoch = 0
+        market_source_sequence = None
+        market_source_time = None
+        market_evaluation_time = None
+        market_occurrence_identity = None
+        market_halted = False
+        market_baseline_required = True
+        market_exhausted = False
     else:
-        stream_epoch = prior._stream_epoch
-        stream_sequence = prior._stream_sequence
-        stream_source_time = prior._stream_source_time
-        stream_evaluation_time = prior._stream_evaluation_time
-        stream_halted = prior._stream_halted
+        market_occurrence_epoch = prior._market_occurrence_epoch
+        market_committed_epoch = prior._market_committed_epoch
+        market_expected_epoch = prior._market_expected_epoch
+        market_source_sequence = prior._market_source_sequence
+        market_source_time = prior._market_source_time
+        market_evaluation_time = prior._market_evaluation_time
+        market_occurrence_identity = prior._market_occurrence_identity
+        market_halted = prior._market_halted
+        market_baseline_required = prior._market_baseline_required
+        market_exhausted = prior._market_exhausted
     reset_all = (
         prior is None
         or not formula_available
@@ -1108,51 +1341,33 @@ def _new_state_from_projection(
         or (prior is not None and not prior.formula_available)
     )
     if reset_all:
-        last_primary_present = False
-        last_primary_units = 0
-        hard_bid_count = 0
-        hard_bid_sequence = -1
-        hard_bid_source_time = -1
-        hard_bid_identity = genesis
-        trade_present = False
-        trade_source_time = -1
-        trade_identity = genesis
-        trade_units = 0
-        trail_bid_count = 0
-        trail_bid_sequence = -1
-        trail_bid_source_time = -1
-        trail_bid_identity = genesis
+        market_last_primary = None
+        hard_bid_identity = None
+        hard_bid_source_time = None
+        trade_identity = None
+        trade_source_time = None
+        trail_bid_identity = None
+        trail_bid_source_time = None
     else:
         if prior is None:
             raise TypeError("retained prior state is required")
-        last_primary_present = prior._last_primary_present
-        last_primary_units = prior._last_primary_units
-        hard_bid_count = prior._hard_bid_count
-        hard_bid_sequence = prior._hard_bid_sequence
-        hard_bid_source_time = prior._hard_bid_source_time
+        market_last_primary = prior._market_last_primary
         hard_bid_identity = prior._hard_bid_identity
-        trade_present = prior._trade_present
-        trade_source_time = prior._trade_source_time
+        hard_bid_source_time = prior._hard_bid_source_time
         trade_identity = prior._trade_identity
-        trade_units = prior._trade_units
-        trail_bid_count = prior._trail_bid_count
-        trail_bid_sequence = prior._trail_bid_sequence
-        trail_bid_source_time = prior._trail_bid_source_time
+        trade_source_time = prior._trade_source_time
         trail_bid_identity = prior._trail_bid_identity
+        trail_bid_source_time = prior._trail_bid_source_time
     trigger_changed = (
         prior is not None
         and prior.armed_hard_bail_trigger != hard_bail
         and not reset_all
     )
     if trigger_changed:
-        hard_bid_count = 0
-        hard_bid_sequence = -1
-        hard_bid_source_time = -1
-        hard_bid_identity = genesis
-        trade_present = False
-        trade_source_time = -1
-        trade_identity = genesis
-        trade_units = 0
+        hard_bid_identity = None
+        hard_bid_source_time = None
+        trade_identity = None
+        trade_source_time = None
     if flat_ready:
         exit_provenance = _flat_origin()
     elif raw_quantity == 0 and prior is not None:
@@ -1178,55 +1393,24 @@ def _new_state_from_projection(
         waiting,
         projection.cursor_ordinal,
         projection.cursor_head,
-        stream_epoch,
-        stream_sequence,
-        stream_source_time,
-        stream_evaluation_time,
-        stream_halted,
-        seen_occurrence_receipts,
-        last_primary_present,
-        last_primary_units,
-        hard_bid_count,
-        hard_bid_sequence,
-        hard_bid_source_time,
+        market_occurrence_epoch,
+        market_committed_epoch,
+        market_expected_epoch,
+        market_source_sequence,
+        market_source_time,
+        market_evaluation_time,
+        market_occurrence_identity,
+        market_halted,
+        market_baseline_required,
+        market_exhausted,
+        market_last_primary,
         hard_bid_identity,
-        trade_present,
-        trade_source_time,
+        hard_bid_source_time,
         trade_identity,
-        trade_units,
-        trail_bid_count,
-        trail_bid_sequence,
-        trail_bid_source_time,
+        trade_source_time,
         trail_bid_identity,
+        trail_bid_source_time,
         exit_provenance,
-    )
-
-
-def _occurrence_identity(occurrence: MarketOccurrence) -> bytes:
-    return _commit_parts(
-        b"execution-core/protection-market-occurrence-identity/v1",
-        _encode_text(occurrence.occurrence_id.value),
-    )
-
-
-def _occurrence_payload(occurrence: MarketOccurrence) -> bytes:
-    return _commit_parts(
-        b"execution-core/protection-market-occurrence-payload/v1",
-        _encode_text(occurrence.source_id.value),
-        _encode_position_scope(occurrence.position_scope),
-        _encode_text(occurrence.session_id.value),
-        _encode_int(occurrence.market_epoch),
-        _encode_int(
-            occurrence.source_sequence if occurrence.source_sequence is not None else -1
-        ),
-        _encode_int(occurrence.source_time),
-        _encode_text(occurrence.kind.value),
-        _encode_reported_price(occurrence.best_bid),
-        _encode_reported_price(occurrence.best_ask),
-        _encode_reported_price(occurrence.trade_price),
-        _encode_reported_price(occurrence.atr_distance),
-        _encode_reported_price(occurrence.structure_trail),
-        _encode_int(1 if occurrence.halted else 0),
     )
 
 
@@ -1249,24 +1433,20 @@ def _market_price_matches(
     )
 
 
-def _mandate_price(units: int, tick: _TickMetadata) -> _ReportedPrice:
-    return _ReportedPrice(_PriceUnits(units), tick.scale, tick)
-
-
 def _step_is_eligible(
     state: PositionProtectionState,
-    units: int,
+    primary: _ReportedPrice,
 ) -> bool:
-    if not state._last_primary_present:
+    retained = state._market_last_primary
+    if retained is None:
         return True
     difference = (
-        units - state._last_primary_units
-        if units >= state._last_primary_units
-        else state._last_primary_units - units
+        primary.exact_value - retained.exact_value
+        if primary.exact_value >= retained.exact_value
+        else retained.exact_value - primary.exact_value
     )
-    return _Fraction(difference) <= (
-        _Fraction(state._last_primary_units)
-        * state.mandate.evidence_policy.max_step_fraction
+    return difference <= (
+        retained.exact_value * state.mandate.evidence_policy.max_step_fraction
     )
 
 
@@ -1282,6 +1462,9 @@ def _goal_for_state(
         not exit_policy
         or not _real_exit(state._exit_provenance)
         or not state.formula_available
+        or state._market_halted
+        or state._market_baseline_required
+        or state._market_exhausted
         or state.raw_quantity <= 0
         or state.raw_quantity > state.mandate.maximum_quantity.value
         or state.waiting_buy_resolution
@@ -1315,220 +1498,262 @@ def _goal_for_state(
     )
 
 
-def _market_inert_transition(
+def _market_projection_is_current(
     state: PositionProtectionState,
     projection: ProtectionVenueProjection,
-    advanced: bool,
-    alert: ProtectionAlert | None,
-) -> ProtectionTransition:
-    disposition = (
-        ProtectionDisposition.APPLIED
-        if advanced
-        else ProtectionDisposition.EXACT_REPLAY
+) -> bool:
+    return (
+        _projection_is_authentic(projection)
+        and projection._position_scope == state.mandate.position_scope
+        and projection._mandate_commitment == _commit_mandate(state.mandate)
+        and state._cursor_ordinal == projection.cursor_ordinal
+        and state._cursor_head == projection.cursor_head
+        and state.execution_commitment == projection.execution_commitment
     )
-    goal = _goal_for_state(state, projection) if advanced else None
-    return ProtectionTransition(state, disposition, goal, alert)
 
 
-def _state_with_occurrence_receipts(
+def _market_state(
     state: PositionProtectionState,
-    receipts: _PersistentKeyMap,
+    policy: ProtectionPolicy,
+    high_watermark: _ReportedPrice | None,
+    trail: _ReportedPrice | None,
+    occurrence_epoch: int | None,
+    committed_epoch: int | None,
+    expected_epoch: int | None,
+    source_sequence: int | None,
+    source_time: int | None,
+    evaluation_time: int | None,
+    occurrence_identity: _MarketOccurrenceId | None,
+    halted: bool,
+    baseline_required: bool,
+    exhausted: bool,
+    last_primary: _ReportedPrice | None,
+    hard_bid_identity: _MarketOccurrenceId | None,
+    hard_bid_source_time: int | None,
+    trade_identity: _MarketOccurrenceId | None,
+    trade_source_time: int | None,
+    trail_bid_identity: _MarketOccurrenceId | None,
+    trail_bid_source_time: int | None,
+    exit_provenance: bytes,
 ) -> PositionProtectionState:
     return _rebuild_state(
-        state.policy,
+        policy,
         state.mandate,
         state.raw_quantity,
         state.execution_commitment,
         state.formula_available,
         state.armed_hard_bail_trigger,
         state.activation_price,
-        state.high_watermark,
-        state.trail,
+        high_watermark,
+        trail,
         state.waiting_buy_resolution,
         state._cursor_ordinal,
         state._cursor_head,
-        state._stream_epoch,
-        state._stream_sequence,
-        state._stream_source_time,
-        state._stream_evaluation_time,
-        state._stream_halted,
-        receipts,
-        state._last_primary_present,
-        state._last_primary_units,
-        state._hard_bid_count,
-        state._hard_bid_sequence,
-        state._hard_bid_source_time,
-        state._hard_bid_identity,
-        state._trade_present,
-        state._trade_source_time,
-        state._trade_identity,
-        state._trade_units,
-        state._trail_bid_count,
-        state._trail_bid_sequence,
-        state._trail_bid_source_time,
-        state._trail_bid_identity,
-        state._exit_provenance,
+        occurrence_epoch,
+        committed_epoch,
+        expected_epoch,
+        source_sequence,
+        source_time,
+        evaluation_time,
+        occurrence_identity,
+        halted,
+        baseline_required,
+        exhausted,
+        last_primary,
+        hard_bid_identity,
+        hard_bid_source_time,
+        trade_identity,
+        trade_source_time,
+        trail_bid_identity,
+        trail_bid_source_time,
+        exit_provenance,
     )
 
 
-def _recorded_market_inert_transition(
-    state: PositionProtectionState,
-    receipts: _PersistentKeyMap,
-    projection: ProtectionVenueProjection,
-    advanced: bool,
-    alert: ProtectionAlert | None,
-) -> ProtectionTransition:
-    next_state = _state_with_occurrence_receipts(state, receipts)
-    goal = _goal_for_state(next_state, projection) if advanced else None
-    return ProtectionTransition(
-        next_state,
-        ProtectionDisposition.APPLIED,
-        goal,
-        alert,
-    )
-
-
-def _state_after_market_halt(
+def _reserve_market_occurrence(
     state: PositionProtectionState,
     occurrence: MarketOccurrence,
-    receipts: _PersistentKeyMap,
+    source_time: int,
+    evaluation_time: int,
 ) -> PositionProtectionState:
-    genesis = _market_genesis()
-    stream_sequence = (
-        occurrence.source_sequence
-        if occurrence.source_sequence is not None
-        else (
-            -1
-            if occurrence.market_epoch > state._stream_epoch
-            else state._stream_sequence
-        )
-    )
-    return _rebuild_state(
+    return _market_state(
+        state,
         state.policy,
-        state.mandate,
-        state.raw_quantity,
-        state.execution_commitment,
-        state.formula_available,
-        state.armed_hard_bail_trigger,
-        state.activation_price,
         state.high_watermark,
         state.trail,
-        state.waiting_buy_resolution,
-        state._cursor_ordinal,
-        state._cursor_head,
         occurrence.market_epoch,
-        stream_sequence,
-        occurrence.source_time,
-        occurrence.evaluation_time,
-        True,
-        receipts,
-        False,
-        0,
-        0,
-        -1,
-        -1,
-        genesis,
-        False,
-        -1,
-        genesis,
-        0,
-        0,
-        -1,
-        -1,
-        genesis,
+        state._market_committed_epoch,
+        state._market_expected_epoch,
+        occurrence.source_sequence,
+        source_time,
+        evaluation_time,
+        occurrence.occurrence_id,
+        state._market_halted,
+        state._market_baseline_required,
+        state._market_exhausted,
+        state._market_last_primary,
+        state._hard_bid_identity,
+        state._hard_bid_source_time,
+        state._trade_identity,
+        state._trade_source_time,
+        state._trail_bid_identity,
+        state._trail_bid_source_time,
         state._exit_provenance,
     )
 
 
-def _reduce_market_occurrence(
+def _restrict_market_state(
     state: PositionProtectionState,
-    projection: ProtectionVenueProjection,
+    committed_epoch: int | None,
+    expected_epoch: int | None,
+    halted: bool,
+    baseline_required: bool,
+    exhausted: bool,
+) -> PositionProtectionState:
+    return _market_state(
+        state,
+        state.policy,
+        state.high_watermark,
+        state.trail,
+        state._market_occurrence_epoch,
+        committed_epoch,
+        expected_epoch,
+        state._market_source_sequence,
+        state._market_source_time,
+        state._market_evaluation_time,
+        state._market_occurrence_identity,
+        halted,
+        baseline_required,
+        exhausted,
+        state._market_last_primary,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        state._exit_provenance,
+    )
+
+
+def _exhaust_market_state(
+    state: PositionProtectionState,
+    committed_epoch: int | None,
+    halted: bool,
+) -> PositionProtectionState:
+    return _restrict_market_state(
+        state,
+        committed_epoch,
+        None,
+        halted,
+        True,
+        True,
+    )
+
+
+def _enter_market_baseline(
+    state: PositionProtectionState,
+    halted: bool,
+) -> PositionProtectionState:
+    if state._market_exhausted:
+        return state
+    if state._market_baseline_required:
+        return _restrict_market_state(
+            state,
+            state._market_committed_epoch,
+            state._market_expected_epoch,
+            halted,
+            True,
+            False,
+        )
+    committed_epoch = state._market_committed_epoch
+    if committed_epoch is None:
+        return _restrict_market_state(
+            state,
+            None,
+            0,
+            halted,
+            True,
+            False,
+        )
+    expected_epoch = _next_market_epoch(committed_epoch)
+    if expected_epoch is None:
+        return _exhaust_market_state(state, committed_epoch, halted)
+    return _restrict_market_state(
+        state,
+        committed_epoch,
+        expected_epoch,
+        halted,
+        True,
+        False,
+    )
+
+
+def _current_market_coordinate_matches(
+    state: PositionProtectionState,
     occurrence: MarketOccurrence,
-    advanced: bool,
-    alert: ProtectionAlert | None,
-) -> ProtectionTransition:
+) -> bool:
+    if (
+        state._market_occurrence_identity is None
+        or state._market_occurrence_epoch != occurrence.market_epoch
+    ):
+        return False
+    if state.mandate.evidence_policy.sequence_mode is MarketSequenceMode.SEQUENCED:
+        return state._market_source_sequence == occurrence.source_sequence
+    return state._market_source_time == occurrence.source_time
+
+
+def _market_occurrence_is_authentic(occurrence: MarketOccurrence) -> bool:
+    if not _market_generation_is_authentic(occurrence.stream_generation):
+        return False
+    if not _market_occurrence_identity_is_authentic(occurrence.occurrence_id):
+        return False
+    return (
+        occurrence.occurrence_id._bytes
+        == _sha256(
+            _market_occurrence_preimage(
+                source_id=occurrence.source_id.value,
+                position_scope=occurrence.position_scope,
+                session_id=occurrence.session_id.value,
+                stream_generation=occurrence.stream_generation._bytes,
+                market_epoch=occurrence.market_epoch,
+                source_sequence=occurrence.source_sequence,
+                source_time=occurrence.source_time,
+                kind=occurrence.kind.value,
+                best_bid=occurrence.best_bid,
+                best_ask=occurrence.best_ask,
+                trade_price=occurrence.trade_price,
+                atr_distance=occurrence.atr_distance,
+                structure_trail=occurrence.structure_trail,
+                halted=occurrence.halted,
+            )
+        ).digest()
+    )
+
+
+def _market_route_matches(
+    state: PositionProtectionState,
+    occurrence: MarketOccurrence,
+) -> bool:
+    if not _market_occurrence_is_authentic(occurrence):
+        return False
     if (
         occurrence.position_scope != state.mandate.position_scope
         or occurrence.source_id != state.mandate.evidence_policy.source_id
+        or occurrence.stream_generation
+        != state.mandate.evidence_policy.stream_generation
         or occurrence.session_id != state.mandate.session_id
-        or occurrence.market_epoch < state._stream_epoch
     ):
-        return _market_inert_transition(state, projection, advanced, alert)
-    identity = _occurrence_identity(occurrence)
-    payload = _occurrence_payload(occurrence)
-    retained_payload = _PersistentKeyMap.get(
-        state._seen_occurrence_receipts,
-        identity,
-    )
-    if retained_payload is not None:
-        if advanced:
-            return _market_inert_transition(state, projection, True, alert)
-        if retained_payload != payload:
-            return ProtectionTransition(
-                state,
-                ProtectionDisposition.REFUSED,
-                None,
-                alert,
-            )
-        return ProtectionTransition(
-            state,
-            ProtectionDisposition.EXACT_REPLAY,
-            None,
-            alert,
-        )
-    receipts = _PersistentKeyMap.insert_new(
-        state._seen_occurrence_receipts,
-        identity,
-        payload,
-        payload,
-    )
-    if (
-        not state.formula_available
-        or state.policy is ProtectionPolicy.FLAT
-        or occurrence.source_time > occurrence.evaluation_time
-        or occurrence.evaluation_time - occurrence.source_time
-        > state.mandate.evidence_policy.max_age
-    ):
-        return _recorded_market_inert_transition(
-            state,
-            receipts,
-            projection,
-            advanced,
-            alert,
-        )
-    new_epoch = occurrence.market_epoch > state._stream_epoch
-    if not new_epoch and (
-        occurrence.source_time < state._stream_source_time
-        or occurrence.evaluation_time < state._stream_evaluation_time
-        or (
-            occurrence.source_sequence is not None
-            and state._stream_sequence >= 0
-            and occurrence.source_sequence <= state._stream_sequence
-        )
-    ):
-        return _recorded_market_inert_transition(
-            state,
-            receipts,
-            projection,
-            advanced,
-            alert,
-        )
-    if state._stream_halted and not new_epoch:
-        return _recorded_market_inert_transition(
-            state,
-            receipts,
-            projection,
-            advanced,
-            alert,
-        )
-    if occurrence.halted:
-        next_state = _state_after_market_halt(state, occurrence, receipts)
-        return ProtectionTransition(
-            next_state,
-            ProtectionDisposition.APPLIED,
-            _goal_for_state(next_state, projection),
-            alert,
-        )
+        return False
+    if state.mandate.evidence_policy.sequence_mode is MarketSequenceMode.SEQUENCED:
+        return occurrence.source_sequence is not None
+    return occurrence.source_sequence is None
+
+
+def _market_primary(
+    state: PositionProtectionState,
+    occurrence: MarketOccurrence,
+) -> _ReportedPrice | None:
     if occurrence.kind is MarketKind.BEST_BID:
         if (
             type(occurrence.best_bid) is not _ReportedPrice
@@ -1537,136 +1762,170 @@ def _reduce_market_occurrence(
             or not _market_price_matches(occurrence.best_ask, state.mandate.tick)
             or occurrence.best_bid.exact_value > occurrence.best_ask.exact_value
         ):
-            return _recorded_market_inert_transition(
-                state,
-                receipts,
-                projection,
-                advanced,
-                alert,
-            )
-        primary = occurrence.best_bid
-    else:
-        if type(
-            occurrence.trade_price
-        ) is not _ReportedPrice or not _market_price_matches(
-            occurrence.trade_price, state.mandate.tick
-        ):
-            return _recorded_market_inert_transition(
-                state,
-                receipts,
-                projection,
-                advanced,
-                alert,
-            )
-        primary = occurrence.trade_price
-    if not new_epoch and not _step_is_eligible(state, primary.units.value):
-        return _recorded_market_inert_transition(
-            state,
-            receipts,
-            projection,
-            advanced,
-            alert,
-        )
+            return None
+        return occurrence.best_bid
+    if type(occurrence.trade_price) is not _ReportedPrice or not _market_price_matches(
+        occurrence.trade_price, state.mandate.tick
+    ):
+        return None
+    return occurrence.trade_price
 
-    genesis = _market_genesis()
-    stream_sequence = (
-        occurrence.source_sequence
-        if occurrence.source_sequence is not None
-        else (-1 if new_epoch else state._stream_sequence)
+
+def _tightened_trail(
+    state: PositionProtectionState,
+    occurrence: MarketOccurrence,
+    high_watermark: _ReportedPrice,
+) -> _ReportedPrice:
+    candidate = _upward_price(
+        high_watermark.exact_value * (1 - state.mandate.percent_trail_fraction),
+        state.mandate.tick,
     )
-    last_primary_present = False if new_epoch else state._last_primary_present
-    last_primary_units = 0 if new_epoch else state._last_primary_units
-    hard_bid_count = 0 if new_epoch else state._hard_bid_count
-    hard_bid_sequence = -1 if new_epoch else state._hard_bid_sequence
-    hard_bid_source_time = -1 if new_epoch else state._hard_bid_source_time
-    hard_bid_identity = genesis if new_epoch else state._hard_bid_identity
-    trade_present = False if new_epoch else state._trade_present
-    trade_source_time = -1 if new_epoch else state._trade_source_time
-    trade_identity = genesis if new_epoch else state._trade_identity
-    trade_units = 0 if new_epoch else state._trade_units
-    trail_bid_count = 0 if new_epoch else state._trail_bid_count
-    trail_bid_sequence = -1 if new_epoch else state._trail_bid_sequence
-    trail_bid_source_time = -1 if new_epoch else state._trail_bid_source_time
-    trail_bid_identity = genesis if new_epoch else state._trail_bid_identity
+    if (
+        type(occurrence.atr_distance) is _ReportedPrice
+        and _market_price_matches(occurrence.atr_distance, state.mandate.tick)
+        and high_watermark.exact_value
+        > occurrence.atr_distance.exact_value * state.mandate.atr_multiple
+    ):
+        atr_candidate = _upward_price(
+            high_watermark.exact_value
+            - occurrence.atr_distance.exact_value * state.mandate.atr_multiple,
+            state.mandate.tick,
+        )
+        if atr_candidate.exact_value > candidate.exact_value:
+            candidate = atr_candidate
+    if (
+        type(occurrence.structure_trail) is _ReportedPrice
+        and _market_price_matches(occurrence.structure_trail, state.mandate.tick)
+        and occurrence.structure_trail.exact_value <= high_watermark.exact_value
+        and occurrence.structure_trail.exact_value > candidate.exact_value
+    ):
+        candidate = occurrence.structure_trail
+    if state.trail is not None and state.trail.exact_value > candidate.exact_value:
+        return state.trail
+    return candidate
+
+
+def _state_after_market_baseline(
+    state: PositionProtectionState,
+    occurrence: MarketOccurrence,
+    primary: _ReportedPrice,
+) -> PositionProtectionState:
     policy = state.policy
     high_watermark = state.high_watermark
     trail = state.trail
+    if (
+        policy is ProtectionPolicy.FLOOR_ONLY
+        and state.activation_price is not None
+        and primary.exact_value >= state.activation_price.exact_value
+    ):
+        policy = ProtectionPolicy.TRAIL_ACTIVE
+        high_watermark = primary
+    if policy is ProtectionPolicy.TRAIL_ACTIVE or high_watermark is not None:
+        if high_watermark is None or primary.exact_value > high_watermark.exact_value:
+            high_watermark = primary
+        if high_watermark is not None:
+            trail = _tightened_trail(state, occurrence, high_watermark)
+    return _market_state(
+        state,
+        policy,
+        high_watermark,
+        trail,
+        occurrence.market_epoch,
+        occurrence.market_epoch,
+        None,
+        state._market_source_sequence,
+        state._market_source_time,
+        state._market_evaluation_time,
+        occurrence.occurrence_id,
+        False,
+        False,
+        False,
+        primary,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        state._exit_provenance,
+    )
+
+
+def _state_after_eligible_market(
+    state: PositionProtectionState,
+    occurrence: MarketOccurrence,
+    primary: _ReportedPrice,
+) -> PositionProtectionState:
+    identity = occurrence.occurrence_id
+    policy = state.policy
+    high_watermark = state.high_watermark
+    trail = state.trail
+    hard_bid_identity = state._hard_bid_identity
+    hard_bid_source_time = state._hard_bid_source_time
+    trade_identity = state._trade_identity
+    trade_source_time = state._trade_source_time
+    trail_bid_identity = state._trail_bid_identity
+    trail_bid_source_time = state._trail_bid_source_time
     exit_provenance = state._exit_provenance
     hard_triggered = False
-    hard_counterpart_identity = genesis
+    counterpart_identity = None
     trigger = state.armed_hard_bail_trigger
     below_hard = trigger is not None and primary.exact_value <= trigger.exact_value
-    last_primary_present = True
-    last_primary_units = primary.units.value
+
     if occurrence.kind is MarketKind.TRADE:
         if below_hard:
-            hard_triggered = (
-                hard_bid_count > 0
+            if (
+                hard_bid_identity is not None
+                and hard_bid_source_time is not None
                 and hard_bid_identity != identity
                 and occurrence.source_time - hard_bid_source_time
                 <= state.mandate.evidence_policy.corroboration_window
-            )
-            if hard_triggered:
-                hard_counterpart_identity = hard_bid_identity
-            trade_present = True
-            trade_source_time = occurrence.source_time
+            ):
+                hard_triggered = True
+                counterpart_identity = hard_bid_identity
             trade_identity = identity
-            trade_units = primary.units.value
+            trade_source_time = occurrence.source_time
         else:
-            trade_present = False
-            trade_source_time = -1
-            trade_identity = genesis
-            trade_units = 0
-        hard_bid_count = 0
-        hard_bid_sequence = -1
-        hard_bid_source_time = -1
-        hard_bid_identity = genesis
-        trail_bid_count = 0
-        trail_bid_sequence = -1
-        trail_bid_source_time = -1
-        trail_bid_identity = genesis
+            trade_identity = None
+            trade_source_time = None
+        hard_bid_identity = None
+        hard_bid_source_time = None
+        trail_bid_identity = None
+        trail_bid_source_time = None
     else:
         if below_hard:
-            prior_hard_bid_identity = hard_bid_identity
-            hard_triggered = (
-                trade_present
+            if (
+                trade_identity is not None
+                and trade_source_time is not None
                 and trade_identity != identity
                 and occurrence.source_time - trade_source_time
                 <= state.mandate.evidence_policy.corroboration_window
-            )
-            if hard_triggered:
-                hard_counterpart_identity = trade_identity
-            hard_bid_count = (
-                hard_bid_count + 1
-                if hard_bid_count > 0 and hard_bid_identity != identity
-                else 1
-            )
-            hard_bid_sequence = stream_sequence
-            hard_bid_source_time = occurrence.source_time
-            hard_bid_identity = identity
-            if hard_bid_count >= 2:
+            ):
                 hard_triggered = True
-                hard_counterpart_identity = prior_hard_bid_identity
+                counterpart_identity = trade_identity
+            elif hard_bid_identity is not None and hard_bid_identity != identity:
+                hard_triggered = True
+                counterpart_identity = hard_bid_identity
+            hard_bid_identity = identity
+            hard_bid_source_time = occurrence.source_time
         else:
-            hard_bid_count = 0
-            hard_bid_sequence = -1
-            hard_bid_source_time = -1
-            hard_bid_identity = genesis
-            trade_present = False
-            trade_source_time = -1
-            trade_identity = genesis
-            trade_units = 0
+            hard_bid_identity = None
+            hard_bid_source_time = None
+            trade_identity = None
+            trade_source_time = None
+
     if hard_triggered:
         policy = ProtectionPolicy.HARD_BAIL
-        exit_provenance = _commit_parts(
-            b"execution-core/protection-hard-exit/v1",
-            hard_counterpart_identity,
-            identity,
-        )
-        trail_bid_count = 0
-        trail_bid_sequence = -1
-        trail_bid_source_time = -1
-        trail_bid_identity = genesis
+        if counterpart_identity is None:
+            raise TypeError("hard-bail counterpart identity is required")
+        if not _real_exit(exit_provenance):
+            exit_provenance = _commit_parts(
+                b"execution-core/protection-hard-exit/v1",
+                counterpart_identity._bytes,
+                identity._bytes,
+            )
+        trail_bid_identity = None
+        trail_bid_source_time = None
     elif occurrence.kind is MarketKind.BEST_BID:
         if (
             policy is ProtectionPolicy.FLOOR_ONLY
@@ -1681,111 +1940,338 @@ def _reduce_market_occurrence(
                 or primary.exact_value > high_watermark.exact_value
             ):
                 high_watermark = primary
-            percent_candidate = _upward_price(
-                high_watermark.exact_value * (1 - state.mandate.percent_trail_fraction),
-                state.mandate.tick,
-            )
-            trail_candidate = percent_candidate
-            if (
-                type(occurrence.atr_distance) is _ReportedPrice
-                and _market_price_matches(
-                    occurrence.atr_distance,
-                    state.mandate.tick,
-                )
-                and high_watermark.exact_value
-                > occurrence.atr_distance.exact_value * state.mandate.atr_multiple
-            ):
-                atr_candidate = _upward_price(
-                    high_watermark.exact_value
-                    - occurrence.atr_distance.exact_value * state.mandate.atr_multiple,
-                    state.mandate.tick,
-                )
-                if atr_candidate.exact_value > trail_candidate.exact_value:
-                    trail_candidate = atr_candidate
-            if (
-                type(occurrence.structure_trail) is _ReportedPrice
-                and _market_price_matches(
-                    occurrence.structure_trail,
-                    state.mandate.tick,
-                )
-                and occurrence.structure_trail.exact_value <= high_watermark.exact_value
-                and occurrence.structure_trail.exact_value > trail_candidate.exact_value
-            ):
-                trail_candidate = occurrence.structure_trail
-            trail_changed = trail is None or (
-                trail_candidate.exact_value > trail.exact_value
-            )
-            if trail_changed:
-                trail = trail_candidate
-                trail_bid_count = 0
-                trail_bid_sequence = -1
-                trail_bid_source_time = -1
-                trail_bid_identity = genesis
-            if trail is None:
-                raise TypeError("active trail is required")
+            if high_watermark is None:
+                raise TypeError("active high watermark is required")
+            previous_trail = trail
+            trail = _tightened_trail(state, occurrence, high_watermark)
+            if previous_trail is None or trail.exact_value > previous_trail.exact_value:
+                trail_bid_identity = None
+                trail_bid_source_time = None
             if primary.exact_value <= trail.exact_value:
-                prior_trail_identity = trail_bid_identity
-                trail_bid_count = (
-                    trail_bid_count + 1
-                    if trail_bid_count > 0 and trail_bid_identity != identity
-                    else 1
-                )
-                trail_bid_sequence = stream_sequence
-                trail_bid_source_time = occurrence.source_time
-                trail_bid_identity = identity
-                if trail_bid_count >= 2:
+                if trail_bid_identity is not None and trail_bid_identity != identity:
                     policy = ProtectionPolicy.EXIT_NORMAL
                     exit_provenance = _commit_parts(
                         b"execution-core/protection-normal-exit/v1",
-                        prior_trail_identity,
-                        identity,
+                        trail_bid_identity._bytes,
+                        identity._bytes,
                     )
+                trail_bid_identity = identity
+                trail_bid_source_time = occurrence.source_time
             else:
-                trail_bid_count = 0
-                trail_bid_sequence = -1
-                trail_bid_source_time = -1
-                trail_bid_identity = genesis
+                trail_bid_identity = None
+                trail_bid_source_time = None
 
-    next_state = _rebuild_state(
+    return _market_state(
+        state,
         policy,
-        state.mandate,
-        state.raw_quantity,
-        state.execution_commitment,
-        state.formula_available,
-        state.armed_hard_bail_trigger,
-        state.activation_price,
         high_watermark,
         trail,
-        state.waiting_buy_resolution,
-        state._cursor_ordinal,
-        state._cursor_head,
         occurrence.market_epoch,
-        stream_sequence,
-        occurrence.source_time,
-        occurrence.evaluation_time,
+        state._market_committed_epoch,
+        state._market_expected_epoch,
+        state._market_source_sequence,
+        state._market_source_time,
+        state._market_evaluation_time,
+        identity,
         False,
-        receipts,
-        last_primary_present,
-        last_primary_units,
-        hard_bid_count,
-        hard_bid_sequence,
-        hard_bid_source_time,
+        False,
+        False,
+        primary,
         hard_bid_identity,
-        trade_present,
-        trade_source_time,
+        hard_bid_source_time,
         trade_identity,
-        trade_units,
-        trail_bid_count,
-        trail_bid_sequence,
-        trail_bid_source_time,
+        trade_source_time,
         trail_bid_identity,
+        trail_bid_source_time,
         exit_provenance,
     )
+
+
+def _stale_or_refused_exhausted_market(
+    state: PositionProtectionState,
+    occurrence: MarketOccurrence,
+) -> ProtectionDisposition:
+    retained_epoch = state._market_occurrence_epoch
+    if retained_epoch is not None and occurrence.market_epoch < retained_epoch:
+        return ProtectionDisposition.STALE
+    if retained_epoch == occurrence.market_epoch:
+        if state.mandate.evidence_policy.sequence_mode is MarketSequenceMode.SEQUENCED:
+            if (
+                state._market_source_sequence is not None
+                and occurrence.source_sequence is not None
+                and occurrence.source_sequence < state._market_source_sequence
+            ):
+                return ProtectionDisposition.STALE
+        elif (
+            state._market_source_time is not None
+            and occurrence.source_time < state._market_source_time
+        ):
+            return ProtectionDisposition.STALE
+    return ProtectionDisposition.REFUSED
+
+
+def _reduce_market_occurrence(
+    state: PositionProtectionState,
+    projection: ProtectionVenueProjection,
+    occurrence: MarketOccurrence,
+) -> ProtectionTransition:
+    if not _market_projection_is_current(state, projection):
+        return ProtectionTransition(
+            state,
+            ProtectionDisposition.REFUSED,
+            None,
+            None,
+        )
+    if not _market_route_matches(state, occurrence):
+        return ProtectionTransition(
+            state,
+            ProtectionDisposition.REFUSED,
+            None,
+            None,
+        )
+
+    current_coordinate = _current_market_coordinate_matches(state, occurrence)
+    if current_coordinate:
+        if state._market_occurrence_identity == occurrence.occurrence_id:
+            return ProtectionTransition(
+                state,
+                ProtectionDisposition.EXACT_REPLAY,
+                None,
+                None,
+            )
+        if state._market_baseline_required:
+            return ProtectionTransition(
+                state,
+                ProtectionDisposition.REFUSED,
+                None,
+                None,
+            )
+        conflicted = _enter_market_baseline(state, state._market_halted)
+        conflict_alert = (
+            ProtectionAlert.MARKET_COORDINATE_EXHAUSTED
+            if conflicted._market_exhausted
+            else ProtectionAlert.MARKET_BASELINE_REQUIRED
+        )
+        return ProtectionTransition(
+            conflicted,
+            ProtectionDisposition.APPLIED,
+            None,
+            conflict_alert,
+        )
+
+    if state._market_exhausted:
+        return ProtectionTransition(
+            state,
+            _stale_or_refused_exhausted_market(state, occurrence),
+            None,
+            None,
+        )
+
+    admitted_epoch = (
+        state._market_expected_epoch
+        if state._market_baseline_required
+        else state._market_committed_epoch
+    )
+    if admitted_epoch is None:
+        return ProtectionTransition(
+            state,
+            ProtectionDisposition.REFUSED,
+            None,
+            None,
+        )
+    if occurrence.market_epoch < admitted_epoch:
+        return ProtectionTransition(
+            state,
+            ProtectionDisposition.STALE,
+            None,
+            None,
+        )
+    if occurrence.market_epoch > admitted_epoch:
+        return ProtectionTransition(
+            state,
+            ProtectionDisposition.REFUSED,
+            None,
+            None,
+        )
+
+    sequenced = (
+        state.mandate.evidence_policy.sequence_mode is MarketSequenceMode.SEQUENCED
+    )
+    if sequenced:
+        if occurrence.source_sequence is None:
+            return ProtectionTransition(
+                state,
+                ProtectionDisposition.REFUSED,
+                None,
+                None,
+            )
+        if (
+            state._market_source_sequence is not None
+            and occurrence.source_sequence <= state._market_source_sequence
+        ):
+            return ProtectionTransition(
+                state,
+                ProtectionDisposition.STALE,
+                None,
+                None,
+            )
+        strict_coordinate = occurrence.source_sequence
+    else:
+        if (
+            state._market_source_time is not None
+            and occurrence.source_time <= state._market_source_time
+        ):
+            return ProtectionTransition(
+                state,
+                ProtectionDisposition.STALE,
+                None,
+                None,
+            )
+        strict_coordinate = occurrence.source_time
+
+    source_time_regressed = (
+        sequenced
+        and state._market_source_time is not None
+        and occurrence.source_time < state._market_source_time
+    )
+    evaluation_time_regressed = (
+        state._market_evaluation_time is not None
+        and occurrence.evaluation_time < state._market_evaluation_time
+    )
+    retained_source_time = (
+        state._market_source_time if source_time_regressed else occurrence.source_time
+    )
+    if retained_source_time is None:
+        raise TypeError("retained source time is required")
+    retained_evaluation_time = (
+        state._market_evaluation_time
+        if evaluation_time_regressed
+        else occurrence.evaluation_time
+    )
+    if retained_evaluation_time is None:
+        raise TypeError("retained evaluation time is required")
+    reserved = _reserve_market_occurrence(
+        state,
+        occurrence,
+        retained_source_time,
+        retained_evaluation_time,
+    )
+
+    committing_epoch_maximum = (
+        state._market_baseline_required
+        and occurrence.market_epoch == 18446744073709551615
+    )
+    if strict_coordinate == 18446744073709551615 or committing_epoch_maximum:
+        committed_epoch = (
+            occurrence.market_epoch
+            if committing_epoch_maximum
+            else state._market_committed_epoch
+        )
+        exhausted = _exhaust_market_state(
+            reserved,
+            committed_epoch,
+            reserved._market_halted,
+        )
+        return ProtectionTransition(
+            exhausted,
+            ProtectionDisposition.APPLIED,
+            None,
+            ProtectionAlert.MARKET_COORDINATE_EXHAUSTED,
+        )
+
+    if source_time_regressed:
+        restricted = _enter_market_baseline(reserved, reserved._market_halted)
+        restriction_alert = (
+            ProtectionAlert.MARKET_COORDINATE_EXHAUSTED
+            if restricted._market_exhausted
+            else (
+                ProtectionAlert.MARKET_BASELINE_REQUIRED
+                if not state._market_baseline_required
+                else None
+            )
+        )
+        return ProtectionTransition(
+            restricted,
+            ProtectionDisposition.APPLIED,
+            None,
+            restriction_alert,
+        )
+
+    if occurrence.halted:
+        halted_state = _enter_market_baseline(reserved, True)
+        halt_alert = (
+            ProtectionAlert.MARKET_COORDINATE_EXHAUSTED
+            if halted_state._market_exhausted
+            else (
+                ProtectionAlert.MARKET_BASELINE_REQUIRED
+                if not state._market_baseline_required
+                else None
+            )
+        )
+        return ProtectionTransition(
+            halted_state,
+            ProtectionDisposition.APPLIED,
+            None,
+            halt_alert,
+        )
+
+    primary = _market_primary(state, occurrence)
+    context_is_eligible = (
+        primary is not None
+        and not evaluation_time_regressed
+        and occurrence.source_time <= occurrence.evaluation_time
+        and occurrence.evaluation_time - occurrence.source_time
+        <= state.mandate.evidence_policy.max_age
+        and state.formula_available
+        and state.policy is not ProtectionPolicy.FLAT
+        and state.raw_quantity > 0
+        and state.raw_quantity <= state.mandate.maximum_quantity.value
+    )
+    if (
+        context_is_eligible
+        and not state._market_baseline_required
+        and primary is not None
+        and not _step_is_eligible(state, primary)
+    ):
+        context_is_eligible = False
+    if (
+        not context_is_eligible
+        or primary is None
+        or (
+            state._market_baseline_required
+            and occurrence.kind is not MarketKind.BEST_BID
+        )
+    ):
+        inert = _restrict_market_state(
+            reserved,
+            reserved._market_committed_epoch,
+            reserved._market_expected_epoch,
+            reserved._market_halted,
+            reserved._market_baseline_required,
+            False,
+        )
+        return ProtectionTransition(
+            inert,
+            ProtectionDisposition.APPLIED,
+            None,
+            None,
+        )
+
+    if state._market_baseline_required:
+        baseline = _state_after_market_baseline(reserved, occurrence, primary)
+        return ProtectionTransition(
+            baseline,
+            ProtectionDisposition.APPLIED,
+            None,
+            None,
+        )
+
+    applied = _state_after_eligible_market(reserved, occurrence, primary)
     return ProtectionTransition(
-        next_state,
+        applied,
         ProtectionDisposition.APPLIED,
-        _goal_for_state(next_state, projection),
-        alert,
+        _goal_for_state(applied, projection),
+        None,
     )
 
 
@@ -1936,14 +2422,11 @@ def initialize_position_protection(
 def reduce_position_protection(
     state: PositionProtectionState,
     projection: ProtectionVenueProjection,
-    occurrence: MarketOccurrence | None,
 ) -> ProtectionTransition:
     if type(state) is not PositionProtectionState:
         raise TypeError("state must be PositionProtectionState")
     if type(projection) is not ProtectionVenueProjection:
         raise TypeError("projection must be ProtectionVenueProjection")
-    if occurrence is not None and type(occurrence) is not MarketOccurrence:
-        raise TypeError("occurrence must be MarketOccurrence or None")
     if not _state_is_authentic(state):
         return ProtectionTransition(state, ProtectionDisposition.REFUSED, None, None)
     if not _projection_is_authentic(projection):
@@ -1956,14 +2439,6 @@ def reduce_position_protection(
         state._cursor_ordinal == projection.cursor_ordinal
         and state._cursor_head == projection.cursor_head
     ):
-        if occurrence is not None:
-            return _reduce_market_occurrence(
-                state,
-                projection,
-                occurrence,
-                False,
-                None,
-            )
         return ProtectionTransition(
             state,
             ProtectionDisposition.EXACT_REPLAY,
@@ -1986,19 +2461,60 @@ def reduce_position_protection(
         if state._exit_provenance == _flat_origin() and next_state.raw_quantity > 0
         else None
     )
-    if occurrence is not None:
-        return _reduce_market_occurrence(
-            next_state,
-            projection,
-            occurrence,
-            True,
-            alert,
-        )
     return ProtectionTransition(
         next_state,
         ProtectionDisposition.APPLIED,
         _goal_for_state(next_state, projection),
         alert,
+    )
+
+
+def reduce_position_protection_market(
+    state: PositionProtectionState,
+    projection: ProtectionVenueProjection,
+    occurrence: MarketOccurrence,
+) -> ProtectionTransition:
+    if type(state) is not PositionProtectionState:
+        raise TypeError("state must be PositionProtectionState")
+    if type(projection) is not ProtectionVenueProjection:
+        raise TypeError("projection must be ProtectionVenueProjection")
+    if type(occurrence) is not MarketOccurrence:
+        raise TypeError("occurrence must be MarketOccurrence")
+    if not _state_is_authentic(state):
+        return ProtectionTransition(state, ProtectionDisposition.REFUSED, None, None)
+    return _reduce_market_occurrence(state, projection, occurrence)
+
+
+def invalidate_position_protection_market(
+    state: PositionProtectionState,
+    projection: ProtectionVenueProjection,
+) -> ProtectionTransition:
+    if type(state) is not PositionProtectionState:
+        raise TypeError("state must be PositionProtectionState")
+    if type(projection) is not ProtectionVenueProjection:
+        raise TypeError("projection must be ProtectionVenueProjection")
+    if not _state_is_authentic(state):
+        return ProtectionTransition(state, ProtectionDisposition.REFUSED, None, None)
+    if not _market_projection_is_current(state, projection):
+        return ProtectionTransition(state, ProtectionDisposition.REFUSED, None, None)
+    if state._market_baseline_required or state._market_exhausted:
+        return ProtectionTransition(
+            state,
+            ProtectionDisposition.EXACT_REPLAY,
+            None,
+            None,
+        )
+    invalidated = _enter_market_baseline(state, state._market_halted)
+    invalidation_alert = (
+        ProtectionAlert.MARKET_COORDINATE_EXHAUSTED
+        if invalidated._market_exhausted
+        else ProtectionAlert.MARKET_BASELINE_REQUIRED
+    )
+    return ProtectionTransition(
+        invalidated,
+        ProtectionDisposition.APPLIED,
+        None,
+        invalidation_alert,
     )
 
 
@@ -2008,6 +2524,7 @@ __all__ = (
     "ExecutionGuard",
     "MarketKind",
     "MarketOccurrence",
+    "MarketSequenceMode",
     "PositionProtectionState",
     "ProtectionAlert",
     "ProtectionDisposition",
@@ -2017,6 +2534,8 @@ __all__ = (
     "ProtectionUrgency",
     "ProtectionVenueProjection",
     "initialize_position_protection",
+    "invalidate_position_protection_market",
     "project_protection_venue",
     "reduce_position_protection",
+    "reduce_position_protection_market",
 )

@@ -1449,3 +1449,28 @@ The focused proof-isolation and canonical-identity set passes 27/27 with the in-
 implementation; Ruff lint/format and diff checks pass. Freeze this test/work-order successor with
 application files excluded, obtain one independent exact-delta review, and then rely on the
 already-authorized application candidate only after the successor has no unresolved P0/P1.
+
+### ADR-023 GREEN application pre-freeze
+
+Immutable proof-isolation successor `b7ae0d7db900557d54784ede2a27a7df65be0ae4` received
+independent exact-delta `ACCEPT`, P0=0/P1=0/P2=0. This closes the missing-lifecycle,
+exit-provenance isolation, and coordinated-identity RED gates.
+
+The pure application candidate now implements the exact five-function ADR-023 surface, the fixed
+19-part/480-byte authenticated market cursor, the single retained last-primary value, derived
+occurrence identity, strict generation-global coordinate ordering, explicit baseline/invalidation/
+recovery/exhaustion handling, sticky hard-bail and hybrid-trail policy, and goal suppression under
+every non-serving state. The coordinated identity finding is corrected at the identity root by
+re-deriving exact text-to-32-byte correspondence and the seal before protection accepts either an
+occurrence identity or stream generation.
+
+Fresh evidence is 509/509 direct/stateful/import tests and 1,254/1,254 complete execution-core
+tests. Ruff repository lint and candidate format, mypy over 86 application files, all six import
+contracts, Python 3.11 grammar controls, diff, activation-base scope, install, version, ledger, and
+PKL checks pass. Exact file hashes and command evidence are retained at
+`work/review/REV-0050/adr023-green-candidate/GREEN-EVIDENCE.md`.
+
+This remains author-side pre-freeze evidence. Commit the exact application/evidence candidate and
+obtain one fresh independent exact-candidate production review with zero unresolved P0/P1 before
+any closeout or CI claim. No deferred runtime, persistence, database, broker, network, credential,
+M2, master-merge, deletion, or cleanup surface is authorized or implemented.
