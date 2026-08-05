@@ -113,3 +113,9 @@ Seam discipline is what makes the safety invariants structurally enforceable rat
   fail-closed invalidation/baseline recovery, and terminal coordinate exhaustion. Implementation
   remains pure and unwired; adapter normalization and the source-authoritative restart fence remain
   deferred to M2.
+- 2026-08-04: Ratified ADR-023 amendment R1 at exact proposal SHA-256
+  `F0403B87770648DE233575CE29D853327FD0B48559CE032B4CEF529A6EFE34E9`. The bounded cursor
+  now retains one exact last-primary `ReportedPrice` solely for the next maximum-step comparison and
+  serializes only its canonical commitment in unchanged cursor part 13. The RED grammar narrowly
+  permits `_field(init=False)` only for the derived occurrence identity. A replacement RED freeze
+  remains required; every constant-history, pure-M1, and deferred-M2 boundary is unchanged.

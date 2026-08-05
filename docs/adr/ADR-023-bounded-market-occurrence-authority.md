@@ -107,8 +107,9 @@ Protection state SHALL retain only constant-size current market data:
 - current occurrence epoch and canonical occurrence identity;
 - committed market epoch, optional expected recovery epoch, and halt/baseline-required/exhausted
   latches;
-- one optional last-primary-price commitment and at most one hard-bail bid, trade, and trail-bid
-  identity with its paired source time; and
+- one optional exact last-primary `ReportedPrice`, retained solely for the next maximum-step
+  comparison, whose existing canonical reported-price commitment is serialized as cursor part 13,
+  and at most one hard-bail bid, trade, and trail-bid identity with its paired source time; and
 - existing public price, policy, execution cursor, commitment, and provenance fields, which remain
   in the main state commitment and are not duplicated in the private market cursor.
 

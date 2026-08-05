@@ -195,6 +195,7 @@ _PROTECTION_ALLOWED_IMPORTED_BINDINGS = (
     | _PROTECTION_ALLOWED_INTERNAL_IMPORTED_CALLS
     | {
         ("__future__", "annotations"),
+        ("dataclasses", "field"),
         ("enum", "Enum"),
         ("app.execution_core.fills", "ExecutionSide"),
         ("app.execution_core.identity", "MandateId"),
@@ -2544,6 +2545,29 @@ def _protection_write_effect_violations(
     def declarative_assignment_value(node: ast.AST | None) -> bool:
         return node is None or _immutable_literal_expression(node)
 
+    def exact_occurrence_identity_field(
+        statement: ast.AnnAssign,
+        owner: ast.Module | ast.ClassDef,
+    ) -> bool:
+        value = statement.value
+        return bool(
+            isinstance(owner, ast.ClassDef)
+            and owner.name == "MarketOccurrence"
+            and isinstance(statement.target, ast.Name)
+            and statement.target.id == "occurrence_id"
+            and statement.simple == 1
+            and isinstance(statement.annotation, ast.Name)
+            and statement.annotation.id == "_MarketOccurrenceId"
+            and isinstance(value, ast.Call)
+            and isinstance(value.func, ast.Name)
+            and value.func.id == "_field"
+            and not value.args
+            and len(value.keywords) == 1
+            and value.keywords[0].arg == "init"
+            and isinstance(value.keywords[0].value, ast.Constant)
+            and value.keywords[0].value.value is False
+        )
+
     for owner in (
         tree,
         *(node for node in tree.body if isinstance(node, ast.ClassDef)),
@@ -2565,7 +2589,9 @@ def _protection_write_effect_violations(
                     violations.append(
                         f"{_display(path, statement)} non-declarative retained binding"
                     )
-                if not declarative_assignment_value(statement.value):
+                if not declarative_assignment_value(
+                    statement.value
+                ) and not exact_occurrence_identity_field(statement, owner):
                     violations.append(
                         f"{_display(path, statement)} mutable retained binding"
                     )
@@ -3242,6 +3268,48 @@ def _protection_call_binding_violations(
             return None
         return target
 
+    def exact_market_occurrence_identity_field_call(node: ast.AST) -> bool:
+        if not (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "_field"
+            and not node.args
+            and len(node.keywords) == 1
+            and node.keywords[0].arg == "init"
+            and isinstance(node.keywords[0].value, ast.Constant)
+            and node.keywords[0].value.value is False
+        ):
+            return False
+        binding = imported.get(node.func.id)
+        if binding is None or canonical_import(binding) != (
+            "dataclasses",
+            "field",
+        ):
+            return False
+        if node.func.id in (
+            declared | rebound | module_imports | ambiguous_imports | non_module_imports
+        ):
+            return False
+        assignment = parents.get(node)
+        declaration = parents.get(assignment) if assignment is not None else None
+        return bool(
+            isinstance(assignment, ast.AnnAssign)
+            and assignment.value is node
+            and assignment.simple == 1
+            and isinstance(assignment.target, ast.Name)
+            and assignment.target.id == "occurrence_id"
+            and isinstance(assignment.annotation, ast.Name)
+            and assignment.annotation.id == "_MarketOccurrenceId"
+            and imported.get("_MarketOccurrenceId") is not None
+            and canonical_import(imported["_MarketOccurrenceId"])
+            == ("app.execution_core.identity", "MarketOccurrenceId")
+            and isinstance(declaration, ast.ClassDef)
+            and declaration.name == "MarketOccurrence"
+            and parents.get(declaration) is tree
+            and len(declaration.decorator_list) == 1
+            and dataclass_decorator_target(declaration.decorator_list[0]) is not None
+        )
+
     def unshadowed_builtin(name: str) -> bool:
         return name not in (
             declared
@@ -3695,6 +3763,7 @@ def _protection_call_binding_violations(
         if isinstance(node.func, ast.Name):
             binding = imported.get(node.func.id)
             canonical_binding = None if binding is None else canonical_import(binding)
+            exact_identity_field = exact_market_occurrence_identity_field_call(node)
             if canonical_binding == ("hashlib", "sha256") and not (
                 exact_sha_constructor_call(node)
             ):
@@ -3711,6 +3780,12 @@ def _protection_call_binding_violations(
                     violations.append(
                         f"{_display(path, node)} dataclass call is not a class decorator"
                     )
+            if canonical_binding == ("dataclasses", "field") and not (
+                exact_identity_field
+            ):
+                violations.append(
+                    f"{_display(path, node)} derived occurrence-id field call is not exact"
+                )
             if (
                 node.func.id == "type"
                 and node.func.id not in declared
@@ -3739,7 +3814,15 @@ def _protection_call_binding_violations(
                 violations.append(
                     f"{_display(path, node)} guarded lifecycle len call is not exact"
                 )
-            elif node.func.id != "len" and not callable_name_is_allowed(node.func.id):
+            elif (
+                node.func.id != "len"
+                and not callable_name_is_allowed(node.func.id)
+                and (
+                    imported.get(node.func.id) is None
+                    or canonical_import(imported[node.func.id])
+                    != ("dataclasses", "field")
+                )
+            ):
                 violations.append(
                     f"{_display(path, node)} unproven call binding {node.func.id}"
                 )
@@ -4852,6 +4935,56 @@ def test_guarded_lifecycle_calls_require_exact_source_context() -> None:
         violations = _protection_call_binding_violations(tree, path)
         matching = [item for item in violations if expected in item]
         assert len(matching) == 1, label
+
+
+def test_market_occurrence_identity_field_call_is_narrow_and_failure_capable() -> None:
+    """Only the derived immutable occurrence identity may use field(init=False)."""
+
+    path = _PACKAGE_ROOT / "synthetic_protection_occurrence_field.py"
+
+    def source_with(
+        field_call: str,
+        *,
+        class_name: str = "MarketOccurrence",
+        field_name: str = "occurrence_id",
+        annotation: str = "_MarketOccurrenceId",
+    ) -> ast.Module:
+        return ast.parse(
+            "from dataclasses import dataclass as _dataclass, field as _field\n"
+            "from .identity import MarketOccurrenceId as _MarketOccurrenceId\n"
+            "@_dataclass(frozen=True, slots=True)\n"
+            f"class {class_name}:\n"
+            f"    {field_name}: {annotation} = {field_call}\n"
+        )
+
+    accepted = source_with("_field(init=False)")
+    assert _protection_call_binding_violations(accepted, path) == []
+
+    mutants = {
+        "missing init": source_with("_field()"),
+        "caller initialized": source_with("_field(init=True)"),
+        "extra option": source_with("_field(init=False, repr=False)"),
+        "positional option": source_with("_field(False)"),
+        "wrong class": source_with(
+            "_field(init=False)",
+            class_name="OtherOccurrence",
+        ),
+        "wrong field": source_with(
+            "_field(init=False)",
+            field_name="source_id",
+        ),
+        "wrong annotation": source_with(
+            "_field(init=False)",
+            annotation="str",
+        ),
+        "default factory": source_with("_field(default_factory=_MarketOccurrenceId)"),
+    }
+    for label, mutant in mutants.items():
+        violations = _protection_call_binding_violations(mutant, path)
+        assert any(
+            "derived occurrence-id field call is not exact" in item
+            for item in violations
+        ), label
 
 
 def test_protection_canonical_private_imports_preserve_exact_public_surface() -> None:

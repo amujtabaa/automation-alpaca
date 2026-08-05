@@ -102,3 +102,9 @@ Roadmapping against an unverified codebase state repeats the failure mode Fable 
   until a replacement immutable RED contract receives independent exact-commit `ACCEPT` with zero
   P0/P1; `WO-0149`, M2, runtime/persistence, broker/network, merge, deletion, and cleanup remain
   inactive.
+- 2026-08-04: Ameen ratified ADR-023 amendment R1 at exact proposal SHA-256
+  `F0403B87770648DE233575CE29D853327FD0B48559CE032B4CEF529A6EFE34E9`. The correction retains
+  one exact bounded last-primary price for the required next-step comparison and narrowly admits the
+  derived-identity dataclass field form. WO-0148 remains pure and unwired; application work remains
+  barred until one corrected immutable RED contract receives independent acceptance with zero
+  unresolved P0/P1.

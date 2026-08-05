@@ -206,6 +206,13 @@ _ADR023_CURSOR_PREIMAGE_PARAMETERS = (
     "trail_bid_identity",
     "trail_bid_source_time",
 )
+_ADR023_STATE_CURSOR_PARAMETERS = tuple(
+    "last_primary" if name == "last_primary_commitment" else name
+    for name in _ADR023_CURSOR_PREIMAGE_PARAMETERS
+)
+_ADR023_LAST_PRIMARY_COMMITMENT_SOURCE = (
+    "None if last_primary is None else _encode_reported_price(last_primary)"
+)
 _ADR023_STATE_COMMITMENT_PARAMETERS = (
     "policy",
     "mandate",
@@ -219,7 +226,7 @@ _ADR023_STATE_COMMITMENT_PARAMETERS = (
     "waiting_buy_resolution",
     "cursor_ordinal",
     "cursor_head",
-    *_ADR023_CURSOR_PREIMAGE_PARAMETERS,
+    *_ADR023_STATE_CURSOR_PARAMETERS,
     "exit_provenance",
 )
 _ADR023_STATE_COMMITMENT_PART_SOURCES = (
@@ -6011,7 +6018,7 @@ def test_every_reducer_owned_state_field_is_authenticated_before_advancement() -
         ("_market_source_time",): 10,
         ("_market_evaluation_time",): 11,
         ("_market_occurrence_identity",): occurrence_id_type("a1" * 32),
-        ("_market_last_primary",): bytes.fromhex("a2" * 32),
+        ("_market_last_primary",): _price(107),
         ("_hard_bid_identity",): occurrence_id_type("a3" * 32),
         ("_hard_bid_source_time",): 12,
         ("_trade_identity",): occurrence_id_type("a4" * 32),
@@ -9615,6 +9622,9 @@ def test_cross_kind_market_step_limit_uses_the_last_eligible_primary(
             sequence=1,
         ),
     )
+    expected_primary = 92 if first_kind == "BEST_BID" else 1
+    assert type(first.state._market_last_primary) is ReportedPrice
+    assert first.state._market_last_primary == _price(expected_primary)
     second_kind = "TRADE" if first_kind == "BEST_BID" else "BEST_BID"
     second = _reduce(
         module,
@@ -13929,16 +13939,26 @@ def _state_cursor_digest_binding_violations(source: str) -> list[str]:
         preimage_call.keywords,
         strict=False,
     ):
+        expected_source = (
+            _ADR023_LAST_PRIMARY_COMMITMENT_SOURCE
+            if expected == "last_primary_commitment"
+            else expected
+        )
+        expected_expression = ast.parse(
+            expected_source,
+            mode="eval",
+            feature_version=(3, 11),
+        ).body
         if not (
             keyword.arg == expected
-            and isinstance(keyword.value, ast.Name)
-            and keyword.value.id == expected
+            and ast.dump(keyword.value, include_attributes=False)
+            == ast.dump(expected_expression, include_attributes=False)
         ):
             violations.append(
-                f"cursor digest slot {expected} must use exact source {expected}"
+                f"cursor digest slot {expected} must use exact source {expected_source}"
             )
 
-    cursor_names = set(_ADR023_CURSOR_PREIMAGE_PARAMETERS)
+    cursor_names = set(_ADR023_STATE_CURSOR_PARAMETERS)
     for part in commit_call.args:
         if part is digest_part:
             continue
@@ -13966,10 +13986,11 @@ def test_state_commitment_binds_one_exact_cursor_digest_part() -> None:
 
 def test_state_commitment_cursor_digest_runtime_dependencies_are_canonical() -> None:
     module = _protection_module()
-    state_commitment, commit_parts, preimage = _required(
+    state_commitment, commit_parts, encode_reported_price, preimage = _required(
         module,
         "_state_commitment",
         "_commit_parts",
+        "_encode_reported_price",
         "_protection_market_cursor_preimage",
     )
     fills_module = importlib.import_module("app.execution_core.fills")
@@ -13980,8 +14001,14 @@ def test_state_commitment_cursor_digest_runtime_dependencies_are_canonical() -> 
     assert vars(module).get("_state_commitment") is state_commitment
     assert vars(module).get("_protection_market_cursor_preimage") is preimage
     assert vars(module).get("_commit_parts") is commit_parts
+    assert vars(module).get("_encode_reported_price") is encode_reported_price
     assert commit_parts is vars(fills_module).get("_commit_parts")
+    assert encode_reported_price is vars(fills_module).get("_encode_reported_price")
     assert state_commitment.__globals__.get("_commit_parts") is commit_parts
+    assert (
+        state_commitment.__globals__.get("_encode_reported_price")
+        is encode_reported_price
+    )
     assert (
         state_commitment.__globals__.get("_protection_market_cursor_preimage")
         is preimage
@@ -13991,9 +14018,20 @@ def test_state_commitment_cursor_digest_runtime_dependencies_are_canonical() -> 
 
 def test_state_cursor_digest_binding_oracle_is_failure_capable() -> None:
     parameters = ", ".join(_ADR023_STATE_COMMITMENT_PARAMETERS)
-    keywords = ", ".join(
-        f"{name}={name}" for name in _ADR023_CURSOR_PREIMAGE_PARAMETERS
+    keyword_sources = {name: name for name in _ADR023_CURSOR_PREIMAGE_PARAMETERS}
+    keyword_sources["last_primary_commitment"] = (
+        f"({_ADR023_LAST_PRIMARY_COMMITMENT_SOURCE})"
     )
+
+    def render_keywords(overrides: dict[str, str] | None = None) -> str:
+        sources = dict(keyword_sources)
+        if overrides is not None:
+            sources.update(overrides)
+        return ", ".join(
+            f"{name}={sources[name]}" for name in _ADR023_CURSOR_PREIMAGE_PARAMETERS
+        )
+
+    keywords = render_keywords()
     digest_part_index = _ADR023_STATE_COMMITMENT_PART_SOURCES.index("<CURSOR_DIGEST>")
     canonical_leading_parts = _ADR023_STATE_COMMITMENT_PART_SOURCES[:digest_part_index]
 
@@ -14024,24 +14062,21 @@ def test_state_cursor_digest_binding_oracle_is_failure_capable() -> None:
         "_sha256(_protection_market_cursor_preimage(" + keywords + ")).digest()"
     )
     assert _state_cursor_digest_binding_violations(source_with(exact_part)) == []
-    swapped_keywords = ", ".join(
-        f"{name}="
-        + (
-            "sequence_mode"
-            if name == "stream_generation"
-            else "stream_generation"
-            if name == "sequence_mode"
-            else name
-        )
-        for name in _ADR023_CURSOR_PREIMAGE_PARAMETERS
+    swapped_keywords = render_keywords(
+        {
+            "stream_generation": "sequence_mode",
+            "sequence_mode": "stream_generation",
+        }
     )
-    constant_keywords = keywords.replace(
-        "occurrence_epoch=occurrence_epoch",
-        "occurrence_epoch=0",
+    constant_keywords = render_keywords(
+        {
+            "occurrence_epoch": "0",
+        }
     )
-    transformed_keywords = keywords.replace(
-        "source_time=source_time",
-        "source_time=_encode_int(source_time)",
+    transformed_keywords = render_keywords(
+        {
+            "source_time": "_encode_int(source_time)",
+        }
     )
     transformed_retained_parts = list(canonical_leading_parts)
     transformed_retained_parts[2] = "_encode_int(raw_quantity + 0)"
@@ -14060,7 +14095,7 @@ def test_state_cursor_digest_binding_oracle_is_failure_capable() -> None:
         "missing cursor field": source_with(
             "_sha256(_protection_market_cursor_preimage("
             + ", ".join(
-                f"{name}={name}"
+                f"{name}={keyword_sources[name]}"
                 for name in _ADR023_CURSOR_PREIMAGE_PARAMETERS
                 if name != "trade_identity"
             )
@@ -14080,6 +14115,18 @@ def test_state_cursor_digest_binding_oracle_is_failure_capable() -> None:
         "transformed cursor slot": source_with(
             "_sha256(_protection_market_cursor_preimage("
             + transformed_keywords
+            + ")).digest()"
+        ),
+        "raw last primary instead of commitment": source_with(
+            "_sha256(_protection_market_cursor_preimage("
+            + render_keywords({"last_primary_commitment": "last_primary"})
+            + ")).digest()"
+        ),
+        "last primary commitment loses absence": source_with(
+            "_sha256(_protection_market_cursor_preimage("
+            + render_keywords(
+                {"last_primary_commitment": ("_encode_reported_price(last_primary)")}
+            )
             + ")).digest()"
         ),
         "raw component through local alias": source_with(
@@ -14164,11 +14211,17 @@ def test_state_cursor_digest_binding_oracle_is_failure_capable() -> None:
             ),
         ),
     }
-    assert len(mutants) == 24
+    assert len(mutants) == 26
     expected_findings = {
         "explicit cursor slot swap": "cursor digest slot stream_generation",
         "constant cursor slot substitution": "cursor digest slot occurrence_epoch",
         "transformed cursor slot": "cursor digest slot source_time",
+        "raw last primary instead of commitment": (
+            "cursor digest slot last_primary_commitment"
+        ),
+        "last primary commitment loses absence": (
+            "cursor digest slot last_primary_commitment"
+        ),
         "raw component through local alias": "one straight-line return",
         "raw component through transitive aliases": "one straight-line return",
         "extra parameter duplicate": "signature differs",
@@ -14212,7 +14265,7 @@ def test_main_state_commitment_authenticates_every_cursor_component() -> None:
         _market_halted=False,
         _market_baseline_required=False,
         _market_exhausted=False,
-        _market_last_primary=bytes.fromhex("22" * 32),
+        _market_last_primary=_price(110),
         _hard_bid_identity=occurrence_id_type("33" * 32),
         _hard_bid_source_time=8,
         _trade_identity=occurrence_id_type("44" * 32),
@@ -14233,7 +14286,7 @@ def test_main_state_commitment_authenticates_every_cursor_component() -> None:
         "_market_halted": True,
         "_market_baseline_required": True,
         "_market_exhausted": True,
-        "_market_last_primary": bytes.fromhex("77" * 32),
+        "_market_last_primary": _price(115),
         "_hard_bid_identity": occurrence_id_type("88" * 32),
         "_hard_bid_source_time": 7,
         "_trade_identity": occurrence_id_type("99" * 32),
@@ -14360,7 +14413,11 @@ def _production_cursor_preimage_from_state(
         halted=state._market_halted,
         baseline_required=state._market_baseline_required,
         exhausted=state._market_exhausted,
-        last_primary_commitment=state._market_last_primary,
+        last_primary_commitment=(
+            None
+            if state._market_last_primary is None
+            else _literal_encode_reported_price(state._market_last_primary)
+        ),
         hard_bid_identity=(
             None
             if state._hard_bid_identity is None

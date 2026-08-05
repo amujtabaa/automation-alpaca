@@ -1284,3 +1284,49 @@ ADR-023 retained-state text, implementation stops pending exact human ratificati
 implementation and review activity resumes after one replacement RED candidate proves the two
 corrections without changing the 19-part/480-byte cursor, constant-history bounds, or any other
 ADR-023 behavior.
+
+### Ratified ADR-023 amendment R1 — implementable bounded last-primary state
+
+On 2026-08-04, Ameen approved proposed ADR-023 amendment R1 at exact SHA-256
+`F0403B87770648DE233575CE29D853327FD0B48559CE032B4CEF529A6EFE34E9` and its exact
+ADR-023 text amendment and WO-0148 RED-contract re-gate.
+
+Applying that exact amendment produces controlling ADR-023 SHA-256
+`9A61D4F952079B5F78DA7A8F1A17F70DC3099D20FB359596923C5938CC421EAF`; the prior accepted
+body and hash remain immutable provenance.
+
+The controlling correction retains `_market_last_primary` as exact `ReportedPrice | None` solely
+for the next maximum-step comparison and serializes only its canonical reported-price commitment
+as existing cursor part 13. The cursor remains exactly 19 parts and 480 bytes, and state/work remain
+constant in market-history length. The import grammar may additionally admit only canonical private
+`from dataclasses import field as _field` and only `_field(init=False)` as the class-level default
+of `MarketOccurrence.occurrence_id`; every broader use remains refused.
+
+The accepted `e886fead41dca94e86e666a993f4f976507ece8d` RED freeze and its independent
+acceptance remain immutable historical evidence. Before application edits, the two corrections
+must receive failure-capable positive/negative controls, focused RED and predecessor/static/scope
+verification, one replacement immutable RED freeze, and one materiality-bounded independent exact-
+delta `ACCEPT` with zero unresolved P0/P1. No broader review cycle is required absent a new material
+contradiction.
+
+This re-gate authorizes no runtime wiring, persistent application-database or direct database work,
+SQL/DDL, broker/Alpaca/network activity, credentials, M2 implementation, master merge, deletion, or
+cleanup.
+
+### ADR-023 amendment R1 replacement RED pre-freeze verification
+
+The two ratified RED corrections are now implemented without an application-code change. The
+replacement contract collects 505 tests and classifies against unchanged pre-ADR-023 production as
+410 intentional structural failures, 95 passing controls, zero errors, and zero skips. Focused
+failure-capability controls pass 4/4, and the exact predecessor execution-core corpus passes
+745/745.
+
+Ruff, format, Python 3.11 grammar, mypy, diff, scope, install, version, ledger, PKL, disposition,
+application-absence, accepted-ADR hash, artifact-hash, and all nine auxiliary-worktree checks pass.
+The exact evidence and boundaries are recorded in
+`work/review/REV-0050/adr023-green-feasibility/ADR-023-R1-RED-FREEZE-EVIDENCE.md`.
+
+This is pre-freeze evidence only. Application code remains unchanged and barred until the exact
+replacement RED candidate is committed immutably and receives one fresh materiality-bounded
+independent exact-delta `ACCEPT` with P0=0 and P1=0. No broader review cycle is required absent a
+new material contradiction.

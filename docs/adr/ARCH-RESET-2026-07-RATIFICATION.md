@@ -114,3 +114,31 @@ independent exact-commit `ACCEPT` with zero unresolved P0/P1.
 No runtime wiring, persistent application-database or direct database work, broker/Alpaca/network
 activity, M2 implementation, master merge, deletion, or cleanup is authorized. ADR-023's runtime
 recovery-fence proof remains a later M2 gate and is inadmissible as an M1 acceptance claim.
+
+## ADR-023 amendment R1 — accepted 2026-08-04
+
+Ameen approved proposed ADR-023 amendment R1 at exact SHA-256
+`F0403B87770648DE233575CE29D853327FD0B48559CE032B4CEF529A6EFE34E9` together with its
+exact ADR-023 text amendment and WO-0148 RED-contract re-gate.
+
+The amendment replaces only the retained-state bullet in ADR-023 Section 3. Protection retains one
+optional exact last-primary `ReportedPrice` solely for the next maximum-step comparison, while only
+its existing canonical reported-price commitment is serialized as cursor part 13. The cursor
+remains exactly 19 parts and 480 bytes; constant-history state/work, generation/mode, ordering,
+baseline, invalidation, halt, exhaustion, and goal-suppression clauses are unchanged.
+
+The exactly amended ADR-023 body has SHA-256
+`9A61D4F952079B5F78DA7A8F1A17F70DC3099D20FB359596923C5938CC421EAF`. This is the
+controlling ADR-023 body after R1; the original accepted hash above remains immutable provenance.
+
+The matching RED-contract correction also permits only canonical private
+`from dataclasses import field as _field` and only `_field(init=False)` as the class-level default
+for `MarketOccurrence.occurrence_id`. Every broader field call, argument, default, factory, alias,
+rebinding, or call site remains refused.
+
+This approval authorizes only the named ADR-023 amendment, matching active-WO/PKL reconciliation,
+the two named RED corrections, replacement RED freeze and review, and continuation of already
+authorized WO-0148 application/test, review, evidence, branch-push, and exact-head-CI work after
+the replacement RED gate passes. It authorizes no runtime wiring, persistent application-database
+or direct database work, SQL/DDL, broker/Alpaca/network activity, credentials, M2 implementation,
+master merge, deletion, or cleanup.

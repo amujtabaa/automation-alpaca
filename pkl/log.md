@@ -124,3 +124,12 @@
   matching PKL reconciliation. The next gate is an independently accepted immutable replacement
   RED contract before application work. No runtime/persistence/database, broker/Alpaca/network,
   M2, merge, deletion, or cleanup authority was added.
+
+- 2026-08-04: Ameen approved ADR-023 amendment R1 at exact proposal SHA-256
+  `F0403B87770648DE233575CE29D853327FD0B48559CE032B4CEF529A6EFE34E9`. Applied the exact
+  Section 3 retained-state correction: one bounded exact last-primary price supports the next
+  maximum-step comparison while its canonical commitment remains cursor part 13. Re-gated the RED
+  grammar only for canonical `_field(init=False)` on the derived occurrence identity. The next gate
+  is one corrected immutable RED freeze and materiality-bounded independent acceptance before
+  application work. No runtime/persistence/direct-database, SQL/DDL, broker/Alpaca/network,
+  credentials, M2, merge, deletion, or cleanup authority was added.
