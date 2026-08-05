@@ -26,10 +26,11 @@ The first three reset M1 semantic centers are implemented, independently accepte
 dual-version green, and unwired: `WO-0145` owns immutable execution facts and position truth;
 `WO-0146` owns venue effects, concrete acceptances, closure, ambiguity, and ADR-012 recovery; and
 `WO-0147` owns deny-by-default trading mode, manual controls, shared request budgets, symbol-wide
-execution authority, and atomic final claim. Pure `WO-0148` is active to add a separate position-
-protection and hybrid-trailing semantic center against those frozen interfaces. No reset slice
-changes runtime behavior or persistence, and no slice authenticates an operational supervisor
-fence; acquisition integration and later work remain inactive until separately gated.
+execution authority, and atomic final claim. Pure `WO-0148` now adds the separate formula-bound
+position-protection, bounded market-occurrence, hybrid-trailing, wait/flat/late-fill, and typed SELL-
+goal semantic center. Its independently accepted local closeout remains effectively `REVIEW` until
+exact-head dual-version CI succeeds. No reset work order is active; acquisition integration,
+`WO-0149`, M2, and all runtime/persistence work remain inactive until separately gated.
 
 ## Rules / facts
 
@@ -50,8 +51,10 @@ fence; acquisition integration and later work remain inactive until separately g
   separate capacity-capped human-fill/non-economic release boundary. Its execution-authority model
   adds exact phase/mode/fence state, kill/manual controls, shared request budgets, permanent query
   identity, symbol-wide uncertainty, and atomic final claim without minting an operational
-  supervisor. The package remains an unwired M1 reference center until later persistence and
-  composition work orders.
+  supervisor. Its protection model derives formula-bound floors, bounded market authority, hybrid
+  trails, exact wait/flat/late-fill semantics, and typed SELL goals from authenticated execution and
+  venue state without creating an effect. The package remains an unwired M1 reference center until
+  later persistence and composition work orders.
 - Boundary enforcement: import-linter contracts in CI; a PR crossing a protected seam fails.
 - Runtime pins: Python 3.11 and 3.12 supported, 3.12 development default, no 3.12-only production
   syntax; FastAPI; Streamlit; `alpaca-py` in the adapter only; SQLite as the sole reset-beta
@@ -119,3 +122,9 @@ Seam discipline is what makes the safety invariants structurally enforceable rat
   serializes only its canonical commitment in unchanged cursor part 13. The RED grammar narrowly
   permits `_field(init=False)` only for the derived occurrence identity. A replacement RED freeze
   remains required; every constant-history, pure-M1, and deferred-M2 boundary is unchanged.
+- 2026-08-04: Filed the pure WO-0148 position-protection closeout candidate after exact root-
+  successor and runtime-envelope reviews returned `ACCEPT` with no unresolved P0/P1, 61/61 R2 cases
+  passed, and 5,847 repository tests completed with zero failures/errors at
+  `93.01194919026261%` raw combined coverage. The local metadata is proposed `CLOSED`, but effective
+  lifecycle remains `REVIEW` until unchanged exact-head Python 3.11/3.12 CI succeeds. No reset work
+  order is active; WO-0149, acquisition, M2, runtime, and persistence remain inactive.

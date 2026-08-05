@@ -6729,6 +6729,58 @@ def test_transition_proof_rejects_predecessor_execution_seal_discontinuity() -> 
     assert not internally_recomputed.lineage_is_authentic
 
 
+def test_runtime_rejects_non_exact_protection_envelopes() -> None:
+    class NonExactBytes(bytes):
+        pass
+
+    module = _protection_module()
+    transition = _owned_fill_transition(label="protection-proof-envelope-runtime")
+    mandate = _mandate(module)
+    (project,) = _required(module, "project_protection_venue")
+
+    wrong_proof_type = _clone_opaque(
+        transition,
+        _protection_proof=object(),
+    )
+    with pytest.raises(TypeError, match="protection proof is not exact"):
+        project(wrong_proof_type, mandate)
+
+    wrong_commitment_type = _clone_opaque(
+        transition,
+        _protection_proof_commitment=NonExactBytes(
+            transition._protection_proof_commitment
+        ),
+    )
+    with pytest.raises(ValueError, match="proof commitment is not exact"):
+        project(wrong_commitment_type, mandate)
+
+    _, projection, state = _start(
+        module,
+        transition,
+        mandate,
+        establish_baseline=False,
+    )
+    wrong_projection_seal = _clone_opaque(
+        projection,
+        _seal=NonExactBytes(projection._seal),
+    )
+    rejected = _reduce_projection(module, state, wrong_projection_seal)
+    assert rejected.disposition is module.ProtectionDisposition.REFUSED
+    assert rejected.state == state
+    assert rejected.goal is None
+    assert rejected.critical_alert is None
+
+    wrong_state_commitment = _clone_opaque(
+        state,
+        commitment=NonExactBytes(state.commitment),
+    )
+    rejected = _reduce_projection(module, wrong_state_commitment, projection)
+    assert rejected.disposition is module.ProtectionDisposition.REFUSED
+    assert rejected.state == wrong_state_commitment
+    assert rejected.goal is None
+    assert rejected.critical_alert is None
+
+
 def test_sibling_venue_fork_cannot_advance_from_the_same_predecessor_twice() -> None:
     module = _protection_module()
     fill = _owned_fill_transition()

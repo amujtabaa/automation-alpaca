@@ -1,12 +1,12 @@
 ---
 type: Work Order
 title: "Reset kernel D: position protection and hybrid trailing"
-status: ACTIVE
+status: CLOSED
 work_order_id: WO-0148
 wave: RESET-M1D
 model_tier: strong
 risk: high
-disposition: []
+disposition: [PKL_UPDATED, RESULT_SUMMARY_KEPT]
 owner: Codex implementation seat
 created: 2026-08-02
 branch: codex/arch-reset-2026-07-r1
@@ -1554,3 +1554,84 @@ mandatory fresh R2 oracle, full-repository branch coverage, atomic closeout, pus
 suite, and exact-head Python 3.11/3.12 CI have not run. Those gates instantiate disposable SQLite
 and execute SQL/DDL; the latest authorization explicitly prohibits both, so no database-backed
 gate or push has been initiated.
+
+## Final authorized repository gate and conditional closeout
+
+Ameen explicitly authorized the mandatory fresh R2, full-repository branch-coverage, and unchanged
+exact-head Python 3.11/3.12 CI gates with `BROKER_ADAPTER=mock` and SQL/DDL only through existing
+fixtures against disposable test-only SQLite files. No credential was present or used, no Alpaca or
+broker/network call occurred, and no persistent application database, runtime wiring, CI-workflow
+change, PR/merge, deletion, cleanup, WO-0149 activation, or M2 work occurred.
+
+The accepted pure application root successor is
+`e9c2d58a8f16d2b3457dad5e4c5ed04ca24073ae`; reviewer record
+`6696743337f9eae8dad0567be6d49333d9d100cc` retains the fresh exact-delta `ACCEPT` with
+P0=0/P1=0/P2=0. A final tests-only runtime-envelope pin then made exact proof, proof-commitment,
+projection-seal, and state-commitment type checks executable. Its bounded independent review first
+identified and preserved one test-strength P1, then accepted the corrected exact-bytes-subclass
+counterexamples after three separate weaker-guard counterfactuals failed. The final result is
+`ACCEPT`, P0=0/P1=0/P2=0, retained at
+`work/review/REV-0050/adr023-final-coverage-pin/result.md`.
+
+The definitive exact-tree local evidence under
+`work/review/REV-0050/evidence/adr023-root-final-gate-06/` is:
+
+- focused runtime-envelope control: 1/1 pass, with eight deterministic formerly unpinned runtime
+  line/branch units executed;
+- R2 conformance oracle: 61/61 pass under the mock adapter;
+- full repository: 5,847 tests, zero failures, zero errors, 12 skipped outcomes, and JUnit time
+  1,601.407 seconds;
+- raw combined line/branch coverage: `93.01194919026261%`, comprising 19,985/21,081 statements
+  and 7,181/8,126 branches, or 27,166/29,207 combined units; and
+- the unchanged literal 93% floor passed.
+
+Earlier final-gate attempts remain preserved as non-acceptance provenance: one timed out; one
+completed all tests at `92.98798233300236%`; an initially green `93.00510151675968%` run was
+superseded when independent review found its exact-type counterexample too weak; and the corrected
+successor completed all tests at `92.99825384325675%`, one unit below the floor because an unrelated
+pre-existing store branch varied between runs. No failed or superseded result is used for closeout.
+
+This atomic documentation/governance reconciliation creates the immutable closeout candidate. Its
+exact commit SHA is recorded externally by Git and as `HEAD` in the append-only ledger to avoid a
+self-referential or evidence-only successor. The proposed `CLOSED` disposition becomes effective
+only if this exact SHA passes the unchanged Python 3.11 and 3.12 workflow. Until then effective
+lifecycle remains `REVIEW`; no reset work order is active, and `WO-0149` and M2 remain inactive. A
+failed, canceled, incomplete, or mismatched-head run reopens this same WO. No post-success
+evidence-only closeout successor is permitted.
+
+## Reconciled done criteria
+
+```yaml
+fable_done:
+  task: "WO-0148 reset kernel D: position protection and hybrid trailing"
+  done_when_results:
+    - item: "Pure protection state, bounded market authority, hybrid trailing, wait/flat/late-fill behavior, and SELL goals are deterministic and unwired."
+      status: MET
+      evidence: "Accepted root successor e9c2d58 implements ADR-020 through ADR-023 semantics; reviewer record 6696743 reports ACCEPT with no P0/P1."
+    - item: "Safety-relevant opaque runtime envelopes and newly added controls are failure-capable."
+      status: MET
+      evidence: "The final tests-only review reports ACCEPT after exact bytes-subclass controls killed weaker proof-commitment, projection-seal, and state-commitment guards."
+    - item: "Fresh R2 and repository-wide branch-coverage gates pass under the authorized mock/disposable-test path."
+      status: MET
+      evidence: "61 R2 cases and 5,847 repository tests passed with zero failures/errors; raw combined coverage is 93.01194919026261% against the unchanged 93% floor."
+    - item: "Independent review has no unresolved P0/P1."
+      status: MET
+      evidence: "Both the application root-successor review and bounded final tests-only addendum end ACCEPT with P0=0 and P1=0."
+    - item: "Allowed paths and operational exclusions remain respected."
+      status: MET
+      evidence: "Only pure application/test, retained review/evidence, and authorized closeout records changed. No credentials, Alpaca/broker/network activity, persistent application database, runtime wiring, CI-workflow edit, PR/merge, deletion, cleanup, WO-0149, M2, or prohibited-R1-DDL reliance occurred."
+  scope_check:
+    allowed_paths_respected: true
+    drive_by_edits: false
+  debt_check: "No in-scope P0/P1 remains. Persistence/hydration, adapters, acquisition, runtime composition, cutover, and operational database validation remain later separately gated work."
+  deferred:
+    - "External exact-head Python 3.11/3.12 CI is the effectiveness gate for this immutable closeout candidate; effective lifecycle remains REVIEW until both jobs succeed."
+  status: VERIFIED
+  verification_scope: "Pure implementation, focused/static/scope, R2, full repository coverage, evidence, and independent-review gates only; no claim that later CI has already passed."
+  acceptance_condition: "EXTERNAL_EXACT_HEAD_CI_REQUIRED_BEFORE_ANY_WO_0149_ACTIVATION"
+```
+
+WO-0148 is retained with `[PKL_UPDATED, RESULT_SUMMARY_KEPT]`. No accepted ADR body, packet,
+runtime, persistence, broker, credential, branch/worktree, or retained evidence artifact was
+mutated or removed. The prohibited R1 DDL result was not used for any design, test, review, or
+acceptance conclusion.

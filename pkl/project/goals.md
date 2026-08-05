@@ -20,9 +20,10 @@ accepted reset target is a modular monolith with one sequenced writer, one pure 
 one SQLite production store, transactional current state/outbox, and broker-neutral protection and
 side-symmetric liquidity execution. The integrated Spine v2 application and R6 branch are frozen
 evidence, not the reset foundation. M0 and pure M1A/M1B/M1C `WO-0145` through `WO-0147` are
-effective `CLOSED` after independent acceptance and exact-head Python 3.11/3.12 CI. Their immutable
-execution-truth, venue/recovery, and deny-by-default execution-authority centers remain I/O-free
-and unwired. Pure M1D `WO-0148` is active for position protection and hybrid trailing only.
+effective `CLOSED` after independent acceptance and exact-head Python 3.11/3.12 CI. Pure M1D
+`WO-0148` is filed as an independently accepted, locally green conditional closeout for position
+protection and hybrid trailing; its effective lifecycle remains `REVIEW` until its immutable exact
+SHA passes the unchanged dual-version workflow. No reset implementation work order is active.
 `WO-0149`, M2, and every runtime/persistence/cutover slice remain inactive.
 
 ## Rules / facts
@@ -36,9 +37,9 @@ and unwired. Pure M1D `WO-0148` is active for position protection and hybrid tra
   use transactional current state under ADR-020.
 - The permanent safety core lives verbatim in `CLAUDE.md` and is never overridden by tooling or convenience defaults.
 - Reset implementation advances only through independently reviewed work orders explicitly
-  activated after their predecessor gates. `WO-0145` through `WO-0147` are effective `CLOSED`.
-  Only pure, unwired `WO-0148` is active; it cannot perform broker effects, authenticate an
-  operational fence, persist state, or activate `WO-0149`/M2.
+  activated after their predecessor gates. `WO-0145` through `WO-0147` are effective `CLOSED`;
+  `WO-0148` is a proposed `CLOSED` closeout but remains effectively `REVIEW` pending exact-head CI.
+  No reset work order is active, and neither `WO-0149` nor M2 may begin from the local closeout.
 
 ## Rationale
 
@@ -108,3 +109,9 @@ Roadmapping against an unverified codebase state repeats the failure mode Fable 
   derived-identity dataclass field form. WO-0148 remains pure and unwired; application work remains
   barred until one corrected immutable RED contract receives independent acceptance with zero
   unresolved P0/P1.
+- 2026-08-04: Filed the independently accepted pure WO-0148 closeout candidate after the final
+  position-local successor, exact runtime-envelope review, 61/61 R2 oracle, and 5,847-test repository
+  gate passed with zero failures/errors and `93.01194919026261%` raw combined coverage. Effective
+  lifecycle remains `REVIEW` until the immutable closeout SHA passes unchanged Python 3.11/3.12 CI.
+  No reset work order is active; `WO-0149`, M2, runtime/persistence, broker/network, credentials,
+  merge, deletion, and cleanup remain inactive.

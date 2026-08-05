@@ -142,3 +142,28 @@ authorized WO-0148 application/test, review, evidence, branch-push, and exact-he
 the replacement RED gate passes. It authorizes no runtime wiring, persistent application-database
 or direct database work, SQL/DDL, broker/Alpaca/network activity, credentials, M2 implementation,
 master merge, deletion, or cleanup.
+
+## WO-0148 conditional closeout gate - filed 2026-08-04
+
+Ameen explicitly authorized WO-0148's mandatory fresh R2, full-repository branch-coverage, and
+unchanged exact-head GitHub Actions Python 3.11/3.12 CI gates to use the existing mock-broker
+fixtures and SQL/DDL only against disposable test-only SQLite files. This adds no authority for
+credentials, Alpaca/broker/network activity, persistent application databases, runtime wiring,
+CI-workflow changes, PR/merge, deletion/cleanup, WO-0149 activation, or M2.
+
+The exact position-local application successor
+`e9c2d58a8f16d2b3457dad5e4c5ed04ca24073ae` and reviewer record
+`6696743337f9eae8dad0567be6d49333d9d100cc` close the application review with `ACCEPT`,
+P0=0/P1=0/P2=0. The final tests-only runtime-envelope delta is separately retained with a preserved
+initial P1 and corrective addenda ending `ACCEPT`, P0=0/P1=0/P2=0.
+
+Definitive local evidence is 61/61 R2 cases and 5,847 repository tests with zero failures, zero
+errors, 12 skipped outcomes, and raw combined line/branch coverage
+`93.01194919026261%` (19,985/21,081 statements plus 7,181/8,126 branches). Existing fixtures ran
+only under explicit mock/disposable-test authority. No prohibited R1 DDL result, credential,
+broker/Paper result, persistent application database, or deferred runtime proof was used.
+
+The filed `CLOSED` metadata remains effectively `REVIEW` until the immutable closeout `HEAD` passes
+both unchanged exact-head workflow jobs. No reset work order is active while that gate is pending;
+`WO-0149` and M2 remain inactive, and a failed, canceled, incomplete, or mismatched-head run reopens
+WO-0148 rather than activating a successor.
