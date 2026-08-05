@@ -1353,3 +1353,17 @@ changed, and the preserved fresh 745/745 artifact remains hash-identical. Exact 
 Production remains unchanged and barred. Freeze this bounded successor and review only the exact
 P1 correction. Application work may begin only after that immutable successor receives `ACCEPT`
 with P0=0 and P1=0.
+
+### ADR-023 R1 replacement RED exact acceptance
+
+Immutable successor commit `9fe4c37f4114aee2ac5ca2f499b784cabc657cc6` received fresh
+independent exact-delta `ACCEPT`, P0=0/P1=0/P2=0. The reviewer verified the exact parent and
+five-file path set, application absence, the one-field constructor-metadata correction across every
+applicable passive-value path, the direct negative controls, 5/5 focused R1 controls, 17/17 passive
+helper controls, exact 506 and 745 collections, both retained JUnit hashes, Ruff, format, Python
+3.11 grammar, diff, and scope.
+
+The request and result are retained under
+`work/review/REV-0050/adr023-r1-red-successor/`. This acceptance closes the sole first-review P1
+and releases only the already authorized WO-0148 pure application implementation gate. It does not
+accept production behavior, close WO-0148, or authorize any deferred surface.
