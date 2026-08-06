@@ -203,3 +203,9 @@
   a time. No `git branch -D`, remote action, Git metadata reconstruction, fixture/root-cache retry,
   application/test, database, runtime, broker/network, credential, M2, merge, or other cleanup is
   authorized. A documentation-only live baseline must precede all filesystem mutation.
+- 2026-08-05: The WO-0154 manual-retirement baseline `36c7fa5c71062b4260730eaeb129ef56d5780830`
+  was pushed and exact-live-ref verified before per-target action. All five literal roots passed
+  containment, root/cache-child non-reparse, tip, and registration checks, but every named protected
+  cache child denied listing/ACL inspection and the only authorized `takeown /F` returned `Access is
+  denied`. No `icacls`, full-tree deletion, prune, branch deletion, metadata operation, or broader
+  access/deletion retry ran. WO-0154 returns to REVIEW with `PARTIAL CLEANUP - ACCESS REPAIR FAILED`.

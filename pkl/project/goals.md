@@ -61,6 +61,10 @@ live baseline, one-target critical preflight, component-scoped nonrecursive acce
 needed, exact-root deletion, and normal (`git branch -d`) branch retirement only after matching-path
 absence. It does not authorize a branch force-delete, remote operation, metadata reconstruction,
 fixture/cache retry, or any product work.
+That manual pass reached the required access gate on all five rows but could not read the named
+protected cache child or obtain its ownership with the only authorized nonrecursive command. No
+full-tree or branch deletion was therefore eligible. WO-0154 is back in `REVIEW` as
+`PARTIAL CLEANUP - ACCESS REPAIR FAILED`; the five roots and branches remain retained.
 
 ## Rules / facts
 

@@ -323,9 +323,16 @@ successor_cleanup:
     handle_evidence: "LIMITED: openfiles local-object list disabled and process query access denied; no no-handle claim is made."
     preserved_limits: "Fixture ACL evidence limitation and four UNKNOWN root-cache byte totals are unchanged."
   manual_retirement_activation:
-    status: "PREFLIGHT_ACCEPTED_PENDING_DOCUMENTATION_BASELINE"
+    status: "PARTIAL_CLEANUP_ACCESS_REPAIR_FAILED"
     authority: "Explicit user authorization for only the five frozen full-tree remnants and subsequent matching local branch deletions."
     destructive_operation: "Remove-Item -LiteralPath <one frozen canonical root> -Recurse -Force -ErrorAction Stop, only after per-target gates."
     access_repair: "Only the named immediate cache child; nonrecursive takeown /F and non-inheriting icacls grant to current user after capture."
     branch_operation: "git branch -d only after matching root absence and registration absence; git branch -D not authorized."
     prohibitions_retained: "No remote action, .git/worktrees operation, re-registration, fixture/root-cache retry, broad/recursive ACL ownership, process termination, application/test/database/runtime work, or M2."
+    activation_sha: "36c7fa5c71062b4260730eaeb129ef56d5780830; exact live ref verified before mutation."
+    results:
+      - "codex-lane2-bootstrap: .pytest_cache unreadable; nonrecursive takeown /F returned Access is denied; root and branch retained."
+      - "codex-lane2-docs: .pytest_cache unreadable; nonrecursive takeown /F returned Access is denied; root and branch retained."
+      - "codex-signal-tests-staging: .pytest_cache unreadable; nonrecursive takeown /F returned Access is denied; root and branch retained."
+      - "codex-wo-0114: .pytest_cache unreadable; nonrecursive takeown /F returned Access is denied; root and branch retained."
+      - "codex-wo-0124: .pytest-tmp-review-138e389-core unreadable; nonrecursive takeown /F returned Access is denied; root and branch retained."

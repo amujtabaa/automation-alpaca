@@ -128,3 +128,38 @@ fable_recheck:
     repair_removal_prune_branch_deletion_run: false
     unapproved_operations_run: false
 ```
+
+## Manual-retirement access-gate outcome
+
+The activation baseline `36c7fa5c71062b4260730eaeb129ef56d5780830` was pushed and exact live-ref
+verified before this pass. For each frozen row, the root and named immediate cache child passed
+literal canonical containment and non-reparse checks; the matching fallback branch still had its
+frozen tip, no worktree registration existed, no `.git` marker existed, and `git ls-files` found no
+tracked main-worktree path beneath the root. The cache child could not be listed or read for ACL
+data (`UnauthorizedAccessException`), and the one authorized nonrecursive ownership command then
+failed without effect: `takeown.exe /F <exact-cache-child>` -> `ERROR: Access is denied`.
+
+| Remnant | Named protected child | Branch @ frozen tip | Manual result | Branch action |
+|---|---|---|---|---|
+| `.claude/worktrees/codex-lane2-bootstrap` | `.pytest_cache` | `codex/lane2-bootstrap` @ `ea3f75cec2e93a51ca100a8e83a5e658a2630300` | `DEFERRED - ACCESS REPAIR FAILED` | Retained |
+| `.claude/worktrees/codex-lane2-docs` | `.pytest_cache` | `codex/lane2-docs` @ `088d9b5a026a1a5d977d834e00c4e73ba5acc9aa` | `DEFERRED - ACCESS REPAIR FAILED` | Retained |
+| `.claude/worktrees/codex-signal-tests-staging` | `.pytest_cache` | `codex/signal-tests-staging` @ `24d3746a35e30f736a6c5e3541720f0d47b0d751` | `DEFERRED - ACCESS REPAIR FAILED` | Retained |
+| `.claude/worktrees/codex-wo-0114` | `.pytest_cache` | `codex/wo-0114` @ `0a97f51aee11721448dccbf4576c8308bf88f14e` | `DEFERRED - ACCESS REPAIR FAILED` | Retained |
+| `.claude/worktrees/codex-wo-0124` | `.pytest-tmp-review-138e389-core` | `codex/wo-0124` @ `3d8015f2bf10fa26ea767d70cab586c9e1b324ca` | `DEFERRED - ACCESS REPAIR FAILED` | Retained |
+
+This gate made no successful ownership or ACL change. Because no complete descendant inventory was
+possible, no full-tree `Remove-Item` command was eligible. No `icacls`, worktree prune, branch
+deletion, metadata operation, fixture/root-cache revisit, process action, or broader retry ran.
+All five targets remain deferred; no fallback branch is eligible for deletion.
+
+```yaml
+fable_manual_retirement:
+  activation_sha: "36c7fa5c71062b4260730eaeb129ef56d5780830"
+  target_count: 5
+  terminal_result: "PARTIAL_CLEANUP_ACCESS_REPAIR_FAILED"
+  successful_access_repairs: 0
+  successful_full_tree_retirements: 0
+  successful_branch_retirements: 0
+  prohibited_or_broadened_operations: false
+  status: REVIEW
+```

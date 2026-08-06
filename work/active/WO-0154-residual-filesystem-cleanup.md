@@ -1,7 +1,7 @@
 ---
 type: Work Order
 title: "Residual filesystem cleanup: WO-0153 AccessDenied targets"
-status: ACTIVE
+status: REVIEW
 work_order_id: WO-0154
 wave: RESET-CLEANUP
 model_tier: strong
@@ -291,3 +291,18 @@ reset ref to equal that commit before the first filesystem mutation. Record per-
 action, inventory, command result, postcondition, branch result, and any stop. Close this work
 order only if all five literal roots and all five matching local fallback branches are absent;
 otherwise retain it in `REVIEW` with an exact partial outcome.
+
+## Execution checkpoint - manual-retirement access gate
+
+The documentation-only manual-retirement baseline was committed and exact-live-ref verified at
+`36c7fa5c71062b4260730eaeb129ef56d5780830`. Each of the five frozen roots then passed its exact
+canonical containment, root/cache-child non-reparse, fallback-ref/tip, untracked-main-path, and
+registration-absence checks. Each named immediate cache child remained unreadable; `Get-Acl` also
+returned `UnauthorizedAccessException`. The authorized nonrecursive command
+`takeown.exe /F <exact-cache-child>` then returned `ERROR: Access is denied` for every row.
+
+No `icacls`, `Remove-Item`, `git worktree prune`, branch deletion, metadata operation, fixture/cache
+retry, process action, or broader access/deletion command followed any failure. All five roots and
+fallback branches remain present at their frozen tips. This is a partial environment-controlled
+outcome, not a closure: WO-0154 returns to `REVIEW` pending separately authorized access that can
+actually inspect and retire the protected cache children without weakening the other safety gates.
