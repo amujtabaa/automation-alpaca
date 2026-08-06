@@ -13,8 +13,16 @@ branch: codex/arch-reset-2026-07-r1
 base_sha: 268d5e2b5a80c2445ad6d7efe0e77e492a8f8ebd
 activation_commit: 3bdf5e341ffd5a41c1c11a9c2060608422e365d7
 predecessor: "Accepted ADR-020 R2 and ADR-021 R2; no prior M1E slice"
-implementation_authority: "GRANTED — user directed WO-0150 to start after the stated RED-contract gate"
-activation_required: "SATISFIED — exact contract successor d54ffec4e0547be8fcff447d212e1afbebd4489f independently ACCEPTed at P0=0/P1=0; result retained at 268d5e2b5a80c2445ad6d7efe0e77e492a8f8ebd; activation published at 3bdf5e341ffd5a41c1c11a9c2060608422e365d7"
+amendment_r1: "AUTHORIZED — fresh independent R1 RED acceptance required before the narrowed E1 implementation resumes"
+active_contract_r1: "work/review/REV-0057/WO-0150-RED-CONTRACT-R1.md"
+r1_replacement_manifest: "work/review/REV-0057/WO-0150-R1-REPLACEMENT-02-CANDIDATE-MANIFEST.md"
+r1_replacement_request: "work/review/REV-0057/WO-0150-R1-REPLACEMENT-02-PREFLIGHT-REQUEST.md"
+r1_replacement_result: "work/review/REV-0057/WO-0150-R1-REPLACEMENT-02-PREFLIGHT-RESULT.md"
+r1_correction_04: "AUTHORIZED — current-book projection clarification; fresh replacement review required before implementation resumes"
+r1_implementation_authority: "GRANTED — the exact accepted R1 contract and existing allowed paths authorize the narrowed E1 RED/implementation work only"
+r1_activation_required: "SATISFIED — replacement-02 manifest 785b394c3bcdc59f80c9d7a718a45d61da7f5ef9ee108466b01a4469c6541e1f independently ACCEPTed at P0=0/P1=0; result retained at work/review/REV-0057/WO-0150-R1-REPLACEMENT-02-PREFLIGHT-RESULT.md"
+implementation_authority: "HISTORICAL_R0_SUPERSEDED — retained predecessor authorization only; it cannot authorize the amended R1 implementation"
+activation_required: "HISTORICAL_R0_SATISFIED — successor d54ffec4e0547be8fcff447d212e1afbebd4489f independently ACCEPTed at P0=0/P1=0 and activation published at 3bdf5e341ffd5a41c1c11a9c2060608422e365d7; neither fact satisfies the R1 gate"
 allowed_paths:
   - app/execution_core/identity.py
   - app/execution_core/acquisition.py
@@ -53,7 +61,7 @@ forbidden_paths:
 [FABLE - FULL - verification: DIRECT plus independent review - task: policy-free direct
 acquisition-generation lineage]
 
-## Active status and authority
+## Predecessor R0 activation — retained historical evidence only
 
 The user explicitly directed WO-0150 to start after this work order's stated RED-contract gate.
 The exact corrected contract candidate is
@@ -62,13 +70,74 @@ with P0=0/P1=0 and is retained unchanged at
 `work/review/REV-0057/recheck-result.md` in predecessor evidence commit
 `268d5e2b5a80c2445ad6d7efe0e77e492a8f8ebd`.
 
-This activation authorizes only the red-first, pure E1 implementation and tests in the exact
-allowed paths below, necessary evidence/PKL/ledger reconciliation, local commits, and a normal
-branch push when credentials are available. It does not authorize E2/E3, runtime wiring,
-persistent application-database work, SQL/DDL, broker/Alpaca/network activity, credentials,
-CI-workflow changes, master merge, PR, deletion, cleanup, rebase, or force-push.
+That R0 activation is retained only to explain the predecessor state. It is superseded for active
+implementation by Amendment R1 below: it cannot satisfy the R1 preflight or authorize test or
+production work. The underlying exclusions remain unchanged: no E2/E3, runtime wiring, persistent
+application-database work, SQL/DDL, broker/Alpaca/network activity, credentials, CI-workflow
+changes, master merge, PR, deletion, cleanup, rebase, or force-push.
 
-## Activation gate
+## Amendment R1 — authorized narrow E1/E2 boundary re-gate
+
+The user authorized this amendment after the independent implementation findings retained at
+`work/review/REV-0057/WO-0150-IMPLEMENTATION-BOUNDARY-FINDINGS-R1.md`. It is a sequencing
+correction under accepted ADR-020 R2 and ADR-021 R2, not a new architectural decision and not an
+authorization for E2 implementation.
+
+`work/review/REV-0057/WO-0150-RED-CONTRACT-R1.md` supersedes the original RED contract only as
+the active WO-0150 implementation contract. The original contract, request, results, and prior
+preflight remain unchanged historical evidence and cannot satisfy this amendment's acceptance
+gate.
+
+This amendment replaces the prior WO-0150 goal, FR-04 through FR-07, AC-02 through AC-05, and
+the conflicting `done_when` item that required successful A-to-B-to-C registry/index population or
+late-fact mutation in E1. Those transitions require exact controller admission/currentness and
+canonical-fact proof and are deferred intact to WO-0151's later E2 composite reducer.
+
+The amended E1 goal is limited to:
+
+- deterministic, non-authoritative `AcquisitionGenerationId` wire derivation and validation;
+- nonconstructable immutable view declarations and inert, read-only direct-lookup containers;
+- the direct, bounded `VenueRecoveryBook.acquisition_correlation` bridge, including
+  broker-correlated human roots; and
+- failure-capable import and private-venue-access controls.
+
+E1 MUST NOT contain a successful admission, registry population, lineage binding, route mutation,
+or late-fact update helper. A self-sealed receipt made from raw inputs is not authenticated E2
+provenance. Before E2 supplies a completed composite transition, every registry/index lookup MUST
+remain reconciliation-only and return `None`; no lookup may infer a current generation.
+
+The active R1 gate is satisfied: replacement-02 manifest
+`785b394c3bcdc59f80c9d7a718a45d61da7f5ef9ee108466b01a4469c6541e1f`
+received fresh independent `ACCEPT` with P0=0/P1=0 at
+`work/review/REV-0057/WO-0150-R1-REPLACEMENT-02-PREFLIGHT-RESULT.md`. The result authorizes only
+the narrowed E1 RED/implementation work in this work order's existing allowed paths. It grants no
+ADR edit, controller/currentness behavior, protection behavior, fact-truth interpretation,
+persistence/runtime work, database work, broker/network activity, or later work-order activation.
+
+### Amendment R1 completion condition
+
+WO-0150 may close only when the accepted R1 controls prove the amended E1 foundation, the existing
+venue bridge's direct/no-history properties, scope and static boundary controls, focused pure
+tests, independent implementation acceptance, and the applicable exact-head evidence. Successful
+generation registration, A-to-B-to-C routing, and late-fact mutation are explicit WO-0151 E2
+acceptance obligations and are not implied by E1 closeout.
+
+### Amendment R1 correction 04
+
+`work/review/REV-0057/CORRECTION-04.md` records the independent clarification
+that E1 identity validates wire shape only, that the acquisition-module export
+contract is distinct from the broader package root, and that venue correlation
+is a current-book-derived output-only projection rather than a transferable
+provenance capability. It adds no accepted-ADR ambiguity or E2 behavior. Its
+replacement-02 manifest received the required fresh independent `ACCEPT`; only
+the narrowly authorized E1 work may now resume.
+
+## Predecessor R0 activation gate — retained historical evidence only
+
+The R0 Fable gate below is preserved for provenance. It is not the active implementation gate,
+and its `done_when` route/registry item is explicitly superseded by Amendment R1. The active gate
+is the exact R1 candidate, its fresh independent `ACCEPT` with P0=0/P1=0, and this work order's
+R1 status fields above.
 
 fable_gate:
   goal: "Implement the smallest pure E1 identity, direct lineage, and no-history correlation foundation."
@@ -86,7 +155,7 @@ fable_gate:
   out_of_scope:
     - "Controller admission/currentness, protection, claim/effect eligibility, runtime, persistence, SQL/DDL, broker/network activity, and later work-order activation."
   done_when:
-    - behavior: "Every accepted E1 lineage route is immutable and resolves current state through one direct registry join."
+    - behavior: "HISTORICAL R0 — SUPERSEDED BY R1: Every accepted E1 lineage route is immutable and resolves current state through one direct registry join."
       test: "WO-0150 RED controls and their named mutation pins."
       command: "Focused acquisition/venue/import tests, then required repository gates."
     - behavior: "Every broker root accepted for E1 correlation has a direct no-history provenance route."
@@ -107,7 +176,12 @@ fable_gate:
 WO-0149 is formally SUPERSEDED and retained as historical evidence; it grants no authority for
 this serial-generation scope.
 
-## Goal
+## Predecessor R0 goal and requirements — retained historical evidence only
+
+The goal, functional requirements, acceptance controls, and gate text in this section are the
+original R0 record. Amendment R1 replaces their active E1 meaning where they imply successful
+registration, routing, or late-fact mutation. They remain preserved evidence only and cannot be
+used to resume implementation.
 
 Create only the deterministic, replay-stable, direct lineage needed to route each acquisition-owned
 request occurrence, effect, venue owner, canonical root, and revision to exactly one reducer-minted
@@ -246,10 +320,12 @@ NOT touch protection.py or authority.py; any need for those semantics belongs to
 
 ## Gate, evidence, and stop conditions
 
-The activation prerequisites are satisfied by the ratification record, the fresh exact RED contract,
-the independent successor `ACCEPT` with P0=0/P1=0, and the user direction to start WO-0150. The
-GREEN phase requires red-first controls, focused tests, static/scope/import/type checks, fresh
-independent review, and exact-head evidence within this active work-order authority.
+For historical R0 only, the activation prerequisites were satisfied by the ratification record, the
+then-current RED contract, the independent successor `ACCEPT` with P0=0/P1=0, and the user
+direction to start WO-0150. Amendment R1 replaces that gate: the GREEN phase remains forbidden
+until the exact R1 candidate receives its own fresh independent `ACCEPT` with P0=0/P1=0. After
+that gate, red-first controls, focused tests, static/scope/import/type checks, fresh independent
+review, and exact-head evidence remain required within this active work-order authority.
 
 Stop and return to planning if the requirement needs a history scan, caller-shaped authority,
 compatibility/admission policy in E1, cross-side policy, a public-contract break,

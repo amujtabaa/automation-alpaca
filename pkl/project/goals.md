@@ -25,18 +25,36 @@ effective `CLOSED` after independent acceptance and exact-head Python 3.11/3.12 
 `2462fb557172dd28a7475a763eca0b440c0298e3` passed unchanged GitHub Actions push run
 `30996686588` (#693) on Python 3.11 and 3.12. ADR-020 R2 and ADR-021 R2 now control the
 serial acquisition-generation foundation. The retained `WO-0149` lifecycle record does not
-grant R2 implementation authority. `WO-0150` is the sole active pure-M1E implementation slice;
-`WO-0151` and `WO-0152` remain DRAFT/inactive. M2 and every runtime/persistence/cutover slice
-remain inactive. WO-0153 has completed its bounded cleanup scope
+grant R2 implementation authority. `WO-0150` has completed its R1 documentation re-gate:
+replacement-02 received fresh independent `ACCEPT` at P0=0/P1=0, so only its narrowed pure-E1
+RED/application/test work may resume in the active work-order paths. `WO-0151` and `WO-0152` remain DRAFT/inactive.
+M2 and every runtime/persistence/cutover slice remain inactive. WO-0153 has completed its bounded cleanup scope
 with environment-controlled deferred artifacts only; it adds no implementation authority.
 
 ## Current R2 ratification posture
 
 ADR-020 R2 and ADR-021 R2 now control serial same-symbol acquisition. WO-0149 is formally
 SUPERSEDED and retained as evidence; it grants no implementation authority for the new
-serial-generation scope. WO-0150 is active only for its exact policy-free E1 scope after
-REV-0057's accepted RED-contract successor; WO-0151 through WO-0152 remain DRAFT/inactive. M2
-and every runtime/persistence/cutover slice remain inactive.
+serial-generation scope. The predecessor REV-0057 successor and its WO-0150 activation are
+historical R0 evidence only. The active WO-0150 R1 replacement-02 gate is satisfied by manifest
+`785b394c3bcdc59f80c9d7a718a45d61da7f5ef9ee108466b01a4469c6541e1f` and fresh independent
+`ACCEPT` at P0=0/P1=0. It authorizes only narrowed E1 work; WO-0151 through WO-0152 remain
+DRAFT/inactive. M2 and every runtime/persistence/cutover slice remain inactive.
+
+Current amendment (2026-08-05): the original REV-0057 successor is retained historical evidence.
+WO-0150's narrower R1/E2 boundary contract is independently accepted at P0=0/P1=0. E1 is limited
+to identity data, immutable view/inert-reader shapes, and direct venue correlation. Registry/index
+population, serial routing, and late-fact mutation remain future E2 obligations. This changes no
+ADR, does not activate WO-0151/WO-0152, and grants no runtime, persistence, database, broker,
+credential, or M2 authority.
+
+Current R1 clarification: identity validation is wire-shape only; semantic predecessor/currentness
+admission remains E2-only. The acquisition module has a narrow exact export set while the existing
+package root remains broader. Venue correlation is a current-book-derived output-only projection,
+not a standalone authority object; future E2 must obtain it by re-querying the authenticated current
+book inside its composite transition. Replacement-02 manifest
+`785b394c3bcdc59f80c9d7a718a45d61da7f5ef9ee108466b01a4469c6541e1f` is accepted; E1 may now
+begin red-first implementation under the active work order.
 
 ## Cleanup posture
 
@@ -90,9 +108,10 @@ runtime, persistence, broker/network, credential, database, or M2 authority.
 - The permanent safety core lives verbatim in `CLAUDE.md` and is never overridden by tooling or convenience defaults.
 - Reset implementation advances only through independently reviewed work orders explicitly
   activated after their predecessor gates. `WO-0145` through `WO-0148` are effective `CLOSED`.
-  The ratified R2 architecture has one active implementation work order: WO-0150 is limited to
-  policy-free direct identity/lineage and no-history venue correlation. WO-0149 is formally
-  SUPERSEDED, while WO-0151 and WO-0152 remain DRAFT only.
+  The ratified R2 architecture has one active documentation re-gate: WO-0150 is `R1_PENDING` and
+  may resume only its narrowed policy-free identity/inert-reader/direct-venue E1 work after a fresh
+  exact-candidate independent `ACCEPT`. WO-0149 is formally SUPERSEDED, while WO-0151 and WO-0152
+  remain DRAFT only.
   Runtime wiring, persistent database work, broker/network activity, credentials, M2, merge,
   deletion, and cleanup remain outside current authority.
 

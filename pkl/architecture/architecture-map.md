@@ -31,18 +31,20 @@ position-protection, bounded market-occurrence, hybrid-trailing, wait/flat/late-
 goal semantic center; its exact closeout `2462fb557172dd28a7475a763eca0b440c0298e3` is now
 dual-version CI green and effective `CLOSED`. ADR-020 R2 and ADR-021 R2 now define the
 serial acquisition-generation architecture. The retained `WO-0149` lifecycle record is not
-authority for that R2 scope; WO-0150 is active only for policy-free direct lineage, while its E2/E3
-successors and all M2/runtime/persistence work remain inactive until separately gated.
+authority for that R2 scope; WO-0150's narrowed R1 documentation re-gate is accepted, so only its
+pure E1 red-first application/test work may resume. Its E2/E3 successors and all
+M2/runtime/persistence work remain inactive until separately gated.
 
 ## Current R2 ratification posture
 
 ADR-020 R2 and ADR-021 R2 are the accepted authority for serial same-symbol acquisition:
 direct immutable generation lineage, one SymbolAcquisitionController, at most one LIVE generation,
 and one active protection/broker authority. WO-0149 is formally SUPERSEDED and retained as
-evidence; it grants no implementation authority for this R2 serial-generation scope. WO-0150 is
-the one active E1 implementation slice after accepted REV-0057 RED-contract review; WO-0151 and
-WO-0152 remain DRAFT only. M2 and all runtime/persistence work remain inactive until separately
-gated.
+evidence; it grants no implementation authority for this R2 serial-generation scope. The original
+WO-0150 activation and accepted REV-0057 successor are historical R0 evidence only. WO-0150's
+current R1 replacement-02 gate received fresh exact-candidate independent `ACCEPT` at P0=0/P1=0;
+it authorizes only narrowed E1 work. WO-0151 and WO-0152 remain DRAFT only. M2 and all runtime/
+persistence work remain inactive until separately gated.
 
 ## Rules / facts
 
@@ -79,10 +81,22 @@ gated.
   coordinate retained in a constant-size authenticated cursor. Projection, market, and invalidation
   transitions are structurally separate. No lifetime receipt collection, history scan, runtime
   wiring, persistence, adapter fence, or broker authority is part of this pure M1 boundary.
-- The R2 serial acquisition foundation is split across E1 direct lineage, E2 controller/recovery
-  behavior, and E3 generated/stateful conformance. WO-0150 is active only for E1's reviewed
-  policy-free identity, permanent direct indexes, and no-history venue correlation; E2/E3 remain
-  inactive. No runtime, persistent database, broker, credential, or M2 authority is granted.
+- The R2 serial acquisition foundation is split across E1 identity/direct venue correlation, E2
+  controller/recovery behavior, and E3 generated/stateful conformance. WO-0150's exact
+  replacement-02 R1 candidate is independently `ACCEPT`ed at P0=0/P1=0, authorizing only the
+  narrowed E1 red-first work. Successful registry/index population, permanent routing, and
+  late-fact mutation are E2-only. E2/E3 remain inactive. No runtime, persistent database, broker,
+  credential, or M2 authority is granted.
+- Current posture amendment (2026-08-05): E1 provides only deterministic non-authoritative identity
+  data, immutable view and inert-reader shapes, and the no-history venue correlation bridge.
+  Successful direct registry/index population, A-to-B-to-C routing, and late-fact mutation are
+  deferred to future E2; the preceding permanent-index statement is retained historical
+  pre-amendment context, not current E1 implementation authority.
+- Current R1 clarification: wire-shape validation does not decide predecessor authenticity or
+  controller currentness; E2 owns those decisions. The acquisition module's exact narrow export set
+  is separate from the broad established package root. Venue correlation is a current-book-derived,
+  output-only read projection rather than a transferable proof; future E2 must re-query the current
+  authenticated book within its composite transition.
 
 ## Rationale
 

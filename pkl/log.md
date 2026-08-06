@@ -235,3 +235,27 @@
 - 2026-08-05: WO-0150's documentation-only activation was published at exact local SHA
   `3bdf5e341ffd5a41c1c11a9c2060608422e365d7`. It is the activation baseline for red-first E1
   application/test work; no implementation evidence is claimed by this record.
+- 2026-08-05: The user authorized WO-0150's narrow R1 E1/E2 re-gate. The predecessor R0
+  acceptance and activation remain retained historical evidence only and cannot authorize resumed
+  implementation. The current gate is `R1_PENDING`: a replacement manifest-bound R1 contract must
+  receive fresh independent `ACCEPT` with P0=0/P1=0 before any E1 application or test work resumes.
+  R1 retains deterministic identity, opaque inert readers, a producer-bound direct venue bridge,
+  and failure-capable boundary controls; successful registry/index/fact mutation remains E2-only.
+  No ADR, WO-0151/WO-0152 activation, runtime, persistent database, SQL/DDL, broker/network,
+  credential, M2, merge, deletion, cleanup, rebase, or force-push authority is added.
+- 2026-08-05: Independent R1 architecture adjudication found no accepted-ADR ambiguity and no new
+  ADR need. It clarified that E1 identity checks wire shape only; the package-root export delta is
+  distinct from the narrow acquisition-module export set; and venue correlation is a current-book-
+  derived output-only read projection. Its commitment/seal gives field integrity, not producer
+  authentication. A raw-field factory is forbidden, and future E2 must re-query the authenticated
+  current book inside its composite transition rather than accept any supplied correlation object.
+  The prior R1 replacement candidate remains retained negative evidence; a new frozen replacement
+  review is required before E1 implementation resumes. No new implementation or operating authority
+  is added.
+- 2026-08-05: WO-0150 R1 replacement-02 manifest
+  `785b394c3bcdc59f80c9d7a718a45d61da7f5ef9ee108466b01a4469c6541e1f` independently received
+  `ACCEPT` with P0=0/P1=0. The documentation-only R1 gate is therefore satisfied. Only the active
+  work order's narrowed, pure E1 red-first application/test implementation may resume; successful
+  registry/index/fact mutation, controller currentness, and all E2 behavior remain deferred to
+  WO-0151. No runtime, database, broker/network, credential, M2, merge, deletion, cleanup, rebase,
+  or force-push authority is added.
