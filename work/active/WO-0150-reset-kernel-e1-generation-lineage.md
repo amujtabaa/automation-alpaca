@@ -11,9 +11,10 @@ owner: Codex implementation seat
 created: 2026-08-05
 branch: codex/arch-reset-2026-07-r1
 base_sha: 268d5e2b5a80c2445ad6d7efe0e77e492a8f8ebd
+activation_commit: 3bdf5e341ffd5a41c1c11a9c2060608422e365d7
 predecessor: "Accepted ADR-020 R2 and ADR-021 R2; no prior M1E slice"
 implementation_authority: "GRANTED — user directed WO-0150 to start after the stated RED-contract gate"
-activation_required: "SATISFIED — exact contract successor d54ffec4e0547be8fcff447d212e1afbebd4489f independently ACCEPTed at P0=0/P1=0; result retained at 268d5e2b5a80c2445ad6d7efe0e77e492a8f8ebd"
+activation_required: "SATISFIED — exact contract successor d54ffec4e0547be8fcff447d212e1afbebd4489f independently ACCEPTed at P0=0/P1=0; result retained at 268d5e2b5a80c2445ad6d7efe0e77e492a8f8ebd; activation published at 3bdf5e341ffd5a41c1c11a9c2060608422e365d7"
 allowed_paths:
   - app/execution_core/identity.py
   - app/execution_core/acquisition.py

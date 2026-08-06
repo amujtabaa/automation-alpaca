@@ -232,3 +232,6 @@
   now active only for pure E1 implementation: deterministic acquisition identity, permanent direct
   lineage, and no-history venue correlation. WO-0151/WO-0152, runtime, persistent database,
   SQL/DDL, broker/network, credentials, M2, master merge, deletion, and cleanup remain inactive.
+- 2026-08-05: WO-0150's documentation-only activation was published at exact local SHA
+  `3bdf5e341ffd5a41c1c11a9c2060608422e365d7`. It is the activation baseline for red-first E1
+  application/test work; no implementation evidence is claimed by this record.
