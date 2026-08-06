@@ -43,6 +43,9 @@ as the filesystem permitted. Its exact outcome is `PARTIAL CLEANUP - DEFERRED TA
 unregistered worktree remnants, 55 root cache directories, and ten generated fixture files remain
 because exact direct deletion returned `AccessDenied`. This does not activate WO-0150 through
 WO-0152, M2, runtime wiring, persistence, broker/network activity, or master landing.
+On 2026-08-06, only `WO-0154` was activated to retry those exact environment-controlled residuals
+through a frozen literal allowlist and component-wise filesystem controls. It adds no implementation
+or product authority.
 
 ## Rules / facts
 
