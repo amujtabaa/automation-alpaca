@@ -49,6 +49,12 @@ or product authority.
 The fixture and root-cache portions are now complete, but `WO-0154` is in `REVIEW` with a documented
 blocker: five residual paths are unregistered full worktree remnants, so their cache-only removal
 condition is false and their fallback branches remain retained.
+The later bounded standard-Git repair re-gate reconciled exact checkpoint/local/live reset SHA
+`3da1dc381827d4ab7812925d085dce3388c791a7` and all five fallback tips, but every remnant lacks both
+a `.git` marker and corresponding `.git/worktrees` administrative metadata. Each is therefore
+`DEFERRED — METADATA UNAUTHENTICATED`, not eligible for repair/removal; no branch is eligible for
+deletion. This is `PARTIAL CLEANUP — MANUAL RETIREMENT STILL REQUIRED`, not an M1, master, or
+successor-work authorization.
 
 ## Rules / facts
 

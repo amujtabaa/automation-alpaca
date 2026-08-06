@@ -65,6 +65,39 @@ authorized re-registration/removal workflow or separately bounded manual full-tr
 fresh path/provenance gates. Do not delete the five local fallback branches unless the matching
 remnant has first been safely retired.
 
+## Standard Git repair re-gate — partial result
+
+The authorization limited this pass to standard Git repair/removal and local fallback-branch
+retirement after a matching path had safely retired. Its recovery gate passed exactly:
+
+- checkpoint commit, local `HEAD`, and live `refs/heads/codex/arch-reset-2026-07-r1` were all
+  `3da1dc381827d4ab7812925d085dce3388c791a7`;
+- main-worktree staged, unstaged, ordinary-untracked, and `app`/`tests` deltas were empty;
+- `git worktree list --porcelain` listed only the main reset worktree;
+- WO-0150, WO-0151, and WO-0152 remained `DRAFT` with implementation authority not granted; and
+- the five fallback refs still exactly matched their frozen manifest tips and READY provenance.
+
+Every literal path passed canonical-component containment and root non-reparse checks, but failed
+the required authentication gate. For each target, `.git` is absent, no `git worktree list`
+registration exists, and no `.git/worktrees/<id>` administrative directory points to the target.
+Read-only descendant inspection is also denied at the preserved ignored-cache root. The installed
+`openfiles.exe` facility reports that the system object-list flag is disabled, and the attempted
+process query reports access denied; neither is presented as a no-handle result.
+
+| Remnant | Branch @ frozen tip | Classification | Standard repair | Branch action |
+|---|---|---|---|---|
+| `.claude/worktrees/codex-lane2-bootstrap` | `codex/lane2-bootstrap` @ `ea3f75cec2e93a51ca100a8e83a5e658a2630300` | `DEFERRED — METADATA UNAUTHENTICATED` | Not attempted: no authentic marker or admin metadata | Retained |
+| `.claude/worktrees/codex-lane2-docs` | `codex/lane2-docs` @ `088d9b5a026a1a5d977d834e00c4e73ba5acc9aa` | `DEFERRED — METADATA UNAUTHENTICATED` | Not attempted: no authentic marker or admin metadata | Retained |
+| `.claude/worktrees/codex-signal-tests-staging` | `codex/signal-tests-staging` @ `24d3746a35e30f736a6c5e3541720f0d47b0d751` | `DEFERRED — METADATA UNAUTHENTICATED` | Not attempted: no authentic marker or admin metadata | Retained |
+| `.claude/worktrees/codex-wo-0114` | `codex/wo-0114` @ `0a97f51aee11721448dccbf4576c8308bf88f14e` | `DEFERRED — METADATA UNAUTHENTICATED` | Not attempted: no authentic marker or admin metadata | Retained |
+| `.claude/worktrees/codex-wo-0124` | `codex/wo-0124` @ `3d8015f2bf10fa26ea767d70cab586c9e1b324ca` | `DEFERRED — METADATA UNAUTHENTICATED` | Not attempted: no authentic marker or admin metadata | Retained |
+
+No target was `REPAIRABLE`, so no `git worktree repair`, `git worktree remove`, forced removal,
+`git worktree prune`, branch deletion, or filesystem operation was authorized to run. This is not
+a recovery mismatch: the frozen state matched. It is the required safe disposition for
+unrepresentable metadata. A later separately authorized manual-retirement procedure would be
+needed to alter these five full trees; the present authorization explicitly excluded it.
+
 ```yaml
 fable_done:
   task: "WO-0154 residual filesystem cleanup checkpoint"
@@ -82,4 +115,16 @@ fable_done:
   deferred:
     - "Safe human-authorized disposition for the five unregistered full worktree remnants."
   status: BLOCKED
+```
+
+```yaml
+fable_recheck:
+  task: "WO-0154 standard Git repair re-gate"
+  recovery: "RECONCILED at 3da1dc381827d4ab7812925d085dce3388c791a7"
+  result: "PARTIAL_CLEANUP_MANUAL_RETIREMENT_REQUIRED"
+  deferred:
+    - "Separately authorized manual-retirement procedure for the five full remnants with absent Git metadata."
+  scope_check:
+    repair_removal_prune_branch_deletion_run: false
+    unapproved_operations_run: false
 ```

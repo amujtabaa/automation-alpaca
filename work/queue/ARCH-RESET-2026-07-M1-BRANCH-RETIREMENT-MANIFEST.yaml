@@ -303,5 +303,22 @@ successor_cleanup:
     fixture_roots_absent: 10
     root_cache_directories_absent: 55
   retained_blocked_targets:
-    worktree_remnants: 5
-    local_fallback_branches: 5
+    worktree_remnants:
+      count: 5
+      standard_git_repair_regate: "PARTIAL_CLEANUP_MANUAL_RETIREMENT_REQUIRED; frozen metadata authentication failed for every named full remnant."
+      exact_paths:
+        - ".claude/worktrees/codex-lane2-bootstrap: DEFERRED — METADATA UNAUTHENTICATED; .git marker absent, registration absent, corresponding .git/worktrees admin entry absent."
+        - ".claude/worktrees/codex-lane2-docs: DEFERRED — METADATA UNAUTHENTICATED; .git marker absent, registration absent, corresponding .git/worktrees admin entry absent."
+        - ".claude/worktrees/codex-signal-tests-staging: DEFERRED — METADATA UNAUTHENTICATED; .git marker absent, registration absent, corresponding .git/worktrees admin entry absent."
+        - ".claude/worktrees/codex-wo-0114: DEFERRED — METADATA UNAUTHENTICATED; .git marker absent, registration absent, corresponding .git/worktrees admin entry absent."
+        - ".claude/worktrees/codex-wo-0124: DEFERRED — METADATA UNAUTHENTICATED; .git marker absent, registration absent, corresponding .git/worktrees admin entry absent."
+    local_fallback_branches:
+      count: 5
+      state: "RETAINED; matching path retirement did not succeed, so deletion was not eligible."
+  standard_git_repair_regate:
+    checkpoint_sha: "3da1dc381827d4ab7812925d085dce3388c791a7"
+    local_and_live_reset_ref: "EQUAL at 3da1dc381827d4ab7812925d085dce3388c791a7 via exact git ls-remote --heads origin refs/heads/codex/arch-reset-2026-07-r1."
+    git_state: "Main worktree clean; git worktree list --porcelain contained only the reset worktree; app/tests diff empty."
+    repair_commands: "NOT RUN: every frozen target was D — UNSAFE_OR_UNREPRESENTABLE, not B — REPAIRABLE."
+    handle_evidence: "LIMITED: openfiles local-object list disabled and process query access denied; no no-handle claim is made."
+    preserved_limits: "Fixture ACL evidence limitation and four UNKNOWN root-cache byte totals are unchanged."

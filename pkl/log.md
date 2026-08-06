@@ -188,3 +188,11 @@
   Five worktree remnants, 55 root cache directories, and ten generated fixtures remain only because
   direct exact deletion returned `AccessDenied`; no ACL, ownership, or other bypass was attempted.
   WO-0150 through WO-0152 remain DRAFT/inactive.
+- 2026-08-05: The later WO-0154 standard-Git repair re-gate exactly reconciled checkpoint, local,
+  and live reset SHA `3da1dc381827d4ab7812925d085dce3388c791a7`, clean main Git state, the five
+  fallback tips, and DRAFT/inactive WO-0150 through WO-0152. Every retained full path lacks a
+  `.git` marker, worktree registration, and corresponding `.git/worktrees` administrative entry;
+  each is `DEFERRED — METADATA UNAUTHENTICATED`. No repair/removal/prune/branch deletion, ACL or
+  ownership change, fixture/cache retry, or application/test/runtime/database/network action ran.
+  The fixture ACL evidence limitation and four `UNKNOWN` cache byte totals remain explicitly
+  preserved. Result: `PARTIAL CLEANUP — MANUAL RETIREMENT STILL REQUIRED`.

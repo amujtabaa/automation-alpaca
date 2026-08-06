@@ -169,6 +169,7 @@ allowed_paths:
   - work/review/REV-0056/WO-0154-EXECUTION-OUTCOME.md
   - work/queue/ARCH-RESET-2026-07-M1-BRANCH-RETIREMENT-MANIFEST.yaml
   - pkl/project/goals.md
+  - pkl/log.md
   - work/ledger.jsonl
 ```
 
@@ -219,6 +220,28 @@ authorize re-registration, manual recursive removal of those full trees, or fall
 `work/review/REV-0056/WO-0154-EXECUTION-OUTCOME.md` is the current evidence record. A later human
 authorization must resolve the unregistered-full-worktree disposition before this work order can
 continue or close.
+
+## Execution checkpoint — partial standard-Git repair re-gate
+
+The later bounded authorization permitted only standard `git worktree repair` where the current
+filesystem and Git administrative evidence first classified a remnant as `REPAIRABLE`. Recovery
+matched checkpoint commit `3da1dc381827d4ab7812925d085dce3388c791a7`, the exact live reset ref,
+all five frozen fallback-branch tips, and a clean main worktree. WO-0150 through WO-0152 remained
+`DRAFT` with `implementation_authority: NOT_GRANTED`.
+
+All five remnant roots still exist at their exact canonical literal paths, remain under
+`.claude/worktrees`, and are non-reparse at the root. None has a `.git` marker, a registered
+worktree entry, or a corresponding `.git/worktrees/<id>` administrative entry. Recursive
+read-only content inspection stops at the retained ACL-protected ignored-cache directory for each
+path; `openfiles.exe` cannot enumerate local handles in this environment and the process query is
+access denied. Those are recorded as limitations, not no-handle claims.
+
+Each path is therefore `D — UNSAFE_OR_UNREPRESENTABLE`, specifically
+`DEFERRED — METADATA UNAUTHENTICATED`. It is not eligible for `git worktree repair`; no repair,
+removal, prune, branch deletion, ACL/ownership change, filesystem deletion, fixture/cache retry,
+or other cleanup command was run in this re-gate. The five fallback branches remain retained at
+their frozen tips. The historical fixture ACL evidence limitation and four `UNKNOWN` cache-byte
+totals remain unchanged. This work order remains `REVIEW` and cannot close under this authority.
 
 ## Completion disposition
 
