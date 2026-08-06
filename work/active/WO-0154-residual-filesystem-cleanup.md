@@ -1,7 +1,7 @@
 ---
 type: Work Order
 title: "Residual filesystem cleanup: WO-0153 AccessDenied targets"
-status: REVIEW
+status: ACTIVE
 work_order_id: WO-0154
 wave: RESET-CLEANUP
 model_tier: strong
@@ -186,7 +186,7 @@ forbidden_paths:
   - work/queue/WO-0152-*
 forbidden_operations:
   - "git clean, git reset, fetch --prune, remote prune, remote branch deletion, or remote-tracking ref cleanup"
-  - "wildcards, globbed or dynamic deletion roots, Remove-Item -Path, broad recursive deletion"
+  - "wildcards, globbed or dynamic deletion roots, Remove-Item -Path, or recursive deletion other than the separately gated exact-literal manual-retirement root operation below"
   - "recursive takeown/icacls, ACL reset, inheritance propagation, broad-principal grants, process termination"
   - "application/test/SQL/database/runtime/broker/Alpaca/network activity"
 ```
@@ -251,3 +251,43 @@ totals remain unchanged. This work order remains `REVIEW` and cannot close under
 ## Deletion decision
 
 Retain this work order under `work/completed/keep/` on closure: it records privileged component-wise cleanup and exact residual dispositions.
+
+## User-authorized manual-retirement amendment
+
+The later explicit authorization permits manual retirement **only** for the five literal remnant
+roots and their corresponding local fallback branches named in the frozen allowlist. It does not
+authorize a remote-ref action, fixture/root-cache revisit, `.git/worktrees` change, worktree
+re-registration, application/test execution, database/runtime/broker activity, or any other
+cleanup target. This amendment reopens this work order as `ACTIVE` solely for that bounded pass.
+
+For one frozen root at a time, the required critical preflight is: reconfirm local/live reset-head
+equality, clean main Git baselines, exact fallback ref/tip and manifest proof, canonical relative
+containment beneath the exact `.claude/worktrees` root, non-reparse root and descendant inventory,
+and no status or content change between final preflight and the deletion command. Existing absent
+Git metadata remains an expected condition; it must never be recreated or edited.
+
+If the named immediate ignored-cache child is still access-protected, it may receive only an
+exact-component, nonrecursive ownership/access repair after its own literal containment and
+negative-reparse checks: record current owner/ACL, run `takeown.exe /F <exact-component>` with no
+`/R` or `/D`, then `icacls <exact-component> /grant <current-user>:F` without `/T`, inheritance
+flags, reset, or changes to any parent or sibling. A further access denial, sharing conflict,
+unexpected content, or reparse point is a stop condition for that target.
+
+Only after a complete clean descendant inventory and immediate recheck may the exact full root be
+retired with this sole recursive filesystem command:
+
+```powershell
+Remove-Item -LiteralPath <one-frozen-canonical-root> -Recurse -Force -ErrorAction Stop
+```
+
+The command may never use a variable-derived root, wildcard, parent directory, alternate path, or
+second target. Verify exact path absence and continued lack of a worktree registration; then run
+local `git worktree prune` only to reconcile registrations. Delete the matching local fallback
+branch only after those gates: use `git branch -d <exact-branch>` first, and retain the branch if it
+refuses. `git branch -D` is not authorized by this amendment.
+
+Publish the manual-retirement preflight as a documentation-only commit and require the exact live
+reset ref to equal that commit before the first filesystem mutation. Record per-target owner/ACL
+action, inventory, command result, postcondition, branch result, and any stop. Close this work
+order only if all five literal roots and all five matching local fallback branches are absent;
+otherwise retain it in `REVIEW` with an exact partial outcome.

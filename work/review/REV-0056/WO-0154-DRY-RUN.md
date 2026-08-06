@@ -35,3 +35,25 @@ For each row: validate the frozen tip and cited WO-0153 proof; inspect the exact
 ## Explicitly absent from the plan
 
 No repository root, workspace root, evidence parent, `.git` path, test/application path, wildcard, `Remove-Item -Path`, `git clean`, `git reset`, fetch/prune, remote branch deletion, recursive ACL, recursive ownership, or process termination is planned.
+
+## Manual-retirement amendment dry run
+
+For each of the five table rows above, the post-activation shape is intentionally one root and one
+branch, never a batch deletion:
+
+1. Resolve and equality-check the row's literal canonical root under `.claude/worktrees`; check its
+   root and readable descendants for reparse points, and recheck the frozen branch tip/proof.
+2. If the row's named immediate cache child blocks inventory, record its owner/ACL and change only
+   that literal child using nonrecursive `takeown /F` and non-inheriting `icacls` for the current
+   user. Any deeper access failure stops the row.
+3. Require a complete non-reparse descendant inventory and unchanged immediate pre-delete state.
+4. Run only `Remove-Item -LiteralPath <that-one-canonical-root> -Recurse -Force -ErrorAction Stop`.
+   The literal is substituted from the frozen row, not discovered from enumeration.
+5. Require exact root absence and no registration, then run local `git worktree prune` and recheck
+   the other four rows for unexpected change.
+6. Require the matching branch still equals its frozen tip and run `git branch -d <exact-branch>`.
+   If it refuses, retain it; no force-delete is planned.
+
+No manual `.git` operation, re-registration, move, quarantine, remote action, fixture/root-cache
+action, recursive ACL/ownership command, branch `-D`, process termination, or application/test/
+database/runtime command is in this amendment.

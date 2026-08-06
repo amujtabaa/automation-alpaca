@@ -88,3 +88,45 @@ fable_done:
   deferred: ["Actual per-target execution and closeout."]
   status: VERIFIED
 ```
+
+## Manual-retirement critical preflight
+
+`ACCEPT - P0=0, P1=0 for documentation-only activation; per-target destructive gates remain mandatory.`
+
+The user authorized actual retirement of only the five frozen full-tree remnants and later deletion
+of a matching local fallback branch only after its path is proven absent. The standard-Git repair
+re-gate had already established that each root has no authentic `.git` marker or worktree-admin
+entry. This amendment does not attempt to recreate either; it uses a manual filesystem procedure
+only after a new exact documentation baseline is live.
+
+Frozen target tuples, copied without expansion from WO-0154 and the retirement manifest:
+
+- `.claude/worktrees/codex-lane2-bootstrap` -> `codex/lane2-bootstrap` @ `ea3f75cec2e93a51ca100a8e83a5e658a2630300`
+- `.claude/worktrees/codex-lane2-docs` -> `codex/lane2-docs` @ `088d9b5a026a1a5d977d834e00c4e73ba5acc9aa`
+- `.claude/worktrees/codex-signal-tests-staging` -> `codex/signal-tests-staging` @ `24d3746a35e30f736a6c5e3541720f0d47b0d751`
+- `.claude/worktrees/codex-wo-0114` -> `codex/wo-0114` @ `0a97f51aee11721448dccbf4576c8308bf88f14e`
+- `.claude/worktrees/codex-wo-0124` -> `codex/wo-0124` @ `3d8015f2bf10fa26ea767d70cab586c9e1b324ca`
+
+| Critical challenge | Required control | Result |
+|---|---|---|
+| Full-tree command reaches a parent, a prefix-collision path, or an added target | Five literal canonical roots only; relative-component equality, no rooted/`..`/ADS input, and one-target command construction | PASS |
+| Reparse path redirects a recursive operation | Reparse scan of root and every readable descendant before access repair and again immediately before removal | PASS design; target-specific execution required |
+| Protected cache leads to a broad permission change | At most its frozen immediate cache child may receive nonrecursive `takeown` and non-inheriting `icacls` after owner/ACL capture | PASS |
+| Metadata loss is papered over | No `.git` or `.git/worktrees` creation/edit; registration absence remains a required postcondition | PASS |
+| Branch is removed despite retained tree or unmerged history | Root absence + no registration + frozen tip + `git branch -d` only; no `-D` authority | PASS |
+| Handle tool limitation is misrepresented | Record `openfiles`/process limitations; defer on any sharing or access failure; never end a process | PASS |
+| Previously completed fixture/cache work is repeated | Those 65 outcomes and their known evidence limits are immutable inputs, not targets | PASS |
+
+```yaml
+fable_recheck:
+  task: "WO-0154 manual full-tree retirement activation"
+  local_and_live_reset_head: "c6cfaee6be7443e0a6f42d961efc08c5989b2edc"
+  target_count: 5
+  review_result: "ACCEPT - P0=0, P1=0"
+  constraints:
+    - "One exact literal root at a time; no parent, wildcard, or dynamic root."
+    - "No .git/worktrees modification or worktree reconstruction."
+    - "No recursive ownership or ACL command; no branch force deletion."
+    - "A documentation-only commit and exact live-ref equality precede mutation."
+  deferred_to_execution: "Target-by-target reparse, access, inventory, sharing, postcondition, and branch-deletion gates."
+```

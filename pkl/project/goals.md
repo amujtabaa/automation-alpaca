@@ -55,6 +55,12 @@ a `.git` marker and corresponding `.git/worktrees` administrative metadata. Each
 `DEFERRED — METADATA UNAUTHENTICATED`, not eligible for repair/removal; no branch is eligible for
 deletion. This is `PARTIAL CLEANUP — MANUAL RETIREMENT STILL REQUIRED`, not an M1, master, or
 successor-work authorization.
+The user has now authorized a new `WO-0154` manual-retirement pass for only those five literal
+full-tree roots and their matching local fallback branches. It requires a new documentation-only
+live baseline, one-target critical preflight, component-scoped nonrecursive access repair only if
+needed, exact-root deletion, and normal (`git branch -d`) branch retirement only after matching-path
+absence. It does not authorize a branch force-delete, remote operation, metadata reconstruction,
+fixture/cache retry, or any product work.
 
 ## Rules / facts
 

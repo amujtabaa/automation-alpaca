@@ -196,3 +196,10 @@
   ownership change, fixture/cache retry, or application/test/runtime/database/network action ran.
   The fixture ACL evidence limitation and four `UNKNOWN` cache byte totals remain explicitly
   preserved. Result: `PARTIAL CLEANUP — MANUAL RETIREMENT STILL REQUIRED`.
+- 2026-08-05: The user authorized a bounded WO-0154 manual-retirement pass for only the five
+  retained literal full-tree remnants and, after each matching path is absent, its local fallback
+  branch. The preflight limits access repair to an exact named cache child without recursive
+  ownership/ACL changes; the only recursive deletion is one fully verified literal remnant root at
+  a time. No `git branch -D`, remote action, Git metadata reconstruction, fixture/root-cache retry,
+  application/test, database, runtime, broker/network, credential, M2, merge, or other cleanup is
+  authorized. A documentation-only live baseline must precede all filesystem mutation.

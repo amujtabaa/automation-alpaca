@@ -322,3 +322,10 @@ successor_cleanup:
     repair_commands: "NOT RUN: every frozen target was D — UNSAFE_OR_UNREPRESENTABLE, not B — REPAIRABLE."
     handle_evidence: "LIMITED: openfiles local-object list disabled and process query access denied; no no-handle claim is made."
     preserved_limits: "Fixture ACL evidence limitation and four UNKNOWN root-cache byte totals are unchanged."
+  manual_retirement_activation:
+    status: "PREFLIGHT_ACCEPTED_PENDING_DOCUMENTATION_BASELINE"
+    authority: "Explicit user authorization for only the five frozen full-tree remnants and subsequent matching local branch deletions."
+    destructive_operation: "Remove-Item -LiteralPath <one frozen canonical root> -Recurse -Force -ErrorAction Stop, only after per-target gates."
+    access_repair: "Only the named immediate cache child; nonrecursive takeown /F and non-inheriting icacls grant to current user after capture."
+    branch_operation: "git branch -d only after matching root absence and registration absence; git branch -D not authorized."
+    prohibitions_retained: "No remote action, .git/worktrees operation, re-registration, fixture/root-cache retry, broad/recursive ACL ownership, process termination, application/test/database/runtime work, or M2."
