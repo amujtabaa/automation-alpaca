@@ -281,3 +281,12 @@
   `466e712b6f507ee165a7fc0c80e826fa8a35a710` and verified that SHA against the live reset branch
   ref. RED tests and implementation may now begin only under the active work order and accepted R7
   contract; no external CI result is claimed for later implementation work.
+- 2026-08-06: The user ratified the immutable WO-0151 R8 RED contract
+  `d6a0295f14652222d9fa05e1f826e77ecd306c07dbf1b8faf4525976396eec1f` and authorized its
+  corresponding narrow re-gate. Its frozen manifest
+  `b6faddc624a227382f80ebefe57044ce2e2e372328df3528e027fc4bcd924311` and independent
+  pre-flight `ACCEPT` at P0=0/P1=0/P2=0 are controlling. R7 remains retained provenance only.
+  Only R8's in-scope pure E2 application/test work, verification, remediation, evidence, normal
+  commits/pushes, and exact-head CI may continue; SQL/DDL, database, runtime, broker/network,
+  credentials, M2, merge, deletion, cleanup, rebase, force-push, and later activation remain
+  excluded.

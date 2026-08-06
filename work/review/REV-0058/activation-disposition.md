@@ -1,6 +1,6 @@
 # WO-0151 activation disposition
 
-Status: **AUTHORIZED FOR PURE E2 IMPLEMENTATION -- activation commit pending**
+Status: **R7 ACTIVATION RECORDED; R8 RE-GATE AUTHORIZED -- EXACT DOCUMENTATION COMMIT PENDING**
 
 [FABLE - FULL - verification: DIRECT plus independent review - task: WO-0151
 activation and pure E2 implementation]
@@ -12,10 +12,10 @@ fable_gate:
     - claim: "WO-0150 is effectively CLOSED on its exact external CI head."
       status: VERIFIED
       evidence: "GitHub Actions run 31089203210, jobs 92575847934 and 92575848023."
-    - claim: "The R7 contract is independently accepted and no source/test work preceded activation."
+    - claim: "The R7 contract is retained activation provenance; the ratified R8 contract controls resumed implementation."
       status: VERIFIED
-      evidence: "REV-0058 result-r7.md; tracked worktree clean before the retained review packet."
-  approach: "Commit the activation record, write failure-capable RED controls, implement the smallest pure composite reducer, then run bounded and full acceptance gates."
+      evidence: "REV-0058 result-r7.md, result-r8.md, and the R8 frozen manifest."
+  approach: "Preserve the published activation record, reconcile the ratified R8 re-gate, write failure-capable RED controls, implement the smallest pure composite reducer, then run bounded and full acceptance gates."
   alternatives_considered:
     - "Do not bypass the activation record or use a draft-contract implementation path."
   out_of_scope:
@@ -64,6 +64,28 @@ The exact documentation-only activation commit is
 against the live `refs/heads/codex/arch-reset-2026-07-r1` ref before this
 append-only reconciliation. No implementation or test execution may begin
 until this record is committed.
+
+## R8 ratification and controlling re-gate
+
+On 2026-08-06, the user ratified the exact R8 contract SHA-256
+`d6a0295f14652222d9fa05e1f826e77ecd306c07dbf1b8faf4525976396eec1f` and
+authorized the corresponding WO-0151 R8 re-gate. Its independent static
+pre-flight result, retained at `result-r8.md`, is `ACCEPT` with P0=0, P1=0,
+and P2=0; the exact candidate manifest is
+`b6faddc624a227382f80ebefe57044ce2e2e372328df3528e027fc4bcd924311`; the
+review result SHA-256 is
+`5dc43bcaab99af837ee89e83880a1484cb79f649ea67e7218e5a2dd798699e80`.
+
+R8 now controls the active RED/test/production path. R7's accepted contract
+and the documentation-only activation commit remain historical provenance, but
+they do not authorize a different bootstrap representation. The only new
+semantic authority is the frozen R8 body: an owner-sealed target-local
+`UNBOUND_BOOTSTRAP`, its neutral checkpoint proof, first specialized-request
+promotion, and generic `CreateBrokerEffect(BUY)` refusal while the bootstrap
+record is active. The pre-existing source/test WIP is not acceptance evidence;
+it remains subject to R8 RED controls and the later independent review. No
+SQL/DDL, database, runtime, broker/network, credentials, M2, merge, deletion,
+cleanup, force-push, rebase, or later work-order activation is authorized.
 
 ## File-level check note
 
