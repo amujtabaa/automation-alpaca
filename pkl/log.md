@@ -277,3 +277,7 @@
   same-account cross-symbol source rule. The user's remaining-M1 authorization activates only
   pure E2 implementation in WO-0151's allowed paths. WO-0152, runtime, persistence, SQL/DDL,
   broker/network, credentials, M2, merge, deletion, and cleanup remain outside this activation.
+- 2026-08-06: Published the documentation-only WO-0151 activation at exact SHA
+  `466e712b6f507ee165a7fc0c80e826fa8a35a710` and verified that SHA against the live reset branch
+  ref. RED tests and implementation may now begin only under the active work order and accepted R7
+  contract; no external CI result is claimed for later implementation work.

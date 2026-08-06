@@ -59,9 +59,11 @@ precede production changes. R7 does not authorize a new architecture, runtime
 wiring, persistence, SQL/DDL, broker or Alpaca activity, credentials, M2,
 master merge, deletion, or cleanup.
 
-The exact documentation-only activation commit is recorded by a follow-on
-append-only reconciliation after this activation delta is committed. No
-implementation or test execution may begin until that record exists.
+The exact documentation-only activation commit is
+`466e712b6f507ee165a7fc0c80e826fa8a35a710`. It was pushed and then verified
+against the live `refs/heads/codex/arch-reset-2026-07-r1` ref before this
+append-only reconciliation. No implementation or test execution may begin
+until this record is committed.
 
 ## File-level check note
 

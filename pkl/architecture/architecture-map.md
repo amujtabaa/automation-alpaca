@@ -34,8 +34,9 @@ serial acquisition-generation architecture. The retained `WO-0149` lifecycle rec
 authority for that R2 scope. WO-0150's pure E1 closeout SHA
 `f1a40d69f301ad7f594a61f202d3bd380607b98a` passed exact-head GitHub Actions run `31089203210`
 (#726) on Python 3.11 and 3.12 and is effective `CLOSED`. WO-0151 is now active only for its
-accepted pure-E2 R7 contract; WO-0152 and all M2/runtime/persistence work remain inactive until
-separately gated.
+accepted pure-E2 R7 contract at documentation-only activation SHA
+`466e712b6f507ee165a7fc0c80e826fa8a35a710`; WO-0152 and all M2/runtime/persistence work remain
+inactive until separately gated.
 
 ## Current R2 ratification posture
 

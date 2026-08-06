@@ -65,7 +65,9 @@ proceeded under its active work order and is now effectively closed.
 
 Current E2 activation (2026-08-06): R7 independently accepted the bounded,
 target-local refresh and neutral-protection alignment contract at P0=0/P1=0/P2=0. Only WO-0151
-may now implement that pure semantic center; R7 remains a contract, not proof of runtime behavior.
+may now implement that pure semantic center. Documentation-only activation SHA
+`466e712b6f507ee165a7fc0c80e826fa8a35a710` is live-verified; R7 remains a contract, not proof
+of runtime behavior.
 
 ## Cleanup posture
 

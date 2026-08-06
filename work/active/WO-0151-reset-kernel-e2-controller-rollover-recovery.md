@@ -15,7 +15,7 @@ predecessor: "Effectively CLOSED WO-0150: exact f1a40d69f301ad7f594a61f202d3bd38
 implementation_authority: "GRANTED — explicit remaining-M1 authorization after E1 external closure and accepted R7 RED preflight"
 activation_required: "SATISFIED — R7 contract c82ab206d154cdcccf06794e139966724f7a814d4d2201a4fdf27bf3d7cbcb1e independently ACCEPTed at P0=0/P1=0/P2=0; result d4f95b2b454b9f80ebd30382a7cfca3f5ad1ea68cf6e37fb8fdc420d89923794"
 activated: 2026-08-06
-activation_commit: PENDING_WO0151_ACTIVATION_SHA_RECONCILIATION
+activation_commit: 466e712b6f507ee165a7fc0c80e826fa8a35a710
 ---
 
 # WO-0151 - Reset kernel E2: aggregate controller, successor admission, and mixed recovery
