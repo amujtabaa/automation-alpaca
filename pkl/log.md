@@ -267,3 +267,13 @@
   effectively `REVIEW` until its immutable exact-head Python 3.11/3.12 CI succeeds. WO-0151 and
   WO-0152 remain DRAFT/inactive; no E2, database/SQL, runtime, broker/network, credential, M2,
   merge, deletion, or cleanup authority was added.
+- 2026-08-06: Reconciled the previously pending E1 external gate from live GitHub Actions evidence.
+  Exact closeout SHA `f1a40d69f301ad7f594a61f202d3bd380607b98a` passed CI run `31089203210`
+  (#726): Python 3.11 job `92575847934` and Python 3.12 job `92575848023` both completed
+  `success`. WO-0150 is therefore effectively `CLOSED`.
+- 2026-08-06: The immutable WO-0151 R2+R3+R4+R5+R6+R7 RED composite accepted at P0=0/P1=0/P2=0.
+  The R7 body SHA-256 is `c82ab206d154cdcccf06794e139966724f7a814d4d2201a4fdf27bf3d7cbcb1e`;
+  three focused static passes confirmed lawful authority-owned refresh composition and a bounded
+  same-account cross-symbol source rule. The user's remaining-M1 authorization activates only
+  pure E2 implementation in WO-0151's allowed paths. WO-0152, runtime, persistence, SQL/DDL,
+  broker/network, credentials, M2, merge, deletion, and cleanup remain outside this activation.

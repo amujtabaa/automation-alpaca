@@ -1,19 +1,21 @@
 ---
 type: Work Order
 title: "Reset kernel E2: aggregate controller, successor admission, and mixed recovery"
-status: DRAFT
+status: ACTIVE
 work_order_id: WO-0151
 wave: RESET-M1E-2
 model_tier: strong
 risk: high
 disposition: []
-owner: unassigned until explicit activation
+owner: Codex implementation seat
 created: 2026-08-05
-branch: null
-base_sha: null
-predecessor: "Closed and independently accepted WO-0150 plus explicit activation"
-implementation_authority: NOT_GRANTED
-activation_required: "Explicit human activation after E1 closeout, a fresh RED contract, and independent acceptance"
+branch: codex/arch-reset-2026-07-r1
+base_sha: f1a40d69f301ad7f594a61f202d3bd380607b98a
+predecessor: "Effectively CLOSED WO-0150: exact f1a40d69f301ad7f594a61f202d3bd380607b98a passed GitHub Actions run 31089203210 (#726) on Python 3.11 and 3.12"
+implementation_authority: "GRANTED — explicit remaining-M1 authorization after E1 external closure and accepted R7 RED preflight"
+activation_required: "SATISFIED — R7 contract c82ab206d154cdcccf06794e139966724f7a814d4d2201a4fdf27bf3d7cbcb1e independently ACCEPTed at P0=0/P1=0/P2=0; result d4f95b2b454b9f80ebd30382a7cfca3f5ad1ea68cf6e37fb8fdc420d89923794"
+activated: 2026-08-06
+activation_commit: PENDING_WO0151_ACTIVATION_SHA_RECONCILIATION
 ---
 
 # WO-0151 - Reset kernel E2: aggregate controller, successor admission, and mixed recovery
@@ -21,12 +23,20 @@ activation_required: "Explicit human activation after E1 closeout, a fresh RED c
 [FABLE - FULL - verification: DIRECT plus independent review - task: one-controller serial
 rollover and constrained cross-side recovery]
 
-## Draft status and authority
+## Active status and authority
 
-This is DRAFT only. It authorizes no implementation, tests, commands, SQL/DDL, database work,
-persistence, runtime wiring, broker/network activity, credentials, CI, commits, pushes, merges,
-or activation. It becomes dispatchable only after its predecessor closes, its own RED contract
-receives independent acceptance, and a human activates this exact candidate.
+This exact work order is ACTIVE after the effective WO-0150 external closure,
+the immutable R7 contract's independent `ACCEPT` at P0=0/P1=0/P2=0, and the
+user's explicit remaining-M1 authorization. The activation disposition is
+retained at `work/review/REV-0058/activation-disposition.md`.
+
+It authorizes only the pure, deterministic, I/O-free E2 RED/test/production
+work in the exact allowed paths below, necessary in-scope remediation, required
+evidence/PKL/ledger reconciliation, normal commits/pushes, and the later
+unchanged exact-head CI gate. It does not authorize SQL/DDL, database work,
+persistence, runtime wiring, broker/network activity, credentials, M2, master
+merge, deletion, cleanup, rebase, force-push, or any later work-order
+activation.
 
 ## Authority pins
 
@@ -180,6 +190,13 @@ The following are proposed future paths only and may be narrowed at activation:
   - tests/execution_core/test_venue_recovery.py
   - tests/execution_core/test_import_boundary.py
   - work/queue/WO-0151-reset-kernel-e2-controller-rollover-recovery.md
+  - work/active/WO-0151-reset-kernel-e2-controller-rollover-recovery.md
+  - work/completed/keep/WO-0151-reset-kernel-e2-controller-rollover-recovery.md
+  - work/review/REV-0058/*
+  - work/ledger.jsonl
+  - pkl/project/goals.md
+  - pkl/architecture/architecture-map.md
+  - pkl/log.md
 
 ### Required lifecycle paths at activation
 

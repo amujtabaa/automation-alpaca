@@ -4,7 +4,7 @@ title: Architecture Map (reset target and frozen Spine v2 evidence)
 status: active
 authority: high
 owner: Ameen
-last_verified: 2026-08-05
+last_verified: 2026-08-06
 tags: [architecture, boundaries, layers]
 source_refs: [docs/adr/ADR-020-current-state-execution-kernel.md, docs/adr/ADR-021-position-protection-liquidity-execution.md, docs/adr/ADR-022-reset-beta-scope-cutover-governance.md, docs/adr/ADR-023-bounded-market-occurrence-authority.md, docs/adr/ARCH-RESET-2026-07-RATIFICATION.md, docs/01_ARCHITECTURE.md]
 supersedes: []
@@ -31,10 +31,10 @@ position-protection, bounded market-occurrence, hybrid-trailing, wait/flat/late-
 goal semantic center; its exact closeout `2462fb557172dd28a7475a763eca0b440c0298e3` is now
 dual-version CI green and effective `CLOSED`. ADR-020 R2 and ADR-021 R2 now define the
 serial acquisition-generation architecture. The retained `WO-0149` lifecycle record is not
-authority for that R2 scope. WO-0150's pure E1 implementation closeout is frozen at manifest
-`a68c5897717e0e3ee735af6a95ff768c59951338dff321aca9ab42bc662acfde` and independently
-accepted with P0=0/P1=0, but remains effectively `REVIEW` until unchanged exact-head Python
-3.11/3.12 CI. Its E2/E3 successors and all M2/runtime/persistence work remain inactive until
+authority for that R2 scope. WO-0150's pure E1 closeout SHA
+`f1a40d69f301ad7f594a61f202d3bd380607b98a` passed exact-head GitHub Actions run `31089203210`
+(#726) on Python 3.11 and 3.12 and is effective `CLOSED`. WO-0151 is now active only for its
+accepted pure-E2 R7 contract; WO-0152 and all M2/runtime/persistence work remain inactive until
 separately gated.
 
 ## Current R2 ratification posture
@@ -46,9 +46,10 @@ evidence; it grants no implementation authority for this R2 serial-generation sc
 WO-0150 activation and accepted REV-0057 successor are historical R0 evidence only. The R1
 documentation gate is accepted. Its E1 closeout manifest
 `a68c5897717e0e3ee735af6a95ff768c59951338dff321aca9ab42bc662acfde` received final independent
-`ACCEPT` with P0=0/P1=0, but exact-head Python 3.11/3.12 CI remains required before effective
-closure. WO-0151 and WO-0152 remain DRAFT only. M2 and all runtime/persistence work remain
-inactive until separately gated.
+`ACCEPT` with P0=0/P1=0, and exact closeout SHA
+`f1a40d69f301ad7f594a61f202d3bd380607b98a` passed dual-version CI. R7 then independently
+accepted the target-local refresh/neutral-protection E2 contract. WO-0151 alone is active; WO-0152,
+M2, and all runtime/persistence work remain inactive until separately gated.
 
 ## Rules / facts
 
@@ -87,11 +88,11 @@ inactive until separately gated.
   wiring, persistence, adapter fence, or broker authority is part of this pure M1 boundary.
 - The R2 serial acquisition foundation is split across E1 identity/direct venue correlation, E2
   controller/recovery behavior, and E3 generated/stateful conformance. WO-0150's exact E1
-  closeout manifest `a68c5897717e0e3ee735af6a95ff768c59951338dff321aca9ab42bc662acfde` is
-  independently `ACCEPT`ed at P0=0/P1=0, with the external exact-head Python 3.11/3.12 CI gate
-  still pending. Successful registry/index population, permanent routing, and late-fact mutation
-  are E2-only. E2/E3 remain inactive. No runtime, persistent database, broker, credential, or M2
-  authority is granted.
+  closeout manifest `a68c5897717e0e3ee735af6a95ff768c59951338dff321aca9ab42bc662acfde` was
+  independently `ACCEPT`ed at P0=0/P1=0, and its exact closeout SHA is dual-version CI green.
+  Successful registry/index population, permanent routing, and late-fact mutation are E2-only.
+  E2 is active under accepted R7; E3 remains inactive. No runtime, persistent database, broker,
+  credential, or M2 authority is granted.
 - Current posture amendment (2026-08-05): E1 provides only deterministic non-authoritative identity
   data, immutable view and inert-reader shapes, and the no-history venue correlation bridge.
   Successful direct registry/index population, A-to-B-to-C routing, and late-fact mutation are
