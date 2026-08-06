@@ -287,7 +287,7 @@ execution_record:
 successor_cleanup:
   work_order: WO-0154
   activated_at_utc: "2026-08-06"
-  status: ACTIVE_PRE_MUTATION
+  status: BLOCKED_UNREGISTERED_FULL_WORKTREE_REMNANTS
   authority: "2026-08-06 exact residual-cleanup authorization"
   predecessor_outcome: "WO-0153 remains immutable and PARTIAL_CLEANUP_DEFERRED_TARGETS_REMAIN."
   frozen_scope:
@@ -298,3 +298,10 @@ successor_cleanup:
   preflight: "work/review/REV-0056/WO-0154-HOSTILE-PREFLIGHT.md"
   dry_run: "work/review/REV-0056/WO-0154-DRY-RUN.md"
   constraint: "No M1-complete, master-landing, or successor implementation-activation claim."
+  execution_checkpoint: "work/review/REV-0056/WO-0154-EXECUTION-OUTCOME.md"
+  completed_filesystem_targets:
+    fixture_roots_absent: 10
+    root_cache_directories_absent: 55
+  retained_blocked_targets:
+    worktree_remnants: 5
+    local_fallback_branches: 5

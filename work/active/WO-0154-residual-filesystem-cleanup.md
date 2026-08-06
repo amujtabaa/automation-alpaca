@@ -1,7 +1,7 @@
 ---
 type: Work Order
 title: "Residual filesystem cleanup: WO-0153 AccessDenied targets"
-status: ACTIVE
+status: REVIEW
 work_order_id: WO-0154
 wave: RESET-CLEANUP
 model_tier: strong
@@ -206,6 +206,19 @@ forbidden_operations:
 - [ ] Every 70 filesystem targets and five branches has a recorded terminal status.
 - [ ] No unlisted, tracked, or reparse path is modified.
 - [ ] WO-0153 remains historical; records make no M1-complete, master-landing, or successor implementation-activation claim.
+
+## Execution checkpoint — BLOCKED, 2026-08-06
+
+The 10 fixture targets and 55 root-cache targets are now absent. This work order is not closed:
+the five remaining paths are full, unregistered worktree remnants. Their exact local branch tips
+match the WO-0153 manifest, but `git worktree list --porcelain` contains only the main worktree and
+each required normal `git worktree remove <exact-path>` call returned `fatal: '<path>' is not a
+working tree`. The recorded cache-only force condition is therefore false. This work order does not
+authorize re-registration, manual recursive removal of those full trees, or fallback-branch deletion.
+
+`work/review/REV-0056/WO-0154-EXECUTION-OUTCOME.md` is the current evidence record. A later human
+authorization must resolve the unregistered-full-worktree disposition before this work order can
+continue or close.
 
 ## Completion disposition
 

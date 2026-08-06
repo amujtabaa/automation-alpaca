@@ -46,6 +46,9 @@ WO-0152, M2, runtime wiring, persistence, broker/network activity, or master lan
 On 2026-08-06, only `WO-0154` was activated to retry those exact environment-controlled residuals
 through a frozen literal allowlist and component-wise filesystem controls. It adds no implementation
 or product authority.
+The fixture and root-cache portions are now complete, but `WO-0154` is in `REVIEW` with a documented
+blocker: five residual paths are unregistered full worktree remnants, so their cache-only removal
+condition is false and their fallback branches remain retained.
 
 ## Rules / facts
 

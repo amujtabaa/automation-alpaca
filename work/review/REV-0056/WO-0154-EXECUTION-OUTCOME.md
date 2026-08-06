@@ -1,0 +1,85 @@
+# WO-0154 execution checkpoint
+
+## Status
+
+`BLOCKED — UNREGISTERED FULL WORKTREE REMNANTS`
+
+This is an in-flight checkpoint, not a WO closure. No M1-complete, master-landing, successor
+activation, application/test, database, runtime, broker, credential, or network claim is made.
+
+## Verified completed filesystem scope
+
+- All 10 fixed REV-0050 fixture roots are absent. Each initially had the required one-file
+  SHA-256/142-byte invariant before its leaf and empty directories were removed; the final exact
+  roots were independently rechecked as empty non-reparse directories before removal.
+- All 55 fixed repository-root cache directories are absent. Every successful one-root pass enforced
+  literal direct-child membership, untracked status, Git-ignore status, component containment,
+  non-reparse traversal, stable before/after metadata, per-file literal deletion, empty-directory
+  bottom-up deletion, and clean Git baselines. No successful cache pass required ACL repair.
+- Four cache roots have reclaimed-byte value `UNKNOWN`, not zero: `.pytest_tmp_wo0146_full_10b`,
+  `.pytest_tmp_wo0146_full_14`, `.pytest_tmp_wo0146_full_15`, and
+  `.pytest_tmp_wo0146_full_16`. A bounded batch reached the environment's 60-second command limit
+  after clearing part of that set. Read-only reconciliation then proved the first three absent and
+  completed the fourth's remaining 460 empty directories. No byte value is invented.
+- The fixture pass required component ACL work because traversal was denied. The exact first-root
+  pre/post record is retained in the command evidence: owner `HOMEPC\\CodexSandboxOffline`; before
+  access was `OWNER RIGHTS`, `SYSTEM`, and `Administrators` Full Control; the exact root gained only
+  `HOMEPC\\CodexSandboxOffline:FullControl`. A prior all-target attempt did not persist its complete
+  in-memory per-component ACL log when a postcondition stopped it. This evidence gap is disclosed;
+  no unrecorded ACL claim is used to accept the work order.
+
+## Preserved blocker
+
+All five residual paths are non-reparse, present full trees; each exact branch tip matches its
+WO-0153 proof. They are intentionally unregistered, not stale registrations:
+
+| Remnant | Local branch @ exact tip | Normal removal result |
+|---|---|---|
+| `.claude/worktrees/codex-lane2-bootstrap` | `codex/lane2-bootstrap` @ `ea3f75cec2e93a51ca100a8e83a5e658a2630300` | exit 128, not a working tree |
+| `.claude/worktrees/codex-lane2-docs` | `codex/lane2-docs` @ `088d9b5a026a1a5d977d834e00c4e73ba5acc9aa` | exit 128, not a working tree |
+| `.claude/worktrees/codex-signal-tests-staging` | `codex/signal-tests-staging` @ `24d3746a35e30f736a6c5e3541720f0d47b0d751` | exit 128, not a working tree |
+| `.claude/worktrees/codex-wo-0114` | `codex/wo-0114` @ `0a97f51aee11721448dccbf4576c8308bf88f14e` | exit 128, not a working tree |
+| `.claude/worktrees/codex-wo-0124` | `codex/wo-0124` @ `3d8015f2bf10fa26ea767d70cab586c9e1b324ca` | exit 128, not a working tree |
+
+`git worktree list --porcelain` contains only the main reset worktree. Each residual contains normal
+source/docs content plus multiple ignored cache/temp entries, so the WO-0153 cache-only forced-removal
+condition is not met. No forced removal, re-registration, manual recursive deletion, branch deletion,
+or `git worktree prune` was attempted after those failures.
+
+## Other evidence
+
+- The documentation-only activation `9d68825fea2568bb13f6b02e1aca23ad0b06cbae` and its two
+  focused procedure corrections `10759a205496626d2438b07fea8b9f88c5602cd7` and
+  `430326b5927d5db2af12d0fa1d8d554793ac6efb` were each pushed and live-ref verified before the
+  relevant filesystem operations.
+- The installed `openfiles.exe` facility cannot enumerate local handles because the system object
+  list is disabled. It was recorded as unavailable, not as a no-handle result; no process was ended.
+- A temporary fixed-input cache helper was hash-inspected (`d288619a4f7af4fa29e8bb04b3fd3f12eabf6ecddf0174a8717bd720fa43d694`), but normal execution policy refused it before it ran. No bypass was used; its exact file and empty temporary directory were then removed.
+- Final checkpoint Git status, staged and unstaged tracked deltas, and `git diff HEAD -- app tests`
+  are empty.
+
+## Required next authority
+
+Specify a safe disposition for the five unregistered full worktree roots: either an explicitly
+authorized re-registration/removal workflow or separately bounded manual full-tree retirement with
+fresh path/provenance gates. Do not delete the five local fallback branches unless the matching
+remnant has first been safely retired.
+
+```yaml
+fable_done:
+  task: "WO-0154 residual filesystem cleanup checkpoint"
+  done_when_results:
+    - item: "Ten fixture and 55 root-cache targets absent"
+      status: MET
+      evidence: "Exact literal postcondition checks with clean Git/app/test delta."
+    - item: "Five worktree remnants and matching local branches safely retired"
+      status: BLOCKED
+      evidence: "All normal exact git worktree remove calls returned not-a-working-tree; cache-only force condition is false."
+  scope_check:
+    allowed_paths_respected: true
+    drive_by_edits: false
+  debt_check: "Fixture component ACL evidence and four cache byte values are explicitly incomplete; no acceptance claim relies on them."
+  deferred:
+    - "Safe human-authorized disposition for the five unregistered full worktree remnants."
+  status: BLOCKED
+```
