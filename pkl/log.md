@@ -218,3 +218,10 @@
   literal roots `codex-signal-tests-staging`, `codex-wo-0114`, and `codex-wo-0124`: each stage must
   repeat the full root-specific gate and exact confirmation, and a failure stops later stages. No
   branch deletion, remote action, metadata change, or product work is added.
+- 2026-08-06: The user completed the authorized serial batch. Exact roots
+  `.claude/worktrees/codex-signal-tests-staging` (805 items), `.claude/worktrees/codex-wo-0114`
+  (974), and `.claude/worktrees/codex-wo-0124` (27,250) are absent after their independent gates and
+  explicit confirmations. Together with the two earlier elevated retirements, all five frozen full
+  roots are absent. The five fallback branches remain at their frozen tips; no branch deletion,
+  force delete, remote action, metadata operation, or wider cleanup ran. WO-0154 remains `REVIEW`
+  for a later separately authorized branch disposition; no product authority is added.

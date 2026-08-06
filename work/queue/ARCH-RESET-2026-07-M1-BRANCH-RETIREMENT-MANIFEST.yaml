@@ -302,7 +302,7 @@ successor_cleanup:
   completed_filesystem_targets:
     fixture_roots_absent: 10
     root_cache_directories_absent: 55
-    manually_retired_unregistered_full_roots: 2
+    manually_retired_unregistered_full_roots: 5
   retained_blocked_targets:
     worktree_remnants:
       count: 5
@@ -351,3 +351,8 @@ successor_cleanup:
       execution: "One saved script with three explicit literal sequential stages; no loop or derived deletion root; full per-stage preflight and separate exact DELETE confirmation; stop before a later stage on any failure."
       branch_action: "None. All five fallback branches are retained; no force delete or alternative branch-retirement mechanism is authorized."
       prerequisite: "A documentation-only amendment commit must be pushed and its exact live reset ref must equal local HEAD before the batch begins."
+      results:
+        - ".claude/worktrees/codex-signal-tests-staging: DELETED after 805-item inventory; fallback branch codex/signal-tests-staging retained at 24d3746a35e30f736a6c5e3541720f0d47b0d751."
+        - ".claude/worktrees/codex-wo-0114: DELETED after 974-item inventory; fallback branch codex/wo-0114 retained at 0a97f51aee11721448dccbf4576c8308bf88f14e."
+        - ".claude/worktrees/codex-wo-0124: DELETED after 27250-item inventory; fallback branch codex/wo-0124 retained at 3d8015f2bf10fa26ea767d70cab586c9e1b324ca."
+      terminal_state: "ROOT_RETIREMENT_COMPLETE_BRANCH_DISPOSITION_DEFERRED; all five frozen roots absent, all five fallback branches retained at frozen tips."

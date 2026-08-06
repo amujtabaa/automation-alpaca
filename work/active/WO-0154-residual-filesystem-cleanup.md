@@ -1,7 +1,7 @@
 ---
 type: Work Order
 title: "Residual filesystem cleanup: WO-0153 AccessDenied targets"
-status: ACTIVE
+status: REVIEW
 work_order_id: WO-0154
 wave: RESET-CLEANUP
 model_tier: strong
@@ -350,3 +350,25 @@ empty, both matching local fallback refs remained at their frozen tips, and Git 
 the main reset worktree. No branch was deleted: the bootstrap normal delete refused because it was
 unmerged, and the docs procedure intentionally retained its branch. These are actual root retirements,
 not evidence that the earlier sandbox `takeown` result was wrong.
+
+## Execution checkpoint - all literal roots retired; branches retained
+
+The user completed the authorized three-stage serial batch in elevated local PowerShell. Each stage
+passed a fresh exact-root preflight and final recheck before its explicit literal removal command:
+
+| Root | Verified inventory | Filesystem result | Branch result |
+|---|---:|---|---|
+| `.claude/worktrees/codex-signal-tests-staging` | 805 items | `DELETED` | `codex/signal-tests-staging` retained at `24d3746a35e30f736a6c5e3541720f0d47b0d751` |
+| `.claude/worktrees/codex-wo-0114` | 974 items | `DELETED` | `codex/wo-0114` retained at `0a97f51aee11721448dccbf4576c8308bf88f14e` |
+| `.claude/worktrees/codex-wo-0124` | 27,250 items | `DELETED` | `codex/wo-0124` retained at `3d8015f2bf10fa26ea767d70cab586c9e1b324ca` |
+
+Combined local postcondition checks now establish that all five frozen full-tree roots are absent,
+each corresponding fallback branch remains exactly at its frozen tip, the main worktree has clean
+tracked/staged/status baselines, and Git registers only the main reset worktree. No branch deletion,
+force deletion, remote operation, worktree-metadata change, or other cleanup action ran.
+
+The filesystem portion of this work order is complete. This work order remains `REVIEW`, not
+`CLOSED`, because its historical closure condition required the five matching local branches to be
+absent. The user-authorized serial amendment retained them and grants neither an alternative branch
+disposition nor force-delete authority. A future independently authorized branch-retirement decision
+must establish integration/provenance safety for each retained ref.

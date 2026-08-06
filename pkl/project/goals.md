@@ -71,6 +71,10 @@ all five local fallback branches remain retained at their frozen tips. The user 
 one three-stage, stop-on-first-failure serial batch for the remaining three literal roots. Every
 stage retains the per-root preflight and confirmation requirements; no branch force-delete, remote
 operation, metadata change, product work, or other cleanup target is authorized.
+That batch completed: all five frozen unregistered full-tree roots are now absent, while all five
+fallback branch refs remain retained at their frozen tips. WO-0154 remains `REVIEW` only for a later
+separately authorized branch-retirement decision; it adds no M1, master-landing, implementation,
+runtime, persistence, broker/network, credential, database, or M2 authority.
 
 ## Rules / facts
 

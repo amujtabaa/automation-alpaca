@@ -185,3 +185,23 @@ The user then authorized one saved-script serial batch for the three remaining f
 separate exact confirmation at each stage, rerun every per-root gate, and stop before a later stage
 if any earlier stage fails. It adds no branch deletion; all fallback refs remain retained. A fresh
 documentation-only exact-live baseline is required before that batch starts.
+
+## Final serial-batch result
+
+The user completed every authorized stage in the elevated local PowerShell session:
+
+| Remnant | Fresh complete inventory | Root result | Fallback branch result |
+|---|---:|---|---|
+| `.claude/worktrees/codex-signal-tests-staging` | 805 items | `DELETED` | Retained at `24d3746a35e30f736a6c5e3541720f0d47b0d751` |
+| `.claude/worktrees/codex-wo-0114` | 974 items | `DELETED` | Retained at `0a97f51aee11721448dccbf4576c8308bf88f14e` |
+| `.claude/worktrees/codex-wo-0124` | 27,250 items | `DELETED` | Retained at `3d8015f2bf10fa26ea767d70cab586c9e1b324ca` |
+
+Fresh local postcondition verification confirms all five frozen worktree roots are absent, every
+fallback ref remains at its exact frozen tip, the main worktree has no tracked/staged/status delta,
+and `git worktree list --porcelain` registers only the main reset worktree. No branch deletion,
+force deletion, remote operation, metadata action, or broader cleanup occurred.
+
+`WO-0154` therefore has `ROOT-RETIREMENT COMPLETE / BRANCH-DISPOSITION DEFERRED` status. It remains
+in `REVIEW` rather than closing because the original close condition requires the five branches to
+be absent, and the serial-batch authority intentionally retained them. No implementation or product
+authority is implied.
