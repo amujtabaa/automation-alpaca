@@ -25,16 +25,18 @@ effective `CLOSED` after independent acceptance and exact-head Python 3.11/3.12 
 `2462fb557172dd28a7475a763eca0b440c0298e3` passed unchanged GitHub Actions push run
 `30996686588` (#693) on Python 3.11 and 3.12. ADR-020 R2 and ADR-021 R2 now control the
 serial acquisition-generation foundation. The retained `WO-0149` lifecycle record does not
-grant R2 implementation authority; WO-0150 through WO-0152 are DRAFT-only candidates. M2 and every
-runtime/persistence/cutover slice remain inactive. WO-0153 has completed its bounded cleanup scope
+grant R2 implementation authority. `WO-0150` is the sole active pure-M1E implementation slice;
+`WO-0151` and `WO-0152` remain DRAFT/inactive. M2 and every runtime/persistence/cutover slice
+remain inactive. WO-0153 has completed its bounded cleanup scope
 with environment-controlled deferred artifacts only; it adds no implementation authority.
 
 ## Current R2 ratification posture
 
 ADR-020 R2 and ADR-021 R2 now control serial same-symbol acquisition. WO-0149 is formally
 SUPERSEDED and retained as evidence; it grants no implementation authority for the new
-serial-generation scope. WO-0150 through WO-0152 are DRAFT-only successor candidates. M2 and
-every runtime/persistence/cutover slice remain inactive.
+serial-generation scope. WO-0150 is active only for its exact policy-free E1 scope after
+REV-0057's accepted RED-contract successor; WO-0151 through WO-0152 remain DRAFT/inactive. M2
+and every runtime/persistence/cutover slice remain inactive.
 
 ## Cleanup posture
 
@@ -88,9 +90,9 @@ runtime, persistence, broker/network, credential, database, or M2 authority.
 - The permanent safety core lives verbatim in `CLAUDE.md` and is never overridden by tooling or convenience defaults.
 - Reset implementation advances only through independently reviewed work orders explicitly
   activated after their predecessor gates. `WO-0145` through `WO-0148` are effective `CLOSED`.
-  The ratified R2 architecture has no active implementation work order: WO-0149 is formally
-  SUPERSEDED and does not authorize its serial-generation scope, and WO-0150 through WO-0152 are
-  DRAFT only.
+  The ratified R2 architecture has one active implementation work order: WO-0150 is limited to
+  policy-free direct identity/lineage and no-history venue correlation. WO-0149 is formally
+  SUPERSEDED, while WO-0151 and WO-0152 remain DRAFT only.
   Runtime wiring, persistent database work, broker/network activity, credentials, M2, merge,
   deletion, and cleanup remain outside current authority.
 

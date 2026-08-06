@@ -1,19 +1,50 @@
 ---
 type: Work Order
 title: "Reset kernel E1: acquisition-generation identity, ownership, and lineage"
-status: DRAFT
+status: ACTIVE
 work_order_id: WO-0150
 wave: RESET-M1E-1
 model_tier: strong
 risk: high
 disposition: []
-owner: unassigned until explicit activation
+owner: Codex implementation seat
 created: 2026-08-05
-branch: null
-base_sha: null
+branch: codex/arch-reset-2026-07-r1
+base_sha: 268d5e2b5a80c2445ad6d7efe0e77e492a8f8ebd
 predecessor: "Accepted ADR-020 R2 and ADR-021 R2; no prior M1E slice"
-implementation_authority: NOT_GRANTED
-activation_required: "Explicit human activation of this exact candidate after a fresh RED contract and independent acceptance"
+implementation_authority: "GRANTED — user directed WO-0150 to start after the stated RED-contract gate"
+activation_required: "SATISFIED — exact contract successor d54ffec4e0547be8fcff447d212e1afbebd4489f independently ACCEPTed at P0=0/P1=0; result retained at 268d5e2b5a80c2445ad6d7efe0e77e492a8f8ebd"
+allowed_paths:
+  - app/execution_core/identity.py
+  - app/execution_core/acquisition.py
+  - app/execution_core/venue.py
+  - app/execution_core/__init__.py
+  - tests/execution_core/test_acquisition.py
+  - tests/execution_core/test_venue_ownership.py
+  - tests/execution_core/test_venue_binding_recovery.py
+  - tests/execution_core/test_venue_recovery.py
+  - tests/execution_core/test_import_boundary.py
+  - work/active/WO-0150-reset-kernel-e1-generation-lineage.md
+  - work/completed/keep/WO-0150-reset-kernel-e1-generation-lineage.md
+  - work/review/REV-0057/*
+  - work/ledger.jsonl
+  - pkl/project/goals.md
+  - pkl/architecture/architecture-map.md
+  - pkl/log.md
+forbidden_paths:
+  - app/execution_core/authority.py
+  - app/execution_core/protection.py
+  - app/execution_core/recovery.py
+  - app/store/*
+  - app/broker/*
+  - app/events/*
+  - app/api/*
+  - app/main.py
+  - app/server.py
+  - ui/*
+  - .github/*
+  - docs/adr/*
+  - migrations/*
 ---
 
 # WO-0150 - Reset kernel E1: acquisition-generation identity, ownership, and lineage
@@ -21,12 +52,47 @@ activation_required: "Explicit human activation of this exact candidate after a 
 [FABLE - FULL - verification: DIRECT plus independent review - task: policy-free direct
 acquisition-generation lineage]
 
-## Draft status and authority
+## Active status and authority
 
-This is a planning artifact only. It does not authorize source or test edits, commands, SQL/DDL,
-database work, persistence, runtime wiring, broker/network activity, credentials, CI, commits,
-pushes, merges, or activation. It is not a dispatchable work order until a human explicitly
-activates this exact candidate.
+The user explicitly directed WO-0150 to start after this work order's stated RED-contract gate.
+The exact corrected contract candidate is
+`d54ffec4e0547be8fcff447d212e1afbebd4489f`; its focused independent recheck returned `ACCEPT`
+with P0=0/P1=0 and is retained unchanged at
+`work/review/REV-0057/recheck-result.md` in predecessor evidence commit
+`268d5e2b5a80c2445ad6d7efe0e77e492a8f8ebd`.
+
+This activation authorizes only the red-first, pure E1 implementation and tests in the exact
+allowed paths below, necessary evidence/PKL/ledger reconciliation, local commits, and a normal
+branch push when credentials are available. It does not authorize E2/E3, runtime wiring,
+persistent application-database work, SQL/DDL, broker/Alpaca/network activity, credentials,
+CI-workflow changes, master merge, PR, deletion, cleanup, rebase, or force-push.
+
+## Activation gate
+
+fable_gate:
+  goal: "Implement the smallest pure E1 identity, direct lineage, and no-history correlation foundation."
+  assumptions:
+    - claim: "The accepted successor RED contract is the complete E1 public-interface and failure-control authority."
+      status: VERIFIED
+      evidence: "REV-0057/recheck-result.md: ACCEPT, P0=0/P1=0 for d54ffec4e0547be8fcff447d212e1afbebd4489f."
+    - claim: "E2 alone owns admission/currentness/controller/protection semantics."
+      status: VERIFIED
+      evidence: "ADR-020 R2 sections 3-4; ADR-021 R2 sections 4-6; frozen RED contract."
+  approach: "Write failing RED controls first, implement the smallest sealed value/index/venue bridge, then run focused and full acceptance gates."
+  alternatives_considered:
+    - "Store mutable generation state in every route: rejected because a late fact would make transition work proportional to retained routes."
+    - "Use venue audit/materializer readers: rejected because they traverse retained history and do not prove direct current provenance."
+  out_of_scope:
+    - "Controller admission/currentness, protection, claim/effect eligibility, runtime, persistence, SQL/DDL, broker/network activity, and later work-order activation."
+  done_when:
+    - behavior: "Every accepted E1 lineage route is immutable and resolves current state through one direct registry join."
+      test: "WO-0150 RED controls and their named mutation pins."
+      command: "Focused acquisition/venue/import tests, then required repository gates."
+    - behavior: "Every broker root accepted for E1 correlation has a direct no-history provenance route."
+      test: "Normal and broker-correlated-human root controls with audit/materializer tripwires."
+      command: "Focused venue and acquisition tests."
+  blast_radius: "Only app/execution_core identity/acquisition/venue package surfaces and named tests; no runtime wiring."
+  rollback: "Revert only the exact WO-0150 commits; retained review evidence and predecessor behavior remain intact."
 
 ## Authority pins
 
@@ -154,7 +220,7 @@ The future activation may narrow, but may not broaden without a new decision, th
   - tests/execution_core/test_venue_binding_recovery.py
   - tests/execution_core/test_venue_recovery.py
   - tests/execution_core/test_import_boundary.py
-  - work/queue/WO-0150-reset-kernel-e1-generation-lineage.md
+  - work/active/WO-0150-reset-kernel-e1-generation-lineage.md
 
 ### Required lifecycle paths at activation
 
@@ -177,12 +243,12 @@ app/api, app/main.py, app/server.py, ui, .github, docs/adr, migrations, SQL/DDL,
 runtime wiring, credentials, broker/network activity, M2, merge, deletion, and cleanup. E1 MUST
 NOT touch protection.py or authority.py; any need for those semantics belongs to E2.
 
-## Future gate, evidence, and stop conditions
+## Gate, evidence, and stop conditions
 
-Activation requires the ratification record, a fresh exact RED contract, independent exact-candidate
-ACCEPT with P0=0/P1=0, and explicit human activation. A future GREEN phase requires red-first
-controls, focused tests, static/scope/import/type checks, fresh independent review, and exact-head
-evidence within separately granted authority.
+The activation prerequisites are satisfied by the ratification record, the fresh exact RED contract,
+the independent successor `ACCEPT` with P0=0/P1=0, and the user direction to start WO-0150. The
+GREEN phase requires red-first controls, focused tests, static/scope/import/type checks, fresh
+independent review, and exact-head evidence within this active work-order authority.
 
 Stop and return to planning if the requirement needs a history scan, caller-shaped authority,
 compatibility/admission policy in E1, cross-side policy, a public-contract break,

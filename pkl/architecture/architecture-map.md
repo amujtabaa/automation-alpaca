@@ -31,17 +31,18 @@ position-protection, bounded market-occurrence, hybrid-trailing, wait/flat/late-
 goal semantic center; its exact closeout `2462fb557172dd28a7475a763eca0b440c0298e3` is now
 dual-version CI green and effective `CLOSED`. ADR-020 R2 and ADR-021 R2 now define the
 serial acquisition-generation architecture. The retained `WO-0149` lifecycle record is not
-authority for that R2 scope; only DRAFT successor candidates exist. M2 and all runtime/persistence
-work remain inactive until separately gated.
+authority for that R2 scope; WO-0150 is active only for policy-free direct lineage, while its E2/E3
+successors and all M2/runtime/persistence work remain inactive until separately gated.
 
 ## Current R2 ratification posture
 
 ADR-020 R2 and ADR-021 R2 are the accepted authority for serial same-symbol acquisition:
 direct immutable generation lineage, one SymbolAcquisitionController, at most one LIVE generation,
 and one active protection/broker authority. WO-0149 is formally SUPERSEDED and retained as
-evidence; it grants no implementation authority for this R2 serial-generation scope. Three
-successor candidates are DRAFT only; M2 and all runtime/persistence work remain inactive until
-separately gated.
+evidence; it grants no implementation authority for this R2 serial-generation scope. WO-0150 is
+the one active E1 implementation slice after accepted REV-0057 RED-contract review; WO-0151 and
+WO-0152 remain DRAFT only. M2 and all runtime/persistence work remain inactive until separately
+gated.
 
 ## Rules / facts
 
@@ -78,10 +79,10 @@ separately gated.
   coordinate retained in a constant-size authenticated cursor. Projection, market, and invalidation
   transitions are structurally separate. No lifetime receipt collection, history scan, runtime
   wiring, persistence, adapter fence, or broker authority is part of this pure M1 boundary.
-- The R2 serial acquisition foundation must be split across E1 direct lineage, E2 controller/
-  recovery behavior, and E3 generated/stateful conformance. The retained WO-0149 record does not
-  authorize those changes. Until an exact successor candidate receives an explicit activation, no
-  runtime, persistent database, broker, credential, test-fixture, or M2 authority is granted.
+- The R2 serial acquisition foundation is split across E1 direct lineage, E2 controller/recovery
+  behavior, and E3 generated/stateful conformance. WO-0150 is active only for E1's reviewed
+  policy-free identity, permanent direct indexes, and no-history venue correlation; E2/E3 remain
+  inactive. No runtime, persistent database, broker, credential, or M2 authority is granted.
 
 ## Rationale
 

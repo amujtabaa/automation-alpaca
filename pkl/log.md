@@ -225,3 +225,10 @@
   roots are absent. The five fallback branches remain at their frozen tips; no branch deletion,
   force delete, remote action, metadata operation, or wider cleanup ran. WO-0154 remains `REVIEW`
   for a later separately authorized branch disposition; no product authority is added.
+- 2026-08-05: The user directed WO-0150 to start after its stated RED-contract gate. The initial
+  contract candidate `882dbc922fc2611f685344a06f12992840c1143a` received a retained P1; its
+  focused successor `d54ffec4e0547be8fcff447d212e1afbebd4489f` corrected mutable route-state and
+  broker-correlated-human root provenance, then independently `ACCEPT`ed at P0=0/P1=0. WO-0150 is
+  now active only for pure E1 implementation: deterministic acquisition identity, permanent direct
+  lineage, and no-history venue correlation. WO-0151/WO-0152, runtime, persistent database,
+  SQL/DDL, broker/network, credentials, M2, master merge, deletion, and cleanup remain inactive.
