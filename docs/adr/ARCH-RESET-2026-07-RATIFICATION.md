@@ -211,3 +211,50 @@ test-only SQLite files. It grants no credentials, Alpaca/broker/network activity
 application-database change, runtime wiring, CI-workflow change, PR/merge, deletion/cleanup,
 rebase/force-push, M2, or master landing. No accepted ADR body changes or new architectural
 decision are required.
+
+## Serial acquisition-generation R2 ratification - accepted 2026-08-05
+
+Ameen approved the ARCH-RESET-2026-07 serial acquisition-generation decision only at frozen
+candidate-manifest SHA-256
+d2538dedb9f9eb05368eb892e83c7ae0dd2872ea0e991f5ee225c88f7ec4714c. The independent static
+preflight result SHA-256
+c2bbe63a0dd71f5154713554b28af417bef10b86ed6d96847763be09feb2e0e9 concluded ACCEPT,
+P0=0, P1=0, P2=0 for that exact candidate. REV-0053 through REV-0055 remain retained, negative
+or unaccepted evidence; they are not authority.
+
+The canonical ADR bodies below are byte-identical copies of their approved R2 candidates. Their
+embedded PROPOSED / DRAFT ONLY text remains deliberately unchanged so the approved bytes and
+hashes remain verifiable. This index, not a body edit, records their accepted status.
+
+| Current authority | Exact accepted body SHA-256 | Immutable predecessor | Disposition |
+|---|---|---|---|
+| ADR-020 R2 - current-state execution kernel with acquisition-generation lineage | eab0c18cc08539a0c2b1dbc6d61f6d2a0ff359d38b71e8d659cb1ff620513653 | ADR-020 R1 35c6782ff7c09ec125b2acad859b4080302660531004db47b8c544b4cf2a5838 | Accepted complete replacement |
+| ADR-021 R2 - position protection, serial acquisition generations, and liquidity execution | b2527dc5285137ef829211b293411e03168458d34b9d3dce96d04b521394c30c | ADR-021 R1 ca822fe682bc2ccca32b5a7915ea4f07bd4ad2319e62d48312edd12c3f8f44f0 | Accepted complete replacement |
+| ADR-023 R1 - bounded market occurrence authority | 9a61d4f952079b5f78da7a8f1a17f70dc3099d20fb359596923c5938cc421eaf | accepted ADR-023 body and R1 amendment provenance | Retained controlling overlay for market occurrence, stream generation, cursor, evidence, and recovery |
+
+ADR-020 R2 and ADR-021 R2 replace their R1 bodies in full as current architecture authority.
+ADR-022 is unchanged. The selected model permits distinct reducer-minted
+AcquisitionGenerationId values with immutable direct root/effect/owner lineage, one aggregate
+SymbolAcquisitionController, at most one LIVE generation, exactly one active protection/broker
+authority, and immutable equal EmergencyRecoveryCompatibility for successors. It forbids concurrent
+generations, per-generation protection controllers, generic policy arbitration, audit-history scans,
+caller-shaped authority, market-stream reset/reuse, and ownership transfer.
+
+This approval authorizes only the documentation reconciliation recorded here and the drafting of
+three future pure-M1 work-order candidates. It does not activate any candidate, grant application
+or test implementation authority for the R2 serial-generation scope, or alter WO-0149's formal
+lifecycle. SQL/DDL and database work, persistence/runtime wiring, credentials, broker/Alpaca/network
+activity, M2, master merge, pull request, push, deletion, cleanup, force-push, and rebase remain
+unapproved.
+
+## WO-0149 formal supersession - authorized 2026-08-05
+
+Ameen separately authorized formal supersession of WO-0149 solely because ratified ADR-020 R2 and
+ADR-021 R2 replace its one-lifetime same-symbol acquisition premise. The work order and every
+related artifact remain retained evidence; no historical body, partial material, review result, or
+prior authority is erased or treated as accepted R2 implementation evidence.
+
+WO-0149 is now SUPERSEDED by DRAFT-only WO-0150, WO-0151, and WO-0152. This is a lifecycle and
+documentation reconciliation only. It activates none of those drafts and authorizes no application
+or test implementation, SQL/DDL, database/persistence/runtime work, credentials, broker/Alpaca/
+network activity, M2, master merge, pull request, push, deletion, cleanup, force-push, or rebase.

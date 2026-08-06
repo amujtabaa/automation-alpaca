@@ -23,10 +23,17 @@ evidence, not the reset foundation. M0 and pure M1A/M1B/M1C `WO-0145` through `W
 effective `CLOSED` after independent acceptance and exact-head Python 3.11/3.12 CI. Pure M1D
 `WO-0148` is effectively `CLOSED`: immutable SHA
 `2462fb557172dd28a7475a763eca0b440c0298e3` passed unchanged GitHub Actions push run
-`30996686588` (#693) on Python 3.11 and 3.12. Pure M1E `WO-0149` is active for its bounded,
-unwired acquisition/cross-side implementation and verification under recorded authority at
-activation commit `a74998dbe34fabcf47467deb16f34180234fac3f`. M2 and every
+`30996686588` (#693) on Python 3.11 and 3.12. ADR-020 R2 and ADR-021 R2 now control the
+serial acquisition-generation foundation. The retained `WO-0149` lifecycle record does not
+grant R2 implementation authority; WO-0150 through WO-0152 are DRAFT-only candidates. M2 and every
 runtime/persistence/cutover slice remain inactive.
+
+## Current R2 ratification posture
+
+ADR-020 R2 and ADR-021 R2 now control serial same-symbol acquisition. WO-0149 is formally
+SUPERSEDED and retained as evidence; it grants no implementation authority for the new
+serial-generation scope. WO-0150 through WO-0152 are DRAFT-only successor candidates. M2 and
+every runtime/persistence/cutover slice remain inactive.
 
 ## Rules / facts
 
@@ -39,10 +46,12 @@ runtime/persistence/cutover slice remain inactive.
   use transactional current state under ADR-020.
 - The permanent safety core lives verbatim in `CLAUDE.md` and is never overridden by tooling or convenience defaults.
 - Reset implementation advances only through independently reviewed work orders explicitly
-  activated after their predecessor gates. `WO-0145` through `WO-0148` are effective `CLOSED`;
-  `WO-0149` alone is active for its pure-M1E application/test implementation, evidence, and
-  verification. Runtime wiring, persistent database work, broker/network activity, credentials,
-  M2, merge, deletion, and cleanup remain outside its authority.
+  activated after their predecessor gates. `WO-0145` through `WO-0148` are effective `CLOSED`.
+  The ratified R2 architecture has no active implementation work order: WO-0149 is formally
+  SUPERSEDED and does not authorize its serial-generation scope, and WO-0150 through WO-0152 are
+  DRAFT only.
+  Runtime wiring, persistent database work, broker/network activity, credentials, M2, merge,
+  deletion, and cleanup remain outside current authority.
 
 ## Rationale
 
@@ -129,3 +138,14 @@ Roadmapping against an unverified codebase state repeats the failure mode Fable 
   #691 remains negative evidence only. Activated only the frozen, pure-M1E WO-0149 specification
   after `REV-0052` exact-candidate review and addendum returned `ACCEPT` with P0=0/P1=0. No
   application/test implementation or operational authority was added.
+- 2026-08-05: Ameen approved the exact REV-0056 R3 serial acquisition-generation architecture
+  candidate: ADR-020 R2 eab0c18cc08539a0c2b1dbc6d61f6d2a0ff359d38b71e8d659cb1ff620513653,
+  ADR-021 R2 b2527dc5285137ef829211b293411e03168458d34b9d3dce96d04b521394c30c,
+  manifest d2538dedb9f9eb05368eb892e83c7ae0dd2872ea0e991f5ee225c88f7ec4714c, and independent
+  static preflight c2bbe63a0dd71f5154713554b28af417bef10b86ed6d96847763be09feb2e0e9
+  (ACCEPT, P0=0/P1=0/P2=0). The approval permits documentation reconciliation and three
+  DRAFT-only M1E candidates, not their activation or implementation. No operating boundary changed.
+- 2026-08-05: Ameen formally superseded WO-0149 solely because the ratified R2 ADRs replace its
+  one-lifetime same-symbol premise. All artifacts remain retained evidence; WO-0150 through WO-0152
+  remain DRAFT/inactive. No application/test, database, runtime, broker/network, credential, M2,
+  merge, deletion, or cleanup authority was added.

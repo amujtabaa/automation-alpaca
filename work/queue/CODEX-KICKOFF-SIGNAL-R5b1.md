@@ -1,5 +1,10 @@
 # Codex kickoff — Signal Seat R5b-1: producer ingest surface (LOCAL, strongest model)
 
+> **Reset-cleanup supersession — 2026-08-05.** Historical kickoff only. ADR-022 disables and
+> unmounts Signal Seat for reset beta. Do not use this prompt or fetch its retired staging-branch
+> dependency; future reactivation requires a new ADR/work order and the durable requirements in
+> `docs/spec/signal-seat/07-malformed-quarantine-conformance.md`.
+
 > Operator launch prompt, drafted by the planning seat 2026-07-25. Paste into a FRESH **local** Codex
 > session at the repo root, strongest model, full effort. R5b-1 is a human-gated auth surface (first
 > authenticated external input path) → strongest local model.
@@ -63,9 +68,11 @@ Never present R5b-1 as completing the auth surface.
      when this WO was drafted; if this returns nothing, **STOP** — the operator must merge R5a
      (`codex/signal-r5a-foundation`) and the planning branch first. Do not branch from an R5a-less
      master; the corpus will not run.
-  4. `git checkout -b codex/signal-r5b1-producer-ingest origin/master`.
-  5. `git fetch origin codex/signal-tests-staging archive/claude-wo-0001-install-checks-2x5ys8` (the
-     staged corpus, and the archive design reference you read but never port verbatim).
+  4. **Historical only:** the former `codex/signal-r5b1-producer-ingest` branch is retired;
+     do not recreate it.
+  5. `git fetch origin archive/claude-wo-0001-install-checks-2x5ys8` (the retained archive design
+     reference may be read but never ported verbatim). The former staging corpus is retired and
+     must not be queried or recreated.
 - Never push master. No PR unless asked. Paper-only; zero credentials/broker/live. Pytest scratch in
   OS temp, never repo-root.
 
@@ -74,9 +81,9 @@ Never present R5b-1 as completing the auth surface.
 Every line is `TRACED` or `INHERITED`; anchors are in the WO. **No `ASSUMED` line is pre-checked.**
 
 - [x] **D-R5b1-1 HARD predecessor gate — R5a merged first** (Step 0.3). Branch from the merged master.
-- [x] **D-R5b1-2 Corpus, and it is INCOMPLETE.** Pull the **producer/ingest subset** of
-      `tests/test_signal_routes.py` + all of `tests/test_signal_facade_reads.py` from
-      `origin/codex/signal-tests-staging`. The staged route file is **truncated at byte 14628, ending
+- [x] **D-R5b1-2 Historical corpus note.** The former **producer/ingest subset** of
+      `tests/test_signal_routes.py` plus `tests/test_signal_facade_reads.py` was staged before
+      retirement. Its route file was **truncated at byte 14628, ending
       mid-comment (`# The forged X-Ac`)** inside
       `test_operator_command_audit_actor_is_principal_not_forged_x_actor` — it parses, collects, and
       **PASSES while asserting nothing about the actor**. That test is **R5b-2's**; do NOT import it

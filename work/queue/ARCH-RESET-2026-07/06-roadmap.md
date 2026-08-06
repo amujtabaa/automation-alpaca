@@ -426,6 +426,23 @@ Demote automatically on:
 - non-reconstructible decision;
 - startup that cannot establish order/position parity.
 
+## Ratified serial acquisition-generation sequence - 2026-08-05
+
+Before any repeated same-symbol BUY lifecycle, the pure M1E foundation is split into three separate
+future candidates: M1E-1 direct acquisition-generation identity/ownership/lineage; M1E-2 one
+controller, successor admission, and mixed-generation recovery; and M1E-3 generated/stateful
+conformance. Each requires its own Fable gate, RED contract, narrow paths, independent review, and
+explicit human activation. M1E-1 must remain policy-free; M1E-2 is the sole cross-side behavioral
+slice; M1E-3 adds proof rather than production capability.
+
+M2 must persist the same bounded direct authority atomically. M3 replays A/B/C and crash/race
+histories; M4 preserves broker fact correlation; M5 preserves a fresh ADR-023 baseline; M6 proves
+an attended repeat lifecycle; M7 exposes one controller state; and M8 measures bounded routing and
+recovery. Concurrent policy arbitration, positive-exposure authority transfer, and market-stream
+transfer remain deferred. This sequence records ADR-020 R2
+eab0c18cc08539a0c2b1dbc6d61f6d2a0ff359d38b71e8d659cb1ff620513653 and ADR-021 R2
+b2527dc5285137ef829211b293411e03168458d34b9d3dce96d04b521394c30c; it activates nothing.
+
 ## Complexity budget
 
 - One production persistence adapter.

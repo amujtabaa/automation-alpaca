@@ -534,6 +534,26 @@ Manual flatten is not a generic replacement:
 | Initial/unmanaged position | `HALTED`; no reset-engine effect; resolve outside the reset engine |
 | Optional subsystem failure | Disable that subsystem; protection continues |
 
+## Ratified R2 serial acquisition-generation amendment - 2026-08-05
+
+The current authority is ADR-020 R2
+eab0c18cc08539a0c2b1dbc6d61f6d2a0ff359d38b71e8d659cb1ff620513653 and ADR-021 R2
+b2527dc5285137ef829211b293411e03168458d34b9d3dce96d04b521394c30c. A sealed
+begin_acquisition_generation transition is the only successor admission route. It requires exact
+flat execution, exact CLOSED parent acceptance, clear reconciliation/integrity/basis state, no
+potentially executable predecessor work, the exact predecessor controller head, a distinct complete
+dual-mandate binding, equal immutable emergency compatibility, and a distinct ADR-023 stream after
+the predecessor becomes non-serving.
+
+Ownership classification is derived only from immutable direct bindings:
+LIVE_FIRST_ROOT, LIVE_FOLLOW_ON_ROOT, RETIRED_ROOT, or NON_ACQUISITION. A current generation's
+first root begins normal FLOOR_ONLY protection. A valid retired-generation root applies its
+economics to its own current head, advances controller currentness, stales/preempts current BUY
+authority, and enters the single constrained controller-level HARD_BAIL recovery route. No caller
+may shape classification, and no transition may infer it from history.
+
+This amendment is an architecture contract, not an active implementation or test instruction.
+
 ## Falsifiable domain obligations
 
 The reference model and later simulator must kill at least these counterexamples:

@@ -343,6 +343,24 @@ Initial paper-beta budgets on the deployment machine:
 These are local processing budgets, not promises about broker, feed, or exchange latency. Optimize
 Python only after repeatable profiling violates one.
 
+## Ratified R2 serial acquisition-generation amendment - 2026-08-05
+
+ADR-020 R2 eab0c18cc08539a0c2b1dbc6d61f6d2a0ff359d38b71e8d659cb1ff620513653 and ADR-021 R2
+b2527dc5285137ef829211b293411e03168458d34b9d3dce96d04b521394c30c replace only the previously
+unspecified same-symbol successor route. A PositionScope may have serial AcquisitionGenerationId
+values but never concurrent LIVE generations. One bounded SymbolAcquisitionController carries the
+current generation/head, immutable controller-lifetime EmergencyRecoveryCompatibility, and one
+active protection/broker authority. Direct immutable root/effect/owner-to-generation indexes and a
+generation current-economics head route retired facts; they are not a retired-history collection and
+no live transition scans audit or venue history.
+
+A successor requires exact flat/CLOSED/clear/no-live-work predecessor conditions, an exact
+predecessor controller head, a distinct complete dual-mandate binding, equal compatibility, and a
+distinct ADR-023 market stream after the predecessor is non-serving. The controller never accepts
+caller-shaped authority, policy arbitration, ownership transfer, or market-stream reset/reuse.
+This is documentation of accepted architecture only; it does not activate or implement a work
+order.
+
 ## Failure-domain rules
 
 - Signal Seat is not mounted or loaded.

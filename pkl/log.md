@@ -168,3 +168,16 @@
   one opaque acquisition/currentness reducer, bounded venue projections, sealed acquisition and
   protection-exit authority commands, and unchanged native-replace prohibition. This is a pure,
   unwired M1E interface freeze; no source or test implementation had started at this gate.
+- 2026-08-05: Ameen ratified REV-0056 R3's serial acquisition-generation architecture at manifest
+  d2538dedb9f9eb05368eb892e83c7ae0dd2872ea0e991f5ee225c88f7ec4714c: ADR-020 R2
+  eab0c18cc08539a0c2b1dbc6d61f6d2a0ff359d38b71e8d659cb1ff620513653, ADR-021 R2
+  b2527dc5285137ef829211b293411e03168458d34b9d3dce96d04b521394c30c, and static preflight
+  c2bbe63a0dd71f5154713554b28af417bef10b86ed6d96847763be09feb2e0e9 (ACCEPT, P0=0/P1=0/P2=0).
+  Documentation now records the R2 authority and three DRAFT-only M1E successor candidates. No
+  activation, implementation, SQL/DDL, database, runtime, broker/network, credential, M2, merge,
+  deletion, or cleanup authority was added.
+- 2026-08-05: Ameen formally superseded WO-0149 because ratified ADR-020 R2 and ADR-021 R2
+  replace its one-lifetime same-symbol acquisition premise. Its work-order record and all artifacts
+  remain retained evidence. WO-0150 through WO-0152 remain DRAFT/inactive; no implementation,
+  test, SQL/DDL, database, runtime, broker/network, credential, M2, merge, deletion, or cleanup
+  authority was added.

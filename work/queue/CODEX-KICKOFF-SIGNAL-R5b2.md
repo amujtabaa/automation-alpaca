@@ -1,5 +1,10 @@
 # Codex kickoff — Signal Seat R5b-2: operator enforcement surface (LOCAL, strongest model)
 
+> **Reset-cleanup supersession — 2026-08-05.** Historical kickoff only. ADR-022 disables and
+> unmounts Signal Seat for reset beta. Do not use this prompt or fetch its retired staging-branch
+> dependency; future reactivation requires a new ADR/work order and the durable requirements in
+> `docs/spec/signal-seat/07-malformed-quarantine-conformance.md`.
+
 > Operator launch prompt, drafted by the planning seat 2026-07-25. Paste into a FRESH **local** Codex
 > session at the repo root, strongest model, full effort. **Round 2 of 4 — runs ALONE.**
 >
@@ -63,10 +68,15 @@ schema/migration; event-log **vocabulary** changes; enabling the flag.
    - `git ls-tree master app/api/routes_signals.py` returns a blob (R5b-1 is merged), **and**
    - `work/review/REV-0042/disposition.md` exists (R5b-1's review is dispositioned).
    Do not start on an unmerged or unreviewed predecessor.
-4. `git checkout -b codex/signal-r5b2-operator-auth origin/master`
+4. **Historical only:** the former `codex/signal-r5b2-operator-auth` branch is retired; do not
+   recreate it.
 5. `git fetch origin codex/signal-tests-staging archive/claude-wo-0001-install-checks-2x5ys8` — the
    staged corpus and the archive **design reference** (1021-line route test, `deps.py`, `main.py`).
    Read the archive; **never port it verbatim** (see BUILD HAZARDS).
+
+**WO-0153 retirement amendment:** do not execute Step 5's former staging-ref component or recreate
+that branch. Only the retained archive may be read for historical provenance; a future Signal Seat
+slice requires a newly authorized work order and its bounded conformance specification.
 
 Never push master. No PR unless asked. Paper-only; zero credentials/broker/live. Pytest scratch in OS
 temp, never repo-root.

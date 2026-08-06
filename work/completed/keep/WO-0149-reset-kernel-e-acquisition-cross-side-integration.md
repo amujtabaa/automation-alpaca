@@ -1,12 +1,12 @@
 ---
 type: Work Order
 title: "Reset kernel E: acquisition and cross-side integration"
-status: ACTIVE
+status: SUPERSEDED
 work_order_id: WO-0149
 wave: RESET-M1E
 model_tier: strong
 risk: high
-disposition: []
+disposition: [SUPERSEDED, PKL_UPDATED, RESULT_SUMMARY_KEPT]
 owner: Codex implementation seat
 created: 2026-08-05
 branch: codex/arch-reset-2026-07-r1
@@ -18,15 +18,34 @@ implementation_authority: AUTHORIZED_2026-08-05
 activated: 2026-08-05
 activation_commit: a74998dbe34fabcf47467deb16f34180234fac3f
 activation_preflight: "REV-0052 result identified the prior candidate P1; result-addendum-01 accepted its root correction and result-addendum-02 accepted frozen candidate SHA-256 0936E114642F5B531A9996EB5685F39024B2982BB1F5BD348FF8048DBB13086D, final P0=0/P1=0"
+superseded: 2026-08-05
+superseded_by: [WO-0150, WO-0151, WO-0152]
+supersession_authority: "Ameen authorization: ratified ADR-020 R2 and ADR-021 R2 replace the one-lifetime same-symbol premise; preserve artifacts, reconcile records, keep successors DRAFT/inactive."
+current_execution_authority: NOT_GRANTED_SUPERSEDED_2026-08-05
 ---
 
 # WO-0149 — Reset kernel E: acquisition and cross-side integration
 
 `[FABLE • FULL • verification: DIRECT • task: pure acquisition and cross-side integration]`
 
+## Formal supersession - 2026-08-05
+
+Ameen formally superseded this work order solely because ratified ADR-020 R2
+eab0c18cc08539a0c2b1dbc6d61f6d2a0ff359d38b71e8d659cb1ff620513653 and ADR-021 R2
+b2527dc5285137ef829211b293411e03168458d34b9d3dce96d04b521394c30c replace its one-lifetime
+same-symbol acquisition premise. This record is retained in full as evidence; its historical
+activation, authority, partial material, and review references are not erased or retroactively
+accepted for the new R2 design.
+
+No prior implementation authority in this work order may be used for the ratified serial-generation
+scope. WO-0150, WO-0151, and WO-0152 are the only successor candidates and remain DRAFT/inactive.
+Each needs its own activation, RED contract, independent acceptance, and explicit human authority.
+This supersession grants no application/test work, SQL/DDL, database/persistence/runtime work,
+credential or broker/network activity, M2, merge, deletion, cleanup, push, rebase, or force-push.
+
 ## Activation and authority
 
-This work order is active only because the immutable predecessor closeout
+This work order was active only because the immutable predecessor closeout
 `2462fb557172dd28a7475a763eca0b440c0298e3` passed unchanged GitHub Actions push run
 `30996686588` (#693): Python 3.11 job `92275345844` and Python 3.12 job
 `92275345943` both concluded `SUCCESS`. WO-0145 through WO-0148 are therefore effectively
@@ -34,8 +53,8 @@ This work order is active only because the immutable predecessor closeout
 
 The documentation/specification-only activation was published at
 `a74998dbe34fabcf47467deb16f34180234fac3f`. It did not itself authorize application or test
-implementation. The following recorded authority is the only basis for implementation under this
-active work order. The prohibited R1 DDL incident remains inadmissible for every claim.
+implementation. The following recorded authority was the only basis for implementation under this
+then-active work order. The prohibited R1 DDL incident remains inadmissible for every claim.
 
 ## Recorded implementation authority - 2026-08-05
 
@@ -314,17 +333,18 @@ private venue accessor, or compatibility alias is allowed.
    - opaque, non-subclassable `AcquisitionState`, `AcquisitionCurrentness`,
      `AcquisitionAuthorization`, and `ProtectionExitProjection`;
    - `AcquisitionDisposition` and exact immutable `AcquisitionTransition(state,
-     protection_state, currentness, authorization, exit_projection, disposition)`; and
+     protection_state, protection_alert, currentness, authorization, exit_projection,
+     disposition)`; and
    - only `initialize_acquisition(mandate, venue_projection)`,
-     `apply_acquisition_integration(state, venue_projection)`,
-     `reduce_acquisition_market(state, occurrence)`, and
+     `apply_acquisition_integration(state, transition)`,
+     `reduce_acquisition_market(state, transition, occurrence)`, and
      `authorize_acquisition_effect(currentness, terms)`.
      The composite reducer, not a caller-supplied `ProtectionTransition` or `ExecutionGoal`, is
      the only mint for `ProtectionExitProjection`. It owns the linked protection state and calls
      the accepted M1D reducers exactly once per authenticated venue projection.
 3. `venue.py` adds opaque `AcquisitionVenueProjection` and
    `VenueBuyPreemptionProjection`, plus only
-   `project_acquisition_venue(transition, binding)`,
+   `project_acquisition_venue(source, binding, *, execution=None)`,
    `project_next_buy_preemption(book, execution, effect_id, binding)`, and
    `build_acquisition_cancel_request(projection, input_id, effect_id,
    request_occurrence_id)`. A projection carries one exact current leg or no leg, never a
@@ -350,6 +370,62 @@ effect authorization and `ClaimEffect` must compare the exact registered head an
 stands down at most safely-local unclaimed M1E work, and creates at most one exact target cancel.
 `CreateProtectionExitEffect` remains blocked until that preemption projection reports every
 relevant BUY parent exactly `CLOSED`.
+
+### R1 — explicit empty-book genesis correction
+
+The frozen two-argument projector has no honest way to mint the first currentness: an empty
+`VenueRecoveryBook` has no opaque `VenueRecoveryTransition`, while registration must precede the
+first bound effect. The existing projector name therefore accepts one tightly limited genesis
+form: `source` may be the exact `VenueRecoveryBook` only when `execution` is the exact flat
+`ExecutionSnapshot` for one matching position scope and the book is the exact empty genesis for
+that account. All effect, owner, claim, input, closure, reconciliation, binding, and uncertainty
+indexes must be empty/clear. The sealed projection records a `GENESIS` source kind, the complete
+book and execution commitments, scope, and supplied `DualMandateBinding`; its owned economics are
+exactly zero. The binding is a composite namespace checked later against `AcquisitionMandate`; it
+is not evidence of venue ownership.
+
+After genesis, an authentic venue transition with no dual-mandate binding is a neutral,
+zero-economic currentness refresh only. A transition that carries a dual binding must match the
+requested binding exactly. Only a transition carrying that exact M1E binding may contribute owned
+BUY economics or ownership/closure evidence. No rejected/no-op input, unrelated pre-existing
+effect, private constructor, or audit-history scan may substitute for this genesis form.
+
+### R2 — same-transition atomic integration correction
+
+`apply_acquisition_integration` accepts one exact opaque `VenueRecoveryTransition`, not a
+caller-selected acquisition projection. Inside one composite call it derives both
+`project_acquisition_venue(transition, state.mandate.binding)` and the existing
+`project_protection_venue(transition, state.mandate.protection_mandate)`, then publishes one
+`AcquisitionTransition` only after both acquisition and protection reductions accept that same
+source. Sealed acquisition state retains only the bounded acquisition projection and
+`PositionProtectionState | None`; it never retains the transition, book, execution history,
+closure history, or a caller-provided protection projection.
+
+Before the first positive owned BUY exposure, protection remains uninitialized. The first positive
+post-transition execution initializes it directly from the linked mandate; later accepted venue
+advances use the existing protection reducer exactly once. This avoids a prior flat initialization
+being misclassified as a late positive after `FLAT`, and prevents authentic but cross-paired
+acquisition/protection projections. This is an M1E composition-seam completeness correction under
+ADR-020/ADR-021, not a new architectural decision.
+
+### R3 — current-venue market integration correction
+
+The prior market-reducer signature could not honestly call the accepted M1D reducer: it retained
+neither a `ProtectionVenueProjection` nor a venue transition, while ADR-023 requires market
+reduction to receive an already-current projection. `reduce_acquisition_market` therefore accepts
+one exact `VenueRecoveryTransition` in addition to state and occurrence. It derives both bounded
+projections internally, requires the acquisition projection to equal the sealed current state
+projection exactly, and calls `reduce_position_protection_market` exactly once. A newer, stale, or
+forked transition is refused; no transition or protection projection is retained.
+
+On an accepted market reduction, the composite result retains unchanged acquisition economics and
+venue head, updates only the linked `PositionProtectionState`, advances one composite currentness
+head, and relays the exact `ProtectionAlert | None` supplied by M1D. An actionable exit means a
+positive-quantity M1D `EXIT_NORMAL` or `HARD_BAIL` state, including a wait state where M1D correctly
+withholds its SELL goal until BUY parents close. The same reducer latches acquisition preemption and
+mints the opaque exit projection against that successor head; it never promotes normal urgency or
+treats an alert as exit intent. This corrects a local composition seam under ADR-023; it neither
+grants raw M1D goals authority nor adds a new architectural decision.
 
 Before any production implementation:
 

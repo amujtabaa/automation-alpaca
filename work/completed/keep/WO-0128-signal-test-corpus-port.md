@@ -1,18 +1,25 @@
 ---
 type: Work Order
 title: "Signal Seat R3: red-first test-corpus port (branch-staged, never merged red)"
-status: DRAFT
+status: SUPERSEDED
 work_order_id: WO-0128
 wave: signal-seat revival (O-3 path a; ladder step R3)
 model_tier: mid
 risk: low
-disposition: []
+disposition: [SUPERSEDED, RESULT_SUMMARY_KEPT]
 owner: Ameen / implementer: Codex ultra session
 created: 2026-07-20
 gated_surface: none (staging branch only; nothing lands on master in this WO)
 ---
 
 # Work Order: port the 12-file signal test corpus onto a staging branch, red
+
+> **Formal current-posture supersession — 2026-08-05.** ADR-022 disables and unmounts Signal Seat
+> for reset beta, and WO-0153 retires `codex/signal-tests-staging` after distilling its two
+> branch-only malformed/quarantine requirements into
+> `docs/spec/signal-seat/07-malformed-quarantine-conformance.md`. This historical draft is retained
+> for provenance only. Do not activate, fetch, or execute it; future Signal Seat work requires a
+> new ADR and separately authorized work order.
 
 > The archive's most portable asset is its regression corpus (plan §5 tests table: 12 KEEP
 > files + helpers + 2 hunk cherry-picks). Porting it red-first BEFORE the implementation WOs

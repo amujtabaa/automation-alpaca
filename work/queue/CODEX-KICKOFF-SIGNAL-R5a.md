@@ -1,5 +1,10 @@
 # Codex kickoff — Signal Seat R5a: composition-root foundation (LOCAL, strongest model)
 
+> **Reset-cleanup supersession — 2026-08-05.** Historical kickoff only. ADR-022 disables and
+> unmounts Signal Seat for reset beta. Do not use this prompt or fetch its retired staging-branch
+> dependency; future reactivation requires a new ADR/work order and the durable requirements in
+> `docs/spec/signal-seat/07-malformed-quarantine-conformance.md`.
+
 > Operator launch prompt, drafted by the planning seat 2026-07-22. Paste into a FRESH **local**
 > Codex session at the repo root. R5a is a human-gated auth/launcher/transport **security boundary**
 > → strongest local model, full effort. The decision block below is the **M1 assumption ledger** of
@@ -32,18 +37,17 @@ so your flag-on code is exercised only by tests.
 - **Step 0 (execute yourself):** `git status --short` (clean, else STOP) → `git fetch origin` →
   confirm `git merge-base --is-ancestor 83a740b origin/master && echo BASE-OK` (must print BASE-OK;
   the tip may be newer) → `git checkout -b codex/signal-r5a-foundation origin/master` →
-  `git fetch origin codex/signal-tests-staging archive/claude-wo-0001-install-checks-2x5ys8` (you
-  pull the RED corpus from the staging ref and read the archive launcher design via
+  `git fetch origin archive/claude-wo-0001-install-checks-2x5ys8` (the retained archive launcher
+  design is read via
   `git show origin/archive/claude-wo-0001-install-checks-2x5ys8:<path>`).
 - **Precondition guard (fail closed — ALL must hold, else STOP and report which failed):**
   1. `work/queue/WO-0137-signal-r5a-composition-root-foundation.md` exists on master. If missing,
      the planning branch (`claude/signal-r4-kickoff-planning-354qc0`) hasn't merged — STOP; operator
      merges it first.
   2. `docs/adr/ADR-009-signal-seat-boundary.md` shows **Status: Accepted** (2026-07-21).
-  3. Staging + archive refs reachable:
-     `git show origin/codex/signal-tests-staging:tests/test_signal_seat_launcher.py | head -3` and
-     `git show origin/archive/claude-wo-0001-install-checks-2x5ys8:app/launch_guard.py | head -3`
-     both return content.
+  3. **Historical only:** the former staging ref is retired and must not be queried or recreated.
+     The retained archive reference may be read for provenance; any future Signal Seat work must
+     use a newly authorized work order and the bounded conformance specification.
   4. `work/review/REV-0041/` does NOT exist (namespace free).
 - Never push master. No PR unless asked. Paper-only; zero credentials/broker/live. Pytest scratch in
   OS temp, never repo-root. Strongest local model, full effort — this is the localhost security
@@ -54,10 +58,9 @@ so your flag-on code is exercised only by tests.
 Every line was traced against code in the war-game and survived M4b refutation. Anchors are in
 WO-0137.
 
-- [x] **D-R5a-1 Branch & corpus.** `codex/signal-r5a-foundation` from master; pull the R5a test
-      slices from `origin/codex/signal-tests-staging`: `test_signal_seat_config.py`,
-      `test_signal_seat_launcher.py`, `test_signal_seat_launch_guard.py`, `signal_seat_helpers.py`,
-      and the `test_import_boundaries.py` `_SANCTIONED_*` hunk.
+- [x] **D-R5a-1 Historical branch/corpus note.** `codex/signal-r5a-foundation` formerly used
+      staging test slices. The source branch is retired and not a future test source; see the
+      bounded conformance specification for the retained requirement.
 - [x] **D-R5a-2 Scope = construction-time foundation** (the boundary above).
 - [x] **D-R5a-3 Transport = `loopback` | `tailnet_serve`, Funnel/public forbidden.**
       `SIGNAL_TRANSPORT_POLICIES = {"loopback","tailnet_serve"}`. **The ONE authorized staged-test
@@ -111,8 +114,8 @@ middleware, constructs flag-on with master's EXISTING routers and NO signal midd
 
 ## The work — recommended slice order
 
-1. **Red-first:** pull the R5a test slices from staging; re-baseline the config test (D-R5a-3, paste
-   the diff); paste the RED collection.
+1. **Historical only:** this former red-first instruction used a staging test corpus that is now
+   retired. Do not execute or recreate it; future work needs fresh authorized tests.
 2. **`app/config.py`** — all signal fields (secrets `repr=False`) + env parsing +
    `validate_signal_seat_settings` + the operator/producer overlap helper. → `test_signal_seat_config.py` green.
 3. **Launcher trio** `app/launch_guard.py` (leaf: `validate_transport_bind` + code-owned capability),
@@ -155,4 +158,5 @@ middleware, constructs flag-on with master's EXISTING routers and NO signal midd
   (folding the threat model's GAP-01/02/05/06) when R5a lands.
 - R6 (rails provider / WO-0104), R7 (conversion). GAP-10 (signal-sell-vs-envelope + multi-exit) is
   an operator decision R7 needs — not now.
-- Anything touching `codex/signal-tests-staging` (live RED corpus; never deleted or merged red).
+- The former staging corpus is retired. Do not recreate it; use only a future authorized work
+  order and its bounded conformance specification.

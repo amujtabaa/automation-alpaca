@@ -1127,6 +1127,22 @@ are part of the M2 startup/cutover gate and cross-reference the ownership rules 
 This is intentionally simpler than N-1 schema compatibility. Paper-only posture and the authorized
 fresh datastore make that trade appropriate.
 
+## Ratified R2 M2 contract-only amendment - 2026-08-05
+
+When separately authorized, M2 must persist immutable acquisition-generation identity, complete
+binding, predecessor, status, and direct current-economics head; exact root/effect/owner-to-generation
+uniqueness; and one bounded SymbolAcquisitionController record per scope. One atomic unit of work
+must apply a fact/current-head/controller-currentness/preemption/effect change together. Durable
+constraints must refuse two LIVE generations, ambiguous bindings, incompatible successor authority,
+or a mismatched controller head. Restart must validate direct-index totality and currentness and
+become non-serving on any inconsistency; it must not reconstruct authority by scanning history.
+
+This is the M2 persistence contract implied by ratified ADR-020 R2
+eab0c18cc08539a0c2b1dbc6d61f6d2a0ff359d38b71e8d659cb1ff620513653 and ADR-021 R2
+b2527dc5285137ef829211b293411e03168458d34b9d3dce96d04b521394c30c. It authorizes no DDL,
+schema, database, migration, or runtime work. The prior prohibited R1 DDL incident remains
+inadmissible for any schema or operational conclusion.
+
 ## Retention
 
 - Keep old databases/logs and the R6 branch until the revised paper beta completes its first soak

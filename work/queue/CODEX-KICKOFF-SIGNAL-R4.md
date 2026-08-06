@@ -1,5 +1,10 @@
 # Codex kickoff — Signal Seat R4 (+ WO-0135 lineage record) (local, strongest model)
 
+> **Reset-cleanup supersession — 2026-08-05.** Historical kickoff only. Signal Seat is disabled and
+> unmounted by ADR-022; this is not an operative implementation prompt. The retired staging branch
+> has been replaced by the durable future-only requirements in
+> `docs/spec/signal-seat/07-malformed-quarantine-conformance.md`. Do not fetch or recreate it.
+
 > Operator launch prompt, drafted by the planning seat 2026-07-22. Paste into a FRESH local
 > Codex session at the repo root — no pre-steps needed: the session syncs itself (Setup
 > step 0) and fail-closes if preconditions aren't met. Decision block below is PRE-CHECKED
@@ -50,9 +55,9 @@ fresh pasted evidence, FIX blocks with root cause. No completion claims without 
   2. `docs/adr/ADR-009-signal-seat-boundary.md` shows **Status: Accepted** (2026-07-21) and
      `docs/adr/ADR-012-submit-recovery-operator-release.md` shows **Accepted** (2026-07-22 —
      Lane B's operator-reconcile terminal depends on it).
-  3. The staging corpus is reachable:
-     `git show origin/codex/signal-tests-staging:tests/test_signal_ingest_store.py | head -3`
-     returns content.
+  3. **Historical only:** the former staging corpus was retired under WO-0153. Do not query or
+     recreate it; the retained malformed/quarantine requirements now live in
+     `docs/spec/signal-seat/07-malformed-quarantine-conformance.md`.
   4. Neither `work/review/REV-0039/` (Lane A) nor `work/review/REV-0040/` (Lane B) exists
      (namespaces free).
 - Never push master. No PR unless asked. Paper-only; zero credentials/broker/live.
@@ -81,8 +86,9 @@ fresh pasted evidence, FIX blocks with root cause. No completion claims without 
 - [x] D-R4-4 **Archive citations convert to archive-ref provenance** — never bare
       REV-0024/REV-0025 ids on master (id collision, plan §2): cite as
       `archive REV-00xx @ origin/archive/claude-wo-0001-install-checks-2x5ys8`.
-- [x] D-R4-5 **Branch:** `codex/signal-r4-store` from current master; the three test files
-      are pulled from the staging branch, byte-identical, never weakened.
+- [x] D-R4-5 **Historical branch/corpus note:** `codex/signal-r4-store` used three former staging
+      files. That retired corpus is not a future source; the durable requirement is the
+      bounded conformance specification named above.
 - [x] D-R4-6 **Property-based corpus:** add `tests/test_signal_ingest_properties.py`
       (hypothesis, already pinned — no new dependency, no ADR) with the three tiers the WO
       specifies: planner invariants (A-3 exactness, skew boundaries, dedupe injectivity,
@@ -156,9 +162,9 @@ Recommended slice order — the schema-gate package goes FIRST because the opera
 launched this session is still at the keyboard; approval then overlaps all the store work
 instead of stalling after it:
 
-1. **Red first:** pull the three R4 test files from staging
-   (`git checkout origin/codex/signal-tests-staging -- <the three paths>`); paste red
-   collection evidence (today they die on the missing `app.store.core` signal constants).
+1. **Historical only:** this former R4 instruction copied three files from the retired staging
+   branch. Do not execute it or recreate the branch; any future Signal Seat work must start from
+   a newly authorized work order and the retained bounded conformance specification.
 2. **Present THE SCHEMA GATE package IMMEDIATELY** — the DDL is fully derivable from
    `01-schema.md §2` + the archive reference alone and does not depend on any of your
    implementation. Package = exact DDL + `_migrate` hunk; field-by-field cross-check vs
@@ -258,5 +264,5 @@ The design is fully pre-ratified (D-ML-1..6) — **no mid-session gate**. Order:
   cloud/mid-tier session per the execution preference; do NOT absorb it here.
 - The other two REV-0037/0035 advisory P2s (per-child escalation isolation; full 3.12 `--cov`
   run) — still recorded backlog, not this session.
-- Anything touching the staging branch itself (`codex/signal-tests-staging` is live and
-  never deleted or merged red).
+- The former staging branch is retired; its retained bounded requirements are recorded in
+  `docs/spec/signal-seat/07-malformed-quarantine-conformance.md`.

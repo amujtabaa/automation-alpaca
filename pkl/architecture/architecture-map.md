@@ -29,9 +29,19 @@ dual-version green, and unwired: `WO-0145` owns immutable execution facts and po
 execution authority, and atomic final claim. Pure `WO-0148` adds the separate formula-bound
 position-protection, bounded market-occurrence, hybrid-trailing, wait/flat/late-fill, and typed SELL-
 goal semantic center; its exact closeout `2462fb557172dd28a7475a763eca0b440c0298e3` is now
-dual-version CI green and effective `CLOSED`. Pure `WO-0149` is active for bounded, unwired
-acquisition/cross-side implementation under its recorded authority. M2 and all
-runtime/persistence work remain inactive until separately gated.
+dual-version CI green and effective `CLOSED`. ADR-020 R2 and ADR-021 R2 now define the
+serial acquisition-generation architecture. The retained `WO-0149` lifecycle record is not
+authority for that R2 scope; only DRAFT successor candidates exist. M2 and all runtime/persistence
+work remain inactive until separately gated.
+
+## Current R2 ratification posture
+
+ADR-020 R2 and ADR-021 R2 are the accepted authority for serial same-symbol acquisition:
+direct immutable generation lineage, one SymbolAcquisitionController, at most one LIVE generation,
+and one active protection/broker authority. WO-0149 is formally SUPERSEDED and retained as
+evidence; it grants no implementation authority for this R2 serial-generation scope. Three
+successor candidates are DRAFT only; M2 and all runtime/persistence work remain inactive until
+separately gated.
 
 ## Rules / facts
 
@@ -68,11 +78,10 @@ runtime/persistence work remain inactive until separately gated.
   coordinate retained in a constant-size authenticated cursor. Projection, market, and invalidation
   transitions are structurally separate. No lifetime receipt collection, history scan, runtime
   wiring, persistence, adapter fence, or broker authority is part of this pure M1 boundary.
-- WO-0149 implements the next pure semantic center: distinct immutable acquisition/protection
-  authority, sealed currentness at BUY create/final claim, one-fold first-fill protection
-  integration, and current-index cross-side preemption. It remains unwired: no runtime, persistent
-  database, broker, credential, or M2 authority is granted; test-only mock/disposable SQLite
-  fixtures are permitted only for authorized verification.
+- The R2 serial acquisition foundation must be split across E1 direct lineage, E2 controller/
+  recovery behavior, and E3 generated/stateful conformance. The retained WO-0149 record does not
+  authorize those changes. Until an exact successor candidate receives an explicit activation, no
+  runtime, persistent database, broker, credential, test-fixture, or M2 authority is granted.
 
 ## Rationale
 
@@ -144,3 +153,14 @@ Seam discipline is what makes the safety invariants structurally enforceable rat
   documentation/specification `WO-0149` after final independent exact-candidate preflight returned
   `ACCEPT` with no P0/P1. The new acquisition/cross-side semantics remain unimplemented and unwired;
   M2, persistence, runtime, broker, credentials, merge, deletion, and cleanup remain inactive.
+- 2026-08-05: Ameen ratified ADR-020 R2
+  eab0c18cc08539a0c2b1dbc6d61f6d2a0ff359d38b71e8d659cb1ff620513653 and ADR-021 R2
+  b2527dc5285137ef829211b293411e03168458d34b9d3dce96d04b521394c30c from REV-0056 R3 manifest
+  d2538dedb9f9eb05368eb892e83c7ae0dd2872ea0e991f5ee225c88f7ec4714c. The ratified design
+  requires serial direct acquisition-generation lineage and one aggregate controller. Three
+  successor work orders are DRAFT only; no R2 implementation, activation, runtime, persistence,
+  broker, credential, database, M2, merge, deletion, or cleanup authority was added.
+- 2026-08-05: Ameen formally superseded WO-0149 because the ratified R2 ADRs replace its
+  one-lifetime same-symbol premise. The record and all related material are retained as evidence;
+  WO-0150 through WO-0152 remain DRAFT/inactive. No implementation, test, database, runtime,
+  broker, credential, M2, merge, deletion, or cleanup authority was added.

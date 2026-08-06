@@ -117,6 +117,22 @@ required. The listed roadmap gates remain future implementation evidence obligat
 | `PA-05` bounded active/unresolved checkpoint plus immutable terminal closure ledger | `AR-05` terminal legs unbound the checkpoint | `13-proposed-adr-current-state-kernel.md` | M1/M2/M3 in `06-roadmap.md` | `AR-05` row in `07-war-game.md` |
 | `PA-06` trigger dedupe/formula, orthogonal exit wait, and late-fill recovery | `AR-06`, `AR-07`, `AR-08`, and `AR-09` | `14-proposed-adr-protection-execution.md` | M1/M3/M5 in `06-roadmap.md` | `AR-06`, `AR-07`, `AR-08`, and `AR-09` rows in `07-war-game.md` |
 
+## Ratified ADR-020/ADR-021 R2 successor record - 2026-08-05
+
+This R1 matrix and its source texts remain immutable historical provenance. The current complete
+replacements are canonical ADR-020 R2
+(eab0c18cc08539a0c2b1dbc6d61f6d2a0ff359d38b71e8d659cb1ff620513653) and ADR-021 R2
+(b2527dc5285137ef829211b293411e03168458d34b9d3dce96d04b521394c30c), ratified only at
+REV-0056 R3 manifest d2538dedb9f9eb05368eb892e83c7ae0dd2872ea0e991f5ee225c88f7ec4714c.
+They completely replace the ADR-020/ADR-021 R1 bodies while preserving accepted ADR-023 R1
+9a61d4f952079b5f78da7a8f1a17f70dc3099d20fb359596923c5938cc421eaf as the controlling
+market-occurrence overlay. See work/review/REV-0056/05-SUPERSESSION-AND-RECONCILIATION-MAP.md
+for the reviewed clause map.
+
+This successor record grants no work-order activation or implementation authority. The three M1E
+candidates may be drafted only; all persistence, database, runtime, broker, credential, M2, merge,
+deletion, and cleanup boundaries remain unchanged.
+
 ## Exact proposed ADR texts
 
 - [13-proposed-adr-current-state-kernel.md](13-proposed-adr-current-state-kernel.md)
