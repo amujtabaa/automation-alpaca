@@ -302,6 +302,7 @@ successor_cleanup:
   completed_filesystem_targets:
     fixture_roots_absent: 10
     root_cache_directories_absent: 55
+    manually_retired_unregistered_full_roots: 2
   retained_blocked_targets:
     worktree_remnants:
       count: 5
@@ -336,3 +337,17 @@ successor_cleanup:
       - "codex-signal-tests-staging: .pytest_cache unreadable; nonrecursive takeown /F returned Access is denied; root and branch retained."
       - "codex-wo-0114: .pytest_cache unreadable; nonrecursive takeown /F returned Access is denied; root and branch retained."
       - "codex-wo-0124: .pytest-tmp-review-138e389-core unreadable; nonrecursive takeown /F returned Access is denied; root and branch retained."
+  elevated_manual_retirement_update:
+    status: "TWO_ROOTS_RETIRED_THREE_STAGE_SERIAL_BATCH_AUTHORIZED"
+    user_session_evidence: "The user ran exact-root procedures in elevated local PowerShell after fresh per-root preflight and complete descendant inventory."
+    retired_roots:
+      - ".claude/worktrees/codex-lane2-bootstrap: DELETED after 989-item inventory; fallback branch codex/lane2-bootstrap retained at ea3f75cec2e93a51ca100a8e83a5e658a2630300 because normal git branch -d refused unmerged history."
+      - ".claude/worktrees/codex-lane2-docs: DELETED after 983-item inventory; fallback branch codex/lane2-docs retained at 088d9b5a026a1a5d977d834e00c4e73ba5acc9aa."
+    remaining_serial_batch:
+      targets:
+        - ".claude/worktrees/codex-signal-tests-staging"
+        - ".claude/worktrees/codex-wo-0114"
+        - ".claude/worktrees/codex-wo-0124"
+      execution: "One saved script with three explicit literal sequential stages; no loop or derived deletion root; full per-stage preflight and separate exact DELETE confirmation; stop before a later stage on any failure."
+      branch_action: "None. All five fallback branches are retained; no force delete or alternative branch-retirement mechanism is authorized."
+      prerequisite: "A documentation-only amendment commit must be pushed and its exact live reset ref must equal local HEAD before the batch begins."

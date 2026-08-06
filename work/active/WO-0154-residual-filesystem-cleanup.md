@@ -1,7 +1,7 @@
 ---
 type: Work Order
 title: "Residual filesystem cleanup: WO-0153 AccessDenied targets"
-status: REVIEW
+status: ACTIVE
 work_order_id: WO-0154
 wave: RESET-CLEANUP
 model_tier: strong
@@ -306,3 +306,47 @@ retry, process action, or broader access/deletion command followed any failure. 
 fallback branches remain present at their frozen tips. This is a partial environment-controlled
 outcome, not a closure: WO-0154 returns to `REVIEW` pending separately authorized access that can
 actually inspect and retire the protected cache children without weakening the other safety gates.
+
+## User-authorized serial-batch amendment
+
+The user expressly authorizes a single saved PowerShell script containing three **serial** stages
+for only these remaining literal roots:
+
+```text
+.claude/worktrees/codex-signal-tests-staging
+.claude/worktrees/codex-wo-0114
+.claude/worktrees/codex-wo-0124
+```
+
+This amendment changes sequencing only. It neither adds a target nor relaxes an existing per-root
+gate. The script must use three explicit literal stage bodies: no loop, filesystem enumeration to
+derive a target, wildcard, variable-derived `Remove-Item` root, or parent-directory operation is
+allowed. Before each stage it must independently reconfirm the exact local/live reset head, clean
+main Git baseline, frozen fallback tip, registration absence, canonical containment, untracked
+state, negative reparse result, complete descendant inventory, and unchanged final inventory. Each
+stage must pause for its own exact `DELETE <branch>` confirmation. A failed gate, access repair,
+sharing conflict, reparse result, content change, or deletion failure stops the entire script before
+the next stage.
+
+The scope for access repair remains unchanged: only the named immediate cache child for the current
+literal target, only after its own checks, using nonrecursive `takeown.exe /F` and non-inheriting
+`icacls` for the current user. The batch grants no ownership/ACL action outside that child and no
+operation on `.git/worktrees`, remote refs, fixture/root-cache targets, application/test, database,
+runtime, broker, credential, M2, merge, or other cleanup target.
+
+The serial batch must not run any branch-deletion command. The first normal `git branch -d` attempt
+for `codex/lane2-bootstrap` correctly refused an unmerged branch; the fallback branches are retained
+at their frozen tips. This amendment grants neither a force delete nor a replacement branch-retirement
+mechanism. A later branch disposition requires separate authority and provenance proof.
+
+## Execution checkpoint - elevated manual retirement update
+
+After the previously recorded sandbox access-gate failure, the user ran the exact-root procedure in
+an elevated local PowerShell session. Both `.claude/worktrees/codex-lane2-bootstrap` and
+`.claude/worktrees/codex-lane2-docs` passed fresh root-specific preflight and complete descendant
+inventory, then were removed by their explicit literal `Remove-Item` commands. The first contained
+989 inventoried items and the second 983. The main worktree's tracked and staged diffs remained
+empty, both matching local fallback refs remained at their frozen tips, and Git still registered only
+the main reset worktree. No branch was deleted: the bootstrap normal delete refused because it was
+unmerged, and the docs procedure intentionally retained its branch. These are actual root retirements,
+not evidence that the earlier sandbox `takeown` result was wrong.

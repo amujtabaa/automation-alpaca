@@ -163,3 +163,25 @@ fable_manual_retirement:
   prohibited_or_broadened_operations: false
   status: REVIEW
 ```
+
+## Elevated manual-retirement update and serial-batch amendment
+
+The earlier access-gate result is retained as historical environment evidence. It was followed by
+two independently rerun exact-root procedures in the user's elevated local PowerShell session:
+
+| Remnant | Fresh complete inventory | Root result | Fallback branch result |
+|---|---:|---|---|
+| `.claude/worktrees/codex-lane2-bootstrap` | 989 items | `DELETED` | Retained at `ea3f75cec2e93a51ca100a8e83a5e658a2630300`; normal `git branch -d` refused because the branch is unmerged. |
+| `.claude/worktrees/codex-lane2-docs` | 983 items | `DELETED` | Retained at `088d9b5a026a1a5d977d834e00c4e73ba5acc9aa`; no branch-delete command ran. |
+
+Local postcondition checks confirm both exact roots are absent, the two fallback refs remain at the
+listed frozen tips, the main worktree's tracked/staged/status baselines are clean, and Git registers
+only the main reset worktree. No force branch deletion, remote operation, worktree metadata change,
+or wider cleanup occurred.
+
+The user then authorized one saved-script serial batch for the three remaining fixed roots:
+`.claude/worktrees/codex-signal-tests-staging`, `.claude/worktrees/codex-wo-0114`, and
+`.claude/worktrees/codex-wo-0124`. It must contain three explicit literal stages, pause for a
+separate exact confirmation at each stage, rerun every per-root gate, and stop before a later stage
+if any earlier stage fails. It adds no branch deletion; all fallback refs remain retained. A fresh
+documentation-only exact-live baseline is required before that batch starts.

@@ -63,8 +63,14 @@ absence. It does not authorize a branch force-delete, remote operation, metadata
 fixture/cache retry, or any product work.
 That manual pass reached the required access gate on all five rows but could not read the named
 protected cache child or obtain its ownership with the only authorized nonrecursive command. No
-full-tree or branch deletion was therefore eligible. WO-0154 is back in `REVIEW` as
-`PARTIAL CLEANUP - ACCESS REPAIR FAILED`; the five roots and branches remain retained.
+full-tree or branch deletion was therefore eligible. WO-0154 returned to `REVIEW` as
+`PARTIAL CLEANUP - ACCESS REPAIR FAILED`.
+In a later elevated, exact-root pass, `.claude/worktrees/codex-lane2-bootstrap` and
+`.claude/worktrees/codex-lane2-docs` were independently retired after fresh complete inventories;
+all five local fallback branches remain retained at their frozen tips. The user has authorized only
+one three-stage, stop-on-first-failure serial batch for the remaining three literal roots. Every
+stage retains the per-root preflight and confirmation requirements; no branch force-delete, remote
+operation, metadata change, product work, or other cleanup target is authorized.
 
 ## Rules / facts
 

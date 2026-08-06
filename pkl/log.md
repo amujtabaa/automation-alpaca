@@ -209,3 +209,12 @@
   cache child denied listing/ACL inspection and the only authorized `takeown /F` returned `Access is
   denied`. No `icacls`, full-tree deletion, prune, branch deletion, metadata operation, or broader
   access/deletion retry ran. WO-0154 returns to REVIEW with `PARTIAL CLEANUP - ACCESS REPAIR FAILED`.
+- 2026-08-06: In later elevated local PowerShell procedures with fresh exact-root preflight and
+  complete inventories, the user retired only `.claude/worktrees/codex-lane2-bootstrap` (989 items)
+  and `.claude/worktrees/codex-lane2-docs` (983 items). Local postchecks confirm both paths absent,
+  their frozen fallback refs retained, clean main Git baselines, and only the main reset worktree
+  registered. The bootstrap normal `git branch -d` correctly refused unmerged history; no force
+  deletion was used. The user then authorized only a three-stage serial batch for the remaining
+  literal roots `codex-signal-tests-staging`, `codex-wo-0114`, and `codex-wo-0124`: each stage must
+  repeat the full root-specific gate and exact confirmation, and a failure stops later stages. No
+  branch deletion, remote action, metadata change, or product work is added.
