@@ -126,8 +126,6 @@ class GenerationRouteView:  # opaque/read-only
     route_kind: GenerationRouteKind
     source_commitment: bytes
     generation_id: AcquisitionGenerationId
-    economics_head_commitment: bytes
-    serving_class: GenerationServingClass
 
 class GenerationRegistry:  # opaque/non-enumerable
     @classmethod
@@ -159,11 +157,16 @@ the views and direct lookups above.
 
 VenueAcquisitionCorrelation and VenueRecoveryBook.acquisition_correlation are the sole E1 venue
 bridge. The query verifies request/effect ownership directly; when leg_key is supplied it verifies
-the exact owner; when root_key is supplied it verifies the exact direct root-to-coverage-to-owner
-chain and rejects a mismatch. It returns the canonical leg when the direct root mapping proves one.
-It preserves the exact application generation and position scope, exposes no book/private map,
-and never enumerates an audit collection. No other acquisition module access to venue private
-fields or audit readers is permitted.
+the exact owner; when root_key is supplied it verifies the exact direct root-to-owner chain and
+rejects a mismatch. It returns the canonical leg when the root mapping proves one. The bridge is
+backed by one private direct RootFillKey-to-immutable-correlation map in VenueRecoveryBook. Every
+canonical broker root accepted for E1 correlation, including broker-correlated human coverage,
+must have exactly one entry in that map. The entry contains only the immutable
+request/effect/leg/root provenance; current economics remain in ExecutionSnapshot root heads.
+The query must use the direct request/effect, owner, and root maps only; it must not call
+_current_effect or inspect effective state. It preserves the exact application generation and
+position scope, exposes no book/private map, and never enumerates an audit collection. No other
+acquisition module access to venue private fields or audit readers is permitted.
 
 ## State ownership and invariants
 
@@ -173,10 +176,12 @@ commitment. A record contains no root/effect/owner/fact map, recursive predecess
 audit collection, or controller state.
 
 AcquisitionLineageIndex has separately keyed immutable bindings for each accepted request,
-effect, owner, root, and canonical fact/revision. A route binds one exact key to one exact
-generation and its exact current economics-head commitment. A missing or mismatched request,
-effect, owner, root, fact, scope, application generation, or source commitment returns no route
-or a reconciliation-only result—never the current symbol/generation as a fallback.
+effect, owner, root, and canonical fact/revision. A stored route contains only route kind, source
+commitment, and exact AcquisitionGenerationId. It never stores a mutable economics head or serving
+class. To obtain current generation state, a consumer first performs exactly one direct route lookup
+and then exactly one direct GenerationRegistry.record(route.generation_id) lookup. A missing or
+mismatched route or record is reconciliation-only; there is never a current-symbol/generation
+fallback.
 
 A valid late first-occurrence FILL, predecessor-linked TRADE_CORRECT, or predecessor-linked
 TRADE_BUST for retired A may update A's own record/head exactly once after its direct route is
@@ -185,7 +190,9 @@ choice. Actual controller-head advancement, staleness/preemption, aggregate econ
 protection classification are explicit E2 obligations.
 
 All direct lookups are bounded. The registry grows only once per genuine generation, and the
-lineage index grows only once per immutable accepted binding. Neither growth enters the future
+lineage index grows only once per immutable accepted binding. A late fact updates one registry
+record and may append its one new fact route; it must never rewrite, replace, or iterate existing
+request/effect/owner/root routes for that generation. Neither growth enters the future
 constant-size controller, and no E1 live decision traverses retired records, predecessor links,
 or audit history.
 
@@ -205,14 +212,18 @@ authority.
    mutation.
 3. **Direct immutable routing.** A serial A → B → C fixture binds request/effect/owner/root/fact
    values once. A late A fill, correction, and bust each resolve directly to A; a duplicate is
-   idempotent; B/C routes and classifications remain unchanged.
+   idempotent; B/C routes and classifications remain unchanged. The route returns A's immutable
+   id, and one direct registry lookup returns A's newly changed head/class.
 4. **No fallback.** Missing, ambiguous, cross-scope, mismatched-order, mismatched-owner, or
    unbound root/revision returns no serving route and cannot resolve to B merely because B is
    current for the same symbol.
 5. **Boundedness.** A long serial fixture retains the earliest route while poisoned audit views,
    history materializers, predecessor traversal, and registry/lineage iteration fail if touched.
-   The test pins constant controller-shaped input and one-record/one-lookup work, not an
-   unrealistic claim of constant total retained storage.
+   A many-route A fixture then applies one late A correction and one late A bust while route
+   replacement/iteration traps fail if touched; it proves that only A's record changes, a direct
+   registry join returns the new A head/class, and B/C remain unchanged. The test pins constant
+   controller-shaped input and one-record/one-lookup work, not an unrealistic claim of constant
+   total retained storage.
 6. **Projection discipline.** Views are immutable and schema-neutral; they expose no private map,
    registrar, constructor capability, callable, mutable record, or missing required commitment.
 7. **Boundary discipline.** Static controls reject imports of authority.py, protection.py,
@@ -221,9 +232,10 @@ authority.
    public-surface oracle must agree.
 
 Named mutation controls must fail if they omit a coordinate, permit ordinal wrap, map a missing
-root to current B, replace a routed A with B, skip exact root/fact/owner equality, allow raw
-caller-built binding data into the registry, access an audit materializer, or export a mutation
-or enumeration capability.
+root to current B, replace a routed A with B, copy mutable A state into a route, rewrite A's old
+routes after a late fact, skip exact root/fact/owner equality, omit a broker-correlated human root
+from the direct root-correlation map, allow raw caller-built binding data into the registry, access
+an audit materializer, or export a mutation or enumeration capability.
 
 ## Acceptance and stop rules
 
