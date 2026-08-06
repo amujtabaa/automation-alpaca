@@ -48,6 +48,21 @@ fable_fix:
   attempt: 1
 ```
 
+## Focused procedure correction — fixture-root final removal
+
+The first verified fixture pass removed every expected leaf and nested chain directory but stopped at the ten exact empty fixture roots. The cause was a bottom-up list that omitted the root itself. Read-only inventory confirmed every retained root is an exact non-reparse empty directory and Git status is clean; no parent was touched. The corrected procedure appends the exact verified root as the final bottom-up component. This is narrower than the prior operation and is not recursive.
+
+```yaml
+fable_fix:
+  symptom: "All ten fixture target roots remained empty after their verified leaves and descendants were removed."
+  root_cause: "The bottom-up deletion list contained only descendants, not the exact target root."
+  evidence: "Post-pass literal inventory: ten directories, each non-reparse with child_count=0; git status clean."
+  fix: "Verify and remove the exact empty fixture root as the final literal component."
+  regression_test: "Per-root postcondition: Test-Path -LiteralPath <exact-root> is false."
+  red_green_verified: true
+  attempt: 2
+```
+
 ```yaml
 evidence:
   phase: MANUAL_QA

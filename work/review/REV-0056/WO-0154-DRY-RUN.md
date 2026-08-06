@@ -14,7 +14,7 @@ Potential permission components, in order: the literal root, then the five liter
 
 If ownership is needed, its sole permitted syntax is `takeown.exe /F <exact-current-component>`: neither `/D` nor `/R` is permitted. If the recorded owner already equals `whoami`, ownership is a no-op.
 
-Planned deletion actions: verify the sole leaf name/size/SHA; delete that literal leaf; then remove each verified empty literal directory bottom-up. The fixture parent is never removed.
+Planned deletion actions: verify the sole leaf name/size/SHA; delete that literal leaf; then remove each verified empty literal directory bottom-up, ending with the exact fixture root. The fixture parent is never removed.
 
 ## Root caches (55)
 
