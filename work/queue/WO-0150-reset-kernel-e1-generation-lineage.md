@@ -42,10 +42,10 @@ this serial-generation scope.
 
 ## Goal
 
-Create only the direct, immutable lineage needed to route each acquisition-owned root, effect, and
-owner to exactly one reducer-minted AcquisitionGenerationId and its own current economics head.
-This slice must make a retired generation's later fact resolvable without a history scan while
-remaining policy-free.
+Create only the deterministic, replay-stable, direct lineage needed to route each acquisition-owned
+request occurrence, effect, venue owner, canonical root, and revision to exactly one reducer-minted
+AcquisitionGenerationId and its own current economics head. This slice must make a retired
+generation's later fact resolvable without a history scan while remaining policy-free.
 
 ## Context packet at activation
 
@@ -58,26 +58,52 @@ remaining policy-free.
 
 ## Functional requirements for a future RED contract
 
-- FR-01: The reducer MUST mint an opaque AcquisitionGenerationId only from authenticated complete
-  dual-mandate authority in one exact PositionScope.
-- FR-02: Each acquisition root, effect, and venue owner MUST bind directly and immutably to exactly
-  one generation. Missing, reused, forked, ambiguous, caller-shaped, or cross-scope bindings MUST
-  refuse without mutation.
-- FR-03: A bounded GenerationRegistry MUST retain each generation's identity, immutable binding,
-  serving/retired classification, and direct current-economics head. It MUST NOT derive routing by
-  scanning effects, owners, terminal closures, tombstones, or audit history.
-- FR-04: A valid late FILL, TRADE_CORRECT, or TRADE_BUST for retired generation A MUST update only
-  A's direct economics head once under the existing fact-truth rules. It MUST NOT recreate BUY
-  authority or credit a later generation B.
-- FR-05: The public relation projection MUST remain opaque and reducer-authenticated; raw strings,
-  copied commitments, private accessors, and neutral transitions MUST NOT manufacture lineage.
-- FR-06: This slice MUST NOT create a controller, successor admission, protection policy, final
-  claim behavior, emergency compatibility, market-stream handling, persistence, or runtime behavior.
+- FR-01: AcquisitionGenerationId MUST be opaque, deterministic, replay-stable, and reducer-minted
+  from exactly one authenticated identity coordinate: ApplicationGenerationId, exact PositionScope,
+  monotone successor ordinal, complete DualMandateBinding, the exact predecessor controller head or
+  authenticated canonical first-controller genesis head, and the approved
+  EmergencyRecoveryCompatibility commitment. Changing any coordinate MUST change the identity;
+  replaying the same authenticated coordinate MUST reproduce it exactly.
+- FR-02: Randomness, clocks, caller input, copied commitments, wrapping, reuse, generation reset, or
+  a substitute predecessor/genesis head MUST NOT mint or manufacture identity. Missing, duplicate,
+  forked, exhausted, noncanonical, cross-scope, or out-of-order ordinals MUST fail closed without
+  wraparound, widening, or mutation.
+- FR-03: E1 MAY carry the predecessor/genesis-head and EmergencyRecoveryCompatibility commitments as
+  opaque identity coordinates. It MUST NOT interpret compatibility, decide first-controller or
+  successor admission, create or mutate a controller, or implement policy; those decisions belong
+  exclusively to E2.
+- FR-04: Every accepted acquisition request occurrence, effect, venue owner, canonical root, and
+  predecessor-linked FILL, TRADE_CORRECT, or TRADE_BUST revision MUST bind directly and immutably to
+  exactly one generation and its current economics head. Missing, reused, forked, ambiguous,
+  caller-shaped, or cross-scope bindings MUST refuse without fallback to a current generation.
+- FR-05: GenerationRegistry MUST grow only with genuine reducer-minted generations and MUST never
+  evict immutable identity or routing history. Each directly keyed GenerationRecord MUST remain
+  bounded and include immutable provenance/binding, one replaceable predecessor-linked economics
+  head, serving classification, and a bounded closure summary. Root/effect/owner lookup MUST be
+  total and direct for every retained generation.
+- FR-06: The future constant-size SymbolAcquisitionController live state, each GenerationRecord,
+  and each individual lookup MUST remain bounded. No live decision may scan or materialize retired
+  generations, effects, owners, closures, predecessor chains, tombstones, or audit history. Registry
+  cardinality may grow once per genuine generation because retained fact routing is permanent
+  authority; that growth MUST NOT become controller live state or transition work.
+- FR-07: A valid late FILL, TRADE_CORRECT, or TRADE_BUST for retired generation A MUST update only
+  A's direct economics head exactly once under the existing fact-truth rules. It MUST NOT recreate
+  BUY authority, credit a later generation, reopen A, or infer policy.
+- FR-08: The public relation and read projection MUST be narrow, immutable, read-only,
+  reducer-authenticated, and schema-neutral. It MAY expose only the exact generation identity,
+  scope/binding and direct lineage commitments, current economics-head commitment, serving class,
+  and bounded closure summary needed by future persistence or adapter correlation. It MUST grant no
+  authority constructor, persistence behavior, private dependency, or mutable registry access.
+- FR-09: Raw strings, caller-built objects, copied commitments, private accessors, unrelated neutral
+  transitions, and test-only seams MUST NOT manufacture a generation, relation, or read projection.
+- FR-10: This slice MUST NOT create controller admission, protection policy, final-claim behavior,
+  compatibility policy, market-stream handling, persistence, or runtime behavior.
 
 ## Non-functional and safety requirements
 
-- NFR-01: Routing work and retained live state MUST be bounded by direct current indexes, never
-  audit-history length.
+- NFR-01: Routing work and controller live state MUST be constant in retired-generation and audit-
+  history length. Permanent registry storage may grow only with genuine generations, while every
+  record and direct lookup remains bounded.
 - NFR-02: The reducer MUST remain deterministic, I/O-free, and compatible with the existing
   single-writer/fill-truth safety core.
 - NFR-03: No new broker effect or exposure-increasing authority may be introduced.
@@ -85,23 +111,35 @@ remaining policy-free.
 ## Future data and interface freeze
 
 The future RED artifact may propose opaque AcquisitionGenerationId, GenerationBinding,
-GenerationEconomicsHead, and authenticated lineage projection types. Exact public names and
-signatures freeze only in that reviewed RED artifact. This draft does not reserve an implementation
-shape or create an API.
+GenerationEconomicsHead, bounded GenerationRecord/GenerationRegistry contracts, and authenticated
+lineage/read projection types. The read projection must remain schema-neutral and authority-free;
+it is the future M2/M4 correlation boundary, not persistence or an adapter. Exact public names,
+field order, encodings, exhaustion behavior, and signatures freeze only in that reviewed RED
+artifact. This draft does not create an API.
 
 ## Future RED controls and acceptance criteria
 
-- AC-01 / FR-01 to FR-04: Given serial A then B then C lineage, when a late valid A fill,
-  correction, or bust arrives, then it resolves through A's direct binding/head exactly once and
-  cannot affect B or C capacity.
-- AC-02 / FR-02: Given a missing, reused, forked, copied, caller-built, cross-scope, or ambiguous
-  binding, when it is presented, then the transition refuses with no economic or authority change.
-- AC-03 / FR-03: Instrumented effects, owners, closures, and history materializers MUST fail if
-  lineage routing touches them.
-- AC-04 / FR-04: Given a retired A, when its valid fact arrives, then A economics update while A
+- AC-01 / FR-01-FR-02: Literal known-answer controls MUST prove exact deterministic identity and
+  replay for canonical first and successor coordinates. Changing each coordinate independently
+  MUST change identity. Random, clock, caller, copied, wrapped, reused, missing, forked,
+  cross-scope, out-of-order, or exhausted inputs MUST refuse for the intended reason.
+- AC-02 / FR-04-FR-07: Given serial A then B then C lineage, when a late valid A fill, correction,
+  or bust arrives, then it resolves through A's direct binding/head exactly once, remains routed to
+  A after retirement, and cannot affect B or C capacity.
+- AC-03 / FR-04/FR-09: Given a missing, reused, forked, copied, caller-built, cross-scope, or
+  ambiguous binding or relation, when it is presented, then the transition refuses with no
+  economic or authority change and no current-generation fallback.
+- AC-04 / FR-05-FR-06: Instrumented retired-generation, effect, owner, closure, predecessor, and
+  history materializers MUST fail if direct routing touches them. A long generation sequence MUST
+  keep controller-shape and per-record work constant while retaining direct lookup for its earliest
+  generation.
+- AC-05 / FR-07: Given retired A, when its valid fact arrives, then A economics update while A
   remains non-serving and no BUY effect becomes eligible.
-- AC-05 / FR-06: A named mutation that imports or invokes protection/controller/claim semantics
-  from E1 MUST fail a scope or behavior control.
+- AC-06 / FR-08: Public-surface and round-trip controls MUST pin the authority-free, schema-neutral
+  projection and reject mutable/private fields, authority constructors, or loss of a required
+  commitment.
+- AC-07 / FR-03/FR-10: Named mutations that interpret compatibility or invoke controller,
+  protection, successor-admission, or claim semantics from E1 MUST fail a scope or behavior control.
 
 ## Activation-time allowed paths
 
@@ -147,8 +185,9 @@ controls, focused tests, static/scope/import/type checks, fresh independent revi
 evidence within separately granted authority.
 
 Stop and return to planning if the requirement needs a history scan, caller-shaped authority,
-cross-side policy, a public-contract break, persistence/runtime work, or a second live-generation
-model. Completion must retain a concise evidence/result record and cannot activate E2.
+compatibility/admission policy in E1, cross-side policy, a public-contract break,
+persistence/runtime work, or a second live-generation model. Completion must retain a concise
+evidence/result record and cannot activate E2.
 
 ## Expected completion disposition
 

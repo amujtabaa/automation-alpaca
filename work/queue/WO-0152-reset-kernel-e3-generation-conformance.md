@@ -42,9 +42,10 @@ this serial-generation scope.
 
 ## Goal
 
-Establish generated, stateful, replay, boundedness, and mutation evidence for the ratified E1/E2
-serial generation semantics. E3 adds confidence only. It must not add a production capability or
-absorb an implementation defect found in the prior semantic centers.
+Establish cross-product, stateful, replay/restart-model, long-sequence, boundedness, and mutation
+confidence for the ratified E1/E2 serial-generation semantics. E3 adds confidence only. Complete
+base RED/GREEN proof belongs to E1 and E2; E3 must not defer it, add production capability, or
+absorb an implementation defect found in those semantic centers.
 
 ## Context packet at activation
 
@@ -55,21 +56,41 @@ absorb an implementation defect found in the prior semantic centers.
 
 ## Functional requirements for a future RED contract
 
-- FR-01: Generated A/B/C traces MUST cover a late A FILL, TRADE_CORRECT, and TRADE_BUST before
-  and after B first fill, including duplicate, reorder, replay, fork, stale-head, and cross-scope
-  variants.
-- FR-02: Stateful/replay controls MUST prove one aggregate economic delta per valid canonical
-  fact, at most one LIVE generation/controller/normal protection authority, generation-local
-  capacity, and final-claim refusal when the controller head is stale.
-- FR-03: Failure-capable mutants MUST remove each decisive condition in turn: direct lineage
-  equality, controller-head advance, one-LIVE uniqueness, exact emergency-compatibility equality,
-  generation-local capacity, and bounded direct lookup. Each removal MUST fail a named control.
-- FR-04: Boundedness probes MUST refuse materialization or traversal of audit history, effects,
-  owners, closure collections, or predecessor walks for live authority decisions.
-- FR-05: Restart/hydration model checks MAY prove pure in-memory serialization/replay semantics
-  only. Persistent-database, crash, and broker recovery claims remain deferred to M2 or later.
-- FR-06: If E3 exposes a production defect, E3 MUST stop and return a bounded remediation to the
-  owning E1 or E2 semantic center. E3 MUST NOT make production changes.
+- FR-01: E1/E2 closeout evidence MUST already prove every base functional requirement with
+  failure-capable RED controls. E3 MUST consume those frozen public contracts and evidence; it MUST
+  NOT become the first or only proof of identity, admission, routing, economics, controller,
+  protection, currentness, claim, or boundedness behavior.
+- FR-02: Deterministic generated A/B/C traces MUST include first-controller genesis with unrelated-
+  symbol account history and late A FILL, TRADE_CORRECT, and TRADE_BUST around successor creation,
+  first fill, and final claim. Cross-product variants MUST include duplicate, reorder, exact replay,
+  fork, stale-head, stale ordinal, changed payload, cross-scope, incompatible, and unsafe-genesis or
+  unsafe-successor inputs.
+- FR-03: Stateful/replay controls MUST prove one generation-local economics update and exactly one
+  aggregate economic delta per valid canonical fact, at most one LIVE generation/controller/normal
+  protection authority, generation-local capacity, controller-head invalidation, and final-claim
+  refusal when currentness is stale.
+- FR-04: Restart/hydration model verification is mandatory but schema-neutral and pure. It MUST
+  round-trip the frozen public E1/E2 durable projections and replay deterministic traces, and MUST
+  fail closed for missing, duplicate, forked, stale, inconsistent, cross-scope, or ambiguously
+  mapped generation/root/effect/owner/controller state. It MUST NOT use private object snapshots as
+  authority or claim real database, crash, adapter, or broker recovery.
+- FR-05: Long-sequence boundedness probes MUST preserve direct routing to earliest and current
+  generations while refusing materialization or traversal of retired generations, audit history,
+  effects, owners, closure collections, predecessor chains, or unbounded hydration input for live
+  authority decisions. Controller live shape and per-record/per-transition work MUST remain bounded.
+- FR-06: Failure-capable mutants MUST remove each decisive condition in turn, including identity
+  coordinate binding, direct lineage equality, genesis/successor head and ordinal checks,
+  controller-head advance, one-LIVE uniqueness, aggregate exactly-once application, emergency-
+  compatibility equality, generation-local capacity, hydration-map consistency, and bounded direct
+  lookup. Each removal MUST fail a named control for its intended reason.
+- FR-07: E3 closeout MUST produce an M1-to-M2 handoff that lists frozen public interfaces, a
+  schema-neutral durable field/projection map, the one composite atomic transition boundary,
+  evidence and killed mutations, and deferred obligations for M2 database/crash recovery, M4
+  broker correlation, and M7/M8 controller observation. It MUST NOT claim database/runtime, M2,
+  master-landing, or complete-M1 readiness.
+- FR-08: If E3 exposes a production defect, E3 MUST stop and return a bounded remediation to the
+  owning E1 or E2 semantic center. E3 MUST NOT make production changes or hide the defect in its
+  model, fixture, or oracle.
 
 ## Non-functional and safety requirements
 
@@ -81,24 +102,33 @@ absorb an implementation defect found in the prior semantic centers.
 
 ## Future test and data contract
 
-The activation-time RED artifact may define test-only trace builders, model-state projections,
-instrumented boundedness fakes, and mutation targets. It must consume frozen E1/E2 public
-interfaces; no private accessor or test-only production seam is allowed. Exact test names and
-seeds freeze in that artifact, not in this draft.
+The activation-time RED artifact may define test-only trace builders, a specification model,
+schema-neutral round-trip codecs owned entirely by tests, instrumented boundedness fakes, and
+mutation targets. It must consume frozen E1/E2 public interfaces and projections; no private
+accessor, private-state snapshot, caller-shaped authority, production test seam, database fixture,
+or schema is allowed. Exact scenario matrices, test names, seeds, round-trip fields, and mutation
+owners freeze in that artifact, not in this draft.
 
 ## Future RED controls and acceptance criteria
 
-- AC-01 / FR-01: Given generated serial traces, when late old-generation facts occur around
-  successor creation, first fill, and final claim, then the model and implementation agree on exact
-  economics, serving state, and recovery disposition.
-- AC-02 / FR-02: Given every reachable lifecycle transition, when replayed or duplicated, then
-  all one-controller/one-LIVE/current-head/capacity invariants remain true.
-- AC-03 / FR-03: Each named mutation MUST make its assigned control fail for the intended reason.
-- AC-04 / FR-04: Every instrumented prohibited collection MUST fail if live authority traverses it.
-- AC-05 / FR-05: Pure restart/hydration traces MUST prove only the in-memory contract and label
-  database/crash recovery as deferred.
-- AC-06 / FR-06: A deliberately injected production discrepancy MUST cause the test-only campaign
-  to stop with a bounded E1/E2 remediation recommendation, not a production edit.
+- AC-01 / FR-01: The E3 preflight MUST inventory the exact E1/E2 requirement-to-test map and stop
+  if any base behavior lacks a failure-capable owning-slice control; E3 cannot waive or backfill it.
+- AC-02 / FR-02-FR-03: Given deterministic genesis and A-B-C traces, when late old-generation facts
+  occur around creation, first fill, and final claim under duplicate/reorder/replay/fork/stale/
+  cross-scope variants, then the model and implementation agree on exact generation economics,
+  one aggregate delta, controller currentness, serving state, claim refusal, and recovery class.
+- AC-03 / FR-04: Public-projection round-trip and restart replay MUST preserve exact decisions.
+  Missing, duplicate, forked, stale, inconsistent, or cross-scope durable mappings MUST become
+  non-serving/refused and MUST NOT fall back to current or caller-provided authority.
+- AC-04 / FR-05: A long serial run MUST retain direct earliest-generation routing while keeping
+  controller shape and per-transition work bounded. Every instrumented prohibited collection or
+  predecessor traversal MUST fail if a live decision touches it.
+- AC-05 / FR-06: Each named mutation MUST make its assigned control fail for the intended reason
+  and restore the exact candidate cleanly.
+- AC-06 / FR-07: The handoff MUST explicitly separate pure M1 proof from M2 database/crash, M4
+  correlation, M7/M8 observation, runtime, master-landing, and final-M1 gates.
+- AC-07 / FR-08: A deliberately injected production discrepancy MUST cause the test-only campaign
+  to stop with a bounded E1/E2 remediation recommendation, not a production edit or oracle change.
 
 ## Activation-time allowed paths
 
@@ -147,8 +177,9 @@ Closeout requires the named mutation/boundedness/stateful evidence, static/scope
 independent review, and only separately authorized broader gates.
 
 Stop if the proof requires production API changes, database creation, broker access, a runtime
-fixture, an unbounded trace model, or a new architecture decision. Return any implementation
-finding to E1/E2 rather than broadening E3.
+fixture, an unbounded trace/hydration model, private-state authority, or a new architecture
+decision. Return any implementation finding to E1/E2 rather than broadening E3. E3 closeout cannot
+declare complete M1, master landing, or M2 readiness.
 
 ## Expected completion disposition
 
