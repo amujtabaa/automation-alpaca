@@ -163,6 +163,36 @@ class MarketStreamGenerationId(_ExactIdentity):
         )
 
 
+@dataclass(frozen=True, slots=True)
+class AcquisitionGenerationId(_ExactIdentity):
+    """Exact immutable identity of one serial acquisition generation.
+
+    This is an opaque value only.  Admission, controller currentness, and all
+    effect authority remain outside E1.
+    """
+
+    _bytes: bytes = field(init=False, repr=False)
+    _seal: bytes = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        _ExactIdentity.__post_init__(self)
+        if len(self.value) != 64 or any(
+            character not in "0123456789abcdef" for character in self.value
+        ):
+            raise ValueError(
+                "acquisition generation identity must be lowercase SHA-256 "
+                "hexadecimal text"
+            )
+        decoded = bytes.fromhex(self.value)
+        encoded = self.value.encode("ascii")
+        object.__setattr__(self, "_bytes", decoded)
+        object.__setattr__(
+            self,
+            "_seal",
+            sha256(int.to_bytes(len(encoded), 8, "big") + encoded + decoded).digest(),
+        )
+
+
 def _market_identity_is_canonical(
     value: MarketOccurrenceId | MarketStreamGenerationId,
 ) -> bool:
@@ -185,6 +215,35 @@ def _market_identity_is_canonical(
             int.to_bytes(len(value.value.encode("ascii")), 8, "big")
             + value.value.encode("ascii")
             + value._bytes
+        ).digest()
+    )
+
+
+def _acquisition_generation_id_is_canonical(
+    value: AcquisitionGenerationId,
+) -> bool:
+    """Re-derive the complete text, byte-cache, and seal relationship."""
+
+    if type(value) is not AcquisitionGenerationId:
+        return False
+    try:
+        text = value.value
+        decoded = value._bytes
+        seal = value._seal
+    except AttributeError:
+        return False
+    return (
+        type(text) is str
+        and type(decoded) is bytes
+        and len(decoded) == 32
+        and text == decoded.hex()
+        and type(seal) is bytes
+        and len(seal) == 32
+        and seal
+        == sha256(
+            int.to_bytes(len(text.encode("ascii")), 8, "big")
+            + text.encode("ascii")
+            + decoded
         ).digest()
     )
 

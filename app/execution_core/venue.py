@@ -856,6 +856,97 @@ class VenueIdentityOwner:
         return self.effect_scope.effect_id
 
 
+def _acquisition_correlation_commitment(
+    application_generation_id: ApplicationGenerationId,
+    position_scope: PositionScope,
+    request_occurrence_id: RequestOccurrenceId,
+    effect_id: EffectId,
+    leg_key: VenueLegKey | None,
+    root_key: RootFillKey | None,
+) -> bytes:
+    return _commit_parts(
+        b"execution-core/venue-acquisition-correlation/v1",
+        _encode_text(application_generation_id.value),
+        _position_scope_index_key(position_scope),
+        _request_occurrence_index_key(request_occurrence_id),
+        _effect_index_key(effect_id),
+        (
+            _leg_index_key(leg_key)
+            if leg_key is not None
+            else _commit_parts(
+                b"execution-core/venue-acquisition-correlation/no-leg/v1"
+            )
+        ),
+        (
+            _coverage_root_index_key(root_key)
+            if root_key is not None
+            else _commit_parts(
+                b"execution-core/venue-acquisition-correlation/no-root/v1"
+            )
+        ),
+    )
+
+
+@dataclass(frozen=True, slots=True, init=False)
+class VenueAcquisitionCorrelation:
+    """Read-only direct provenance bridge for a venue-owned broker root."""
+
+    application_generation_id: ApplicationGenerationId = field(init=False)
+    position_scope: PositionScope = field(init=False)
+    request_occurrence_id: RequestOccurrenceId = field(init=False)
+    effect_id: EffectId = field(init=False)
+    leg_key: VenueLegKey | None = field(init=False)
+    root_key: RootFillKey | None = field(init=False)
+    correlation_commitment: bytes = field(init=False)
+    _seal: bytes = field(init=False, repr=False)
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise TypeError("VenueAcquisitionCorrelation is reducer-constructed only")
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        del cls, kwargs
+        raise TypeError("VenueAcquisitionCorrelation cannot be subclassed")
+
+
+@dataclass(frozen=True, slots=True)
+class _AcquisitionCorrelationEntry:
+    """Private immutable root provenance retained by the venue reducer."""
+
+    application_generation_id: ApplicationGenerationId
+    position_scope: PositionScope
+    request_occurrence_id: RequestOccurrenceId
+    effect_id: EffectId
+    leg_key: VenueLegKey
+    root_key: RootFillKey
+
+    def __post_init__(self) -> None:
+        for name, value, expected in (
+            (
+                "application_generation_id",
+                self.application_generation_id,
+                ApplicationGenerationId,
+            ),
+            ("position_scope", self.position_scope, PositionScope),
+            ("request_occurrence_id", self.request_occurrence_id, RequestOccurrenceId),
+            ("effect_id", self.effect_id, EffectId),
+            ("leg_key", self.leg_key, VenueLegKey),
+            ("root_key", self.root_key, RootFillKey),
+        ):
+            _require(name, value, expected)
+
+    @property
+    def commitment(self) -> bytes:
+        return _acquisition_correlation_commitment(
+            self.application_generation_id,
+            self.position_scope,
+            self.request_occurrence_id,
+            self.effect_id,
+            self.leg_key,
+            self.root_key,
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class VenueAttempt:
     leg_key: VenueLegKey
@@ -1887,6 +1978,9 @@ class VenueRecoveryBook:
     _owner_by_leg: _PersistentKeyMap[VenueIdentityOwner] = field(
         default_factory=_PersistentKeyMap.empty
     )
+    _acquisition_correlation_by_root: _PersistentKeyMap[
+        _AcquisitionCorrelationEntry
+    ] = field(default_factory=_PersistentKeyMap.empty)
     _leg_current_by_leg: _PersistentKeyMap[_LegCurrent] = field(
         default_factory=_PersistentKeyMap.empty
     )
@@ -4206,6 +4300,7 @@ class VenueRecoveryBook:
             ("_claim_by_occurrence", _PersistentKeyMap.empty()),
             ("_owner_order", _PersistentSequence.empty()),
             ("_owner_by_leg", _PersistentKeyMap.empty()),
+            ("_acquisition_correlation_by_root", _PersistentKeyMap.empty()),
             ("_leg_current_by_leg", _PersistentKeyMap.empty()),
             ("_leg_summary_by_effect", _PersistentKeyMap.empty()),
             ("_cancel_target_reservation_by_leg", _PersistentKeyMap.empty()),
@@ -4265,6 +4360,95 @@ class VenueRecoveryBook:
             effect,
             contradiction_evidence=self._contradictions_for(effect_id),
         )
+
+    def acquisition_correlation(
+        self,
+        request_occurrence_id: RequestOccurrenceId,
+        effect_id: EffectId,
+        *,
+        leg_key: VenueLegKey | None = None,
+        root_key: RootFillKey | None = None,
+    ) -> VenueAcquisitionCorrelation | None:
+        """Return one direct immutable venue provenance projection, if exact.
+
+        This query deliberately uses only current direct maps.  It neither
+        evaluates effect status nor materializes an audit/history view.
+        """
+
+        _require("request_occurrence_id", request_occurrence_id, RequestOccurrenceId)
+        _require("effect_id", effect_id, EffectId)
+        if leg_key is not None:
+            _require("leg_key", leg_key, VenueLegKey)
+        if root_key is not None:
+            _require("root_key", root_key, RootFillKey)
+        if leg_key is None and root_key is None:
+            return None
+        mapped_effect_id = self._effect_by_request_occurrence.get(
+            _request_occurrence_index_key(request_occurrence_id)
+        )
+        if mapped_effect_id != effect_id:
+            return None
+        current = self._effect_by_id.get(_effect_index_key(effect_id))
+        if current is None:
+            return None
+        effect_scope = current.effect.scope
+        if (
+            effect_scope.request_occurrence_id != request_occurrence_id
+            or effect_scope.effect_id != effect_id
+            or effect_scope.generation != self.scope.generation
+        ):
+            return None
+        proven_leg = leg_key
+        if root_key is not None:
+            entry = self._acquisition_correlation_by_root.get(
+                _coverage_root_index_key(root_key)
+            )
+            if (
+                entry is None
+                or type(entry) is not _AcquisitionCorrelationEntry
+                or entry.root_key != root_key
+                or entry.request_occurrence_id != request_occurrence_id
+                or entry.effect_id != effect_id
+                or entry.application_generation_id != self.scope.generation
+                or entry.position_scope != effect_scope.position_scope
+                or (leg_key is not None and entry.leg_key != leg_key)
+            ):
+                return None
+            proven_leg = entry.leg_key
+        if proven_leg is not None:
+            owner = self._owner_by_leg.get(_leg_index_key(proven_leg))
+            if (
+                owner is None
+                or owner.leg_key != proven_leg
+                or owner.effect_id != effect_id
+                or owner.effect_scope != effect_scope
+            ):
+                return None
+        result = object.__new__(VenueAcquisitionCorrelation)
+        object.__setattr__(result, "application_generation_id", self.scope.generation)
+        object.__setattr__(result, "position_scope", effect_scope.position_scope)
+        object.__setattr__(result, "request_occurrence_id", request_occurrence_id)
+        object.__setattr__(result, "effect_id", effect_id)
+        object.__setattr__(result, "leg_key", proven_leg)
+        object.__setattr__(result, "root_key", root_key)
+        commitment = _acquisition_correlation_commitment(
+            self.scope.generation,
+            effect_scope.position_scope,
+            request_occurrence_id,
+            effect_id,
+            proven_leg,
+            root_key,
+        )
+        object.__setattr__(result, "correlation_commitment", commitment)
+        object.__setattr__(
+            result,
+            "_seal",
+            _commit_parts(
+                b"execution-core/venue-acquisition-correlation-seal/v1",
+                commitment,
+            ),
+        )
+        return result
 
     def execution_binding(
         self, position_scope: PositionScope
@@ -5457,6 +5641,155 @@ def _append_coverage_value(
             ),
         ),
     )
+
+
+def _acquisition_correlation_entry_for(
+    venue_scope: VenueScope,
+    effect_by_request_occurrence: _PersistentKeyMap[EffectId],
+    effect_by_id: _PersistentKeyMap[_EffectCurrent],
+    owner_by_leg: _PersistentKeyMap[VenueIdentityOwner],
+    *,
+    effect_id: EffectId,
+    leg_key: VenueLegKey,
+    root_key: RootFillKey,
+) -> _AcquisitionCorrelationEntry:
+    """Build one root entry from direct current venue indexes only."""
+
+    _require("effect_id", effect_id, EffectId)
+    _require("leg_key", leg_key, VenueLegKey)
+    _require("root_key", root_key, RootFillKey)
+    owner = owner_by_leg.get(_leg_index_key(leg_key))
+    current = effect_by_id.get(_effect_index_key(effect_id))
+    if owner is None or current is None:
+        raise ValueError("acquisition correlation requires direct owner and effect")
+    effect_scope = current.effect.scope
+    if (
+        owner.leg_key != leg_key
+        or owner.effect_id != effect_id
+        or owner.effect_scope != effect_scope
+        or effect_by_request_occurrence.get(
+            _request_occurrence_index_key(effect_scope.request_occurrence_id)
+        )
+        != effect_id
+        or effect_scope.generation != venue_scope.generation
+        or effect_scope.position_scope.broker != root_key.broker
+        or effect_scope.position_scope.environment != root_key.environment
+        or effect_scope.position_scope.account != root_key.account
+    ):
+        raise ValueError("acquisition correlation direct provenance is inconsistent")
+    return _AcquisitionCorrelationEntry(
+        application_generation_id=venue_scope.generation,
+        position_scope=effect_scope.position_scope,
+        request_occurrence_id=effect_scope.request_occurrence_id,
+        effect_id=effect_id,
+        leg_key=leg_key,
+        root_key=root_key,
+    )
+
+
+def _append_acquisition_correlation(
+    retained: _PersistentKeyMap[_AcquisitionCorrelationEntry],
+    entry: _AcquisitionCorrelationEntry,
+) -> _PersistentKeyMap[_AcquisitionCorrelationEntry]:
+    if type(entry) is not _AcquisitionCorrelationEntry:
+        raise TypeError("acquisition correlation entry must be exact")
+    key = _coverage_root_index_key(entry.root_key)
+    prior = retained.get(key)
+    if prior is None:
+        return retained.insert_new(key, entry, entry.commitment)
+    if prior != entry:
+        raise ValueError("broker root has conflicting acquisition correlation")
+    return retained
+
+
+def _evolve_acquisition_correlation_index(
+    current: VenueRecoveryBook,
+    retained: _PersistentKeyMap[_AcquisitionCorrelationEntry],
+    resulting_execution: ExecutionSnapshot,
+    item: object | None,
+    effect_by_request_occurrence: _PersistentKeyMap[EffectId],
+    effect_by_id: _PersistentKeyMap[_EffectCurrent],
+    owner_by_leg: _PersistentKeyMap[VenueIdentityOwner],
+) -> _PersistentKeyMap[_AcquisitionCorrelationEntry]:
+    """Append an accepted broker root without touching coverage or audit history."""
+
+    from .recovery import RecordBrokerFillEvidence
+
+    if type(item) is not RecordBrokerFillEvidence:
+        return retained
+    observed = resulting_execution.seen_facts.get(item.fact.key)
+    if (
+        observed is None
+        or observed.fact != item.fact
+        or observed.classification
+        not in {
+            FirstObservationClassification.APPLIED_AVAILABLE,
+            FirstObservationClassification.APPLIED_BASIS_PENDING,
+            FirstObservationClassification.APPLIED_OVERFILL_QUARANTINE,
+            FirstObservationClassification.APPLIED_PENDING_OVERFILL,
+            FirstObservationClassification.CORROBORATED_ZERO_ECONOMIC,
+        }
+    ):
+        return retained
+    entry = _acquisition_correlation_entry_for(
+        current.scope,
+        effect_by_request_occurrence,
+        effect_by_id,
+        owner_by_leg,
+        effect_id=item.effect_id,
+        leg_key=item.leg_key,
+        root_key=item.fact.root_key,
+    )
+    return _append_acquisition_correlation(retained, entry)
+
+
+def _audit_rebuild_acquisition_correlation_index(
+    venue_scope: VenueScope,
+    effect_by_request_occurrence: _PersistentKeyMap[EffectId],
+    effect_by_id: _PersistentKeyMap[_EffectCurrent],
+    owner_by_leg: _PersistentKeyMap[VenueIdentityOwner],
+    human_coverages: tuple[object, ...],
+    broker_coverages: tuple[object, ...],
+) -> _PersistentKeyMap[_AcquisitionCorrelationEntry]:
+    """Rebuild the derived direct root map only in the explicit slow audit fold."""
+
+    from .recovery import HumanCoverage, _BrokerCoverage
+
+    retained: _PersistentKeyMap[_AcquisitionCorrelationEntry] = (
+        _PersistentKeyMap.empty()
+    )
+    for coverage in broker_coverages:
+        if type(coverage) is not _BrokerCoverage:
+            raise TypeError("broker coverage audit value has the wrong type")
+        retained = _append_acquisition_correlation(
+            retained,
+            _acquisition_correlation_entry_for(
+                venue_scope,
+                effect_by_request_occurrence,
+                effect_by_id,
+                owner_by_leg,
+                effect_id=coverage.effect_id,
+                leg_key=coverage.leg_key,
+                root_key=coverage.fact.root_key,
+            ),
+        )
+    for coverage in human_coverages:
+        if type(coverage) is not HumanCoverage:
+            raise TypeError("human coverage audit value has the wrong type")
+        if coverage.broker_corroborated and coverage.broker_fact is not None:
+            retained = _append_acquisition_correlation(
+                retained,
+                _acquisition_correlation_entry_for(
+                    venue_scope,
+                    effect_by_request_occurrence,
+                    effect_by_id,
+                    owner_by_leg,
+                    effect_id=coverage.effect_id,
+                    leg_key=coverage.leg_key,
+                    root_key=coverage.broker_fact.root_key,
+                ),
+            )
+    return retained
 
 
 def _replace_coverage_value(
@@ -6964,6 +7297,11 @@ def _audit_hydrate_book(
     object.__setattr__(result, "_claim_by_occurrence", claim_by_occurrence)
     object.__setattr__(result, "_owner_order", owner_order)
     object.__setattr__(result, "_owner_by_leg", owner_by_leg)
+    object.__setattr__(
+        result,
+        "_acquisition_correlation_by_root",
+        _PersistentKeyMap.empty(),
+    )
     object.__setattr__(result, "_leg_current_by_leg", leg_current_by_leg)
     object.__setattr__(result, "_leg_summary_by_effect", leg_summary_by_effect)
     object.__setattr__(
@@ -7408,6 +7746,19 @@ def _audit_hydrate_book(
             "M1 audit hydration requires an exact reconstruction of the supplied "
             "opaque checkpoint; replacement loading remains deferred"
         )
+    acquisition_correlation_by_root = _audit_rebuild_acquisition_correlation_index(
+        result.scope,
+        result._effect_by_request_occurrence,
+        result._effect_by_id,
+        result._owner_by_leg,
+        result.human_coverages,
+        result.broker_coverages,
+    )
+    object.__setattr__(
+        result,
+        "_acquisition_correlation_by_root",
+        acquisition_correlation_by_root,
+    )
     return result
 
 
@@ -8948,6 +9299,15 @@ def _apply_venue_input(
             item,
             canonical_economic_input=canonical_economic_input,
         )
+        acquisition_correlation_by_root = _evolve_acquisition_correlation_index(
+            current,
+            current._acquisition_correlation_by_root,
+            resulting_execution,
+            item,
+            effect_by_request_occurrence,
+            effect_by_id,
+            owner_by_leg,
+        )
 
         result = object.__new__(VenueRecoveryBook)
         for name in _EVOLVABLE_BOOK_FIELDS:
@@ -8984,6 +9344,11 @@ def _apply_venue_input(
         object.__setattr__(result, "_claim_by_occurrence", claim_by_occurrence)
         object.__setattr__(result, "_owner_order", owner_order)
         object.__setattr__(result, "_owner_by_leg", owner_by_leg)
+        object.__setattr__(
+            result,
+            "_acquisition_correlation_by_root",
+            acquisition_correlation_by_root,
+        )
         object.__setattr__(result, "_leg_current_by_leg", leg_current_by_leg)
         object.__setattr__(
             result,
@@ -10134,6 +10499,7 @@ __all__ = [
     "RecordTransportOutcome",
     "RecoverClaimedEffect",
     "VenueAttemptState",
+    "VenueAcquisitionCorrelation",
     "VenueClosureKind",
     "VenueEffectScope",
     "VenueExecutionCheckpoint",

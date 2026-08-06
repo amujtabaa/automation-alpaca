@@ -18,6 +18,7 @@ from .fills import (
 )
 from .identity import (
     AccountId,
+    AcquisitionGenerationId,
     ActorId,
     ApplicationGenerationId,
     BrokerId,
@@ -41,6 +42,15 @@ from .identity import (
     VenueInputId,
     VenueLegKey,
     VenueObservationId,
+)
+from .acquisition import (
+    AcquisitionLineageIndex,
+    GenerationBindingView,
+    GenerationRecordView,
+    GenerationRegistry,
+    GenerationRouteKind,
+    GenerationRouteView,
+    GenerationServingClass,
 )
 from .position import (
     BasisAuthority,
@@ -109,6 +119,7 @@ from app.execution_core.venue import (
     RecoverClaimedEffect,
     VenueAttempt,
     VenueAttemptState,
+    VenueAcquisitionCorrelation,
     VenueClosureKind,
     VenueExecutionCheckpoint,
     VenueIdentityOwner,
@@ -148,6 +159,8 @@ from .authority import (
 
 __all__ = [
     "AccountId",
+    "AcquisitionGenerationId",
+    "AcquisitionLineageIndex",
     "AcceptanceSetState",
     "AdvanceManualFlatten",
     "ActorId",
@@ -195,6 +208,12 @@ __all__ = [
     "ExecutionSide",
     "ExecutionSnapshot",
     "ExecutionTransition",
+    "GenerationBindingView",
+    "GenerationRecordView",
+    "GenerationRegistry",
+    "GenerationRouteKind",
+    "GenerationRouteView",
+    "GenerationServingClass",
     "EvidencePolicy",
     "FactKind",
     "FirstObservationClassification",
@@ -252,6 +271,7 @@ __all__ = [
     "TransitionDisposition",
     "TradingMode",
     "VenueAttempt",
+    "VenueAcquisitionCorrelation",
     "VenueAttemptState",
     "VenueClosureKind",
     "VenueExecutionCheckpoint",

@@ -9,6 +9,7 @@ the focused gate red even when that dependency is never exercised by an example.
 from __future__ import annotations
 
 import ast
+from collections import Counter
 from dataclasses import dataclass
 import json
 from pathlib import Path
@@ -246,6 +247,8 @@ _PROTECTION_FORBIDDEN_BINDING_ATTRIBUTES = {
 
 _PUBLIC_SURFACE = {
     "AccountId",
+    "AcquisitionGenerationId",
+    "AcquisitionLineageIndex",
     "AcceptanceSetState",
     "ActorId",
     "AdvanceManualFlatten",
@@ -294,6 +297,12 @@ _PUBLIC_SURFACE = {
     "ExecutionSide",
     "ExecutionSnapshot",
     "ExecutionTransition",
+    "GenerationBindingView",
+    "GenerationRecordView",
+    "GenerationRegistry",
+    "GenerationRouteKind",
+    "GenerationRouteView",
+    "GenerationServingClass",
     "FactKind",
     "FirstObservationClassification",
     "FoldInput",
@@ -349,6 +358,7 @@ _PUBLIC_SURFACE = {
     "TickMetadata",
     "TradingMode",
     "TransitionDisposition",
+    "VenueAcquisitionCorrelation",
     "VenueAttempt",
     "VenueAttemptState",
     "VenueClosureKind",
@@ -472,6 +482,7 @@ def _python_files() -> list[Path]:
     files = sorted(_PACKAGE_ROOT.glob("*.py"))
     assert {path.name for path in files} == {
         "__init__.py",
+        "acquisition.py",
         "authority.py",
         "fills.py",
         "identity.py",
@@ -5594,3 +5605,882 @@ def test_private_acceptance_closure_ast_guard_is_failure_capable(
             synthetic_path,
         )
         assert any(item.endswith(f":{forbidden_name}") for item in violations), snippet
+
+
+_ACQUISITION_R1_IMPORTS = Counter(
+    {
+        (0, "__future__", "annotations", None): 1,
+        (0, "dataclasses", "dataclass", "_dataclass"): 1,
+        (0, "dataclasses", "field", "_field"): 1,
+        (0, "enum", "Enum", "_Enum"): 1,
+        (0, "hashlib", "sha256", "_sha256"): 1,
+        (1, "fills", "PositionScope", "_PositionScope"): 1,
+        (1, "fills", "_commit_parts", None): 1,
+        (1, "fills", "_encode_int", None): 1,
+        (1, "fills", "_encode_position_scope", None): 1,
+        (1, "fills", "_encode_text", None): 1,
+        (1, "fills", "_pack_parts", None): 1,
+        (1, "identity", "AcquisitionGenerationId", "_AcquisitionGenerationId"): 1,
+        (1, "identity", "ApplicationGenerationId", "_ApplicationGenerationId"): 1,
+        (1, "identity", "EffectId", "_EffectId"): 1,
+        (1, "identity", "ExecutionFactKey", "_ExecutionFactKey"): 1,
+        (1, "identity", "RequestOccurrenceId", "_RequestOccurrenceId"): 1,
+        (1, "identity", "RootFillKey", "_RootFillKey"): 1,
+        (1, "identity", "VenueLegKey", "_VenueLegKey"): 1,
+        (1, "identity", "_acquisition_generation_id_is_canonical", None): 1,
+    }
+)
+_ACQUISITION_R1_CLASSES = frozenset(
+    {
+        "GenerationServingClass",
+        "GenerationRouteKind",
+        "GenerationBindingView",
+        "GenerationRecordView",
+        "GenerationRouteView",
+        "GenerationRegistry",
+        "AcquisitionLineageIndex",
+    }
+)
+_ACQUISITION_R1_FUNCTIONS = frozenset(
+    {
+        "_require_exact",
+        "_require_commitment",
+        "_require_ordinal",
+        "_acquisition_controller_genesis_head",
+        "_derive_acquisition_generation_id",
+        "_registry_is_authentic",
+        "_empty_route_result",
+        "_lineage_is_authentic",
+    }
+)
+_ACQUISITION_R1_METHODS = {
+    "GenerationServingClass": frozenset(),
+    "GenerationRouteKind": frozenset(),
+    "GenerationBindingView": frozenset({"__init__", "__init_subclass__"}),
+    "GenerationRecordView": frozenset({"__init__", "__init_subclass__"}),
+    "GenerationRouteView": frozenset({"__init__", "__init_subclass__"}),
+    "GenerationRegistry": frozenset(
+        {"__init__", "__init_subclass__", "empty", "record"}
+    ),
+    "AcquisitionLineageIndex": frozenset(
+        {
+            "__init__",
+            "__init_subclass__",
+            "empty",
+            "route_request",
+            "route_effect",
+            "route_owner",
+            "route_root",
+            "route_fact",
+        }
+    ),
+}
+_ACQUISITION_R1_CLASS_FIELDS = {
+    "GenerationServingClass": frozenset(
+        {"LIVE", "RETIRED_UNSERVING", "RECONCILIATION_REQUIRED"}
+    ),
+    "GenerationRouteKind": frozenset({"REQUEST", "EFFECT", "OWNER", "ROOT", "FACT"}),
+    "GenerationBindingView": frozenset(
+        {
+            "generation_id",
+            "application_generation_id",
+            "position_scope",
+            "successor_ordinal",
+            "dual_mandate_binding_commitment",
+            "predecessor_or_genesis_head_commitment",
+            "emergency_recovery_compatibility_commitment",
+            "binding_commitment",
+            "_seal",
+        }
+    ),
+    "GenerationRecordView": frozenset(
+        {
+            "binding",
+            "economics_head_commitment",
+            "serving_class",
+            "closure_summary_commitment",
+            "_seal",
+        }
+    ),
+    "GenerationRouteView": frozenset(
+        {"route_kind", "source_commitment", "generation_id", "_seal"}
+    ),
+    "GenerationRegistry": frozenset({"_seal"}),
+    "AcquisitionLineageIndex": frozenset({"_seal"}),
+}
+_ACQUISITION_R1_ENUMS = frozenset({"GenerationServingClass", "GenerationRouteKind"})
+_ACQUISITION_R1_DATACLASS_CLASSES = frozenset(
+    {
+        "GenerationBindingView",
+        "GenerationRecordView",
+        "GenerationRouteView",
+        "GenerationRegistry",
+        "AcquisitionLineageIndex",
+    }
+)
+_ACQUISITION_R1_EMPTY_DOMAINS = {
+    "GenerationRegistry": "_REGISTRY_EMPTY_DOMAIN",
+    "AcquisitionLineageIndex": "_LINEAGE_EMPTY_DOMAIN",
+}
+_ACQUISITION_R1_FORBIDDEN_VENUE_NAMES = frozenset(
+    {
+        "_current_effect",
+        "_effect_by_request_occurrence",
+        "_effect_by_id",
+        "_owner_by_leg",
+        "_acquisition_correlation_by_root",
+        "_audit_hydrate_book",
+    }
+)
+_ACQUISITION_R1_MODULE_ASSIGNMENTS = frozenset(
+    {
+        "__all__",
+        "_IDENTITY_DOMAIN",
+        "_GENESIS_DOMAIN",
+        "_REGISTRY_EMPTY_DOMAIN",
+        "_LINEAGE_EMPTY_DOMAIN",
+        "_MAX_SUCCESSOR_ORDINAL",
+    }
+)
+_ACQUISITION_R1_MUTATION_METHODS = frozenset(
+    {
+        "add",
+        "append",
+        "clear",
+        "discard",
+        "extend",
+        "insert",
+        "pop",
+        "remove",
+        "delattr",
+        "setattr",
+        "setdefault",
+        "update",
+        "__delattr__",
+        "__setattr__",
+        "__setitem__",
+        "__delitem__",
+    }
+)
+
+
+def _ast_parent_map(tree: ast.AST) -> dict[ast.AST, ast.AST]:
+    return {
+        child: parent
+        for parent in ast.walk(tree)
+        for child in ast.iter_child_nodes(parent)
+    }
+
+
+def _nearest_enclosing(
+    node: ast.AST,
+    parents: dict[ast.AST, ast.AST],
+    expected: type[ast.AST],
+) -> ast.AST | None:
+    current = parents.get(node)
+    while current is not None:
+        if isinstance(current, expected):
+            return current
+        current = parents.get(current)
+    return None
+
+
+def _acquisition_r1_class_declaration_is_exact(
+    declaration: ast.ClassDef,
+    name: str,
+) -> bool:
+    """Require the closed declaration grammar that makes E1 values immutable."""
+
+    if declaration.keywords:
+        return False
+    if name in _ACQUISITION_R1_ENUMS:
+        return (
+            not declaration.decorator_list
+            and len(declaration.bases) == 1
+            and isinstance(declaration.bases[0], ast.Name)
+            and declaration.bases[0].id == "_Enum"
+        )
+    if name not in _ACQUISITION_R1_DATACLASS_CLASSES:
+        return False
+    if declaration.bases or len(declaration.decorator_list) != 1:
+        return False
+    decorator = declaration.decorator_list[0]
+    if not (
+        isinstance(decorator, ast.Call)
+        and isinstance(decorator.func, ast.Name)
+        and decorator.func.id == "_dataclass"
+        and not decorator.args
+        and len(decorator.keywords) == 3
+        and {keyword.arg for keyword in decorator.keywords}
+        == {"frozen", "slots", "init"}
+    ):
+        return False
+    expected_values = {"frozen": True, "slots": True, "init": False}
+    return all(
+        keyword.arg in expected_values
+        and isinstance(keyword.value, ast.Constant)
+        and type(keyword.value.value) is bool
+        and keyword.value.value == expected_values[keyword.arg]
+        for keyword in decorator.keywords
+    )
+
+
+def _acquisition_r1_empty_construction_is_exact(
+    method: ast.FunctionDef,
+    domain_name: str,
+) -> bool:
+    """Keep the two E1 reader factories limited to a sealed empty value."""
+
+    if not (
+        len(method.decorator_list) == 1
+        and isinstance(method.decorator_list[0], ast.Name)
+        and method.decorator_list[0].id == "classmethod"
+    ):
+        return False
+    allocations = [
+        node
+        for node in ast.walk(method)
+        if isinstance(node, ast.Call)
+        and _static_attribute_path(node.func)
+        in {("object", "__new__"), ("object", "__setattr__")}
+    ]
+    if Counter(_static_attribute_path(node.func) for node in allocations) != Counter(
+        {("object", "__new__"): 1, ("object", "__setattr__"): 1}
+    ):
+        return False
+    allocation = next(
+        node
+        for node in allocations
+        if _static_attribute_path(node.func) == ("object", "__new__")
+    )
+    if not (
+        len(allocation.args) == 1
+        and not allocation.keywords
+        and isinstance(allocation.args[0], ast.Name)
+        and allocation.args[0].id == "cls"
+    ):
+        return False
+    setter = next(
+        node
+        for node in allocations
+        if _static_attribute_path(node.func) == ("object", "__setattr__")
+    )
+    if not (
+        len(setter.args) == 3
+        and not setter.keywords
+        and isinstance(setter.args[0], ast.Name)
+        and setter.args[0].id == "result"
+        and isinstance(setter.args[1], ast.Constant)
+        and setter.args[1].value == "_seal"
+        and isinstance(setter.args[2], ast.Call)
+        and _static_attribute_path(setter.args[2].func) == ("_commit_parts",)
+        and len(setter.args[2].args) == 1
+        and not setter.args[2].keywords
+        and isinstance(setter.args[2].args[0], ast.Name)
+        and setter.args[2].args[0].id == domain_name
+    ):
+        return False
+    returns = [
+        statement for statement in method.body if isinstance(statement, ast.Return)
+    ]
+    return (
+        len(returns) == 1
+        and isinstance(returns[0].value, ast.Name)
+        and returns[0].value.id == "result"
+    )
+
+
+def _acquisition_r1_boundary_violations(tree: ast.Module, path: Path) -> list[str]:
+    """Keep WO-0150's tiny E1 module structurally closed and failure-capable."""
+
+    violations: list[str] = []
+    parents = _ast_parent_map(tree)
+    actual_imports: Counter[tuple[int, str | None, str, str | None]] = Counter()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            violations.append(f"{_display(path, node)} direct module import")
+        elif isinstance(node, ast.ImportFrom):
+            if parents.get(node) is not tree:
+                violations.append(f"{_display(path, node)} nested import")
+            if any(alias.name == "*" for alias in node.names):
+                violations.append(f"{_display(path, node)} wildcard import")
+            actual_imports.update(
+                (node.level, node.module, alias.name, alias.asname)
+                for alias in node.names
+            )
+    if actual_imports != _ACQUISITION_R1_IMPORTS:
+        violations.append(f"{path}: import allowlist differs")
+    violations.extend(_effect_call_violations(tree, path))
+
+    for statement in tree.body:
+        if isinstance(statement, ast.Assign):
+            targets = [
+                target.id
+                for target in statement.targets
+                if isinstance(target, ast.Name)
+            ]
+            if (
+                len(statement.targets) != 1
+                or len(targets) != 1
+                or targets[0] not in _ACQUISITION_R1_MODULE_ASSIGNMENTS
+            ):
+                violations.append(f"{_display(path, statement)} module state")
+        elif isinstance(statement, ast.AnnAssign):
+            violations.append(f"{_display(path, statement)} annotated module state")
+
+    classes = [node for node in tree.body if isinstance(node, ast.ClassDef)]
+    functions = [node for node in tree.body if isinstance(node, ast.FunctionDef)]
+    if Counter(node.name for node in classes) != Counter(_ACQUISITION_R1_CLASSES):
+        violations.append(f"{path}: top-level class surface differs")
+    if Counter(node.name for node in functions) != Counter(_ACQUISITION_R1_FUNCTIONS):
+        violations.append(f"{path}: top-level function surface differs")
+    if any(isinstance(node, ast.AsyncFunctionDef) for node in tree.body):
+        violations.append(f"{path}: async top-level function")
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef) and parents.get(node) is not tree:
+            violations.append(f"{_display(path, node)} nested class")
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and not (
+            parents.get(node) is tree or isinstance(parents.get(node), ast.ClassDef)
+        ):
+            violations.append(f"{_display(path, node)} nested function")
+        elif isinstance(node, ast.Lambda):
+            violations.append(f"{_display(path, node)} lambda helper")
+
+    classes_by_name = {node.name: node for node in classes}
+    for name, expected_methods in _ACQUISITION_R1_METHODS.items():
+        declaration = classes_by_name.get(name)
+        if declaration is None:
+            continue
+        if not _acquisition_r1_class_declaration_is_exact(declaration, name):
+            violations.append(f"{path}: {name} class declaration differs")
+        methods = [
+            statement
+            for statement in declaration.body
+            if isinstance(statement, ast.FunctionDef)
+        ]
+        if Counter(method.name for method in methods) != Counter(expected_methods):
+            violations.append(f"{path}: {name} method surface differs")
+        if any(
+            isinstance(statement, ast.AsyncFunctionDef)
+            for statement in declaration.body
+        ):
+            violations.append(f"{path}: {name} async method")
+        assignments = [
+            statement
+            for statement in declaration.body
+            if isinstance(statement, ast.Assign)
+        ]
+        annotations = [
+            statement
+            for statement in declaration.body
+            if isinstance(statement, ast.AnnAssign)
+        ]
+        if name in _ACQUISITION_R1_ENUMS:
+            assigned_names = [
+                target.id
+                for statement in assignments
+                for target in statement.targets
+                if isinstance(target, ast.Name)
+            ]
+            if (
+                any(
+                    len(statement.targets) != 1
+                    or not isinstance(statement.targets[0], ast.Name)
+                    for statement in assignments
+                )
+                or annotations
+                or Counter(assigned_names)
+                != Counter(_ACQUISITION_R1_CLASS_FIELDS[name])
+            ):
+                violations.append(f"{path}: {name} class state differs")
+        else:
+            annotated_names = [
+                statement.target.id
+                for statement in annotations
+                if isinstance(statement.target, ast.Name)
+            ]
+            if (
+                assignments
+                or any(
+                    not isinstance(statement.target, ast.Name)
+                    for statement in annotations
+                )
+                or Counter(annotated_names)
+                != Counter(_ACQUISITION_R1_CLASS_FIELDS[name])
+            ):
+                violations.append(f"{path}: {name} class state differs")
+        domain_name = _ACQUISITION_R1_EMPTY_DOMAINS.get(name)
+        if domain_name is not None:
+            empty_methods = [method for method in methods if method.name == "empty"]
+            if len(
+                empty_methods
+            ) != 1 or not _acquisition_r1_empty_construction_is_exact(
+                empty_methods[0], domain_name
+            ):
+                violations.append(f"{path}: {name} empty construction differs")
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            call_path = _static_attribute_path(node.func)
+            if call_path in {("object", "__new__"), ("object", "__setattr__")}:
+                owner = _nearest_enclosing(node, parents, ast.ClassDef)
+                method = _nearest_enclosing(node, parents, ast.FunctionDef)
+                owner_name = owner.name if isinstance(owner, ast.ClassDef) else ""
+                method_name = method.name if isinstance(method, ast.FunctionDef) else ""
+                if (
+                    owner_name not in _ACQUISITION_R1_EMPTY_DOMAINS
+                    or method_name != "empty"
+                ):
+                    violations.append(
+                        f"{_display(path, node)} allocation outside exact empty reader"
+                    )
+            elif call_path is not None and call_path[-1] in {
+                "__import__",
+                "getattr",
+                "import_module",
+                "reload",
+            }:
+                violations.append(f"{_display(path, node)} dynamic reach-through")
+            elif (
+                call_path is not None
+                and call_path[-1] in _ACQUISITION_R1_MUTATION_METHODS
+            ):
+                violations.append(f"{_display(path, node)} mutation call")
+        if isinstance(node, (ast.Global, ast.Nonlocal, ast.AugAssign)):
+            violations.append(f"{_display(path, node)} mutable binding")
+        elif isinstance(node, ast.Attribute) and isinstance(
+            node.ctx, (ast.Store, ast.Del)
+        ):
+            violations.append(f"{_display(path, node)} attribute mutation")
+        elif isinstance(node, ast.Subscript) and isinstance(
+            node.ctx, (ast.Store, ast.Del)
+        ):
+            violations.append(f"{_display(path, node)} indexed mutation")
+        if (
+            isinstance(node, ast.Name)
+            and node.id in _ACQUISITION_R1_FORBIDDEN_VENUE_NAMES
+        ):
+            violations.append(f"{_display(path, node)} private venue name:{node.id}")
+        elif (
+            isinstance(node, ast.Attribute)
+            and node.attr in _ACQUISITION_R1_FORBIDDEN_VENUE_NAMES
+        ):
+            violations.append(
+                f"{_display(path, node)} private venue attribute:{node.attr}"
+            )
+        elif (
+            isinstance(node, ast.Constant)
+            and type(node.value) is str
+            and node.value in _ACQUISITION_R1_FORBIDDEN_VENUE_NAMES
+        ):
+            violations.append(
+                f"{_display(path, node)} private venue string:{node.value}"
+            )
+    return violations
+
+
+def _annotation_mentions(node: ast.AST | None, target: str) -> bool:
+    return node is not None and any(
+        (isinstance(candidate, ast.Name) and candidate.id == target)
+        or (isinstance(candidate, ast.Attribute) and candidate.attr == target)
+        or (isinstance(candidate, ast.Constant) and candidate.value == target)
+        for candidate in ast.walk(node)
+    )
+
+
+def _is_exact_venue_correlation_producer(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+    path: Path,
+    venue_path: Path,
+    parents: dict[ast.AST, ast.AST],
+) -> bool:
+    """Allow only the unique module-level venue projection producer."""
+
+    owner = _nearest_enclosing(node, parents, ast.ClassDef)
+    module = parents.get(owner) if isinstance(owner, ast.ClassDef) else None
+    top_level_owners = (
+        [
+            declaration
+            for declaration in module.body
+            if isinstance(declaration, ast.ClassDef)
+            and declaration.name == "VenueRecoveryBook"
+        ]
+        if isinstance(module, ast.Module)
+        else []
+    )
+    argument_annotations = (
+        *(argument.annotation for argument in node.args.posonlyargs),
+        *(argument.annotation for argument in node.args.args),
+        *(argument.annotation for argument in node.args.kwonlyargs),
+        node.args.vararg.annotation if node.args.vararg is not None else None,
+        node.args.kwarg.annotation if node.args.kwarg is not None else None,
+    )
+    return (
+        path == venue_path
+        and type(node) is ast.FunctionDef
+        and node.name == "acquisition_correlation"
+        and isinstance(owner, ast.ClassDef)
+        and owner.name == "VenueRecoveryBook"
+        and parents.get(node) is owner
+        and parents.get(owner) is module
+        and len(top_level_owners) == 1
+        and top_level_owners[0] is owner
+        and _annotation_mentions(node.returns, "VenueAcquisitionCorrelation")
+        and not any(
+            _annotation_mentions(annotation, "VenueAcquisitionCorrelation")
+            for annotation in argument_annotations
+        )
+    )
+
+
+def _is_exact_venue_correlation_producer_reference(
+    node: ast.AST,
+    path: Path,
+    venue_path: Path,
+    parents: dict[ast.AST, ast.AST],
+) -> bool:
+    """Allow only the producer's return annotation and object allocation name."""
+
+    method = _nearest_enclosing(node, parents, ast.FunctionDef)
+    if not (
+        isinstance(method, ast.FunctionDef)
+        and _is_exact_venue_correlation_producer(method, path, venue_path, parents)
+    ):
+        return False
+    if method.returns is not None and any(
+        candidate is node for candidate in ast.walk(method.returns)
+    ):
+        return True
+    parent = parents.get(node)
+    return (
+        isinstance(parent, ast.Call)
+        and _static_attribute_path(parent.func) == ("object", "__new__")
+        and len(parent.args) == 1
+        and parent.args[0] is node
+    )
+
+
+def _venue_correlation_source_violations(
+    tree: ast.Module,
+    path: Path,
+    production_trees: dict[Path, ast.Module],
+) -> list[str]:
+    """Prevent a read projection from becoming a caller-supplied authority."""
+
+    violations: list[str] = []
+    parents = _ast_parent_map(tree)
+    constructors = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and _static_attribute_path(node.func) == ("object", "__new__")
+        and len(node.args) == 1
+        and isinstance(node.args[0], ast.Name)
+        and node.args[0].id == "VenueAcquisitionCorrelation"
+    ]
+    normal_constructors = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "VenueAcquisitionCorrelation"
+    ]
+    if len(constructors) != 1:
+        violations.append(f"{path}: correlation construction count differs")
+    else:
+        constructor = constructors[0]
+        method = _nearest_enclosing(constructor, parents, ast.FunctionDef)
+        if not (
+            isinstance(method, ast.FunctionDef)
+            and _is_exact_venue_correlation_producer(method, path, path, parents)
+        ):
+            violations.append(
+                f"{_display(path, constructor)} unchecked correlation construction"
+            )
+    if normal_constructors:
+        violations.append(f"{path}: normal correlation construction")
+    for declaration in tree.body:
+        if isinstance(
+            declaration, (ast.FunctionDef, ast.AsyncFunctionDef)
+        ) and _annotation_mentions(declaration.returns, "VenueAcquisitionCorrelation"):
+            violations.append(f"{_display(path, declaration)} raw correlation factory")
+
+    for candidate_path, candidate_tree in production_trees.items():
+        candidate_parents = _ast_parent_map(candidate_tree)
+        for node in ast.walk(candidate_tree):
+            if (
+                isinstance(node, ast.ImportFrom)
+                and any(
+                    alias.name == "VenueAcquisitionCorrelation" for alias in node.names
+                )
+                and candidate_path.name != "__init__.py"
+            ):
+                violations.append(
+                    f"{_display(candidate_path, node)} correlation import"
+                )
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                annotations = (
+                    node.returns,
+                    *(argument.annotation for argument in node.args.posonlyargs),
+                    *(argument.annotation for argument in node.args.args),
+                    *(argument.annotation for argument in node.args.kwonlyargs),
+                    (
+                        node.args.vararg.annotation
+                        if node.args.vararg is not None
+                        else None
+                    ),
+                    (
+                        node.args.kwarg.annotation
+                        if node.args.kwarg is not None
+                        else None
+                    ),
+                )
+                if any(
+                    _annotation_mentions(annotation, "VenueAcquisitionCorrelation")
+                    for annotation in annotations
+                ) and not _is_exact_venue_correlation_producer(
+                    node,
+                    candidate_path,
+                    path,
+                    candidate_parents,
+                ):
+                    violations.append(
+                        f"{_display(candidate_path, node)} correlation authority consumer"
+                    )
+            if isinstance(node, ast.AnnAssign) and _annotation_mentions(
+                node.annotation, "VenueAcquisitionCorrelation"
+            ):
+                violations.append(
+                    f"{_display(candidate_path, node)} correlation state annotation"
+                )
+            if (
+                isinstance(node, ast.Name)
+                and node.id == "VenueAcquisitionCorrelation"
+                and not _is_exact_venue_correlation_producer_reference(
+                    node,
+                    candidate_path,
+                    path,
+                    candidate_parents,
+                )
+            ):
+                violations.append(
+                    f"{_display(candidate_path, node)} correlation value consumer"
+                )
+            if (
+                isinstance(node, ast.Attribute)
+                and node.attr == "VenueAcquisitionCorrelation"
+                and not _is_exact_venue_correlation_producer_reference(
+                    node,
+                    candidate_path,
+                    path,
+                    candidate_parents,
+                )
+            ):
+                violations.append(
+                    f"{_display(candidate_path, node)} correlation attribute consumer"
+                )
+            if (
+                isinstance(node, ast.Constant)
+                and node.value == "VenueAcquisitionCorrelation"
+                and isinstance(candidate_parents.get(node), ast.Call)
+                and (call_path := _static_attribute_path(candidate_parents[node].func))
+                is not None
+                and call_path[-1] == "getattr"
+            ):
+                violations.append(
+                    f"{_display(candidate_path, node)} dynamic correlation consumer"
+                )
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "VenueAcquisitionCorrelation"
+            ):
+                violations.append(
+                    f"{_display(candidate_path, node)} normal correlation construction"
+                )
+    return violations
+
+
+def test_wo0150_r1_acquisition_surface_is_closed_and_failure_capable() -> None:
+    path = _PACKAGE_ROOT / "acquisition.py"
+    source = path.read_text(encoding="utf-8")
+    tree = ast.parse(source, filename=str(path))
+    assert _acquisition_r1_boundary_violations(tree, path) == []
+
+    mutants = {
+        "relative authority import": source
+        + "\nfrom .authority import CreateBrokerEffect\n",
+        "absolute authority import": source
+        + "\nfrom app.execution_core.authority import CreateBrokerEffect\n",
+        "module alias": source + "\nimport app.execution_core.venue as venue\n",
+        "random import": source + "\nimport random\n",
+        "dynamic import": source + "\n__import__('random')\n",
+        "builtins dynamic import": source + "\n__builtins__.__import__('random')\n",
+        "mutable view decorator": source.replace(
+            "@_dataclass(frozen=True, slots=True, init=False)",
+            "@_dataclass(frozen=False, slots=True, init=False)",
+            1,
+        ),
+        "dynamic registry execution": source.replace(
+            "        return None\n\n\ndef _registry_is_authentic",
+            '        exec("global _registry_bypass; _registry_bypass = {generation_id: object()}")\n'
+            "        return None\n\n\ndef _registry_is_authentic",
+            1,
+        ),
+        "builtins dynamic registry execution": source.replace(
+            "        return None\n\n\ndef _registry_is_authentic",
+            "        __builtins__['exec'](\"global _registry_bypass; _registry_bypass = {generation_id: object()}\")\n"
+            "        return None\n\n\ndef _registry_is_authentic",
+            1,
+        ),
+        "private venue attribute": source + "\nvenue._effect_by_id\n",
+        "private venue getattr": source + "\ngetattr(book, '_effect_by_id')\n",
+        "extra reader": source.replace(
+            "    def record(\n",
+            "    def items(self) -> None:\n        return None\n\n    def record(\n",
+            1,
+        ),
+        "raw view allocation": source + "\nobject.__new__(GenerationBindingView)\n",
+        "raw-to-trusted helper": source
+        + "\ndef _register_raw() -> None:\n    return None\n",
+        "nested raw-to-trusted helper": source.replace(
+            "    return _AcquisitionGenerationId(\n",
+            "    def _register_raw() -> None:\n        return None\n\n"
+            "    return _AcquisitionGenerationId(\n",
+            1,
+        ),
+        "module mutable registry": source + "\n_registry_bypass = {}\n",
+        "hidden registry mutation": source.replace(
+            "        return None\n\n\ndef _registry_is_authentic",
+            "        _registry_bypass[generation_id] = object()\n"
+            "        return None\n\n\ndef _registry_is_authentic",
+            1,
+        )
+        + "\n_registry_bypass = {}\n",
+        "class mutable registry": source.replace(
+            "    _seal: bytes = _field(init=False, repr=False)\n\n"
+            "    def __init__(self, *args: object, **kwargs: object) -> None:\n",
+            "    _seal: bytes = _field(init=False, repr=False)\n"
+            "    _raw_store = {}\n\n"
+            "    def __init__(self, *args: object, **kwargs: object) -> None:\n",
+            1,
+        ),
+        "foreign empty setter": source.replace(
+            "        result = object.__new__(cls)\n"
+            '        object.__setattr__(result, "_seal", _commit_parts(_REGISTRY_EMPTY_DOMAIN))\n',
+            "        result = object.__new__(cls)\n"
+            '        object.__setattr__(_sha256, "_registry_bypass", {})\n'
+            '        object.__setattr__(result, "_seal", _commit_parts(_REGISTRY_EMPTY_DOMAIN))\n',
+            1,
+        ),
+    }
+    for label, mutant in mutants.items():
+        violations = _acquisition_r1_boundary_violations(
+            ast.parse(mutant, filename=str(path)),
+            path,
+        )
+        assert violations, label
+
+
+def test_wo0150_r1_correlation_is_query_constructed_and_output_only() -> None:
+    path = _PACKAGE_ROOT / "venue.py"
+    production_trees = {
+        candidate: ast.parse(
+            candidate.read_text(encoding="utf-8"), filename=str(candidate)
+        )
+        for candidate in sorted((_REPO_ROOT / "app").rglob("*.py"))
+    }
+    tree = production_trees[path]
+    assert _venue_correlation_source_violations(tree, path, production_trees) == []
+
+    raw_factory = ast.parse(
+        path.read_text(encoding="utf-8")
+        + "\ndef _raw() -> VenueAcquisitionCorrelation:\n"
+        + "    return object.__new__(VenueAcquisitionCorrelation)\n",
+        filename=str(path),
+    )
+    assert _venue_correlation_source_violations(raw_factory, path, production_trees)
+
+    consumer_path = _REPO_ROOT / "app" / "synthetic_correlation_consumer.py"
+    consumer = ast.parse(
+        "import app.execution_core.venue as venue\n\n"
+        "def consume(value: object) -> bool:\n"
+        "    return isinstance(value, venue.VenueAcquisitionCorrelation)\n",
+        filename=str(consumer_path),
+    )
+    mutated_trees = {**production_trees, consumer_path: consumer}
+    assert _venue_correlation_source_violations(tree, path, mutated_trees)
+
+    in_module_consumer = ast.parse(
+        path.read_text(encoding="utf-8").replace(
+            "    def acquisition_correlation(\n",
+            "    def _consume_correlation(\n"
+            "        self, value: VenueAcquisitionCorrelation\n"
+            "    ) -> None:\n"
+            "        del self, value\n\n"
+            "    def acquisition_correlation(\n",
+            1,
+        ),
+        filename=str(path),
+    )
+    in_module_trees = {**production_trees, path: in_module_consumer}
+    assert _venue_correlation_source_violations(
+        in_module_consumer,
+        path,
+        in_module_trees,
+    )
+
+    nested_producer = ast.parse(
+        path.read_text(encoding="utf-8").replace(
+            "    def execution_binding(\n",
+            "    def _nested_holder(self) -> None:\n"
+            "        def acquisition_correlation() -> VenueAcquisitionCorrelation:\n"
+            "            return None\n\n"
+            "        del acquisition_correlation\n\n"
+            "    def execution_binding(\n",
+            1,
+        ),
+        filename=str(path),
+    )
+    nested_producer_trees = {**production_trees, path: nested_producer}
+    assert _venue_correlation_source_violations(
+        nested_producer,
+        path,
+        nested_producer_trees,
+    )
+
+    nested_owner = ast.parse(
+        path.read_text(encoding="utf-8").replace(
+            "    def execution_binding(\n",
+            "    class VenueRecoveryBook:\n"
+            "        def acquisition_correlation(\n"
+            "            self,\n"
+            "        ) -> VenueAcquisitionCorrelation:\n"
+            "            return None\n\n"
+            "    def execution_binding(\n",
+            1,
+        ),
+        filename=str(path),
+    )
+    nested_owner_trees = {**production_trees, path: nested_owner}
+    assert _venue_correlation_source_violations(
+        nested_owner,
+        path,
+        nested_owner_trees,
+    )
+
+    duplicate_top_level_owner = ast.parse(
+        path.read_text(encoding="utf-8")
+        + "\nclass VenueRecoveryBook:\n"
+        + "    def acquisition_correlation(\n"
+        + "        self,\n"
+        + "    ) -> VenueAcquisitionCorrelation:\n"
+        + "        return None\n",
+        filename=str(path),
+    )
+    duplicate_top_level_trees = {**production_trees, path: duplicate_top_level_owner}
+    assert _venue_correlation_source_violations(
+        duplicate_top_level_owner,
+        path,
+        duplicate_top_level_trees,
+    )

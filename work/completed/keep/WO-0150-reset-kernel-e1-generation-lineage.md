@@ -1,12 +1,12 @@
 ---
 type: Work Order
 title: "Reset kernel E1: acquisition-generation identity, ownership, and lineage"
-status: ACTIVE
+status: CLOSED
 work_order_id: WO-0150
 wave: RESET-M1E-1
 model_tier: strong
 risk: high
-disposition: []
+disposition: [PKL_UPDATED, RESULT_SUMMARY_KEPT]
 owner: Codex implementation seat
 created: 2026-08-05
 branch: codex/arch-reset-2026-07-r1
@@ -23,6 +23,9 @@ r1_implementation_authority: "GRANTED — the exact accepted R1 contract and exi
 r1_activation_required: "SATISFIED — replacement-02 manifest 785b394c3bcdc59f80c9d7a718a45d61da7f5ef9ee108466b01a4469c6541e1f independently ACCEPTed at P0=0/P1=0; result retained at work/review/REV-0057/WO-0150-R1-REPLACEMENT-02-PREFLIGHT-RESULT.md"
 implementation_authority: "HISTORICAL_R0_SUPERSEDED — retained predecessor authorization only; it cannot authorize the amended R1 implementation"
 activation_required: "HISTORICAL_R0_SATISFIED — successor d54ffec4e0547be8fcff447d212e1afbebd4489f independently ACCEPTed at P0=0/P1=0 and activation published at 3bdf5e341ffd5a41c1c11a9c2060608422e365d7; neither fact satisfies the R1 gate"
+r1_implementation_manifest: "work/review/REV-0057/WO-0150-R1-IMPLEMENTATION-REMEDIATION-03-CANDIDATE-MANIFEST.md (SHA-256 a68c5897717e0e3ee735af6a95ff768c59951338dff321aca9ab42bc662acfde)"
+r1_implementation_result: "work/review/REV-0057/WO-0150-R1-IMPLEMENTATION-REMEDIATION-03-RECHECK-RESULT.md (ACCEPT, P0=0/P1=0/P2=0)"
+r1_external_exact_head: "PENDING - unchanged Python 3.11/3.12 CI on the immutable closeout commit is required before effective closure or any WO-0151 activation"
 allowed_paths:
   - app/execution_core/identity.py
   - app/execution_core/acquisition.py
@@ -335,3 +338,53 @@ evidence/result record and cannot activate E2.
 ## Expected completion disposition
 
 [PKL_UPDATED, RESULT_SUMMARY_KEPT]
+
+## R1 implementation closeout - filed 2026-08-06, external exact-head CI pending
+
+The exact local implementation candidate is frozen by
+`work/review/REV-0057/WO-0150-R1-IMPLEMENTATION-REMEDIATION-03-CANDIDATE-MANIFEST.md`, SHA-256
+`a68c5897717e0e3ee735af6a95ff768c59951338dff321aca9ab42bc662acfde`. Its final independent
+focused recheck is retained at
+`work/review/REV-0057/WO-0150-R1-IMPLEMENTATION-REMEDIATION-03-RECHECK-RESULT.md` and returned
+`ACCEPT` with P0=0/P1=0/P2=0. Earlier implementation candidates, the two retained
+`ACCEPT-WITH-CHANGES` results, and the stopped remediation-01 request remain negative or
+superseded review evidence; none is used to satisfy this closeout.
+
+Fresh author evidence for this exact candidate comprises the 52-case focused acquisition/import
+gate, pure venue group A and B gates, Ruff check/format, Mypy over the four changed production
+modules, and scope/disposition/ledger/PKL/diff checks. All passed. The candidate contains only the
+allowed pure application/test paths and retained `REV-0057` evidence. No database, SQL/DDL,
+credential, broker/network, runtime, persistence, E2, M2, merge, deletion, or cleanup behavior was
+used or added.
+
+```yaml
+fable_done:
+  task: "WO-0150 R1 reset kernel E1: identity, inert readers, and direct venue correlation"
+  done_when_results:
+    - item: "Deterministic E1 identity data, opaque inert readers, and direct current-book venue correlation are implemented without E2 admission or mutation."
+      status: MET
+      evidence: "Remediation-03 manifest and focused pure venue groups; production paths are exact-hash frozen."
+    - item: "Identity and output-only boundary controls are failure-capable."
+      status: MET
+      evidence: "Final Sol recheck ACCEPT, P0=0/P1=0/P2=0; literal successor, all commitment positions, venue-local consumer, nested-function, nested-owner, and duplicate-owner controls pass."
+    - item: "Static quality and lifecycle scope checks pass."
+      status: MET
+      evidence: "Ruff, Mypy, work-order scope, disposition, ledger, PKL, and diff checks passed on the frozen candidate."
+    - item: "The immutable closeout commit passes unchanged Python 3.11 and 3.12 CI."
+      status: DEFERRED
+      evidence: "External exact-head CI is required after this closeout is committed and pushed."
+  scope_check:
+    allowed_paths_respected: true
+    drive_by_edits: false
+  debt_check: "No in-scope P0/P1 remains. E2 controller admission/currentness, successful registry/index population, permanent routing, late-fact mutation, persistence, runtime composition, and M2 remain separately gated."
+  deferred:
+    - "Unchanged exact-head Python 3.11/3.12 CI is the sole remaining effectiveness gate."
+  status: VERIFIED
+  verification_scope: "Pure R1 implementation, focused/venue/static/type/scope checks, and final independent recheck only; no claim of external CI success."
+  acceptance_condition: "EXTERNAL_EXACT_HEAD_CI_REQUIRED_BEFORE_EFFECTIVE_WO_0150_CLOSE_OR_WO_0151_ACTIVATION"
+```
+
+This is a filed `CLOSED` closeout record only. Its effective lifecycle remains `REVIEW` until the
+immutable closeout commit passes unchanged exact-head Python 3.11 and 3.12 CI. WO-0151 and
+WO-0152 remain DRAFT/inactive; this closeout neither activates them nor grants E2, runtime,
+persistence, database, broker, credential, M2, merge, deletion, or cleanup authority.

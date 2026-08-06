@@ -31,9 +31,11 @@ position-protection, bounded market-occurrence, hybrid-trailing, wait/flat/late-
 goal semantic center; its exact closeout `2462fb557172dd28a7475a763eca0b440c0298e3` is now
 dual-version CI green and effective `CLOSED`. ADR-020 R2 and ADR-021 R2 now define the
 serial acquisition-generation architecture. The retained `WO-0149` lifecycle record is not
-authority for that R2 scope; WO-0150's narrowed R1 documentation re-gate is accepted, so only its
-pure E1 red-first application/test work may resume. Its E2/E3 successors and all
-M2/runtime/persistence work remain inactive until separately gated.
+authority for that R2 scope. WO-0150's pure E1 implementation closeout is frozen at manifest
+`a68c5897717e0e3ee735af6a95ff768c59951338dff321aca9ab42bc662acfde` and independently
+accepted with P0=0/P1=0, but remains effectively `REVIEW` until unchanged exact-head Python
+3.11/3.12 CI. Its E2/E3 successors and all M2/runtime/persistence work remain inactive until
+separately gated.
 
 ## Current R2 ratification posture
 
@@ -41,10 +43,12 @@ ADR-020 R2 and ADR-021 R2 are the accepted authority for serial same-symbol acqu
 direct immutable generation lineage, one SymbolAcquisitionController, at most one LIVE generation,
 and one active protection/broker authority. WO-0149 is formally SUPERSEDED and retained as
 evidence; it grants no implementation authority for this R2 serial-generation scope. The original
-WO-0150 activation and accepted REV-0057 successor are historical R0 evidence only. WO-0150's
-current R1 replacement-02 gate received fresh exact-candidate independent `ACCEPT` at P0=0/P1=0;
-it authorizes only narrowed E1 work. WO-0151 and WO-0152 remain DRAFT only. M2 and all runtime/
-persistence work remain inactive until separately gated.
+WO-0150 activation and accepted REV-0057 successor are historical R0 evidence only. The R1
+documentation gate is accepted. Its E1 closeout manifest
+`a68c5897717e0e3ee735af6a95ff768c59951338dff321aca9ab42bc662acfde` received final independent
+`ACCEPT` with P0=0/P1=0, but exact-head Python 3.11/3.12 CI remains required before effective
+closure. WO-0151 and WO-0152 remain DRAFT only. M2 and all runtime/persistence work remain
+inactive until separately gated.
 
 ## Rules / facts
 
@@ -82,11 +86,12 @@ persistence work remain inactive until separately gated.
   transitions are structurally separate. No lifetime receipt collection, history scan, runtime
   wiring, persistence, adapter fence, or broker authority is part of this pure M1 boundary.
 - The R2 serial acquisition foundation is split across E1 identity/direct venue correlation, E2
-  controller/recovery behavior, and E3 generated/stateful conformance. WO-0150's exact
-  replacement-02 R1 candidate is independently `ACCEPT`ed at P0=0/P1=0, authorizing only the
-  narrowed E1 red-first work. Successful registry/index population, permanent routing, and
-  late-fact mutation are E2-only. E2/E3 remain inactive. No runtime, persistent database, broker,
-  credential, or M2 authority is granted.
+  controller/recovery behavior, and E3 generated/stateful conformance. WO-0150's exact E1
+  closeout manifest `a68c5897717e0e3ee735af6a95ff768c59951338dff321aca9ab42bc662acfde` is
+  independently `ACCEPT`ed at P0=0/P1=0, with the external exact-head Python 3.11/3.12 CI gate
+  still pending. Successful registry/index population, permanent routing, and late-fact mutation
+  are E2-only. E2/E3 remain inactive. No runtime, persistent database, broker, credential, or M2
+  authority is granted.
 - Current posture amendment (2026-08-05): E1 provides only deterministic non-authoritative identity
   data, immutable view and inert-reader shapes, and the no-history venue correlation bridge.
   Successful direct registry/index population, A-to-B-to-C routing, and late-fact mutation are

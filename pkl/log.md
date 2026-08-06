@@ -259,3 +259,11 @@
   registry/index/fact mutation, controller currentness, and all E2 behavior remain deferred to
   WO-0151. No runtime, database, broker/network, credential, M2, merge, deletion, cleanup, rebase,
   or force-push authority is added.
+- 2026-08-06: Filed the pure WO-0150 R1 E1 closeout at remediation-03 manifest
+  `a68c5897717e0e3ee735af6a95ff768c59951338dff321aca9ab42bc662acfde`. The final independent
+  focused recheck returned `ACCEPT`, P0=0/P1=0/P2=0 after correcting only failure-capable identity
+  and output-only-projection controls. Focused acquisition/import and grouped pure venue gates,
+  Ruff, Mypy, scope, disposition, ledger, PKL, and diff checks passed. The closeout remains
+  effectively `REVIEW` until its immutable exact-head Python 3.11/3.12 CI succeeds. WO-0151 and
+  WO-0152 remain DRAFT/inactive; no E2, database/SQL, runtime, broker/network, credential, M2,
+  merge, deletion, or cleanup authority was added.
