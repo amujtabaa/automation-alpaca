@@ -12,6 +12,8 @@ For every frozen fixture root, the only planned chain is:
 
 Potential permission components, in order: the literal root, then the five literal chain components. No component receives ownership or ACL change unless its own exact reparse check is negative and its access actually prevents verification.
 
+If ownership is needed, its sole permitted syntax is `takeown.exe /F <exact-current-component>`: neither `/D` nor `/R` is permitted. If the recorded owner already equals `whoami`, ownership is a no-op.
+
 Planned deletion actions: verify the sole leaf name/size/SHA; delete that literal leaf; then remove each verified empty literal directory bottom-up. The fixture parent is never removed.
 
 ## Root caches (55)

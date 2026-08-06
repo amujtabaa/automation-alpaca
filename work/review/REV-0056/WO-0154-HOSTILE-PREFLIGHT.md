@@ -33,6 +33,21 @@ This is a documentation-only, pre-mutation review of the frozen WO-0154 procedur
 
 No P0/P1 was found. The handle-observability limitation is an environment control, not a reason to widen privilege or tooling. The root-level control is an explicit non-claim plus per-target change/sharing-conflict deferral—not a bypass or a cosmetic clean-handle assertion.
 
+## Focused procedure correction — 2026-08-06
+
+The first exact ACL-repair attempt was rejected before mutation because Windows accepts `takeown /D Y` only with recursive `/R`, while recursive ownership is forbidden. This is a procedure P1, not a target condition. The corrected root-level procedure is `takeown.exe /F <exact-current-component>` with neither `/D` nor `/R`; when the recorded owner is already the `whoami` principal, ownership is an intentional no-op and only exact-component access grant may be considered. No fixture, ACL, or ownership state changed in the rejected attempt. `takeown /?` is the focused non-mutating syntax check.
+
+```yaml
+fable_fix:
+  symptom: "takeown rejected the proposed nonrecursive command before operating on the first fixture root."
+  root_cause: "The dry run did not distinguish takeown's /D syntax constraint from its recursion switch."
+  evidence: "takeown.exe returned: /D should be specified only with /R."
+  fix: "Remove /D and /R; make already-current ownership an explicit no-op."
+  regression_test: "takeown /? and exact work-order command review."
+  red_green_verified: true
+  attempt: 1
+```
+
 ```yaml
 evidence:
   phase: MANUAL_QA

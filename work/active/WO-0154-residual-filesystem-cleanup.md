@@ -194,7 +194,7 @@ forbidden_operations:
 
 1. Canonical-component checks reject repository/evidence-root equality, rooted relative inputs, `.`/`..`, ADS, reparse points, and path-prefix collisions.
 2. Before each ownership, ACL, or deletion command, exact-path inspect the root/component, tracked state, handle/activity state, and reparse state.
-3. If access repair is necessary, record original owner and accessible ACL; run nonrecursive `takeown` and `icacls` only for the current verified component and `whoami` principal. Never restore ACLs speculatively.
+3. If access repair is necessary, record original owner and accessible ACL; run `takeown.exe /F <exact-current-component>` with neither `/D` nor `/R`, then exact-component `icacls` only for the current verified component and `whoami` principal. When the recorded owner already equals `whoami`, ownership is a documented no-op rather than a redundant command. Never restore ACLs speculatively.
 4. Fixtures: walk only the specified chain, verify size/SHA twice, remove its leaf only, then remove empty directories bottom-up without recursion.
 5. Caches: breadth-first inspect only descendants of one verified literal root; reject reparse, tracked, escaping, unstable, or unexpected material; delete individual files and empty directories bottom-up without recursion.
 6. Worktrees: verify stored tip and WO-0153 proof, cache-only condition, status, registration absence, and post-removal absence; use normal exact `git worktree remove` before any recorded cache-only force condition; delete a branch only after path/registration absence.
