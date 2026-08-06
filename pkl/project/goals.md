@@ -4,7 +4,7 @@ title: Project Goals and Current Posture
 status: active
 authority: high
 owner: Ameen
-last_verified: 2026-08-05
+last_verified: 2026-08-06
 tags: [goals, posture, roadmap]
 source_refs: [docs/adr/ADR-020-current-state-execution-kernel.md, docs/adr/ADR-021-position-protection-liquidity-execution.md, docs/adr/ADR-022-reset-beta-scope-cutover-governance.md, docs/adr/ADR-023-bounded-market-occurrence-authority.md, docs/adr/ARCH-RESET-2026-07-RATIFICATION.md]
 supersedes: []
@@ -26,7 +26,8 @@ effective `CLOSED` after independent acceptance and exact-head Python 3.11/3.12 
 `30996686588` (#693) on Python 3.11 and 3.12. ADR-020 R2 and ADR-021 R2 now control the
 serial acquisition-generation foundation. The retained `WO-0149` lifecycle record does not
 grant R2 implementation authority; WO-0150 through WO-0152 are DRAFT-only candidates. M2 and every
-runtime/persistence/cutover slice remain inactive.
+runtime/persistence/cutover slice remain inactive. WO-0153 has completed its bounded cleanup scope
+with environment-controlled deferred artifacts only; it adds no implementation authority.
 
 ## Current R2 ratification posture
 
@@ -34,6 +35,14 @@ ADR-020 R2 and ADR-021 R2 now control serial same-symbol acquisition. WO-0149 is
 SUPERSEDED and retained as evidence; it grants no implementation authority for the new
 serial-generation scope. WO-0150 through WO-0152 are DRAFT-only successor candidates. M2 and
 every runtime/persistence/cutover slice remain inactive.
+
+## Cleanup posture
+
+WO-0153's documentation/evidence reconciliation and approved branch retirement are complete as far
+as the filesystem permitted. Its exact outcome is `PARTIAL CLEANUP - DEFERRED TARGETS REMAIN`: five
+unregistered worktree remnants, 55 root cache directories, and ten generated fixture files remain
+because exact direct deletion returned `AccessDenied`. This does not activate WO-0150 through
+WO-0152, M2, runtime wiring, persistence, broker/network activity, or master landing.
 
 ## Rules / facts
 
@@ -149,3 +158,9 @@ Roadmapping against an unverified codebase state repeats the failure mode Fable 
   one-lifetime same-symbol premise. All artifacts remain retained evidence; WO-0150 through WO-0152
   remain DRAFT/inactive. No application/test, database, runtime, broker/network, credential, M2,
   merge, deletion, or cleanup authority was added.
+- 2026-08-06: WO-0153 completed the authorized cleanup's reconcilable scope: retained the
+  superseded WO-0149 partial source/test artifact outside active paths, reconciled current posture,
+  deleted eleven exact live remote refs, nine local branches, four worktrees, and measured generated
+  files. Filesystem `AccessDenied` retained five worktree remnants, 55 root cache directories, and
+  ten generated fixtures; no ACL/ownership or other bypass was attempted. WO-0150 through WO-0152
+  remain DRAFT/inactive.

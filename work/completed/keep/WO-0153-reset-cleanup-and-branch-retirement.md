@@ -1,12 +1,12 @@
 ---
 type: Work Order
 title: "Reset cleanup: retained WO-0149 evidence and branch retirement"
-status: ACTIVE
+status: CLOSED
 work_order_id: WO-0153
 wave: RESET-CLEANUP
 model_tier: strong
 risk: high
-disposition: []
+disposition: [PKL_UPDATED, RESULT_SUMMARY_KEPT]
 owner: Codex cleanup seat
 created: 2026-08-05
 branch: codex/arch-reset-2026-07-r1
@@ -88,3 +88,13 @@ fable_gate:
 Close only after the final committed reset head equals the live remote reset head, each target is
 recorded as deleted, retained, deferred, or blocked, and the final static verification reports no
 application/test implementation delta and WO-0150 through WO-0152 still DRAFT/inactive.
+
+## Executed outcome
+
+`PARTIAL CLEANUP - DEFERRED TARGETS REMAIN`. The cleanup's reconcilable scope is complete: the
+pre-deletion baseline, retained WO-0149 artifact, canonical documentation/evidence reconciliation,
+eleven exact live remote deletions, nine local branch deletions, four complete worktree removals,
+and measured generated-file reclamation are recorded in
+`work/review/REV-0056/WO-0153-EXECUTION-OUTCOME.md`. Five worktree remnants, 55 root cache
+directories, and ten generated fixture files remain only because direct exact deletion returned
+`AccessDenied`; no control bypass was attempted. WO-0150 through WO-0152 remain DRAFT/inactive.

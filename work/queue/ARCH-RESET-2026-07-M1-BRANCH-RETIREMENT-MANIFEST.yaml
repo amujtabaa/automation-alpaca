@@ -1,6 +1,6 @@
 schema_version: 2
 manifest_id: ARCH-RESET-2026-07-M1-BRANCH-RETIREMENT
-status: PREDELETE_READY
+status: PARTIAL_CLEANUP_DEFERRED_TARGETS_REMAIN
 work_order: WO-0153
 scope: "Post-WO-0149-supersession cleanup and bounded retirement only; no M1-complete, master-landing, or successor-activation claim."
 
@@ -253,14 +253,33 @@ execution_order:
   - "Update actual results, reclaimed bytes, stale remote-tracking-cache evidence, and final static verification; commit and push final manifest."
 
 execution_record:
-  predelete_commit: null
-  predelete_push: null
+  predelete_commit: "4c655be69ddb19e844c2c8d1ae077844acab8968"
+  predelete_push: "Exact live reset ref matched before and after push; no fetch/prune used."
   final_commit: null
   final_push: null
-  remote_deletions: []
-  local_branch_deletions: []
-  worktree_removals: []
-  deferred_targets: []
+  remote_deletions:
+    - "archive/consolidate-r2-canonical-codex @ accfc2072b7d0997a4b497f5710c9fabd5d86d3e: DELETED, exact live tip then exact live absence"
+    - "archive/collab-sol-0001 @ 38180e1d594a961372b5854bfac9f097ac6910b1: DELETED, exact live tip then exact live absence"
+    - "freeze/20260715-master-preconsolidation @ 80250e09be65115b8fc483b2444b297e2b86b2c9: DELETED, exact live tip then exact live absence"
+    - "freeze/20260715-pr8-head @ 22617f4ccf28970d553d5cc65cbffdf42ea4b7cd: DELETED, exact live tip then exact live absence"
+    - "freeze/20260715-r2-claude @ ba1cea7547e98d03c4216546d5a9069171726698: DELETED, exact live tip then exact live absence"
+    - "claude/signal-r4-kickoff-planning-354qc0 @ 95c997f6a1e15375f1022f2d775b8c93ba32a2eb: DELETED, exact live tip then exact live absence"
+    - "claude/wo-0148-clean-room-p06lq6 @ b56ce60043e0609bd73989f8429b573539cedd93: DELETED, exact live tip then exact live absence"
+    - "codex/signal-r5a-foundation @ b2a5667172a63c201ba7f3062a3a01a6a28018fb: DELETED, exact live tip then exact live absence"
+    - "codex/signal-r5b1-producer-ingest @ bbc7e96356b582d410105f5d86291b952acd6158: DELETED, exact live tip then exact live absence"
+    - "codex/signal-r5b2-operator-auth @ d28cabd0d661b9a71bcd50c7a473c7a1fabd67a7: DELETED, exact live tip then exact live absence"
+    - "codex/signal-tests-staging @ 24d3746a35e30f736a6c5e3541720f0d47b0d751: DELETED, exact live tip then exact live absence"
+  local_branch_deletions:
+    - "normal: codex/beta-prep-sweep, codex/signal-r4-store, codex/signal-r5a-foundation, codex/signal-r5b1-producer-ingest, codex/signal-r5b2-operator-auth"
+    - "authorized -D after committed integration/supersession proof: codex/lane2-core, codex/wo-0114-coverage-fix, codex/wo-0118, codex/wo-0126"
+  worktree_removals:
+    - "DELETED: codex/lane2-core, codex/wo-0114-coverage-fix, codex/wo-0118, codex/wo-0126"
+    - "DEFERRED - ENVIRONMENT CONTROL: codex/lane2-bootstrap, codex/lane2-docs, codex/signal-tests-staging, codex/wo-0114, codex/wo-0124; normal Git removal deregistered them but exact ignored-cache deletion returned AccessDenied."
+  deferred_targets:
+    - "Five exact unregistered worktree remnants and their local fallback branches: see REV-0056/WO-0153-EXECUTION-OUTCOME.md."
+    - "55 exact allowed root cache directories rejected direct removal with UnauthorizedAccessException."
+    - "10 exact generated REV-0050 fixture files (1,420 bytes total) rejected direct removal with AccessDenied."
   stale_remote_tracking_cache: []
-  reclaimed_root_generated_bytes: null
-  reclaimed_worktree_bytes: null
+  reclaimed_root_generated_bytes: 3012070178
+  reclaimed_worktree_bytes: "Not measured; no per-worktree pre-removal byte baseline was recorded, so no estimate is claimed."
+  outcome_report: "work/review/REV-0056/WO-0153-EXECUTION-OUTCOME.md"

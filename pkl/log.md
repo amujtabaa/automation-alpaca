@@ -181,3 +181,10 @@
   remain retained evidence. WO-0150 through WO-0152 remain DRAFT/inactive; no implementation,
   test, SQL/DDL, database, runtime, broker/network, credential, M2, merge, deletion, or cleanup
   authority was added.
+- 2026-08-06: WO-0153 completed the authorized reset cleanup's reconcilable scope. The exact
+  pre-deletion baseline is `4c655be69ddb19e844c2c8d1ae077844acab8968`; eleven exact live remote
+  refs, nine local branches, four worktrees, and `3,012,070,178` bytes of measured generated files
+  were retired after the retained WO-0149 source/test capture and documentation/provenance mapping.
+  Five worktree remnants, 55 root cache directories, and ten generated fixtures remain only because
+  direct exact deletion returned `AccessDenied`; no ACL, ownership, or other bypass was attempted.
+  WO-0150 through WO-0152 remain DRAFT/inactive.
