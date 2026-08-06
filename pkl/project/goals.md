@@ -70,8 +70,9 @@ Current E2 R8 re-gate (2026-08-06): R8 independently accepted the bounded,
 target-local bootstrap representation and neutral checkpoint alignment at P0=0/P1=0/P2=0, then
 received exact user ratification. Only WO-0151 may implement that pure semantic center.
 Documentation-only activation SHA `466e712b6f507ee165a7fc0c80e826fa8a35a710` remains
-live-verified; R7 is retained predecessor evidence and R8 remains a contract, not proof of
-runtime behavior.
+live-verified. The exact R8 re-gate documentation SHA is
+`07f169bb6630753b4e12960738e4fb0533686ada`; R7 is retained predecessor evidence and R8 remains
+a contract, not proof of runtime behavior.
 
 ## Cleanup posture
 

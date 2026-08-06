@@ -17,7 +17,7 @@ activation_required: "SATISFIED — ratified R8 contract d6a0295f14652222d9fa05e
 activated: 2026-08-06
 activation_commit: 466e712b6f507ee165a7fc0c80e826fa8a35a710
 r8_regated: 2026-08-06
-r8_regate_commit: PENDING_WO0151_R8_REGATE_COMMIT
+r8_regate_commit: 07f169bb6630753b4e12960738e4fb0533686ada
 ---
 
 # WO-0151 - Reset kernel E2: aggregate controller, successor admission, and mixed recovery

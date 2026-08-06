@@ -1,6 +1,6 @@
 # WO-0151 activation disposition
 
-Status: **R7 ACTIVATION RECORDED; R8 RE-GATE AUTHORIZED -- EXACT DOCUMENTATION COMMIT PENDING**
+Status: **R7 ACTIVATION RECORDED; R8 RE-GATE RECONCILED AT EXACT DOCUMENTATION COMMIT**
 
 [FABLE - FULL - verification: DIRECT plus independent review - task: WO-0151
 activation and pure E2 implementation]
@@ -86,6 +86,12 @@ record is active. The pre-existing source/test WIP is not acceptance evidence;
 it remains subject to R8 RED controls and the later independent review. No
 SQL/DDL, database, runtime, broker/network, credentials, M2, merge, deletion,
 cleanup, force-push, rebase, or later work-order activation is authorized.
+
+The exact documentation-only R8 re-gate commit is
+`07f169bb6630753b4e12960738e4fb0533686ada`. Its delta contains only the frozen
+R8 packet and required active-WO, PKL, ledger, and activation-disposition
+reconciliation. It contains no source or test implementation and does not
+constitute implementation acceptance evidence.
 
 ## File-level check note
 

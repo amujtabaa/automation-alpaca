@@ -290,3 +290,8 @@
   commits/pushes, and exact-head CI may continue; SQL/DDL, database, runtime, broker/network,
   credentials, M2, merge, deletion, cleanup, rebase, force-push, and later activation remain
   excluded.
+- 2026-08-06: Published the documentation-only R8 re-gate at exact SHA
+  `07f169bb6630753b4e12960738e4fb0533686ada`. Its narrow delta preserves R7 and all earlier
+  evidence, adds the immutable R8 packet, and reconciles only the active-WO, PKL, ledger, and
+  activation-disposition provenance. It contains no application or test implementation and claims
+  no implementation gate or external CI result.
