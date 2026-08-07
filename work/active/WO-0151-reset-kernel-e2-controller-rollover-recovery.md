@@ -19,7 +19,7 @@ activation_commit: 466e712b6f507ee165a7fc0c80e826fa8a35a710
 r8_regated: 2026-08-06
 r8_regate_commit: 07f169bb6630753b4e12960738e4fb0533686ada
 r10_regated: 2026-08-06
-r10_regate_commit: PENDING_WO0151_R10_REGATE_COMMIT
+r10_regate_commit: 638c73cff1e02a8834309362cc5dc762b165871b
 ---
 
 # WO-0151 - Reset kernel E2: aggregate controller, successor admission, and mixed recovery
@@ -106,6 +106,12 @@ This re-gate adds no identity field, replay ledger, factory, public authority
 route, policy path, runtime, persistence, SQL/DDL, database, broker/network,
 credentials, M2, merge, deletion, cleanup, force-push, rebase, or later
 work-order activation authority.
+
+The exact documentation-only R10 re-gate commit is
+`638c73cff1e02a8834309362cc5dc762b165871b`. It preserves the frozen R8,
+R9, and R10 packet, reconciles only required current-posture records, and
+contains no application or test implementation. It makes no implementation,
+review, or external CI success claim.
 
 WO-0149 is formally SUPERSEDED and retained as historical evidence; it grants no authority for
 this serial-generation scope.

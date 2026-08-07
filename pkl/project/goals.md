@@ -72,7 +72,9 @@ Manifest `f8d25b3d32e23e3b672991a3d9538c9c5df2bbe2d439a7e4e9d75d8ecacf1f2b`,
 contract `081b0e7971912776f6722f037b89f907736b67367cafa340c98128a186a1bdd3`, and
 result `dd91f3a1403658cf116767c534ad080daf47acc23458e899c6431db290d6c431`
 control only pure E2 WO-0151. R8 is retained ratification provenance; R9 is retained but is
-not a ratification basis. R10 remains a contract, not proof of runtime behavior.
+not a ratification basis. The exact R10 re-gate documentation SHA is
+`638c73cff1e02a8834309362cc5dc762b165871b`; R10 remains a contract, not proof of runtime
+behavior.
 
 ## Cleanup posture
 

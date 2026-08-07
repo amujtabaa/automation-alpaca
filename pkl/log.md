@@ -307,3 +307,8 @@
   commits/pushes, and later exact-head CI may continue; SQL/DDL, database, runtime, broker/network,
   credentials, M2, merge, deletion, cleanup, rebase, force-push, and later activation remain
   excluded.
+- 2026-08-06: Published the documentation-only R10 re-gate at exact SHA
+  `638c73cff1e02a8834309362cc5dc762b165871b`. Its delta preserves the frozen R8, R9, and R10
+  evidence and reconciles only the active work order, review provenance, PKL, and ledger. It
+  contains no application or test implementation and claims no implementation gate or external CI
+  result.

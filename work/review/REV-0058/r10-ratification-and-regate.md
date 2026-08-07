@@ -1,6 +1,6 @@
 # WO-0151 R10 ratification and re-gate
 
-Status: **RATIFIED AND ACTIVE -- documentation reconciliation pending normal commit**
+Status: **RATIFIED AND ACTIVE -- reconciled at exact documentation commit 638c73cff1e02a8834309362cc5dc762b165871b**
 
 ## Exact authority
 
@@ -14,6 +14,9 @@ On 2026-08-06, the user ratified the immutable WO-0151 R10 RED contract:
 The resulting R10 re-gate authorizes only the existing pure E2 WO-0151 application and test paths,
 focused verification, in-scope remediation, evidence reconciliation, normal commits and pushes, and
 the later exact-head CI gate.
+
+The ratification packet and required posture records were published in the
+documentation-only commit `638c73cff1e02a8834309362cc5dc762b165871b`.
 
 ## Controlling interpretation
 

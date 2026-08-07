@@ -1,6 +1,6 @@
 # WO-0151 activation disposition
 
-Status: **R7 ACTIVATION RECORDED; R8 RE-GATE RETAINED; R10 RE-GATE AUTHORIZED -- EXACT DOCUMENTATION COMMIT PENDING**
+Status: **R7 ACTIVATION RECORDED; R8 RE-GATE RETAINED; R10 RE-GATE RECONCILED AT EXACT DOCUMENTATION COMMIT**
 
 [FABLE - FULL - verification: DIRECT plus independent review - task: WO-0151
 activation and pure E2 implementation]
@@ -107,6 +107,10 @@ its initial acceptance remain retained but are not acceptance or ratification
 authority. Scope and exclusions remain exactly those of the active work order.
 No implementation, test, review, or external CI success is claimed by this
 documentation-only reconciliation.
+
+The exact documentation-only R10 re-gate commit is
+`638c73cff1e02a8834309362cc5dc762b165871b`. It records only the frozen
+packet and required current-posture/provenance reconciliation.
 
 ## File-level check note
 

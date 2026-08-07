@@ -36,7 +36,8 @@ authority for that R2 scope. WO-0150's pure E1 closeout SHA
 (#726) on Python 3.11 and 3.12 and is effective `CLOSED`. WO-0151 is now active only for its
 ratified pure-E2 R2+R3+R4+R5+R6+R7+R8+R9+R10 composite, whose R10 contract is
 `081b0e7971912776f6722f037b89f907736b67367cafa340c98128a186a1bdd3` at documentation-only
-activation SHA `466e712b6f507ee165a7fc0c80e826fa8a35a710`; WO-0152 and all
+activation SHA `466e712b6f507ee165a7fc0c80e826fa8a35a710` and R10 re-gate SHA
+`638c73cff1e02a8834309362cc5dc762b165871b`; WO-0152 and all
 M2/runtime/persistence work remain inactive until separately gated.
 
 ## Current R2 ratification posture
