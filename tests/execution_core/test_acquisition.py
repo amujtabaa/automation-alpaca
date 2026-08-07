@@ -87,6 +87,89 @@ def _commitment(label: str) -> bytes:
     return sha256(label.encode("ascii")).digest()
 
 
+def _different_retained_value(value: object) -> object:
+    """Return one deterministic, single-leaf forgery for a retained value."""
+
+    value_type = type(value)
+    if value is None:
+        return object()
+    if value_type is bool:
+        return not value
+    if value_type is int:
+        return value + 1
+    if value_type is str:
+        return f"{value}-forged"
+    if value_type is bytes:
+        if not value:
+            return b"forged"
+        return bytes([value[0] ^ 1]) + value[1:]
+    if value_type is Fraction:
+        return value + 1
+    members = getattr(value_type, "__members__", None)
+    if members is not None:
+        alternate = next(
+            (member for member in members.values() if member is not value), None
+        )
+        return object() if alternate is None else alternate
+    if value_type is tuple:
+        if not value:
+            return (object(),)
+        changed = list(value)
+        changed[0] = _different_retained_value(changed[0])
+        return tuple(changed)
+    if value_type is frozenset:
+        if not value:
+            return frozenset({object()})
+        changed = list(value)
+        changed[0] = _different_retained_value(changed[0])
+        return frozenset(changed)
+    if value_type.__name__ == "_PersistentKeyMap":
+        return value_type.empty()
+    if is_dataclass(value) and not isinstance(value, type):
+        retained = fields(value)
+        if retained:
+            forged = copy(value)
+            first = retained[0]
+            object.__setattr__(
+                forged,
+                first.name,
+                _different_retained_value(object.__getattribute__(value, first.name)),
+            )
+            return forged
+    return object()
+
+
+def _assert_every_retained_field_is_authenticated(
+    value: object,
+    checker: object,
+    *,
+    type_only_fields: frozenset[str] = frozenset(),
+) -> None:
+    """Prove every retained field participates in one owner authenticity gate."""
+
+    assert callable(checker)
+    assert checker(value)
+    retained = fields(value)
+    assert retained
+    for item in retained:
+        changed = _different_retained_value(object.__getattribute__(value, item.name))
+        replacements = (
+            (object(),)
+            if item.name in type_only_fields
+            else (changed,)
+            if type(changed) is object
+            else (changed, object())
+        )
+        for replacement in replacements:
+            forged = copy(value)
+            object.__setattr__(forged, item.name, replacement)
+            try:
+                accepted = checker(forged)
+            except (AttributeError, TypeError, ValueError):
+                accepted = False
+            assert not accepted, (type(value).__name__, item.name)
+
+
 def _request(label: str) -> RequestOccurrenceId:
     return RequestOccurrenceId(f"request-{label}")
 
@@ -879,6 +962,16 @@ def test_wo0151_r10_preminted_rebase_registration_refuses_newer_authority() -> N
         protection_rebase=projection,
     )
     command = authority.RegisterAcquisitionCurrentness.from_registration(registration)
+    _assert_every_retained_field_is_authenticated(
+        registration,
+        authority._protection_rebase_currentness_registration_is_authentic,
+        type_only_fields=frozenset({"_projection"}),
+    )
+    _assert_every_retained_field_is_authenticated(
+        command,
+        authority._register_protection_rebase_currentness_command_is_authentic,
+        type_only_fields=frozenset({"registration"}),
+    )
 
     reducing = copy(applied.authority)
     object.__setattr__(reducing, "mode", authority.TradingMode.REDUCING)
@@ -1701,6 +1794,14 @@ def test_wo0151_r8_generic_buy_and_public_registration_replay_refuse() -> None:
         bootstrap=bootstrap,
         admission=admission,
     )
+    _assert_every_retained_field_is_authenticated(
+        private_replay.registration,
+        authority._acquisition_currentness_registration_is_authentic,
+    )
+    _assert_every_retained_field_is_authenticated(
+        private_replay,
+        authority._register_acquisition_currentness_command_is_authentic,
+    )
     replay_result = authority.apply_execution_authority_input(
         initialized.authority,
         initialized.execution,
@@ -2192,6 +2293,10 @@ def test_wo0151_r11_final_claim_revalidates_the_exact_currentness_head() -> None
         refresh=refresh,
         input_id=input_id,
     )
+    _assert_every_retained_field_is_authenticated(
+        permit,
+        authority._acquisition_claim_permit_is_authentic,
+    )
     slot_key = authority._acquisition_scope_key(
         created.state.application_generation_id,
         scope,
@@ -2612,6 +2717,14 @@ def test_wo0151_current_generation_fact_registration_replay_and_conflict_are_ine
         ),
     )
     command = authority.RegisterAcquisitionCurrentness.from_registration(registration)
+    _assert_every_retained_field_is_authenticated(
+        registration,
+        authority._canonical_fact_currentness_registration_is_authentic,
+    )
+    _assert_every_retained_field_is_authenticated(
+        command,
+        authority._register_canonical_fact_currentness_command_is_authentic,
+    )
 
     replay = authority.apply_execution_authority_input(
         applied.authority,
@@ -4148,6 +4261,354 @@ def test_wo0151_controller_surface_is_explicit_opaque_and_refresh_owned() -> Non
             opaque_type()
         with pytest.raises(TypeError):
             type(f"Forged{opaque_type.__name__}", (opaque_type,), {})
+
+
+def test_wo0151_acquisition_owner_authenticates_every_retained_state_field() -> None:
+    _, _, claimed, filled = _r8_current_generation_fill_transition(
+        acknowledged=True,
+        prefill_needs_review=False,
+    )
+    applied = acquisition.reduce_acquisition_controller(
+        claimed.state,
+        filled,
+        None,
+        claimed.authority,
+    )
+    assert applied.disposition is acquisition.AcquisitionControllerDisposition.APPLIED
+    state = applied.state
+    controller = state._controller
+    mandate = state._mandate
+    projection = filled.book.project_acquisition_fact(filled)
+    relation = projection.fact_relation()
+    assert relation is not None
+    route = state.lineage.route_effect(relation.effect_id)
+    assert route is not None
+    assert controller.live_generation_id is not None
+    record = state.registry.record(controller.live_generation_id)
+    assert record is not None
+
+    cases = (
+        (mandate.binding, acquisition._dual_mandate_binding_is_authentic),
+        (mandate, acquisition._acquisition_mandate_is_authentic),
+        (record.binding, acquisition._generation_binding_view_is_authentic),
+        (record, acquisition._generation_record_is_authentic),
+        (state.registry, acquisition._registry_is_authentic),
+        (route, acquisition._generation_route_is_authentic),
+        (state.lineage, acquisition._lineage_is_authentic),
+        (controller, acquisition._controller_is_authentic),
+        (state, acquisition._controller_state_is_authentic),
+    )
+    for value, checker in cases:
+        _assert_every_retained_field_is_authenticated(value, checker)
+
+
+def test_wo0151_authority_owner_authenticates_every_retained_e2_field() -> None:
+    authority, scope, created = _r8_created_first_effect()
+    assert created.created_effect_id is not None
+    scope_key = authority._acquisition_scope_key(
+        created.state.application_generation_id,
+        scope,
+    )
+    effect_key = authority._effect_key(created.created_effect_id)
+    entry = created.authority._acquisition_currentness_by_scope.get(scope_key)
+    descriptor = created.authority._acquisition_descriptor_by_effect.get(effect_key)
+    active = created.authority._acquisition_active_by_scope.get(scope_key)
+    assert entry is not None
+    assert descriptor is not None
+    assert active is not None
+
+    refresh = authority.refresh_acquisition_context(
+        created.authority,
+        created.execution,
+        scope,
+    )
+    assert refresh.venue_context is not None
+    context = authority.project_acquisition_authority_context(
+        created.authority,
+        created.execution,
+        refresh.venue_context,
+    )
+    admission = authority.project_acquisition_admission(
+        created.authority,
+        created.execution,
+        scope,
+    )
+    _, _, claimed = _r8_claimed_first_effect()
+    assert claimed.fresh_claim is not None
+
+    base_permit = descriptor.permit
+    next_controller_head = sha256(
+        b"wo0151-owner-boundary-exit" + base_permit.controller_head
+    ).digest()
+    exit_permit = authority._new_acquisition_exit_permit(
+        input_id=authority.AuthorityInputId("wo0151-owner-boundary-exit"),
+        purpose=authority._AcquisitionExitPurpose.PREEMPT_BUY_ONLY,
+        application_generation_id=base_permit.application_generation_id,
+        position_scope=base_permit.position_scope,
+        session_id=base_permit.session_id,
+        generation_id=base_permit.generation_id,
+        acquisition_mandate_id=base_permit.acquisition_mandate_id,
+        protection_mandate_id=base_permit.protection_mandate_id,
+        binding_commitment=base_permit.binding_commitment,
+        emergency_recovery_compatibility_commitment=(
+            base_permit.emergency_recovery_compatibility_commitment
+        ),
+        predecessor_controller_head=base_permit.controller_head,
+        controller_head=next_controller_head,
+        successor_ordinal=base_permit.successor_ordinal,
+        execution_snapshot_commitment=base_permit.execution_snapshot_commitment,
+        scope_execution_commitment=base_permit.scope_execution_commitment,
+        venue_commitment=base_permit.venue_commitment,
+        authority_context_commitment=base_permit.authority_context_commitment,
+        predecessor_protection_commitment=base_permit.protection_commitment,
+        protection_commitment=_commitment("wo0151-owner-boundary-protection"),
+        residual_quantity=base_permit.terms.quantity,
+        target_effect_id=base_permit.effect_id,
+        protective_request=None,
+        intent_commitment=_commitment("wo0151-owner-boundary-intent"),
+    )
+    successor_generation_id = acquisition._derive_acquisition_generation_id(
+        base_permit.application_generation_id,
+        base_permit.position_scope,
+        base_permit.successor_ordinal + 1,
+        base_permit.binding_commitment,
+        base_permit.controller_head,
+        base_permit.emergency_recovery_compatibility_commitment,
+    )
+    inactive = authority._new_acquisition_inactive_slot(
+        active,
+        descriptor,
+        successor_generation_id,
+    )
+    _, _, _, fact_transition = _r8_current_generation_fill_transition(
+        acknowledged=True,
+        prefill_needs_review=False,
+    )
+    fact_projection = fact_transition.book.project_acquisition_fact(fact_transition)
+    fact_preemption = authority._new_acquisition_fact_preemption(
+        input_id=exit_permit.input_id,
+        permit=exit_permit,
+        fact_transition=fact_transition,
+        fact_projection=fact_projection,
+    )
+
+    def refresh_matches_live(value: object) -> bool:
+        return bool(
+            type(value) is authority.AcquisitionContextRefresh
+            and value.matches_current(
+                created.authority,
+                created.state.application_generation_id,
+                scope,
+            )
+        )
+
+    cases = (
+        (entry, authority._acquisition_currentness_entry_is_authentic),
+        (context, authority._acquisition_authority_context_is_authentic),
+        (descriptor.permit.terms, authority._acquisition_effect_terms_is_authentic),
+        (descriptor.permit, authority._acquisition_effect_permit_is_authentic),
+        (descriptor, authority._acquisition_effect_descriptor_is_authentic),
+        (active, authority._acquisition_active_effect_is_authentic),
+        (inactive, authority._acquisition_inactive_slot_is_authentic),
+        (exit_permit, authority._acquisition_exit_permit_is_authentic),
+        (claimed.fresh_claim, authority._acquisition_claim_receipt_is_authentic),
+    )
+    for value, checker in cases:
+        _assert_every_retained_field_is_authenticated(value, checker)
+    _assert_every_retained_field_is_authenticated(
+        refresh,
+        refresh_matches_live,
+        type_only_fields=frozenset({"predecessor_venue_context"}),
+    )
+    _assert_every_retained_field_is_authenticated(
+        admission,
+        authority._acquisition_admission_is_authentic,
+        type_only_fields=frozenset({"_authority", "_execution", "_venue_context"}),
+    )
+    _assert_every_retained_field_is_authenticated(
+        fact_preemption,
+        authority._acquisition_fact_preemption_is_authentic,
+        type_only_fields=frozenset({"permit", "_fact_transition", "_fact_projection"}),
+    )
+
+
+def test_wo0151_protection_owner_authenticates_every_acquisition_field() -> None:
+    (
+        authority,
+        scope,
+        applied,
+        _,
+        predecessor_context,
+        rebase_projection,
+    ) = _r10_semantic_rebase_fixture()
+    protection = protection_fixtures._protection_module()
+    assert applied.protection is not None
+    compatibility = (
+        applied.state._mandate.protection_mandate.emergency_recovery_compatibility
+    )
+
+    _, _, waiting, _ = _r11_waiting_preemption_fixture()
+    assert waiting.protection is not None
+    waiting_refresh = authority.refresh_acquisition_context(
+        waiting.authority,
+        waiting.execution,
+        scope,
+    )
+    assert waiting_refresh.venue_context is not None
+    waiting_context = protection.project_acquisition_protection_context(
+        waiting.protection,
+        waiting.venue,
+        waiting.execution,
+        waiting_refresh.venue_context,
+    )
+    assert waiting_context is not None
+    preemption_intent = protection._project_acquisition_preemption_intent(
+        waiting.protection,
+        waiting_context,
+    )
+    assert preemption_intent is not None
+
+    _, _, _, released, next_authority, exit_refresh = _r11_protection_exit_fixture()
+    assert exit_refresh.venue_context is not None
+    exit_context = protection.project_acquisition_protection_context(
+        released.state,
+        next_authority.venue,
+        exit_refresh.execution,
+        exit_refresh.venue_context,
+    )
+    assert exit_context is not None
+    exit_intent = protection._project_acquisition_protection_exit_intent(
+        released,
+        exit_context,
+    )
+    assert exit_intent is not None
+
+    cases = (
+        (compatibility, protection._emergency_recovery_compatibility_is_authentic),
+        (applied.protection, protection._state_is_authentic),
+        (predecessor_context, protection._acquisition_protection_context_is_authentic),
+        (
+            rebase_projection,
+            protection._acquisition_protection_rebase_projection_is_authentic,
+        ),
+        (released._source_projection, protection._projection_is_authentic),
+        (released, protection._protection_transition_is_authentic),
+        (preemption_intent, protection._acquisition_preemption_intent_is_authentic),
+        (
+            exit_intent,
+            protection._acquisition_protection_exit_intent_is_authentic,
+        ),
+    )
+    for value, checker in cases:
+        _assert_every_retained_field_is_authenticated(value, checker)
+
+
+def test_wo0151_venue_owner_authenticates_every_acquisition_fact_field() -> None:
+    _, scope, _, filled = _r8_current_generation_fill_transition(
+        acknowledged=True,
+        prefill_needs_review=False,
+    )
+    context = filled.book.project_acquisition_context(filled.execution, scope)
+    projection = filled.book.project_acquisition_fact(filled)
+    relation = projection.fact_relation()
+    assert relation is not None
+    proof = filled._acquisition_fact_proof
+    assert proof is not None
+    protection_proof = filled._protection_proof
+
+    _, bootstrap_scope, initialized = _r8_initialized_controller()
+    active_bootstrap = initialized.authority.venue._bootstrap_bound_target_record(
+        bootstrap_scope
+    )
+    assert active_bootstrap is not None
+    _, _, created = _r8_created_first_effect()
+    consumed_bootstrap = created.authority.venue._bootstrap_bound_target_by_scope.get(
+        venue._position_scope_index_key(bootstrap_scope)
+    )
+    assert consumed_bootstrap is not None
+
+    cases = (
+        (context, venue._acquisition_venue_context_is_authentic),
+        (projection, venue._acquisition_venue_projection_is_authentic),
+        (relation, venue._acquisition_fact_relation_is_authentic),
+        (protection_proof, venue._protection_transition_proof_is_authentic),
+        (active_bootstrap, venue._bootstrap_bound_target_record_is_authentic),
+        (
+            consumed_bootstrap,
+            venue._consumed_bootstrap_bound_target_record_is_authentic,
+        ),
+    )
+    for value, checker in cases:
+        _assert_every_retained_field_is_authenticated(value, checker)
+
+
+def test_wo0151_owner_minted_boundaries_reject_direct_construction() -> None:
+    authority = authority_fixtures._authority_module()
+    protection = protection_fixtures._protection_module()
+    constructor_blocked = (
+        acquisition.GenerationBindingView,
+        acquisition.GenerationRecordView,
+        acquisition.GenerationRouteView,
+        acquisition.GenerationRegistry,
+        acquisition.AcquisitionLineageIndex,
+        acquisition.DualMandateBinding,
+        acquisition.SymbolAcquisitionController,
+        acquisition.AcquisitionControllerState,
+        acquisition.AcquisitionControllerStatus,
+        acquisition.AcquisitionControllerTransition,
+        authority._RegisterAcquisitionCurrentness,
+        authority.RegisterAcquisitionCurrentness,
+        authority.ExecutionAuthorityState,
+        authority.AcquisitionAuthorityContext,
+        authority.AcquisitionAdmissionProjection,
+        authority._AcquisitionCurrentnessEntry,
+        authority.AcquisitionContextRefresh,
+        authority._AcquisitionCurrentnessRegistration,
+        authority._CanonicalFactCurrentnessRegistration,
+        authority._ProtectionRebaseCurrentnessRegistration,
+        authority.AcquisitionAuthorityReceipt,
+        authority.AcquisitionClaimReceipt,
+        authority.AcquisitionEffectPermit,
+        authority.AcquisitionClaimPermit,
+        authority.AcquisitionExitPermit,
+        authority._AcquisitionFactPreemption,
+        authority._AcquisitionEffectDescriptor,
+        authority._AcquisitionActiveEffect,
+        authority._AcquisitionInactiveSlot,
+        authority.AcquisitionEffectView,
+        protection.PositionProtectionState,
+        protection.ProtectionVenueProjection,
+        protection.ProtectionTransition,
+        protection.AcquisitionMixedRecoveryProof,
+        protection.AcquisitionProtectionContext,
+        protection.AcquisitionProtectionRebaseProjection,
+        protection._AcquisitionPreemptionIntent,
+        protection._AcquisitionProtectionExitIntent,
+        venue.VenueAcquisitionCorrelation,
+        venue.AcquisitionFactRelation,
+        venue.AcquisitionVenueContext,
+        venue.AcquisitionVenueProjection,
+        venue.VenueRecoveryTransition,
+        venue._BootstrapTargetRegistryInput,
+        venue._BootstrapBoundTargetRecord,
+        venue._StagedBootstrapBoundTargetRecord,
+        venue._ConsumedBootstrapBoundTargetRecord,
+        venue.VenueRecoveryBook,
+        venue._BootstrapPromotionPermit,
+    )
+    for value_type in constructor_blocked:
+        with pytest.raises(TypeError):
+            value_type()
+
+    subclass_blocked = tuple(
+        value_type
+        for value_type in constructor_blocked
+        if "__init_subclass__" in vars(value_type)
+    )
+    assert subclass_blocked
+    for value_type in subclass_blocked:
+        with pytest.raises(TypeError):
+            type(f"Forged{value_type.__name__}", (value_type,), {})
 
 
 def test_identity_known_answers_replay_and_well_formed_variants_are_data_only() -> None:

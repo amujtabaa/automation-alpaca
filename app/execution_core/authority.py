@@ -180,6 +180,25 @@ class AcquisitionEffectTerms:
         )
 
 
+def _acquisition_effect_terms_is_authentic(
+    value: object,
+) -> TypeGuard[AcquisitionEffectTerms]:
+    """Recompute the exact economic leaf instead of trusting its cached digest."""
+
+    if type(value) is not AcquisitionEffectTerms:
+        return False
+    try:
+        canonical = AcquisitionEffectTerms(
+            quantity=value.quantity,
+            limit_price=value.limit_price,
+            order_type=value.order_type,
+            evaluation_time=value.evaluation_time,
+        )
+        return value.commitment == canonical.commitment
+    except (AttributeError, TypeError, ValueError):
+        return False
+
+
 @dataclass(frozen=True, slots=True)
 class RequestBudget:
     remaining: int
@@ -1787,6 +1806,8 @@ def _acquisition_effect_permit_is_authentic(
     if type(value) is not AcquisitionEffectPermit:
         return False
     try:
+        if not _acquisition_effect_terms_is_authentic(value.terms):
+            return False
         commitment = _acquisition_effect_permit_commitment(
             input_id=value.input_id,
             application_generation_id=value.application_generation_id,

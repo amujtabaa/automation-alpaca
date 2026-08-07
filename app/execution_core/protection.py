@@ -2065,6 +2065,15 @@ def _projection_is_authentic(projection: ProtectionVenueProjection) -> bool:
         or len(projection._mandate_commitment) != 32
     ):
         return False
+    if (
+        type(projection.predecessor_execution_binding_matches) is not bool
+        or type(projection.execution_binding_matches) is not bool
+        or type(projection.predecessor_account_reconciliation_clear) is not bool
+        or type(projection.account_reconciliation_clear) is not bool
+        or type(projection._basis_available) is not bool
+        or type(projection._basis_metadata_available) is not bool
+    ):
+        return False
     return projection._seal == _projection_commitment(
         projection.predecessor_cursor_ordinal,
         projection.predecessor_cursor_head,
@@ -2379,6 +2388,14 @@ def _state_is_authentic(state: PositionProtectionState) -> bool:
     if not _market_occurrence_identity_is_authentic(state._trade_identity):
         return False
     if not _market_occurrence_identity_is_authentic(state._trail_bid_identity):
+        return False
+    if (
+        type(state.formula_available) is not bool
+        or type(state.waiting_buy_resolution) is not bool
+        or type(state._market_halted) is not bool
+        or type(state._market_baseline_required) is not bool
+        or type(state._market_exhausted) is not bool
+    ):
         return False
     if (state._market_occurrence_epoch is None) != (
         state._market_occurrence_identity is None
