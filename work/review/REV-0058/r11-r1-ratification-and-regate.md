@@ -1,6 +1,6 @@
 # WO-0151 R11 R1 ratification and re-gate
 
-Status: RATIFIED AND ACTIVE -- documentation commit pending
+Status: RATIFIED AND ACTIVE -- exact documentation commit reconciled
 
 ## Exact authority hashes
 
@@ -26,3 +26,7 @@ in-scope remediation, evidence, normal commits/pushes, and exact-head CI are aut
 wiring, persistent database, SQL/DDL, credentials, broker/Alpaca/network activity, M2, master
 merge, pull request, deletion, cleanup, force-push, rebase, and later-work-order activation remain
 excluded.
+
+The exact documentation-only R11 R1 re-gate commit is
+`8ebe9350520e28409c33c28cc958ee926639f28e`. It contains no application or test implementation and
+claims no implementation, review, or external CI success.

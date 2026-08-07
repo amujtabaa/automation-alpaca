@@ -89,6 +89,8 @@ P0=0/P1=0/P2=0, affirmative route completeness) now control only pure E2 WO-0151
 R11 `BLOCK` result is retained negative evidence and is not an acceptance basis. This re-gate adds
 no runtime, database, SQL/DDL, broker/network, credential, M2, merge, deletion, cleanup, rebase,
 force-push, or later-work-order authority.
+The exact documentation-only R11 R1 re-gate SHA is
+`8ebe9350520e28409c33c28cc958ee926639f28e`.
 
 ## Cleanup posture
 

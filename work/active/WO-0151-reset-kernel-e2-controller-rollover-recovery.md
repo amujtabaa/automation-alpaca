@@ -21,7 +21,7 @@ r8_regate_commit: 07f169bb6630753b4e12960738e4fb0533686ada
 r10_regated: 2026-08-06
 r10_regate_commit: 638c73cff1e02a8834309362cc5dc762b165871b
 r11_r1_regated: 2026-08-06
-r11_r1_regate_commit: PENDING_DOCUMENTATION_COMMIT
+r11_r1_regate_commit: 8ebe9350520e28409c33c28cc958ee926639f28e
 ---
 
 # WO-0151 - Reset kernel E2: aggregate controller, successor admission, and mixed recovery
@@ -153,7 +153,8 @@ This re-gate authorizes only the existing pure E2 application/test paths,
 failure-capable controls, verification, in-scope remediation, evidence,
 normal commits/pushes, and exact-head CI. It adds no SQL/DDL, database,
 runtime, broker/network, credential, M2, merge, deletion, cleanup, force-push,
-rebase, or later-work-order authority. Its documentation commit is pending.
+rebase, or later-work-order authority. Its exact documentation commit is
+`8ebe9350520e28409c33c28cc958ee926639f28e`.
 
 WO-0149 is formally SUPERSEDED and retained as historical evidence; it grants no authority for
 this serial-generation scope.

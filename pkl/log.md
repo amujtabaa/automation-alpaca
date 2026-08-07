@@ -324,3 +324,8 @@
   P0=0/P1=0/P2=0, with affirmative route completeness. The R2--R11-plus-R11-R1 composite now
   controls only pure E2 WO-0151. Runtime, database, SQL/DDL, broker/network, credentials, M2,
   merge, deletion, cleanup, rebase, force-push, and later activation remain excluded.
+- 2026-08-06: Published the documentation-only R11 R1 re-gate at exact SHA
+  `8ebe9350520e28409c33c28cc958ee926639f28e`. Its delta contains the frozen R11/R11-R1 packet,
+  both retained review results, and only the directly necessary active-WO, PKL, ledger, and
+  provenance reconciliation. It contains no application or test implementation and claims no
+  implementation gate or external CI result.

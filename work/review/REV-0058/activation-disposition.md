@@ -1,6 +1,6 @@
 # WO-0151 activation disposition
 
-Status: **R11 R1 RATIFIED; DOCUMENTATION RE-GATE COMMIT PENDING**
+Status: **R11 R1 RATIFIED AND RECONCILED AT EXACT DOCUMENTATION COMMIT**
 
 [FABLE - FULL - verification: DIRECT plus independent review - task: WO-0151
 activation and pure E2 implementation]
@@ -126,7 +126,8 @@ and protection-exit constructibility. R11 R1 closes the initial R11 P1 by separa
 goal-independent `PREEMPT_BUY_ONLY` intent from fresh goal-bearing protective SELL exit. The
 initial R11 `BLOCK` result remains retained negative evidence and is not an acceptance basis.
 No new public authority source or policy writer is introduced. All existing scope and safety
-exclusions remain in force. The exact documentation-only re-gate commit is pending.
+exclusions remain in force. The exact documentation-only re-gate commit is
+`8ebe9350520e28409c33c28cc958ee926639f28e`.
 
 ## File-level check note
 

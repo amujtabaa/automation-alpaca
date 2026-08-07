@@ -38,7 +38,8 @@ ratified pure-E2 R2--R11-plus-R11-R1 composite, whose R11 base and R11 R1 correc
 `00f740561bceb036151ac984b45fd40ac6b4255e5b9c301d411ce7b90a7e526d` and
 `d1931b28cad04f457d2e14233966d48789f758546950763e5a0417b07b80c2a9`, following documentation-only
 activation SHA `466e712b6f507ee165a7fc0c80e826fa8a35a710` and R10 re-gate SHA
-`638c73cff1e02a8834309362cc5dc762b165871b`; WO-0152 and all
+`638c73cff1e02a8834309362cc5dc762b165871b`, with R11 R1 re-gate SHA
+`8ebe9350520e28409c33c28cc958ee926639f28e`; WO-0152 and all
 M2/runtime/persistence work remain inactive until separately gated.
 
 ## Current R2 ratification posture
