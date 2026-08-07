@@ -99,3 +99,13 @@ refused.
 
 This closeout adds no runtime, database, broker/network, credential, M2,
 merge, deletion, cleanup, rebase, force-push, or later-work-order authority.
+
+## Subsequent exact-head coverage outcome
+
+Run #741, ID `31185454392`, on
+`a2b84abc1914517cf591f27fb88f0b20b2a47ef7` supersedes only the statement
+that the external result was pending. Both supported Python jobs completed the
+functional/static gates and 5,934 tests, but failed the unchanged 93% coverage
+gate at 91.34%. Under the separately authorized coverage-gate ordering
+amendment, WO-0151 remains effectively `REVIEW` and its final gate is paired
+E2/E3 exact-head CI. This retained closeout is not otherwise rewritten.

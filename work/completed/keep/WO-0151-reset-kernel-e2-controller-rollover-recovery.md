@@ -26,7 +26,7 @@ closed: 2026-08-07
 implementation_manifest: "work/review/REV-0058/WO-0151-R11-R1-IMPLEMENTATION-REMEDIATION-01-CANDIDATE-MANIFEST.md (SHA-256 2538656a49ea643c6befc8e4c55882cf27534f266d2335ef4a630a73182af853)"
 implementation_result: "work/review/REV-0058/WO-0151-R11-R1-IMPLEMENTATION-REMEDIATION-01-RECHECK-RESULT.md (SHA-256 96d08654369894eeaeda0b1b22f8e869735d179daa336c5c3e69d7f19e0e68fd; ACCEPT, P0=0/P1=0/P2=0)"
 closeout_handoff: "work/review/REV-0058/WO-0151-R11-R1-IMPLEMENTATION-CLOSEOUT.md (SHA-256 971a18fab876d84e2e49a0cfe960e38828bc2f9853e187529e374f7ee58cdcdc)"
-external_exact_head: "PENDING - unchanged Python 3.11/3.12 CI on the immutable closeout commit is required before effective closure or any WO-0152 activation"
+external_exact_head: "REVIEW - exact run #741 on a2b84abc1914517cf591f27fb88f0b20b2a47ef7 passed functional/static Python 3.11/3.12 gates but failed only the unchanged 93% coverage ratchet at 91.34%; paired E2/E3 exact-head success is required before effective closure"
 ---
 
 # WO-0151 - Reset kernel E2: aggregate controller, successor admission, and mixed recovery
@@ -398,9 +398,9 @@ fable_done:
     - item: "Static quality, imports, lifecycle scope, and retained evidence are coherent."
       status: MET
       evidence: "Ruff, mypy, import-linter, scope, ledger, PKL, disposition, hashes, and diff gates passed."
-    - item: "The immutable closeout commit passes unchanged Python 3.11 and 3.12 CI."
+    - item: "Paired E2/E3 exact-head Python 3.11 and 3.12 CI passes the unchanged 93% coverage gate."
       status: DEFERRED
-      evidence: "External exact-head CI is required after this closeout is committed and pushed."
+      evidence: "Run #741 verified exact-head functional/static success but failed only 91.34% coverage; the authorized E3 proof layer now supplies the remaining behavior-first coverage evidence."
   scope_check:
     allowed_paths_respected: true
     drive_by_edits: false
@@ -409,7 +409,7 @@ fable_done:
     - "Unchanged exact-head Python 3.11/3.12 CI is the sole remaining WO-0151 effectiveness gate."
   status: VERIFIED
   verification_scope: "Pure E2 implementation, focused/static/type/import/scope checks, mutation evidence, and final independent acceptance only."
-  acceptance_condition: "EXTERNAL_EXACT_HEAD_CI_REQUIRED_BEFORE_EFFECTIVE_WO_0151_CLOSE_OR_WO_0152_ACTIVATION"
+  acceptance_condition: "PAIRED_E2_E3_EXACT_HEAD_CI_93_PERCENT_REQUIRED_BEFORE_EFFECTIVE_CLOSEOUT_OR_M1_COMPLETION"
 ```
 
 This is a filed `CLOSED` closeout record only. Its effective lifecycle remains
@@ -417,3 +417,32 @@ This is a filed `CLOSED` closeout record only. Its effective lifecycle remains
 3.11 and 3.12 CI. WO-0152 remains DRAFT/inactive. This closeout neither
 activates it nor grants runtime, persistence, database, SQL/DDL, broker/network,
 credential, M2, merge, deletion, or cleanup authority.
+
+## Coverage-gate ordering amendment — authorized 2026-08-07
+
+Exact-head run #741, ID `31185454392`, tested
+`a2b84abc1914517cf591f27fb88f0b20b2a47ef7`. Its Python 3.11 job
+`92888729393` and Python 3.12 job `92888729623` completed the functional and
+static gates with 5,934 passed tests each, but both failed the unchanged 93%
+coverage gate at 91.34%. It is therefore positive functional/static evidence
+and negative coverage evidence, not an overall CI success.
+
+The user authorized a narrow gate-order correction because the separately
+drafted E3 proof layer owns generated/stateful/replay/boundedness coverage.
+WO-0151 remains effectively `REVIEW`; its accepted E2 implementation remains
+unchanged. WO-0152 may be independently preflighted while DRAFT and may be
+activated only after an exact independent E3 RED-contract `ACCEPT` at
+P0=0/P1=0. The unchanged 93% gate moves to one paired E2/E3 exact-head
+Python 3.11/3.12 closeout. Neither this correction nor #741 claims effective
+closure, M1 completion, or any broader operating authority.
+
+## WO-0152 R2-R3 activation reconciliation — 2026-08-07
+
+The exact R2-R3 E3 packet then independently returned `ACCEPT`, P0=0/P1=0/P2=0:
+contract `881334b4af6acb566adc57c30a4199f0340129d244cc3d58536c8e7c109a9936`,
+manifest `ee5554bf4e6b380fa7c687324adba7f93168e56168fb84cedf519115e4b7c3f6`,
+and result `8752e20fa0aba82885d1d49ae8eabca9901218f5659073adcb4324fa9b189a59`.
+WO-0152 is consequently active only for its named test-only E3 proof layer.
+This does not close WO-0151, alter the accepted E2 implementation, relax the
+paired unchanged-93% exact-head gate, or grant any production, runtime,
+database, broker/network, credential, M2, merge, deletion, or cleanup authority.

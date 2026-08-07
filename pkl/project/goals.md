@@ -30,9 +30,22 @@ grant R2 implementation authority. `WO-0150` is effectively `CLOSED`: its exact 
 Python 3.11 and 3.12. `WO-0151` has a locally verified pure-E2 closeout at remediation manifest
 `2538656a49ea643c6befc8e4c55882cf27534f266d2335ef4a630a73182af853`; its final independent
 recheck `96d08654369894eeaeda0b1b22f8e869735d179daa336c5c3e69d7f19e0e68fd` returned `ACCEPT`,
-P0=0/P1=0/P2=0. Its effective lifecycle remains `REVIEW` until unchanged exact-head Python
-3.11/3.12 CI succeeds. `WO-0152` remains DRAFT/inactive. M2 and every
-runtime/persistence/cutover slice remain inactive. WO-0153
+P0=0/P1=0/P2=0. Exact-head run #741 (`31185454392`) then passed functional/static Python 3.11/3.12
+gates and all 5,934 tests on `a2b84abc1914517cf591f27fb88f0b20b2a47ef7`, but failed only the
+unchanged 93% coverage gate at 91.34%. Its effective lifecycle remains `REVIEW` pending paired
+ E2/E3 exact-head closure. `WO-0152` is ACTIVE only for its test-only E3 proof layer after exact
+ R2-R3 independent `ACCEPT`, P0=0/P1=0/P2=0, at result
+ `8752e20fa0aba82885d1d49ae8eabca9901218f5659073adcb4324fa9b189a59`; its initial strict-public candidate and first R1 result remain
+ retained negative preflight evidence; R1 found P1=2. R1 remediation 01 then corrected those two
+ issues but independently retained P1=1 for a distinct pre-bootstrap sibling-history bridge outside
+ the two-fixture allowlist. The user then authorized in-flight resolution within the existing safety
+boundaries; the initial R2 candidate and R2-R2 candidate are retained unaccepted evidence, while
+R2-R1 is retained `ACCEPT-WITH-CHANGES` evidence with P1=1. The accepted WO-0152 R2-R3 composite
+retains the same bounded environment-predecessor extension plus one public boundedness-tripwire
+static exception with its inherited fixture table made coherent. Documentation-only activation
+precedes the first E3 test source.
+ M2 and every
+ runtime/persistence/cutover slice remain inactive. WO-0153
 has completed its bounded cleanup scope with environment-controlled deferred artifacts only; it
 adds no implementation authority.
 
@@ -53,8 +66,12 @@ R2--R11-plus-R11-R1 composite, whose R11 base and R11 R1 correction are
 `d1931b28cad04f457d2e14233966d48789f758546950763e5a0417b07b80c2a9`, controls the filed pure-E2
 `WO-0151` implementation closeout. Its exact remediation manifest
 `2538656a49ea643c6befc8e4c55882cf27534f266d2335ef4a630a73182af853` received final independent
-`ACCEPT`, P0=0/P1=0/P2=0. External exact-head CI remains the sole effectiveness gate; WO-0152
-remains DRAFT/inactive. M2 and every runtime/persistence/cutover slice remain inactive.
+`ACCEPT`, P0=0/P1=0/P2=0. Exact-head run #741 is retained functional/static success but
+ coverage-only negative evidence; paired E2/E3 93% exact-head CI is now the effectiveness gate.
+WO-0152 is ACTIVE only for its frozen test-only E3 scope: its R1 remediation 01 result retained one sibling-history
+bridge P1; the first R2 candidate and R2-R2 candidate are retained unaccepted, and R2-R1 retained
+one current-predicate P1. R2-R3 corrects only direct static-table contradictions under the same
+bounded environment-fixture extension and independently `ACCEPT`ed at P0=0/P1=0/P2=0. M2 and every runtime/persistence/cutover slice remain inactive.
 
 Historical E1 amendment (2026-08-05): the original REV-0057 successor is retained historical evidence.
 WO-0150's narrower R1/E2 boundary contract is independently accepted at P0=0/P1=0. E1 is limited
@@ -102,9 +119,37 @@ sole current/retired FILL/CORRECT/BUST matrix and mutation-evidence P1 was corre
 boundary. The focused final result
 `96d08654369894eeaeda0b1b22f8e869735d179daa336c5c3e69d7f19e0e68fd` accepted the exact
 candidate at P0=0/P1=0/P2=0 after an independent 1,353-test pure run and 17/17 focused controls.
-The local closeout is filed, but unchanged Python 3.11 and 3.12 CI on its immutable commit remains
-required before effective `CLOSED` status or any WO-0152 activation. No prohibited local R2,
-database, runtime, broker, network, credential, M2, merge, deletion, or cleanup result was used.
+The local closeout is filed. Unchanged Python 3.11 and 3.12 CI at the paired
+93% gate remains required before effective `CLOSED` status; under the later
+coverage-gate ordering amendment, WO-0152 activation instead requires its own
+frozen independent E3 `ACCEPT` at P0=0/P1=0. No prohibited local R2, database,
+runtime, broker, network, credential, M2, merge, deletion, or cleanup result
+was used.
+
+Current E2/E3 coverage-gate ordering amendment (2026-08-07): exact-head run #741 / ID
+`31185454392` for `a2b84abc1914517cf591f27fb88f0b20b2a47ef7` completed the functional/static
+gates on Python 3.11 job `92888729393` and Python 3.12 job `92888729623`, each with 5,934 passed
+tests, 11 skipped, and one expected failure. Its sole failure was the unchanged 93% coverage
+ratchet at 91.34%. The run is neither an overall CI success nor an E2 closeout. WO-0151 remains
+effectively `REVIEW`; WO-0152 may be drafted/preflighted as a test-only behavior-first proof
+layer, and only a frozen independent E3 `ACCEPT` at P0=0/P1=0 may activate it. Both orders remain
+pending one paired unchanged-93% exact-head Python 3.11/3.12 closeout. No production, database,
+SQL/DDL, runtime, broker/network, credential, M2, merge, deletion, or cleanup authority changed.
+
+Current WO-0152 R2-R3 activation (2026-08-07): R1 remediation 01 result
+`8654e55a40dc6215c1f860ff87f9751e1d6d1c0e03f374c3a4a8e544f769945f` retained the
+pre-bootstrap sibling-history P1. The first R2 candidate is retained unaccepted; R2-R1 result
+`098b2a3791505064406cd1087a654dc89a3a96d9b42906d7ec491cb4bca5bae9` retained one
+current-predicate P1. R2-R2 was stopped before verdict because its static rule contradicted
+inherited fixture exceptions and gave one public method the wrong trap shape. R2-R3 preserves the
+same bounded environment-fixture bridge and public sixteen-member tripwire while correcting only
+those static-table contradictions. The exact R2-R3 contract
+`881334b4af6acb566adc57c30a4199f0340129d244cc3d58536c8e7c109a9936`, manifest
+`ee5554bf4e6b380fa7c687324adba7f93168e56168fb84cedf519115e4b7c3f6`, and result
+`8752e20fa0aba82885d1d49ae8eabca9901218f5659073adcb4324fa9b189a59` now activate only
+the named test-only E3 scope. They add no new setup fixture, private bridge, public API,
+production authority, or operational authority. The paired E2/E3 93% exact-head closeout
+and all standing exclusions remain unchanged.
 
 ## Cleanup posture
 
@@ -159,9 +204,11 @@ runtime, persistence, broker/network, credential, database, or M2 authority.
 - Reset implementation advances only through independently reviewed work orders explicitly
   activated after their predecessor gates. `WO-0145` through `WO-0148` are effective `CLOSED`.
   WO-0150 is effectively `CLOSED` after exact-head Python 3.11/3.12 CI. WO-0149 is formally
-  SUPERSEDED; WO-0151 alone is active for pure E2 implementation, while WO-0152 remains DRAFT.
-  Runtime wiring, persistent database work, broker/network activity, credentials, M2, merge,
-  deletion, and cleanup remain outside current authority.
+   SUPERSEDED; WO-0151 is effectively `REVIEW` after coverage-only run #741, while WO-0152 is
+   DRAFT/preflight-only after its R1 remediation 01 retained a sibling-history P1.
+   Runtime wiring,
+  persistent database work, broker/network activity, credentials, M2, merge, deletion, and cleanup
+  remain outside current authority.
 
 ## Rationale
 
@@ -265,3 +312,28 @@ Roadmapping against an unverified codebase state repeats the failure mode Fable 
   files. Filesystem `AccessDenied` retained five worktree remnants, 55 root cache directories, and
   ten generated fixtures; no ACL/ownership or other bypass was attempted. WO-0150 through WO-0152
   remain DRAFT/inactive.
+- 2026-08-07: The retained WO-0152 R1 remediation 01 `ACCEPT-WITH-CHANGES` result identified one
+  pre-bootstrap sibling-history constructibility P1. Ameen then authorized in-flight issue
+  resolution under existing exclusions. R2 may draft/freeze/review only one extension of the
+  existing environment predecessor fixture: a fixed public same-account OTHER-symbol history and
+  one post-guard copied-authority `venue` installation. It adds no new fixture, production/API
+  capability, or activation authority. WO-0152 remains DRAFT until exact independent R2 `ACCEPT`
+  with P0=0/P1=0; paired E2/E3 93% exact-head closeout remains mandatory.
+- 2026-08-07: The first WO-0152 R2 candidate was stopped before an independent verdict because the
+  work order still named superseded R1 acceptance in its future activation gate. The candidate and
+  absent `result-r2.md` are retained unaccepted evidence. R2-R1 corrects only that reference and
+  lifecycle paths; it preserves the bounded environment-fixture semantics and requires a fresh
+  independent P0=0/P1=0 `ACCEPT` before any E3 activation or test implementation.
+- 2026-08-07: R2-R1 independently returned `ACCEPT-WITH-CHANGES`, P0=0/P1=1/P2=0 because two
+  active PKL clauses still named an R2 result. The direct post-review boundedness audit also found
+  that the already required E3 materialization proof needed an explicit public-only tripwire,
+  including the history-materializing `VenueRecoveryBook.effect` method. R2-R2 corrects only those
+  active predicates and freezes the restoring trap; it preserves every R2/R2-R1 semantic and scope
+  boundary. WO-0152 remains DRAFT until exact independent R2-R2 `ACCEPT` at P0=0/P1=0.
+- 2026-08-07: Before any R2-R2 independent verdict, an author constructibility pass found that
+  its broad source-policy sentence would prohibit inherited exact fixture operations and that
+  `SeenFactIndex.observation_at` is a public keyed method, not a property. R2-R2 is retained
+  unaccepted evidence and `result-r2-r2.md` remains absent. A source-level adjudication confirmed
+  `VenueRecoveryBook.effect` stays in the sixteen-member trap because it materializes retained
+  contradiction history. R2-R3 corrects only the lexical exception table and replacement shapes;
+  WO-0152 stays DRAFT until exact independent R2-R3 `ACCEPT` at P0=0/P1=0.

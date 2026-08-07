@@ -339,3 +339,85 @@
   and is not acceptance evidence. Effective lifecycle remains `REVIEW` until unchanged exact-head
   Python 3.11/3.12 CI succeeds. WO-0152, runtime, persistence, database, broker/network,
   credentials, M2, merge, deletion, and cleanup remain inactive.
+- 2026-08-07: Exact-head GitHub Actions push run #741 / ID `31185454392` for
+  `a2b84abc1914517cf591f27fb88f0b20b2a47ef7` completed the functional/static gates on Python 3.11
+  job `92888729393` and Python 3.12 job `92888729623`, each with 5,934 passed tests, 11 skipped,
+  and one expected failure. Both jobs failed only the unchanged 93% coverage gate at 91.34%. The
+  user authorized a narrow E2/E3 coverage-gate ordering amendment: this is positive functional/static
+  evidence and negative coverage evidence, not overall CI success; WO-0151 remains effective REVIEW;
+  WO-0152 may be drafted/preflighted test-only and activates only after independent exact ACCEPT at
+  P0=0/P1=0; one later paired E2/E3 exact-head Python 3.11/3.12 pass at unchanged 93% is required
+  before either effective closeout or M1 completion. No production, database, SQL/DDL, runtime,
+  broker/network, credential, M2, merge, deletion, cleanup, force-push, or rebase authority changed.
+- 2026-08-07: The initial WO-0152 E3 RED candidate remains retained negative preflight evidence:
+  its strict public-only setup could not mint an approved opaque dual mandate binding or certify
+  the closed parent required after a root-owning predecessor. Ameen authorized only R1
+  documentation/preflight to add two exact test-only setup exceptions in the one future E3 module:
+  _approved_acquisition_mandates_fixture has one statically allowlisted private dual-binding
+  minter call site for fixed immutable A/B/C mandates before genesis, and
+  _certified_terminal_parent_fixture may perform one fully prechecked internal parent closure
+  under an isolated temporary certification hook after public lifecycle evidence. Both model
+  deferred M2 configuration/adapter certification and grant no operational authority. R1 remains
+  DRAFT/preflight-only until an exact independent P0=0/P1=0 ACCEPT; no test, production,
+  database/SQL/DDL, runtime, broker/network, CI workflow, M2, merge, deletion, cleanup,
+  force-push, or rebase work was authorized or performed by this entry.
+- 2026-08-07: The first WO-0152 R1 preflight returned `ACCEPT-WITH-CHANGES`, P0=0/P1=2/P2=0.
+  Both P1s are contract constructibility gaps, not production findings: the already authorized
+  copied-authority venue installation was omitted from the literal static exception table, and the
+  terminal closure did not yet own a lawful bounded proof that target-effect reconciliation was
+  clear before its one internal transition. R1 remediation 01 remains DRAFT/preflight-only. It
+  permits no third fixture, private reconciliation reader, public API, production/test
+  implementation, SQL/DDL, database, runtime, broker/network, CI, M2, merge, deletion, cleanup,
+  force-push, or rebase. It requires a new exact independent `ACCEPT` at P0=0/P1=0 before
+  WO-0152 activation.
+- 2026-08-07: WO-0152 R1 remediation 01 independently verified both authorized fixture repairs but
+  returned `ACCEPT-WITH-CHANGES`, P0=0/P1=1/P2=0 at result
+  `8654e55a40dc6215c1f860ff87f9751e1d6d1c0e03f374c3a4a8e544f769945f`.
+  The remaining P1 is the distinct canonical sibling-history premise: public venue observation and
+  evidence transitions evolve a book but cannot install that book into opaque authority before
+  target bootstrap through the existing two-fixture test-only allowance. WO-0152 remains DRAFT;
+  no test creation/execution or activation occurred. A separate human-authorized lawful boundary is
+  required before another freeze. No production/API, database, SQL/DDL, runtime, broker/network,
+  credential, CI-workflow, M2, merge, deletion, cleanup, force-push, or rebase authority changed.
+- 2026-08-07: Ameen authorized resolution of WO-0152 E3 issues arising in flight under all existing
+  safety exclusions. The narrow R2 DRAFT correction retains the R1/R1 P1 as negative evidence and
+  extends only the existing serving environment fixture with one fixed fully public same-account
+  OTHER-symbol lifecycle, followed after direct guards by one copied-authority literal `venue`
+  installation from the final public venue transition. It adds no third fixture, private production
+  access, production/API change, test implementation, activation, or operational capability. Fresh
+  independent P0=0/P1=0 `ACCEPT` remains required before WO-0152 activation; paired E2/E3 93%
+  exact-head closeout remains mandatory.
+- 2026-08-07: Before independent R2 verdict, a stale work-order future gate still named the
+  superseded R1 acceptance. The R2 packet was stopped with no `result-r2.md`; it is retained
+  unaccepted evidence. R2-R1 corrects only the activation reference and R2-R1 lifecycle paths,
+  preserves every sibling-history/fixture/static bound, and requires fresh independent P0=0/P1=0
+  `ACCEPT` before test-only E3 activation. No source/test implementation, production/API, database,
+  SQL/DDL, runtime, broker/network, CI, M2, merge, deletion, cleanup, force-push, or rebase work
+  was performed or authorized by this correction.
+- 2026-08-07: R2-R1 independently returned `ACCEPT-WITH-CHANGES`, P0=0/P1=1/P2=0 at
+  `098b2a3791505064406cd1087a654dc89a3a96d9b42906d7ec491cb4bca5bae9`; its sole finding was
+  stale current PKL wording that still required an R2 result. The same bounded static pass found
+  that E3's required instrumented boundedness proof needed an exact public-materialization
+  tripwire, including `VenueRecoveryBook.effect`, rather than an implicit test exception. R2-R2
+  corrects only those active predicates and freezes that restoring public-only trap. WO-0152
+  remains DRAFT; only fresh independent R2-R2 P0=0/P1=0 `ACCEPT` may activate test-only E3.
+  No production/API, database, SQL/DDL, runtime, broker/network, credential, CI-workflow, M2,
+  merge, deletion, cleanup, force-push, or rebase authority changed.
+- 2026-08-07: Before an independent R2-R2 verdict, its broad source-policy sentence was found to
+  contradict inherited exact fixture operations, and its tripwire described public
+  `SeenFactIndex.observation_at` with the wrong callable shape. `result-r2-r2.md` remains absent;
+  R2-R2 is retained unaccepted evidence. Source-level static adjudication confirmed the exact
+  tripwire remains sixteen members, including `VenueRecoveryBook.effect` because that public
+  method materializes retained contradiction history. R2-R3 corrects only the lexical exception
+  table and fourteen-property/two-method trap shapes. WO-0152 remains DRAFT until exact
+  independent R2-R3 P0=0/P1=0 `ACCEPT`; no production/API, database, SQL/DDL, runtime,
+  broker/network, credential, CI-workflow, M2, merge, deletion, cleanup, force-push, or rebase
+  authority changed.
+- 2026-08-07: The exact WO-0152 R2-R3 packet independently `ACCEPT`ed at P0=0/P1=0/P2=0:
+  contract `881334b4af6acb566adc57c30a4199f0340129d244cc3d58536c8e7c109a9936`, manifest
+  `ee5554bf4e6b380fa7c687324adba7f93168e56168fb84cedf519115e4b7c3f6`, and result
+  `8752e20fa0aba82885d1d49ae8eabca9901218f5659073adcb4324fa9b189a59`. The documented
+  activation permits only the one named E3 test module and required lifecycle/evidence records after
+  the exact activation SHA is recorded. WO-0151 remains REVIEW and the paired 93% exact-head CI
+  gate remains mandatory; no production/API, database/SQL/DDL, runtime, broker/network, credential,
+  M2, merge, deletion, cleanup, force-push, or rebase authority changed.

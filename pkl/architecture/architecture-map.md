@@ -37,8 +37,19 @@ authority for that R2 scope. WO-0150's pure E1 closeout SHA
 locally closed at remediation manifest
 `2538656a49ea643c6befc8e4c55882cf27534f266d2335ef4a630a73182af853`; final independent result
 `96d08654369894eeaeda0b1b22f8e869735d179daa336c5c3e69d7f19e0e68fd` returned `ACCEPT`,
-P0=0/P1=0/P2=0. It remains effectively `REVIEW` until unchanged exact-head Python 3.11/3.12 CI
-passes. WO-0152 and all M2/runtime/persistence work remain inactive until separately gated.
+P0=0/P1=0/P2=0. Exact-head run #741 passed the functional/static gates and all 5,934 tests but
+failed only the unchanged 93% coverage threshold at 91.34%; WO-0151 remains effectively `REVIEW`
+ pending paired E2/E3 exact-head closure. WO-0152 is ACTIVE only for its test-only E3 proof layer
+ after exact R2-R3 independent `ACCEPT`, P0=0/P1=0/P2=0, at
+ `8752e20fa0aba82885d1d49ae8eabca9901218f5659073adcb4324fa9b189a59`. Its first R1 preflight retained P1=2; R1 remediation 01
+ corrected those two gaps but independently retained P1=1 for a pre-bootstrap sibling-history
+ authority bridge outside the two-fixture allowlist. The user then authorized bounded in-flight
+ resolution: the initial R2 candidate and R2-R2 candidate are retained unaccepted, while R2-R1 is
+retained `ACCEPT-WITH-CHANGES` evidence with P1=1. R2-R3 accepted the same extension of the
+existing environment fixture plus a bounded public-materialization tripwire with coherent inherited
+fixture exceptions. Documentation-only activation precedes the first E3 test source.
+ All three named setup fixtures and the boundedness tripwire remain test-only and grant no
+ production authority. All M2/runtime/persistence work remains inactive.
 
 ## Current R2 ratification posture
 
@@ -57,8 +68,11 @@ the narrow exact-immutable-replay clarification. The initial R11 result is retai
 evidence; R11 R1 closes its single P1 by separating cancel-only BUY preemption from goal-bearing
 protective SELL exit. The fresh R11 R1 review accepted the complete route set at P0=0/P1=0/P2=0.
 WO-0151's locally verified implementation closeout is the sole product of the
-R2--R11-plus-R11-R1 composite. Its external exact-head CI gate is pending; WO-0152, M2, and all
-runtime/persistence work remain inactive until separately gated.
+R2--R11-plus-R11-R1 composite. Its exact-head run #741 is functional/static success but
+ coverage-only negative evidence; the unchanged 93% gate is deferred to paired E2/E3 closeout.
+ WO-0152 is ACTIVE only for its named test-only scope after R2-R3 independently accepted the bounded
+ sibling-history extension, public boundedness tripwire, and inherited fixture limits; M2 and all runtime/persistence work remain inactive until their
+ applicable gates.
 
 ## Rules / facts
 
@@ -101,8 +115,11 @@ runtime/persistence work remain inactive until separately gated.
   independently `ACCEPT`ed at P0=0/P1=0, and its exact closeout SHA is dual-version CI green.
   Successful registry/index population, permanent routing, and late-fact mutation are E2-only.
   E2 is now locally implemented and independently accepted under the ratified R2--R11-plus-R11-R1
-  composite, with external exact-head CI still pending; E3 remains inactive. No runtime, persistent
-  database, broker, credential, or M2 authority is granted.
+  composite. Run #741 established functional/static exact-head success but coverage-only failure,
+   so E2 remains effectively `REVIEW`; E3 is ACTIVE only for its test-only scope under the narrow paired-closeout
+   amendment after R2-R3 independently accepted the bounded sibling-history bridge and public
+   boundedness tripwire. No runtime, persistent database, broker, credential, or M2 authority is
+   granted.
 - Current posture amendment (2026-08-05): E1 provides only deterministic non-authoritative identity
   data, immutable view and inert-reader shapes, and the no-history venue correlation bridge.
   Successful direct registry/index population, A-to-B-to-C routing, and late-fact mutation are
@@ -195,3 +212,35 @@ Seam discipline is what makes the safety invariants structurally enforceable rat
   one-lifetime same-symbol premise. The record and all related material are retained as evidence;
   WO-0150 through WO-0152 remain DRAFT/inactive. No implementation, test, database, runtime,
   broker, credential, M2, merge, deletion, or cleanup authority was added.
+- 2026-08-07: The retained WO-0152 R1 remediation 01 result exposed a test-only pre-bootstrap
+  sibling-history handoff gap. The authorized R2 correction is limited to the existing serving
+  environment fixture: one fixed public OTHER-symbol lifecycle and one post-guard copied-authority
+  `venue` installation from its final public transition. It represents the deferred M2 adapter
+  composition boundary without adding production/public authority. R2 remains DRAFT/preflight-only;
+  no E3 implementation begins without exact independent P0=0/P1=0 `ACCEPT`.
+- 2026-08-07: The first R2 packet was stopped before independent verdict because the work order's
+  future gate still named the superseded R1 acceptance. R2-R1 corrects only that current lifecycle
+  reference and preserves the same R2 test-only sibling-history bridge. It remains DRAFT/preflight-
+  only until exact independent P0=0/P1=0 `ACCEPT`; no implementation or production authority was
+  added.
+- 2026-08-07: R2-R1 independently returned `ACCEPT-WITH-CHANGES`, P0=0/P1=1/P2=0 for stale
+  current PKL activation wording. The direct boundedness audit additionally required an explicit
+  public-only materialization tripwire, including `VenueRecoveryBook.effect`, to make E3's
+  boundedness proof failure-capable. R2-R2 corrects only those current/posture and static test
+  proof gaps; all R2/R2-R1 sibling-history, fixture, public-API, and safety boundaries remain
+  unchanged. WO-0152 stays DRAFT until exact independent R2-R2 P0=0/P1=0 `ACCEPT`.
+- 2026-08-07: R2-R2 was stopped before independent verdict because its broad static prohibition
+  contradicted inherited exact fixture exceptions and mistyped the public ordered fact reader.
+  `result-r2-r2.md` remains absent. A source-level adjudication confirmed that public
+  `VenueRecoveryBook.effect` remains trapped because it materializes retained contradiction
+  history. R2-R3 corrects only the coherent lexical exception table and the fourteen-property/
+  two-method trap shapes; all R2/R2-R1 semantic and safety boundaries remain unchanged. WO-0152
+  stays DRAFT until exact independent R2-R3 P0=0/P1=0 `ACCEPT`.
+- 2026-08-07: Exact R2-R3 contract
+  `881334b4af6acb566adc57c30a4199f0340129d244cc3d58536c8e7c109a9936`, manifest
+  `ee5554bf4e6b380fa7c687324adba7f93168e56168fb84cedf519115e4b7c3f6`, and independent result
+  `8752e20fa0aba82885d1d49ae8eabca9901218f5659073adcb4324fa9b189a59` independently ACCEPTed at
+  P0=0/P1=0/P2=0. WO-0152 is active only for the one named test-only E3 proof layer after its
+  documentation activation SHA is recorded; WO-0151 remains REVIEW pending paired 93% exact-head
+  closure. No production/API, runtime, database/SQL/DDL, broker/network, credential, M2, merge,
+  deletion, cleanup, force-push, or rebase authority was added.
