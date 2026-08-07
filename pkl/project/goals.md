@@ -28,8 +28,9 @@ serial acquisition-generation foundation. The retained `WO-0149` lifecycle recor
 grant R2 implementation authority. `WO-0150` is effectively `CLOSED`: its exact closeout SHA
 `f1a40d69f301ad7f594a61f202d3bd380607b98a` passed GitHub Actions run `31089203210` (#726) on
 Python 3.11 and 3.12. `WO-0151` is active only for the ratified pure-E2
-R2+R3+R4+R5+R6+R7+R8+R9+R10 composite, whose R10 contract is
-`081b0e7971912776f6722f037b89f907736b67367cafa340c98128a186a1bdd3`; `WO-0152` remains
+R2--R11-plus-R11-R1 composite, whose R11 base and R11 R1 correction are
+`00f740561bceb036151ac984b45fd40ac6b4255e5b9c301d411ce7b90a7e526d` and
+`d1931b28cad04f457d2e14233966d48789f758546950763e5a0417b07b80c2a9`; `WO-0152` remains
 DRAFT/inactive. M2 and every runtime/persistence/cutover slice remain inactive. WO-0153
 has completed its bounded cleanup scope with environment-controlled deferred artifacts only; it
 adds no implementation authority.
@@ -46,8 +47,9 @@ implementation closeout is frozen at remediation-03 manifest
 `ACCEPT`, P0=0/P1=0. Its immutable closeout SHA
 `f1a40d69f301ad7f594a61f202d3bd380607b98a` then passed run `31089203210` (#726) on both
 supported Python jobs. The accepted R7 contract remains retained evidence. The ratified
-R2+R3+R4+R5+R6+R7+R8+R9+R10 composite, whose R10 contract is
-`081b0e7971912776f6722f037b89f907736b67367cafa340c98128a186a1bdd3`, now controls only pure
+R2--R11-plus-R11-R1 composite, whose R11 base and R11 R1 correction are
+`00f740561bceb036151ac984b45fd40ac6b4255e5b9c301d411ce7b90a7e526d` and
+`d1931b28cad04f457d2e14233966d48789f758546950763e5a0417b07b80c2a9`, now controls only pure
 E2 `WO-0151`; WO-0152 remains DRAFT/inactive. M2 and every runtime/persistence/cutover slice
 remain inactive.
 
@@ -75,6 +77,18 @@ control only pure E2 WO-0151. R8 is retained ratification provenance; R9 is reta
 not a ratification basis. The exact R10 re-gate documentation SHA is
 `638c73cff1e02a8834309362cc5dc762b165871b`; R10 remains a contract, not proof of runtime
 behavior.
+
+Current E2 R11 R1 re-gate (2026-08-06): the initial R11 static review found one P1 because
+cancel-only BUY preemption was coupled to protective-SELL goal eligibility. R11 R1 separates the
+private `PREEMPT_BUY_ONLY` intent from the separately goal-bearing protection-exit intent. Exact
+R11 body `00f740561bceb036151ac984b45fd40ac6b4255e5b9c301d411ce7b90a7e526d`, R11 R1 body
+`d1931b28cad04f457d2e14233966d48789f758546950763e5a0417b07b80c2a9`, manifest
+`e31c34027be77f61eb027d9e5dd601bb2e95a0fb87ba6f73eae37b6eec9110c8`, and fresh independent
+result `c3c04b6dd0b4c2c578b52ab49637be45bd31d3d79af6582c0949046993aa4d0b` (`ACCEPT`,
+P0=0/P1=0/P2=0, affirmative route completeness) now control only pure E2 WO-0151. The initial
+R11 `BLOCK` result is retained negative evidence and is not an acceptance basis. This re-gate adds
+no runtime, database, SQL/DDL, broker/network, credential, M2, merge, deletion, cleanup, rebase,
+force-push, or later-work-order authority.
 
 ## Cleanup posture
 

@@ -12,14 +12,16 @@ created: 2026-08-05
 branch: codex/arch-reset-2026-07-r1
 base_sha: f1a40d69f301ad7f594a61f202d3bd380607b98a
 predecessor: "Effectively CLOSED WO-0150: exact f1a40d69f301ad7f594a61f202d3bd380607b98a passed GitHub Actions run 31089203210 (#726) on Python 3.11 and 3.12"
-implementation_authority: "GRANTED — explicit remaining-M1 authorization after E1 external closure and ratified R10 RED contract"
-activation_required: "SATISFIED — ratified R10 contract 081b0e7971912776f6722f037b89f907736b67367cafa340c98128a186a1bdd3 independently ACCEPTed at P0=0/P1=0/P2=0; manifest f8d25b3d32e23e3b672991a3d9538c9c5df2bbe2d439a7e4e9d75d8ecacf1f2b; result dd91f3a1403658cf116767c534ad080daf47acc23458e899c6431db290d6c431; R8 is retained ratification provenance and R9 is retained but not an acceptance basis"
+implementation_authority: "GRANTED — explicit remaining-M1 authorization after E1 external closure and ratified R11/R11-R1 RED composite"
+activation_required: "SATISFIED — ratified R11 contract 00f740561bceb036151ac984b45fd40ac6b4255e5b9c301d411ce7b90a7e526d plus R11 R1 correction d1931b28cad04f457d2e14233966d48789f758546950763e5a0417b07b80c2a9 independently ACCEPTed at P0=0/P1=0/P2=0 with affirmative route completeness; manifest e31c34027be77f61eb027d9e5dd601bb2e95a0fb87ba6f73eae37b6eec9110c8; result c3c04b6dd0b4c2c578b52ab49637be45bd31d3d79af6582c0949046993aa4d0b; initial R11 result is retained negative evidence only"
 activated: 2026-08-06
 activation_commit: 466e712b6f507ee165a7fc0c80e826fa8a35a710
 r8_regated: 2026-08-06
 r8_regate_commit: 07f169bb6630753b4e12960738e4fb0533686ada
 r10_regated: 2026-08-06
 r10_regate_commit: 638c73cff1e02a8834309362cc5dc762b165871b
+r11_r1_regated: 2026-08-06
+r11_r1_regate_commit: PENDING_DOCUMENTATION_COMMIT
 ---
 
 # WO-0151 - Reset kernel E2: aggregate controller, successor admission, and mixed recovery
@@ -30,9 +32,10 @@ rollover and constrained cross-side recovery]
 ## Active status and authority
 
 This exact work order is ACTIVE after the effective WO-0150 external closure,
-the immutable R10 contract's independent `ACCEPT` at P0=0/P1=0/P2=0, and the
-user's explicit R10 ratification and re-gate. R8 remains retained ratification
-provenance and R9 remains retained but not an acceptance basis. The activation disposition is retained at
+the immutable R11/R11-R1 composite's independent `ACCEPT` at P0=0/P1=0/P2=0
+with affirmative route completeness, and the user's exact R11/R11-R1
+ratification and re-gate. R8 and R10 remain retained ratification provenance;
+R9 and the initial R11 result remain retained but are not acceptance bases. The activation disposition is retained at
 `work/review/REV-0058/activation-disposition.md`.
 
 It authorizes only the pure, deterministic, I/O-free E2 RED/test/production
@@ -58,6 +61,19 @@ activation.
   exact review manifest is f8d25b3d32e23e3b672991a3d9538c9c5df2bbe2d439a7e4e9d75d8ecacf1f2b.
 - R8 and R9 records remain retained exactly as frozen; R8 is ratification provenance and
   R9 is not an acceptance or ratification basis.
+- R11 base contract:
+  00f740561bceb036151ac984b45fd40ac6b4255e5b9c301d411ce7b90a7e526d.
+- R11 R1 purpose-separated-intent correction:
+  d1931b28cad04f457d2e14233966d48789f758546950763e5a0417b07b80c2a9.
+- R11 R1 manifest:
+  e31c34027be77f61eb027d9e5dd601bb2e95a0fb87ba6f73eae37b6eec9110c8.
+- Fresh R11 R1 independent result:
+  c3c04b6dd0b4c2c578b52ab49637be45bd31d3d79af6582c0949046993aa4d0b
+  (`ACCEPT`, P0=0/P1=0/P2=0, affirmative route completeness).
+- Initial R11 result
+  cafe0132e7e549e4c20fc94a677f21ab8febbbdd36e5f10b1d6e76188a47b5c6 is
+  retained `BLOCK` evidence only; its P1 is closed by R11 R1 and its disclosed
+  search-scope contamination cannot satisfy acceptance.
 
 ## R8 re-gate
 
@@ -112,6 +128,32 @@ The exact documentation-only R10 re-gate commit is
 R9, and R10 packet, reconciles only required current-posture records, and
 contains no application or test implementation. It makes no implementation,
 review, or external CI success claim.
+
+## R11 R1 re-gate
+
+On 2026-08-06 the user ratified the exact R11 base contract
+`00f740561bceb036151ac984b45fd40ac6b4255e5b9c301d411ce7b90a7e526d`,
+R11 R1 correction
+`d1931b28cad04f457d2e14233966d48789f758546950763e5a0417b07b80c2a9`,
+frozen manifest
+`e31c34027be77f61eb027d9e5dd601bb2e95a0fb87ba6f73eae37b6eec9110c8`,
+and fresh independent `ACCEPT` result
+`c3c04b6dd0b4c2c578b52ab49637be45bd31d3d79af6582c0949046993aa4d0b`
+at P0=0/P1=0/P2=0 with affirmative route completeness.
+
+The controlling RED contract is now the exact R2--R11-plus-R11-R1 composite.
+R11 closes neutral refresh, terminality, applied-fact totality, and exit-intent
+constructibility. R11 R1 separates goal-independent, cancel-only BUY
+preemption from goal-bearing protective SELL exit. It adds no public authority
+source, policy writer, history scan, persistence, runtime, or second aggregate
+writer. The initial R11 result remains negative-only evidence and is not an
+acceptance basis.
+
+This re-gate authorizes only the existing pure E2 application/test paths,
+failure-capable controls, verification, in-scope remediation, evidence,
+normal commits/pushes, and exact-head CI. It adds no SQL/DDL, database,
+runtime, broker/network, credential, M2, merge, deletion, cleanup, force-push,
+rebase, or later-work-order authority. Its documentation commit is pending.
 
 WO-0149 is formally SUPERSEDED and retained as historical evidence; it grants no authority for
 this serial-generation scope.

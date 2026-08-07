@@ -312,3 +312,15 @@
   evidence and reconciles only the active work order, review provenance, PKL, and ledger. It
   contains no application or test implementation and claims no implementation gate or external CI
   result.
+- 2026-08-06: The frozen R11 body
+  `00f740561bceb036151ac984b45fd40ac6b4255e5b9c301d411ce7b90a7e526d` received an initial
+  independent `BLOCK`, P0=0/P1=1/P2=0, because goal-gated protection exit was not a total producer
+  for cancel-only BUY preemption. That result is retained negative evidence only and cannot satisfy
+  acceptance.
+- 2026-08-06: The user ratified the R11 body plus the purpose-separated R11 R1 correction
+  `d1931b28cad04f457d2e14233966d48789f758546950763e5a0417b07b80c2a9`. Frozen manifest
+  `e31c34027be77f61eb027d9e5dd601bb2e95a0fb87ba6f73eae37b6eec9110c8` and fresh independent
+  result `c3c04b6dd0b4c2c578b52ab49637be45bd31d3d79af6582c0949046993aa4d0b` record `ACCEPT`,
+  P0=0/P1=0/P2=0, with affirmative route completeness. The R2--R11-plus-R11-R1 composite now
+  controls only pure E2 WO-0151. Runtime, database, SQL/DDL, broker/network, credentials, M2,
+  merge, deletion, cleanup, rebase, force-push, and later activation remain excluded.

@@ -1,6 +1,6 @@
 # WO-0151 activation disposition
 
-Status: **R7 ACTIVATION RECORDED; R8 RE-GATE RETAINED; R10 RE-GATE RECONCILED AT EXACT DOCUMENTATION COMMIT**
+Status: **R11 R1 RATIFIED; DOCUMENTATION RE-GATE COMMIT PENDING**
 
 [FABLE - FULL - verification: DIRECT plus independent review - task: WO-0151
 activation and pure E2 implementation]
@@ -12,10 +12,10 @@ fable_gate:
     - claim: "WO-0150 is effectively CLOSED on its exact external CI head."
       status: VERIFIED
       evidence: "GitHub Actions run 31089203210, jobs 92575847934 and 92575848023."
-    - claim: "R7/R8 are retained activation provenance; the ratified R2+R3+R4+R5+R6+R7+R8+R9+R10 composite controls resumed implementation."
+    - claim: "R7/R8/R10 are retained activation provenance; the ratified R2--R11-plus-R11-R1 composite controls resumed implementation."
       status: VERIFIED
-      evidence: "REV-0058 result-r8.md, result-r9-reconciliation.md, result-r10.md, and the R10 frozen manifest."
-  approach: "Preserve the published activation record, reconcile the ratified R10 re-gate, write failure-capable RED controls, implement the smallest pure composite reducer, then run bounded and full acceptance gates."
+      evidence: "REV-0058 result-r10.md, result-r11.md (negative only), result-r11-r1.md, and the R11 R1 frozen manifest."
+  approach: "Preserve the published activation record, reconcile the ratified R11/R11-R1 re-gate, write failure-capable RED controls, implement the smallest pure composite reducer, then run bounded and full acceptance gates."
   alternatives_considered:
     - "Do not bypass the activation record or use a draft-contract implementation path."
   out_of_scope:
@@ -111,6 +111,22 @@ documentation-only reconciliation.
 The exact documentation-only R10 re-gate commit is
 `638c73cff1e02a8834309362cc5dc762b165871b`. It records only the frozen
 packet and required current-posture/provenance reconciliation.
+
+## R11 R1 ratification and controlling re-gate
+
+The user ratified exact R11 body
+`00f740561bceb036151ac984b45fd40ac6b4255e5b9c301d411ce7b90a7e526d`, exact R11 R1 correction
+`d1931b28cad04f457d2e14233966d48789f758546950763e5a0417b07b80c2a9`, frozen manifest
+`e31c34027be77f61eb027d9e5dd601bb2e95a0fb87ba6f73eae37b6eec9110c8`, and fresh independent
+result `c3c04b6dd0b4c2c578b52ab49637be45bd31d3d79af6582c0949046993aa4d0b` (`ACCEPT`,
+P0=0/P1=0/P2=0, affirmative route completeness).
+
+R11 closes neutral refresh, terminality, applied-fact totality, combined retired-fact preemption,
+and protection-exit constructibility. R11 R1 closes the initial R11 P1 by separating the private,
+goal-independent `PREEMPT_BUY_ONLY` intent from fresh goal-bearing protective SELL exit. The
+initial R11 `BLOCK` result remains retained negative evidence and is not an acceptance basis.
+No new public authority source or policy writer is introduced. All existing scope and safety
+exclusions remain in force. The exact documentation-only re-gate commit is pending.
 
 ## File-level check note
 
