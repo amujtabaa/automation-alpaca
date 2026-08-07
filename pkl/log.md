@@ -421,3 +421,10 @@
   the exact activation SHA is recorded. WO-0151 remains REVIEW and the paired 93% exact-head CI
   gate remains mandatory; no production/API, database/SQL/DDL, runtime, broker/network, credential,
   M2, merge, deletion, cleanup, force-push, or rebase authority changed.
+- 2026-08-07: Documentation-only WO-0152 activation commit
+  `a3ceee237d8635f280bd6f200f492bef919170f9` moved the work order to `work/active/` and published
+  the frozen E3 packet without adding test or production source. Normal branch push reported
+  `a2b84ab..a3ceee2` to `origin/codex/arch-reset-2026-07-r1`. A subsequent live `ls-remote` query
+  could not acquire Windows credentials, so no independent live-ref assertion is made and no
+  workaround was attempted. The SHA reconciliation must commit before E3 test work begins; paired
+  E2/E3 93% exact-head CI remains mandatory.

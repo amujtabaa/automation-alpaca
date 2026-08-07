@@ -1,6 +1,6 @@
 # WO-0152 activation disposition
 
-Status: **R2-R3 ACCEPTED — DOCUMENTATION-ONLY ACTIVATION PENDING EXACT SHA RECONCILIATION**
+Status: **R2-R3 ACCEPTED — EXACT DOCUMENTATION-ONLY ACTIVATION SHA RECONCILED**
 
 [FABLE - FULL - verification: DIRECT plus independent review - task: activate the bounded test-only E3 proof layer]
 
@@ -33,10 +33,10 @@ fable_gate:
 - `tests/execution_core/test_acquisition_stateful.py` was absent before this activation change.
 - The R2-R3 result is an independent static `ACCEPT`, P0=0/P1=0/P2=0. It does not itself claim
   dynamic E3 evidence, CI success, WO-0151 closure, M1 completion, or operating authority.
-- A non-mutating live remote query was unavailable in this environment because Git reported
-  `SEC_E_NO_CREDENTIALS`; the local remote-tracking ref matches the local base, but no live remote
-  claim is made here. A normal authorized branch push will be attempted after the local activation
-  commit without any credential workaround.
+- Normal `git push origin codex/arch-reset-2026-07-r1` reported success from
+  `a2b84ab` through `a3ceee2`. A subsequent non-mutating `git ls-remote` query was unavailable
+  because Git reported `SEC_E_NO_CREDENTIALS`; no independent live-ref query is claimed and no
+  credential workaround was attempted.
 
 ## Activation boundary
 
@@ -48,9 +48,11 @@ or the unchanged paired E2/E3 93% closeout gate.
 
 ## Exact activation SHA
 
-This field is intentionally pending until the documentation-only activation commit exists:
-`PENDING_DOCUMENTATION_ONLY_ACTIVATION_SHA`. A follow-up documentation-only reconciliation must
-replace it with the exact local commit SHA before any E3 test source is created or run.
+The documentation-only activation commit is
+`a3ceee237d8635f280bd6f200f492bef919170f9` (`docs(wo-0152): activate test-only E3`). Its exact
+diff moves the work order from `work/queue/` to `work/active/`, adds the frozen REV-0059 packet and
+coverage-order records, and changes no source or test file. This reconciliation commit must itself
+become immutable before any E3 test source is created or run.
 
 ## File-level check note
 

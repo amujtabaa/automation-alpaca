@@ -15,7 +15,8 @@ predecessor: "Accepted frozen WO-0151 E2 implementation plus exact-head run #741
 implementation_authority: "GRANTED — test-only E3 implementation after exact R2-R3 independent ACCEPT"
 activation_required: "SATISFIED — R2-R3 contract 881334b4af6acb566adc57c30a4199f0340129d244cc3d58536c8e7c109a9936, manifest ee5554bf4e6b380fa7c687324adba7f93168e56168fb84cedf519115e4b7c3f6, and independent ACCEPT result 8752e20fa0aba82885d1d49ae8eabca9901218f5659073adcb4324fa9b189a59 at P0=0/P1=0/P2=0"
 activated: 2026-08-07
-activation_commit: PENDING_DOCUMENTATION_ONLY_ACTIVATION_SHA
+activation_commit: a3ceee237d8635f280bd6f200f492bef919170f9
+activation_push: "SUCCESS — normal git push reported a2b84ab..a3ceee2 to origin/codex/arch-reset-2026-07-r1; subsequent git ls-remote could not acquire Windows credentials, so no independent live-ref query is claimed"
 ---
 
 # WO-0152 - Reset kernel E3: acquisition-generation generated and stateful conformance
@@ -68,9 +69,10 @@ and independent result SHA-256
 `8752e20fa0aba82885d1d49ae8eabca9901218f5659073adcb4324fa9b189a59`.
 The user's coverage-order authorization therefore activates only the
 test-only E3 work defined here and in that frozen composite. This
-documentation-only activation contains no E3 test source; test creation may
-begin only after its exact activation SHA is recorded in the immediately
-following documentation-only reconciliation.
+documentation-only activation contains no E3 test source. Its exact local
+activation SHA is `a3ceee237d8635f280bd6f200f492bef919170f9`; the normal
+branch push reported success. The immediately following documentation-only
+reconciliation records that exact evidence before any E3 test source is created.
 
 This activation preserves WO-0151 in effective `REVIEW` and preserves run
 #741 as functional/static success but coverage-only negative evidence at

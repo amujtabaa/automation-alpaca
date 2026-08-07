@@ -445,3 +445,11 @@ success and 91.34% coverage-only negative evidence; paired E2/E3 exact-head
 Python 3.11/3.12 success at the unchanged 93% gate remains mandatory. This
 adds no production/API, runtime, database/SQL/DDL, broker/network, credential,
 M2, merge, deletion, cleanup, force-push, or rebase authority.
+
+The exact documentation-only activation commit is
+`a3ceee237d8635f280bd6f200f492bef919170f9`. A normal branch push reported
+`a2b84ab..a3ceee2` to `origin/codex/arch-reset-2026-07-r1`. A later non-mutating
+live `ls-remote` query could not acquire Windows credentials; this record relies
+on the successful push result, does not claim an independent live-ref query, and
+uses no credential workaround. No E3 test source exists at this reconciliation
+point.

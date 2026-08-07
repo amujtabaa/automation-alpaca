@@ -244,3 +244,8 @@ Seam discipline is what makes the safety invariants structurally enforceable rat
   documentation activation SHA is recorded; WO-0151 remains REVIEW pending paired 93% exact-head
   closure. No production/API, runtime, database/SQL/DDL, broker/network, credential, M2, merge,
   deletion, cleanup, force-push, or rebase authority was added.
+- 2026-08-07: Documentation-only WO-0152 activation SHA
+  `a3ceee237d8635f280bd6f200f492bef919170f9` is the exact queue-to-active lifecycle commit and
+  contains no source/test implementation. Normal push reported success; the later live `ls-remote`
+  query could not acquire Windows credentials, so no independent live-ref claim is made. E3 test
+  work remains barred until this SHA reconciliation itself is committed.

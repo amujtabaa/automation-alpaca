@@ -151,6 +151,12 @@ the named test-only E3 scope. They add no new setup fixture, private bridge, pub
 production authority, or operational authority. The paired E2/E3 93% exact-head closeout
 and all standing exclusions remain unchanged.
 
+The documentation-only activation SHA is
+`a3ceee237d8635f280bd6f200f492bef919170f9`; its normal branch push reported success. The
+subsequent non-mutating live `ls-remote` query could not acquire Windows credentials, so current
+posture records no independent live-ref claim. No E3 test source existed before this SHA
+reconciliation.
+
 ## Cleanup posture
 
 WO-0153's documentation/evidence reconciliation and approved branch retirement are complete as far
