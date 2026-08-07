@@ -71,6 +71,7 @@ from app.execution_core.identity import (
     ClaimOccurrenceId,
     ClientOrderId,
     ClosureId,
+    EmergencyRecoveryCompatibilityId,
     EffectId,
     EvidenceReference,
     MandateId,
@@ -149,6 +150,36 @@ _MARKET_OCCURRENCE_FIELDS = (
     "halted",
 )
 _MARKET_OCCURRENCE_INIT_FIELDS = _MARKET_OCCURRENCE_FIELDS[1:]
+_EMERGENCY_RECOVERY_COMPATIBILITY_INIT_FIELDS = (
+    "compatibility_id",
+    "position_scope",
+    "session_id",
+    "configuration_version",
+    "configuration_commitment",
+    "emergency_guard",
+    "maximum_goal_rate",
+    "emergency_effect_budget",
+    "deadline",
+    "aggregate_emergency_quantity",
+)
+_PROTECTION_MANDATE_INIT_FIELDS = (
+    "mandate_id",
+    "position_scope",
+    "session_id",
+    "configuration_version",
+    "loss_fraction",
+    "approved_gain",
+    "percent_trail_fraction",
+    "atr_multiple",
+    "tick",
+    "normal_guard",
+    "emergency_guard",
+    "evidence_policy",
+    "maximum_quantity",
+    "maximum_goal_rate",
+    "deadline",
+    "emergency_recovery_compatibility",
+)
 _ADR023_MARKET_CURSOR_FIELD_ORDER = (
     "_market_occurrence_epoch",
     "_market_committed_epoch",
@@ -598,10 +629,12 @@ def _mandate(
     configuration_version: str = "protection-v1",
     normal_guard: object | None = None,
     emergency_guard: object | None = None,
+    emergency_recovery_compatibility: object | None = None,
 ) -> object:
-    evidence_type, mandate_type = _required(
+    evidence_type, compatibility_type, mandate_type = _required(
         module,
         "EvidencePolicy",
+        "EmergencyRecoveryCompatibility",
         "ProtectionMandate",
     )
     source_type, generation_type = _required(
@@ -623,24 +656,48 @@ def _mandate(
         corroboration_window=corroboration_window,
         max_step_fraction=max_step_fraction,
     )
+    resolved_session_id = (
+        session_id if session_id is not None else session_type("session-rth-1")
+    )
+    resolved_normal_guard = normal_guard or _guard(module, "normal-guard")
+    resolved_emergency_guard = emergency_guard or _guard(module, "emergency-guard")
+    resolved_compatibility = (
+        emergency_recovery_compatibility
+        if emergency_recovery_compatibility is not None
+        else compatibility_type(
+            compatibility_id=EmergencyRecoveryCompatibilityId(
+                f"{mandate_id.value}-emergency-compatibility"
+            ),
+            position_scope=position_scope,
+            session_id=resolved_session_id,
+            configuration_version=f"{configuration_version}-emergency",
+            configuration_commitment=sha256(
+                f"{mandate_id.value}:{configuration_version}:emergency".encode("utf-8")
+            ).digest(),
+            emergency_guard=resolved_emergency_guard,
+            maximum_goal_rate=maximum_goal_rate,
+            emergency_effect_budget=0,
+            deadline=deadline,
+            aggregate_emergency_quantity=Quantity(maximum_quantity),
+        )
+    )
     return mandate_type(
         mandate_id=mandate_id,
         position_scope=position_scope,
-        session_id=(
-            session_id if session_id is not None else session_type("session-rth-1")
-        ),
+        session_id=resolved_session_id,
         configuration_version=configuration_version,
         loss_fraction=loss_fraction,
         approved_gain=approved_gain,
         percent_trail_fraction=percent_trail_fraction,
         atr_multiple=atr_multiple,
         tick=tick,
-        normal_guard=normal_guard or _guard(module, "normal-guard"),
-        emergency_guard=emergency_guard or _guard(module, "emergency-guard"),
+        normal_guard=resolved_normal_guard,
+        emergency_guard=resolved_emergency_guard,
         evidence_policy=evidence,
         maximum_quantity=Quantity(maximum_quantity),
         maximum_goal_rate=maximum_goal_rate,
         deadline=deadline,
+        emergency_recovery_compatibility=resolved_compatibility,
     )
 
 
@@ -3065,6 +3122,48 @@ def _assert_lifecycle_operand(
     raise AssertionError("unsupported lifecycle comparison operand")
 
 
+def _is_exact_mandate_compatibility_coordinate_comparison(
+    node: ast.Compare,
+    *,
+    lifecycle: Callable[..., object],
+    field_names: frozenset[str],
+    guarded_types: dict[tuple[str, ...], type[object]],
+) -> bool:
+    """Allow only ProtectionMandate's two exact linked-coordinate checks.
+
+    The generic passive lifecycle grammar intentionally permits protocol
+    comparisons only for scalar values.  A protection mandate additionally
+    must bind its exact immutable compatibility scope and session.  Keep this
+    exception declarative and pinned to the two already exact-type-guarded
+    relationship checks rather than widening object comparison generally.
+    """
+
+    if (
+        lifecycle.__module__ != "app.execution_core.protection"
+        or lifecycle.__qualname__ != "ProtectionMandate.__post_init__"
+        or len(node.ops) != 1
+        or not isinstance(node.ops[0], ast.NotEq)
+        or len(node.comparators) != 1
+    ):
+        return False
+    left = _lifecycle_value_path(node.left, field_names, guarded_types)
+    right = _lifecycle_value_path(node.comparators[0], field_names, guarded_types)
+    expected_by_pair = {
+        (
+            ("self", "emergency_recovery_compatibility", "position_scope"),
+            ("self", "position_scope"),
+        ): _resolve_lifecycle_name(lifecycle, "_PositionScope"),
+        (
+            ("self", "emergency_recovery_compatibility", "session_id"),
+            ("self", "session_id"),
+        ): _resolve_lifecycle_name(lifecycle, "_SessionId"),
+    }
+    expected = expected_by_pair.get((left, right))
+    if type(expected) is not type:
+        return False
+    return guarded_types.get(left) is expected and guarded_types.get(right) is expected
+
+
 def _assert_passive_lifecycle_test(
     node: ast.AST,
     *,
@@ -3122,6 +3221,13 @@ def _assert_passive_lifecycle_test(
         protocol_comparison = any(
             not isinstance(operator, (ast.Is, ast.IsNot)) for operator in node.ops
         )
+        if _is_exact_mandate_compatibility_coordinate_comparison(
+            node,
+            lifecycle=lifecycle,
+            field_names=field_names,
+            guarded_types=guarded_types,
+        ):
+            return
         for operand in (node.left, *node.comparators):
             _assert_lifecycle_operand(
                 operand,
@@ -3385,6 +3491,52 @@ def _market_occurrence_validation_prefix(
     return statements[:-2]
 
 
+def _derived_commitment_validation_prefix(
+    statements: list[ast.stmt],
+    *,
+    value_type: type[object],
+    owner_module: ModuleType,
+) -> list[ast.stmt]:
+    """Remove one exact approved commitment-derivation tail, if applicable."""
+
+    expected_helpers = {
+        "EmergencyRecoveryCompatibility": "_emergency_recovery_compatibility_commitment",
+        "ProtectionMandate": "_protection_mandate_commitment",
+    }
+    expected_helper = expected_helpers.get(value_type.__name__)
+    if expected_helper is None:
+        return statements
+
+    assert owner_module.__name__ == "app.execution_core.protection"
+    assert vars(owner_module).get(value_type.__name__) is value_type
+    helper = vars(owner_module).get(expected_helper)
+    assert inspect.isfunction(helper) and helper.__module__ == owner_module.__name__
+    assert statements
+    assert not any(
+        isinstance(candidate, ast.Call)
+        and _lifecycle_attribute_path(candidate.func) == ("object", "__setattr__")
+        for prior_statement in statements[:-1]
+        for candidate in ast.walk(prior_statement)
+    ), "derived commitment setter must be the sole object.__setattr__ call"
+    statement = statements[-1]
+    assert isinstance(statement, ast.Expr)
+    setter = statement.value
+    assert isinstance(setter, ast.Call)
+    assert _lifecycle_attribute_path(setter.func) == ("object", "__setattr__")
+    assert len(setter.args) == 3 and not setter.keywords
+    assert isinstance(setter.args[0], ast.Name) and setter.args[0].id == "self"
+    assert isinstance(setter.args[1], ast.Constant)
+    assert setter.args[1].value == "commitment"
+    derivation = setter.args[2]
+    assert isinstance(derivation, ast.Call)
+    assert isinstance(derivation.func, ast.Name)
+    assert derivation.func.id == expected_helper
+    assert len(derivation.args) == 1 and not derivation.keywords
+    assert isinstance(derivation.args[0], ast.Name)
+    assert derivation.args[0].id == "self"
+    return statements[:-1]
+
+
 def _assert_passive_lifecycle(
     value_type: type[object],
     owner_module: ModuleType,
@@ -3428,6 +3580,12 @@ def _assert_passive_lifecycle(
         statements = function.body
         if value_type.__name__ == "MarketOccurrence":
             statements = _market_occurrence_validation_prefix(statements)
+        else:
+            statements = _derived_commitment_validation_prefix(
+                statements,
+                value_type=value_type,
+                owner_module=owner_module,
+            )
         _assert_passive_post_init_statements(
             statements,
             lifecycle=lifecycle,
@@ -4410,6 +4568,11 @@ def _forge_authority_predecessor(
 def test_public_protection_contract_is_exported_with_five_exact_transitions() -> None:
     module = _protection_module()
     names = {
+        "AcquisitionMixedRecoveryProof",
+        "AcquisitionProtectionContext",
+        "AcquisitionProtectionRebaseKind",
+        "AcquisitionProtectionRebaseProjection",
+        "EmergencyRecoveryCompatibility",
         "EvidencePolicy",
         "ExecutionGoal",
         "ExecutionGuard",
@@ -4425,7 +4588,10 @@ def test_public_protection_contract_is_exported_with_five_exact_transitions() ->
         "ProtectionUrgency",
         "ProtectionVenueProjection",
         "initialize_position_protection",
+        "force_acquisition_mixed_recovery",
         "invalidate_position_protection_market",
+        "project_acquisition_protection_context",
+        "project_acquisition_protection_rebase",
         "project_protection_venue",
         "reduce_position_protection",
         "reduce_position_protection_market",
@@ -4789,9 +4955,10 @@ def test_public_entrypoint_argument_types_are_unconditionally_sealed() -> None:
         _assert_passive_lifecycle(
             value_type,
             owner_module,
-            expected_init_fields=(
-                _MARKET_OCCURRENCE_INIT_FIELDS if label == "occurrence" else None
-            ),
+            expected_init_fields={
+                "mandate": _PROTECTION_MANDATE_INIT_FIELDS,
+                "occurrence": _MARKET_OCCURRENCE_INIT_FIELDS,
+            }.get(label),
         )
         with pytest.raises(TypeError):
             type(f"Forged{label.title()}", (value_type,), {"__slots__": ()})
@@ -4879,6 +5046,19 @@ def test_public_entrypoints_emit_no_stdout_or_stderr(
 def test_public_value_shapes_and_enum_members_are_exact() -> None:
     module = _protection_module()
     expected_fields = {
+        "EmergencyRecoveryCompatibility": (
+            "compatibility_id",
+            "position_scope",
+            "session_id",
+            "configuration_version",
+            "configuration_commitment",
+            "emergency_guard",
+            "maximum_goal_rate",
+            "emergency_effect_budget",
+            "deadline",
+            "aggregate_emergency_quantity",
+            "commitment",
+        ),
         "EvidencePolicy": (
             "source_id",
             "stream_generation",
@@ -4904,6 +5084,8 @@ def test_public_value_shapes_and_enum_members_are_exact() -> None:
             "maximum_quantity",
             "maximum_goal_rate",
             "deadline",
+            "emergency_recovery_compatibility",
+            "commitment",
         ),
         "MarketOccurrence": _MARKET_OCCURRENCE_FIELDS,
         "PositionProtectionState": (
@@ -4953,6 +5135,32 @@ def test_public_value_shapes_and_enum_members_are_exact() -> None:
             "goal",
             "critical_alert",
         ),
+        "AcquisitionProtectionContext": (
+            "application_generation_id",
+            "position_scope",
+            "scope_execution_commitment",
+            "scope_protection_commitment",
+            "source_protection_commitment",
+            "commitment",
+        ),
+        "AcquisitionProtectionRebaseProjection": (
+            "kind",
+            "application_generation_id",
+            "position_scope",
+            "predecessor_execution_snapshot_commitment",
+            "execution_snapshot_commitment",
+            "predecessor_scope_execution_commitment",
+            "scope_execution_commitment",
+            "predecessor_venue_commitment",
+            "venue_commitment",
+            "predecessor_context_commitment",
+            "context_commitment",
+            "predecessor_source_protection_commitment",
+            "source_protection_commitment",
+            "resulting_state",
+            "source_venue_transition_commitments",
+            "source_commitment",
+        ),
     }
     expected_enums = {
         "MarketKind": ("BEST_BID", "TRADE"),
@@ -4971,6 +5179,10 @@ def test_public_value_shapes_and_enum_members_are_exact() -> None:
             "MARKET_BASELINE_REQUIRED",
             "MARKET_COORDINATE_EXHAUSTED",
         ),
+        "AcquisitionProtectionRebaseKind": (
+            "SEMANTIC_REBASE",
+            "NEUTRAL_REPROJECTION",
+        ),
     }
     public_names = {name for name in vars(module) if not name.startswith("_")}
     assert public_names == set(module.__all__)
@@ -4981,9 +5193,13 @@ def test_public_value_shapes_and_enum_members_are_exact() -> None:
         (value_type,) = _required(module, name)
         assert type(value_type) is type
         assert inspect.getmro(value_type) == (value_type, object)
-        expected_init_fields = (
-            _MARKET_OCCURRENCE_INIT_FIELDS if name == "MarketOccurrence" else None
-        )
+        expected_init_fields = {
+            "EmergencyRecoveryCompatibility": expected_fields[
+                "EmergencyRecoveryCompatibility"
+            ][:-1],
+            "MarketOccurrence": _MARKET_OCCURRENCE_INIT_FIELDS,
+            "ProtectionMandate": _PROTECTION_MANDATE_INIT_FIELDS,
+        }.get(name)
         actual_fields = _assert_passive_dataclass_metadata(
             value_type,
             expected_init_fields=expected_init_fields,
@@ -4996,11 +5212,47 @@ def test_public_value_shapes_and_enum_members_are_exact() -> None:
             )
             == expected
         )
-        if name not in {"PositionProtectionState", "ProtectionVenueProjection"}:
+        opaque_values = {
+            "AcquisitionProtectionContext",
+            "AcquisitionProtectionRebaseProjection",
+            "PositionProtectionState",
+            "ProtectionTransition",
+            "ProtectionVenueProjection",
+        }
+        if name not in opaque_values:
             assert actual_fields == expected
         _assert_passive_slot_descriptors(value_type, actual_fields)
         behavior = _retained_behavior_names(value_type)
-        if name in {"PositionProtectionState", "ProtectionVenueProjection"}:
+        if name == "AcquisitionProtectionContext":
+            assert behavior == {"__init__", "__init_subclass__", "matches_current"}
+            assert tuple(inspect.signature(value_type.matches_current).parameters) == (
+                "self",
+                "book",
+                "execution",
+                "venue_context",
+                "state",
+            )
+        elif name == "AcquisitionProtectionRebaseProjection":
+            assert behavior == {
+                "__init__",
+                "__init_subclass__",
+                "matches_neutral_reprojection",
+                "matches_predecessor_scope_protection_commitment",
+            }
+            assert tuple(
+                inspect.signature(
+                    value_type.matches_predecessor_scope_protection_commitment
+                ).parameters
+            ) == ("self", "expected_scope_protection_commitment")
+            assert tuple(
+                inspect.signature(value_type.matches_neutral_reprojection).parameters
+            ) == (
+                "self",
+                "expected_scope_protection_commitment",
+                "current_context",
+                "source_venue_transition_commitment",
+            )
+        elif name in opaque_values:
             assert behavior == {"__init__", "__init_subclass__"}
         else:
             assert behavior <= _DATACLASS_LIFECYCLE_SPECIALS
@@ -5435,6 +5687,72 @@ def test_passive_lifecycle_derived_identity_tail_is_failure_capable() -> None:
             validate(mutant)
 
 
+def test_passive_lifecycle_derived_commitment_tail_is_failure_capable() -> None:
+    module = _protection_module()
+
+    def statements_from(candidate: str) -> list[ast.stmt]:
+        tree = ast.parse(candidate)
+        function = tree.body[0]
+        assert isinstance(function, ast.FunctionDef)
+        return function.body
+
+    cases = (
+        (
+            module.EmergencyRecoveryCompatibility,
+            "_emergency_recovery_compatibility_commitment",
+        ),
+        (module.ProtectionMandate, "_protection_mandate_commitment"),
+    )
+    for value_type, helper_name in cases:
+        source = textwrap.dedent(inspect.getsource(value_type.__post_init__))
+
+        def strip(candidate: str) -> list[ast.stmt]:
+            return _derived_commitment_validation_prefix(
+                statements_from(candidate),
+                value_type=value_type,
+                owner_module=module,
+            )
+
+        retained = strip(source)
+        assert len(retained) == len(statements_from(source)) - 1
+        tail = source[source.rindex("    object.__setattr__(") :]
+        expected_call = f"{helper_name}(self)"
+        assert expected_call in tail
+        mutants = {
+            "wrong helper": source.replace(
+                expected_call,
+                "_unapproved_commitment(self)",
+                1,
+            ),
+            "wrong receiver": source.replace(
+                tail,
+                tail.replace("self,", "other,", 1),
+                1,
+            ),
+            "wrong field": source.replace(
+                tail,
+                tail.replace('"commitment"', '"other"', 1),
+                1,
+            ),
+            "wrong helper input": source.replace(
+                expected_call,
+                f"{helper_name}(other)",
+                1,
+            ),
+            "helper keyword": source.replace(
+                expected_call,
+                f"{helper_name}(self, extra=0)",
+                1,
+            ),
+            "duplicate setter": source + tail,
+            "trailing statement": source + "    pass\n",
+        }
+        for label, mutant in mutants.items():
+            assert mutant != source, (value_type.__name__, label)
+            with pytest.raises(AssertionError):
+                strip(mutant)
+
+
 def test_passive_lifecycle_accepts_exact_sequential_validation() -> None:
     @dataclass(frozen=True, slots=True)
     class _SequentialValidationProbe:
@@ -5783,6 +6101,48 @@ def test_mandate_is_frozen_exact_and_rejects_subclasses() -> None:
         type("ForgedMandate", (mandate_type,), {})
 
 
+def test_mandate_binds_exact_emergency_compatibility_and_rejects_forged_proof() -> None:
+    """A linked recovery contract cannot be substituted or merely resealed."""
+
+    module = _protection_module()
+    mandate = _mandate(module)
+    compatibility = mandate.emergency_recovery_compatibility
+
+    with pytest.raises(TypeError):
+        replace(mandate, emergency_recovery_compatibility=object())
+
+    other_scope = replace(
+        mandate.position_scope,
+        symbol_id=type(mandate.position_scope.symbol_id)("MSFT"),
+    )
+    with pytest.raises(ValueError):
+        replace(
+            mandate,
+            emergency_recovery_compatibility=replace(
+                compatibility,
+                position_scope=other_scope,
+            ),
+        )
+    with pytest.raises(ValueError):
+        replace(
+            mandate,
+            emergency_recovery_compatibility=replace(
+                compatibility,
+                session_id=type(mandate.session_id)("session-rth-other"),
+            ),
+        )
+
+    forged = copy(compatibility)
+    object.__setattr__(forged, "commitment", b"x" * 32)
+    forged_mandate = replace(mandate, emergency_recovery_compatibility=forged)
+    project = _required(module, "project_protection_venue")[0]
+    with pytest.raises(ValueError, match="mandate commitment is not exact"):
+        project(
+            _owned_fill_transition(label="forged-emergency-compatibility"),
+            forged_mandate,
+        )
+
+
 @pytest.mark.parametrize(
     ("override", "value", "error"),
     [
@@ -6018,16 +6378,576 @@ def test_market_kind_owns_one_exact_payload_shape() -> None:
 
 def test_state_and_projection_are_opaque_and_sealed() -> None:
     module = _protection_module()
-    state_type, projection_type = _required(
+    state_type, projection_type, transition_type = _required(
         module,
         "PositionProtectionState",
         "ProtectionVenueProjection",
+        "ProtectionTransition",
     )
-    for opaque in (state_type, projection_type):
+    for opaque in (state_type, projection_type, transition_type):
         with pytest.raises(TypeError):
             opaque()
         with pytest.raises(TypeError):
             type("ForgedProtectionCapability", (opaque,), {})
+
+
+def test_wo0151_r7_acquisition_protection_rebase_proof_is_opaque_and_authority_free() -> (
+    None
+):
+    """R7: protection owns only its sealed proof, never authority state."""
+    module = _protection_module()
+    (
+        context_type,
+        rebase_kind,
+        projection_type,
+        project_context,
+        project_rebase,
+    ) = _required(
+        module,
+        "AcquisitionProtectionContext",
+        "AcquisitionProtectionRebaseKind",
+        "AcquisitionProtectionRebaseProjection",
+        "project_acquisition_protection_context",
+        "project_acquisition_protection_rebase",
+    )
+
+    assert issubclass(rebase_kind, Enum)
+    assert {
+        rebase_kind.SEMANTIC_REBASE,
+        rebase_kind.NEUTRAL_REPROJECTION,
+    } <= set(rebase_kind)
+    assert tuple(inspect.signature(project_context).parameters) == (
+        "state",
+        "book",
+        "execution",
+        "venue_context",
+    )
+    assert tuple(inspect.signature(project_rebase).parameters) == (
+        "prior_state",
+        "transition",
+        "predecessor_context",
+        "current_context",
+    )
+    assert not {
+        retained.name
+        for retained in fields(projection_type)
+        if "authority" in retained.name
+    }
+    for opaque_proof in (context_type, projection_type):
+        with pytest.raises(TypeError):
+            opaque_proof()
+        with pytest.raises(TypeError):
+            type("ForgedAcquisitionProtectionProof", (opaque_proof,), {})
+
+
+def test_wo0151_protection_context_binds_the_exact_venue_cursor_source() -> None:
+    """A target semantic context cannot outlive its authenticated raw cursor."""
+
+    module = _protection_module()
+    (project_context,) = _required(module, "project_acquisition_protection_context")
+    transition = _owned_fill_transition(label="wo0151-context-cursor")
+    _, _, state = _start(module, transition, establish_baseline=False)
+    venue_context = transition.book.project_acquisition_context(
+        transition.execution,
+        POSITION_SCOPE,
+    )
+
+    exact = project_context(
+        state,
+        transition.book,
+        transition.execution,
+        venue_context,
+    )
+    assert exact is not None
+
+    def recommit(forged_state: typing.Any) -> None:
+        object.__setattr__(
+            forged_state,
+            "commitment",
+            module._state_commitment(
+                forged_state.policy,
+                forged_state.mandate,
+                forged_state.raw_quantity,
+                forged_state.execution_commitment,
+                forged_state.formula_available,
+                forged_state.armed_hard_bail_trigger,
+                forged_state.activation_price,
+                forged_state.high_watermark,
+                forged_state.trail,
+                forged_state.waiting_buy_resolution,
+                forged_state._cursor_ordinal,
+                forged_state._cursor_head,
+                forged_state.mandate.evidence_policy.stream_generation._bytes,
+                0
+                if forged_state.mandate.evidence_policy.sequence_mode
+                is module.MarketSequenceMode.SEQUENCED
+                else 1,
+                forged_state._market_occurrence_epoch,
+                forged_state._market_committed_epoch,
+                forged_state._market_expected_epoch,
+                forged_state._market_source_sequence,
+                forged_state._market_source_time,
+                forged_state._market_evaluation_time,
+                module._identity_bytes(forged_state._market_occurrence_identity),
+                forged_state._market_halted,
+                forged_state._market_baseline_required,
+                forged_state._market_exhausted,
+                forged_state._market_last_primary,
+                module._identity_bytes(forged_state._hard_bid_identity),
+                forged_state._hard_bid_source_time,
+                module._identity_bytes(forged_state._trade_identity),
+                forged_state._trade_source_time,
+                module._identity_bytes(forged_state._trail_bid_identity),
+                forged_state._trail_bid_source_time,
+                forged_state._exit_provenance,
+            ),
+        )
+
+    wrong_cursor_state = copy(state)
+    object.__setattr__(wrong_cursor_state, "_cursor_head", b"y" * 32)
+    recommit(wrong_cursor_state)
+    assert module._state_is_authentic(wrong_cursor_state)
+    assert (
+        project_context(
+            wrong_cursor_state,
+            transition.book,
+            transition.execution,
+            venue_context,
+        )
+        is None
+    )
+
+    wrong_execution_state = copy(state)
+    object.__setattr__(wrong_execution_state, "execution_commitment", b"z" * 32)
+    recommit(wrong_execution_state)
+    assert module._state_is_authentic(wrong_execution_state)
+    assert (
+        project_context(
+            wrong_execution_state,
+            transition.book,
+            transition.execution,
+            venue_context,
+        )
+        is None
+    )
+
+    forged_context = copy(venue_context)
+    object.__setattr__(forged_context, "_source_protection_cursor_head", b"x" * 32)
+    assert (
+        project_context(
+            state,
+            transition.book,
+            transition.execution,
+            forged_context,
+        )
+        is None
+    )
+
+
+def test_wo0151_semantic_rebase_requires_one_sealed_applied_transition() -> None:
+    """A rebase accepts only the reducer's exact predecessor/current relation."""
+
+    module = _protection_module()
+    project_context, project_rebase = _required(
+        module,
+        "project_acquisition_protection_context",
+        "project_acquisition_protection_rebase",
+    )
+    (rebase_kind,) = _required(module, "AcquisitionProtectionRebaseKind")
+    venue_transition = _owned_fill_transition(label="wo0151-semantic-rebase")
+    mandate, projection, state = _start(module, venue_transition)
+    venue_context = venue_transition.book.project_acquisition_context(
+        venue_transition.execution,
+        mandate.position_scope,
+    )
+    predecessor_context = project_context(
+        state,
+        venue_transition.book,
+        venue_transition.execution,
+        venue_context,
+    )
+    assert predecessor_context is not None
+    occurrence = _occurrence(
+        module,
+        "wo0151-semantic-rebase-market",
+        bid=101,
+        ask=102,
+        sequence=1,
+        source_id=mandate.evidence_policy.source_id,
+        stream_generation=mandate.evidence_policy.stream_generation,
+        position_scope=mandate.position_scope,
+        session_id=mandate.session_id,
+    )
+    transition = _reduce_market(module, state, projection, occurrence)
+    (disposition,) = _required(module, "ProtectionDisposition")
+    assert transition.disposition is disposition.APPLIED
+    current_context = project_context(
+        transition.state,
+        venue_transition.book,
+        venue_transition.execution,
+        venue_context,
+    )
+    assert current_context is not None
+
+    result = project_rebase(
+        state,
+        transition,
+        predecessor_context,
+        current_context,
+    )
+    assert result is not None
+    assert result.kind is rebase_kind.SEMANTIC_REBASE
+    assert (
+        result.predecessor_execution_snapshot_commitment == state.execution_commitment
+    )
+    assert result.execution_snapshot_commitment == transition.state.execution_commitment
+    assert result.predecessor_venue_commitment == venue_context.commitment
+    assert result.venue_commitment == venue_context.commitment
+    assert result.resulting_state is transition.state
+    assert result.source_venue_transition_commitments == ()
+
+    forged = copy(transition)
+    object.__setattr__(forged, "_predecessor_protection_commitment", b"x" * 32)
+    assert (
+        project_rebase(
+            state,
+            forged,
+            predecessor_context,
+            current_context,
+        )
+        is None
+    )
+    forged = copy(transition)
+    object.__setattr__(forged, "disposition", disposition.EXACT_REPLAY)
+    assert (
+        project_rebase(
+            state,
+            forged,
+            predecessor_context,
+            current_context,
+        )
+        is None
+    )
+
+
+def test_wo0151_r10_rebase_projection_matches_only_its_sealed_predecessor_semantics() -> (
+    None
+):
+    """R10: exact immutable replay is one relation; substitutions are non-serving."""
+
+    module = _protection_module()
+    project_context, project_rebase = _required(
+        module,
+        "project_acquisition_protection_context",
+        "project_acquisition_protection_rebase",
+    )
+    venue_transition = _owned_fill_transition(label="wo0151-r10-semantic-matcher")
+    mandate, projection, state = _start(module, venue_transition)
+    venue_context = venue_transition.book.project_acquisition_context(
+        venue_transition.execution,
+        mandate.position_scope,
+    )
+    predecessor_context = project_context(
+        state,
+        venue_transition.book,
+        venue_transition.execution,
+        venue_context,
+    )
+    assert predecessor_context is not None
+    occurrence = _occurrence(
+        module,
+        "wo0151-r10-semantic-matcher-market",
+        bid=101,
+        ask=102,
+        sequence=1,
+        source_id=mandate.evidence_policy.source_id,
+        stream_generation=mandate.evidence_policy.stream_generation,
+        position_scope=mandate.position_scope,
+        session_id=mandate.session_id,
+    )
+    transition = _reduce_market(module, state, projection, occurrence)
+    current_context = project_context(
+        transition.state,
+        venue_transition.book,
+        venue_transition.execution,
+        venue_context,
+    )
+    assert current_context is not None
+    rebase = project_rebase(
+        state,
+        transition,
+        predecessor_context,
+        current_context,
+    )
+    assert rebase is not None
+
+    matcher = rebase.matches_predecessor_scope_protection_commitment
+    assert matcher(predecessor_context.scope_protection_commitment)
+    assert copy(rebase).matches_predecessor_scope_protection_commitment(
+        predecessor_context.scope_protection_commitment
+    )
+    assert matcher(copy(rebase).predecessor_source_protection_commitment) is False
+    assert matcher(current_context.scope_protection_commitment) is False
+    assert matcher(None) is False
+    assert matcher("not-bytes") is False
+    assert matcher(b"x" * 31) is False
+    assert matcher(b"x" * 33) is False
+
+    forged = copy(rebase)
+    object.__setattr__(forged, "context_commitment", b"x" * 32)
+    assert (
+        forged.matches_predecessor_scope_protection_commitment(
+            predecessor_context.scope_protection_commitment
+        )
+        is False
+    )
+
+
+def test_wo0151_r11_neutral_reprojection_is_owner_minted_and_transport_only() -> None:
+    """One sibling catch-up refreshes raw protection without semantic authority."""
+
+    module = _protection_module()
+    project_context, project_rebase, neutral_projector = _required(
+        module,
+        "project_acquisition_protection_context",
+        "project_acquisition_protection_rebase",
+        "_project_acquisition_neutral_reprojection",
+    )
+    (rebase_kind,) = _required(module, "AcquisitionProtectionRebaseKind")
+    book, seeded, _ = authority_fixtures._seed_multi_scope_requests(
+        "wo0151-r11-neutral"
+    )
+    source_execution, _ = seeded[0]
+    target_execution, target_seed = seeded[1]
+    target_scope = target_execution.position.scope
+    mandate_id = target_seed._protection_proof.cursor.mandate_id
+    assert mandate_id is not None
+    mandate = _mandate(
+        module,
+        mandate_id=mandate_id,
+        position_scope=target_scope,
+        session_id=execution_core.SessionId("session-1"),
+    )
+    _, _, prior_state = _start(module, target_seed, mandate)
+    retained_venue_context = book.project_acquisition_context(
+        target_execution,
+        target_scope,
+    )
+    retained_context = project_context(
+        prior_state,
+        book,
+        target_execution,
+        retained_venue_context,
+    )
+    assert retained_context is not None
+    assert retained_context.scope_protection_commitment is not None
+
+    source_scope = source_execution.position.scope
+    advanced_book, advanced_source = authority_fixtures._apply_closed_sell_fill(
+        book,
+        source_execution,
+        label="wo0151-r11-neutral-source-advance",
+        leg_key=VenueLegKey(
+            broker=source_scope.broker,
+            environment=source_scope.environment,
+            account=source_scope.account,
+            order_id=OrderId("wo0151-r11-neutral-source-leg"),
+        ),
+        symbol_id=source_scope.symbol_id,
+    )
+    predecessor_venue_context = advanced_book.project_acquisition_context(
+        target_execution,
+        target_scope,
+    )
+    target_catch_up = authority_fixtures._private_venue_apply(
+        advanced_book,
+        target_execution,
+        CatchUpExecutionRegistry(
+            input_id=VenueInputId("wo0151-r11-neutral-target-catch-up"),
+            target_checkpoint=VenueExecutionCheckpoint.from_execution(target_execution),
+            prior_account_registry_count=advanced_book.execution_registry_count,
+            prior_account_registry_commitment=(
+                advanced_book.execution_registry_commitment
+            ),
+            prior_source_binding=advanced_book.execution_binding(source_scope),
+            source_execution=advanced_source,
+        ),
+    )
+    assert target_catch_up.disposition is VenueRecoveryDisposition.APPLIED
+    assert target_catch_up.quantity_delta == 0
+    current_venue_context = target_catch_up.book.project_acquisition_context(
+        target_catch_up.execution,
+        target_scope,
+    )
+
+    neutral = neutral_projector(
+        prior_state,
+        target_execution,
+        predecessor_venue_context,
+        target_catch_up,
+        current_venue_context,
+    )
+
+    assert neutral is not None
+    assert neutral.kind is rebase_kind.NEUTRAL_REPROJECTION
+    assert neutral.resulting_state is not prior_state
+    assert neutral.resulting_state.commitment != prior_state.commitment
+    assert neutral.source_venue_transition_commitments == (
+        target_catch_up._protection_proof_commitment,
+    )
+    current_context = project_context(
+        neutral.resulting_state,
+        target_catch_up.book,
+        target_catch_up.execution,
+        current_venue_context,
+    )
+    assert current_context is not None
+    assert (
+        current_context.scope_protection_commitment
+        == retained_context.scope_protection_commitment
+    )
+    assert neutral.matches_neutral_reprojection(
+        retained_context.scope_protection_commitment,
+        current_context,
+        target_catch_up._protection_proof_commitment,
+    )
+    assert not neutral.matches_predecessor_scope_protection_commitment(
+        retained_context.scope_protection_commitment
+    )
+    assert not neutral.matches_neutral_reprojection(
+        retained_context.scope_protection_commitment,
+        current_context,
+        b"x" * 32,
+    )
+    neutral_transition = module.reduce_position_protection(
+        prior_state,
+        module.project_protection_venue(target_catch_up, mandate),
+    )
+    assert neutral_transition.disposition is module.ProtectionDisposition.APPLIED
+    assert (
+        project_rebase(
+            prior_state,
+            neutral_transition,
+            retained_context,
+            current_context,
+        )
+        is None
+    )
+
+
+def test_wo0151_r11_r1_preemption_and_exit_intents_have_disjoint_owner_producers() -> (
+    None
+):
+    """Cancel-only preemption is goal-independent; SELL exit remains goal-owned."""
+
+    module = _protection_module()
+    project_context, project_preemption, project_exit = _required(
+        module,
+        "project_acquisition_protection_context",
+        "_project_acquisition_preemption_intent",
+        "_project_acquisition_protection_exit_intent",
+    )
+    fill = _owned_fill_transition(label="wo0151-r11-r1-purpose-intents")
+    mandate, projection, state = _start(module, fill)
+    activated = _reduce(
+        module,
+        state,
+        projection,
+        _occurrence(module, "wo0151-r11-r1-activate", bid=120, ask=121, sequence=1),
+    )
+    trailed = _reduce(
+        module,
+        activated.state,
+        projection,
+        _occurrence(
+            module,
+            "wo0151-r11-r1-trail",
+            bid=110,
+            ask=111,
+            sequence=2,
+            source_time=106,
+            evaluation_time=110,
+        ),
+    )
+    waiting = _reduce(
+        module,
+        trailed.state,
+        projection,
+        _occurrence(
+            module,
+            "wo0151-r11-r1-waiting",
+            bid=109,
+            ask=110,
+            sequence=3,
+            source_time=112,
+            evaluation_time=116,
+        ),
+    )
+    assert waiting.goal is None
+    assert waiting.state.waiting_buy_resolution
+    venue_context = fill.book.project_acquisition_context(
+        fill.execution,
+        mandate.position_scope,
+    )
+    waiting_context = project_context(
+        waiting.state,
+        fill.book,
+        fill.execution,
+        venue_context,
+    )
+    assert waiting_context is not None
+
+    preemption = project_preemption(waiting.state, waiting_context)
+
+    assert preemption is not None
+    assert preemption._purpose == "PREEMPT_BUY_ONLY"
+    assert project_exit(waiting, waiting_context) is None
+
+    terminal, closed = _close_base_parent(fill)
+    terminal_only = _reduce(
+        module,
+        waiting.state,
+        _projection(module, terminal, mandate),
+    )
+    assert terminal_only.goal is None
+    released = _reduce(
+        module,
+        terminal_only.state,
+        _projection(module, closed, mandate),
+    )
+    assert released.goal is not None
+    assert not released.state.waiting_buy_resolution
+    released_venue_context = closed.book.project_acquisition_context(
+        closed.execution,
+        mandate.position_scope,
+    )
+    released_context = project_context(
+        released.state,
+        closed.book,
+        closed.execution,
+        released_venue_context,
+    )
+    assert released_context is not None
+
+    exit_intent = project_exit(released, released_context)
+
+    assert exit_intent is not None
+    assert exit_intent._purpose == "CREATE_PROTECTION_EXIT_ONLY"
+    assert project_exit(released, waiting_context) is None
+    assert project_preemption(released.state, released_context) is None
+    altered = copy(released)
+    object.__setattr__(altered, "goal", None)
+    assert project_exit(altered, released_context) is None
+    goal_less = module._mint_protection_transition(
+        terminal_only.state,
+        released._source_projection,
+        released.state,
+        module.ProtectionDisposition.APPLIED,
+        None,
+        released.critical_alert,
+    )
+    assert module._protection_transition_is_authentic(goal_less)
+    assert project_exit(goal_less, released_context) is None
 
 
 def test_single_leaf_mutation_walker_is_complete_local_and_shape_bounded() -> None:
@@ -6472,20 +7392,44 @@ def test_every_projection_field_is_sealed_against_single_field_forgery() -> None
         assert result.critical_alert is None, mutation.path
 
 
-def test_every_venue_transition_field_is_bound_into_the_protection_proof() -> None:
+def test_every_venue_transition_field_is_bound_to_its_owner_proof() -> None:
+    """E2 fact provenance stays venue-owned without weakening the old envelope."""
+
     module = _protection_module()
     _, _, _, applied = _owned_fill_fixture(label="protection-envelope-seal")
     mandate = _mandate(module)
-    tested = set()
+    protection_owned_fields = {
+        "book",
+        "execution",
+        "disposition",
+        "quantity_delta",
+        "_protection_proof",
+        "_protection_proof_commitment",
+    }
+    acquisition_owned_fields = {
+        "_acquisition_fact_proof",
+        "_acquisition_fact_proof_commitment",
+    }
+    assert {retained.name for retained in fields(applied)} == (
+        protection_owned_fields | acquisition_owned_fields
+    )
+    tested_protection = set()
+    tested_acquisition = set()
     for retained in fields(applied):
         current = getattr(applied, retained.name)
         replacement = _different_value(current)
         assert replacement != current
         forged = _clone_opaque(applied, **{retained.name: replacement})
-        with pytest.raises((TypeError, ValueError)):
-            _projection(module, forged, mandate)
-        tested.add(retained.name)
-    assert tested == {retained.name for retained in fields(applied)}
+        if retained.name in protection_owned_fields:
+            with pytest.raises((TypeError, ValueError)):
+                _projection(module, forged, mandate)
+            tested_protection.add(retained.name)
+        else:
+            assert retained.name in acquisition_owned_fields
+            assert applied.book.project_acquisition_fact(forged).fact_relation() is None
+            tested_acquisition.add(retained.name)
+    assert tested_protection == protection_owned_fields
+    assert tested_acquisition == acquisition_owned_fields
 
 
 def test_every_protection_proof_leaf_is_bound_into_its_cursor_lineage() -> None:
@@ -12658,18 +13602,15 @@ def test_state_replay_rejects_scope_only_mandate_forgery_without_execution_confo
         account=ACCOUNT,
         symbol_id=type(SYMBOL)("MSFT"),
     )
-    changed_mandate = replace(mandate, position_scope=changed_scope)
-    for retained in fields(mandate):
-        if retained.name == "position_scope":
-            assert getattr(changed_mandate, retained.name) != getattr(
-                mandate,
-                retained.name,
-            )
-        else:
-            assert getattr(changed_mandate, retained.name) == getattr(
-                mandate,
-                retained.name,
-            )
+    changed_mandate = _mandate(module, position_scope=changed_scope)
+    assert changed_mandate.position_scope == changed_scope
+    assert changed_mandate.position_scope != mandate.position_scope
+    assert (
+        changed_mandate.emergency_recovery_compatibility.position_scope == changed_scope
+    )
+    assert changed_mandate.emergency_recovery_compatibility.commitment != (
+        mandate.emergency_recovery_compatibility.commitment
+    )
 
     forged = _clone_opaque(state, mandate=changed_mandate)
     assert forged.execution_commitment == state.execution_commitment
@@ -12705,11 +13646,12 @@ def test_protection_commitment_binds_each_nested_tick_authority_leaf(
         assert changed_tick.scale != baseline_mandate.tick.scale
     changed_mandate = _mandate(module, tick=changed_tick)
     for retained in fields(baseline_mandate):
-        if retained.name != "tick":
+        if retained.name not in {"tick", "commitment"}:
             assert getattr(changed_mandate, retained.name) == getattr(
                 baseline_mandate,
                 retained.name,
             )
+    assert changed_mandate.commitment != baseline_mandate.commitment
 
     _, baseline_projection, baseline_state = _start(
         module,
@@ -13510,6 +14452,7 @@ def test_value_objects_expose_no_mutating_or_broker_capability_fields() -> None:
         "EvidencePolicy",
         "ExecutionGuard",
         "MarketOccurrence",
+        "EmergencyRecoveryCompatibility",
         "ProtectionMandate",
         "PositionProtectionState",
         "ProtectionVenueProjection",
@@ -13565,6 +14508,7 @@ def test_value_objects_expose_no_mutating_or_broker_capability_fields() -> None:
             Quantity,
             ReportedPrice,
             TickMetadata,
+            EmergencyRecoveryCompatibilityId,
             market_source_type,
             generation_type,
             occurrence_id_type,
@@ -13604,6 +14548,10 @@ def test_value_objects_expose_no_mutating_or_broker_capability_fields() -> None:
             allowed_shapes=allowed_shapes,
             allowed_init_shapes={
                 type(occurrence): _MARKET_OCCURRENCE_INIT_FIELDS,
+                type(mandate.emergency_recovery_compatibility): (
+                    _EMERGENCY_RECOVERY_COMPATIBILITY_INIT_FIELDS
+                ),
+                type(mandate): _PROTECTION_MANDATE_INIT_FIELDS,
             },
             trusted_leaf_types=trusted_leaf_types,
             allowed_enum_shapes=allowed_enum_shapes,
@@ -17649,6 +18597,7 @@ _PY311_AST_API = frozenset(
         "ClassDef",
         "Compare",
         "Constant",
+        "copy_location",
         "Del",
         "Delete",
         "Dict",
@@ -17657,6 +18606,7 @@ _PY311_AST_API = frozenset(
         "Eq",
         "ExceptHandler",
         "Expr",
+        "fix_missing_locations",
         "FloorDiv",
         "For",
         "FunctionDef",
@@ -17665,6 +18615,7 @@ _PY311_AST_API = frozenset(
         "Gt",
         "GtE",
         "If",
+        "IfExp",
         "Import",
         "ImportFrom",
         "In",
@@ -17673,6 +18624,7 @@ _PY311_AST_API = frozenset(
         "Lambda",
         "List",
         "ListComp",
+        "literal_eval",
         "Load",
         "Lt",
         "LtE",
@@ -17685,6 +18637,7 @@ _PY311_AST_API = frozenset(
         "Mult",
         "Name",
         "NamedExpr",
+        "NodeTransformer",
         "NodeVisitor",
         "Nonlocal",
         "Not",
@@ -17714,6 +18667,7 @@ _PY311_AST_API = frozenset(
         "cmpop",
         "comprehension",
         "dump",
+        "expr",
         "get_source_segment",
         "iter_child_nodes",
         "keyword",

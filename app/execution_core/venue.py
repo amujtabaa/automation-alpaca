@@ -24,9 +24,12 @@ from .fills import (
     FirstObservationClassification,
     HumanAttestedFillFact,
     PositionScope,
+    SeenFact,
     _PersistentKeyMap,
     _PersistentSequence,
     _commit_parts,
+    _encode_int,
+    _encode_position_scope,
     _encode_text,
 )
 from .identity import (
@@ -234,6 +237,7 @@ def _require_exact_venue_recovery_input(item: object) -> None:
         ObserveVenueStatus,
         CloseAcceptanceSet,
         CatchUpExecutionRegistry,
+        _BootstrapTargetRegistryInput,
         IngestHumanAttestedFill,
         ReleaseVenueLeg,
         RecordBrokerFillEvidence,
@@ -909,6 +913,1086 @@ class VenueAcquisitionCorrelation:
         raise TypeError("VenueAcquisitionCorrelation cannot be subclassed")
 
 
+class AcquisitionVenueSourceKind(Enum):
+    """The bounded source class for an acquisition-facing venue projection."""
+
+    BOOTSTRAP = "BOOTSTRAP"
+    CANONICAL_ECONOMIC_FACT = "CANONICAL_ECONOMIC_FACT"
+    CANONICAL_ECONOMIC_FACT_RECONCILIATION = "CANONICAL_ECONOMIC_FACT_RECONCILIATION"
+
+
+@dataclass(frozen=True, slots=True, init=False)
+class AcquisitionFactRelation:
+    """Venue-sealed direct provenance for one canonical economic fact.
+
+    The public shape deliberately contains keys only.  It is not a capability,
+    a history reader, or a factory for a new fact relation.
+    """
+
+    application_generation_id: ApplicationGenerationId = field(init=False)
+    position_scope: PositionScope = field(init=False)
+    fact_key: ExecutionFactKey = field(init=False)
+    root_key: RootFillKey = field(init=False)
+    effect_id: EffectId = field(init=False)
+    request_occurrence_id: RequestOccurrenceId = field(init=False)
+    leg_key: VenueLegKey = field(init=False)
+    source_commitment: bytes = field(init=False)
+    _seal: bytes = field(init=False, repr=False)
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise TypeError("AcquisitionFactRelation is venue-constructed only")
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        del cls, kwargs
+        raise TypeError("AcquisitionFactRelation cannot be subclassed")
+
+
+@dataclass(frozen=True, slots=True, init=False)
+class AcquisitionVenueContext:
+    """Exact target-scope context with full-input freshness checked at use time."""
+
+    application_generation_id: ApplicationGenerationId = field(init=False)
+    position_scope: PositionScope = field(init=False)
+    scope_execution_commitment: bytes = field(init=False)
+    commitment: bytes = field(init=False)
+    _source_execution_commitment: bytes = field(init=False, repr=False)
+    _source_protection_cursor_ordinal: int = field(init=False, repr=False)
+    _source_protection_cursor_head: bytes = field(init=False, repr=False)
+    _serving: bool = field(init=False, repr=False)
+    _seal: bytes = field(init=False, repr=False)
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise TypeError("AcquisitionVenueContext is venue-constructed only")
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        del cls, kwargs
+        raise TypeError("AcquisitionVenueContext cannot be subclassed")
+
+    def matches_current(
+        self,
+        book: VenueRecoveryBook,
+        execution: ExecutionSnapshot,
+        application_generation_id: ApplicationGenerationId,
+        position_scope: PositionScope,
+    ) -> bool:
+        if (
+            type(book) is not VenueRecoveryBook
+            or type(execution) is not ExecutionSnapshot
+            or type(application_generation_id) is not ApplicationGenerationId
+            or type(position_scope) is not PositionScope
+            or not _acquisition_venue_context_is_authentic(self)
+            or not self._serving
+        ):
+            return False
+        if (
+            self.application_generation_id != application_generation_id
+            or self.position_scope != position_scope
+        ):
+            return False
+        current = book.project_acquisition_context(execution, position_scope)
+        return (
+            _acquisition_venue_context_is_authentic(current)
+            and current._serving
+            and current.application_generation_id == self.application_generation_id
+            and current.position_scope == self.position_scope
+            and current.scope_execution_commitment == self.scope_execution_commitment
+            and current.commitment == self.commitment
+            and current._source_execution_commitment
+            == self._source_execution_commitment
+            and current._source_protection_cursor_ordinal
+            == self._source_protection_cursor_ordinal
+            and current._source_protection_cursor_head
+            == self._source_protection_cursor_head
+        )
+
+
+@dataclass(frozen=True, slots=True, init=False)
+class AcquisitionVenueProjection:
+    """Opaque target-only bootstrap or canonical-fact venue proof."""
+
+    source_kind: AcquisitionVenueSourceKind = field(init=False)
+    application_generation_id: ApplicationGenerationId = field(init=False)
+    position_scope: PositionScope = field(init=False)
+    predecessor_execution_snapshot_commitment: bytes | None = field(init=False)
+    execution_snapshot_commitment: bytes = field(init=False)
+    predecessor_scope_execution_commitment: bytes | None = field(init=False)
+    scope_execution_commitment: bytes = field(init=False)
+    predecessor_venue_commitment: bytes | None = field(init=False)
+    venue_commitment: bytes = field(init=False)
+    source_commitment: bytes = field(init=False)
+    _fact_relation: AcquisitionFactRelation | None = field(init=False, repr=False)
+    _serving: bool = field(init=False, repr=False)
+    _seal: bytes = field(init=False, repr=False)
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise TypeError("AcquisitionVenueProjection is venue-constructed only")
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        del cls, kwargs
+        raise TypeError("AcquisitionVenueProjection cannot be subclassed")
+
+    def fact_relation(self) -> AcquisitionFactRelation | None:
+        if not _acquisition_venue_projection_is_authentic(self) or not self._serving:
+            return None
+        relation = self._fact_relation
+        return relation if _acquisition_fact_relation_is_authentic(relation) else None
+
+    def matches_bootstrap(
+        self,
+        execution: ExecutionSnapshot,
+        book: VenueRecoveryBook,
+        position_scope: PositionScope,
+    ) -> bool:
+        if (
+            type(execution) is not ExecutionSnapshot
+            or type(book) is not VenueRecoveryBook
+            or type(position_scope) is not PositionScope
+            or not _acquisition_venue_projection_is_authentic(self)
+            or not self._serving
+            or self.source_kind is not AcquisitionVenueSourceKind.BOOTSTRAP
+            or self.position_scope != position_scope
+        ):
+            return False
+        context = book.project_acquisition_context(execution, position_scope)
+        return (
+            context.matches_current(
+                book,
+                execution,
+                self.application_generation_id,
+                position_scope,
+            )
+            and context.scope_execution_commitment == self.scope_execution_commitment
+            and context.commitment == self.venue_commitment
+            and execution.commitment == self.execution_snapshot_commitment
+            and self.source_commitment
+            == _commit_parts(
+                b"execution-core/acquisition-venue/bootstrap/v1",
+                context._seal,
+            )
+        )
+
+    def matches_fact_transition(
+        self,
+        transition: VenueRecoveryTransition,
+        position_scope: PositionScope,
+    ) -> bool:
+        if (
+            type(transition) is not VenueRecoveryTransition
+            or type(position_scope) is not PositionScope
+            or not _acquisition_venue_projection_is_authentic(self)
+            or not self._serving
+            or self.source_kind
+            not in {
+                AcquisitionVenueSourceKind.CANONICAL_ECONOMIC_FACT,
+                AcquisitionVenueSourceKind.CANONICAL_ECONOMIC_FACT_RECONCILIATION,
+            }
+            or self.position_scope != position_scope
+        ):
+            return False
+        expected = transition.book.project_acquisition_fact(transition)
+        relation = self.fact_relation()
+        expected_relation = expected.fact_relation()
+        return (
+            _acquisition_fact_proof_matches_transition(transition.book, transition)
+            and _acquisition_venue_projection_is_authentic(expected)
+            and expected._serving
+            and self.source_kind is expected.source_kind
+            and self.application_generation_id == expected.application_generation_id
+            and self.position_scope == expected.position_scope
+            and self.predecessor_execution_snapshot_commitment
+            == expected.predecessor_execution_snapshot_commitment
+            and self.execution_snapshot_commitment
+            == expected.execution_snapshot_commitment
+            and self.predecessor_scope_execution_commitment
+            == expected.predecessor_scope_execution_commitment
+            and self.scope_execution_commitment == expected.scope_execution_commitment
+            and self.predecessor_venue_commitment
+            == expected.predecessor_venue_commitment
+            and self.venue_commitment == expected.venue_commitment
+            and self.source_commitment == expected.source_commitment
+            and relation is not None
+            and expected_relation is not None
+            and relation._seal == expected_relation._seal
+        )
+
+    def matches_predecessor_book(
+        self,
+        book: VenueRecoveryBook,
+        position_scope: PositionScope,
+    ) -> bool:
+        if (
+            type(book) is not VenueRecoveryBook
+            or type(position_scope) is not PositionScope
+        ):
+            return False
+        predecessor_scope_execution_commitment = (
+            _bound_acquisition_scope_execution_commitment(book, position_scope)
+        )
+        return bool(
+            _acquisition_venue_projection_is_authentic(self)
+            and self.position_scope == position_scope
+            and self.application_generation_id == book.scope.generation
+            and predecessor_scope_execution_commitment is not None
+            and self.predecessor_scope_execution_commitment
+            == predecessor_scope_execution_commitment
+            and self.predecessor_venue_commitment
+            == _acquisition_venue_book_token(
+                book,
+                position_scope,
+                predecessor_scope_execution_commitment,
+            )
+        )
+
+
+def _acquisition_scope_execution_commitment(
+    book: VenueRecoveryBook,
+    execution: ExecutionSnapshot,
+    position_scope: PositionScope,
+) -> bytes:
+    binding = book.execution_binding(position_scope)
+    binding_value = (
+        _commit_parts(b"execution-core/acquisition-venue/no-binding/v1")
+        if binding is None
+        else _commit_parts(
+            b"execution-core/acquisition-venue/binding/v1",
+            _position_scope_index_key(binding.position_scope),
+            binding.position_commitment,
+            binding.root_heads_commitment,
+            _encode_text(str(binding.integrity_bits)),
+        )
+    )
+    return _commit_parts(
+        b"execution-core/acquisition-venue/scope-execution/v1",
+        _encode_text(book.scope.generation.value),
+        _position_scope_index_key(position_scope),
+        execution.position.commitment,
+        execution.root_heads.commitment,
+        _encode_text(str(execution.integrity.value)),
+        binding_value,
+    )
+
+
+def _bound_acquisition_scope_execution_commitment(
+    book: VenueRecoveryBook,
+    position_scope: PositionScope,
+) -> bytes | None:
+    """Rebuild the target scope token from the book-owned direct binding only."""
+
+    binding = book.execution_binding(position_scope)
+    if binding is None:
+        return None
+    binding_value = _commit_parts(
+        b"execution-core/acquisition-venue/binding/v1",
+        _position_scope_index_key(binding.position_scope),
+        binding.position_commitment,
+        binding.root_heads_commitment,
+        _encode_text(str(binding.integrity_bits)),
+    )
+    return _commit_parts(
+        b"execution-core/acquisition-venue/scope-execution/v1",
+        _encode_text(book.scope.generation.value),
+        _position_scope_index_key(position_scope),
+        binding.position_commitment,
+        binding.root_heads_commitment,
+        _encode_text(str(binding.integrity_bits)),
+        binding_value,
+    )
+
+
+def _acquisition_venue_book_token(
+    book: VenueRecoveryBook,
+    position_scope: PositionScope,
+    scope_execution_commitment: bytes,
+) -> bytes:
+    _require_digest("scope_execution_commitment", scope_execution_commitment)
+    summary = book._authority_summary_by_scope.get(
+        _position_scope_index_key(position_scope)
+    )
+    if summary is None:
+        summary = _SymbolAuthoritySummary()
+    bootstrap_record = book._bootstrap_bound_target_by_scope.get(
+        _position_scope_index_key(position_scope)
+    )
+    bootstrap_commitment = (
+        _commit_parts(b"execution-core/acquisition-venue/no-bootstrap-record/v1")
+        if bootstrap_record is None
+        else (
+            cast(_BootstrapBoundTargetRecord, bootstrap_record).commitment
+            if _bootstrap_bound_target_record_is_authentic(bootstrap_record)
+            else _commit_parts(
+                b"execution-core/acquisition-venue/invalid-bootstrap-record/v1"
+            )
+        )
+    )
+    return _commit_parts(
+        b"execution-core/acquisition-venue/context/v1",
+        _encode_text(book.scope.generation.value),
+        _position_scope_index_key(position_scope),
+        scope_execution_commitment,
+        _encode_text(str(summary.effect_count)),
+        _encode_text(str(summary.blocking_effect_count)),
+        _encode_text(str(summary.blocking_buy_effect_count)),
+        _encode_text(str(summary.stand_downable_buy_count)),
+        _encode_text(str(summary.waiting_buy_parent_count)),
+        _encode_text(str(summary.unknown_buy_effect_count)),
+        bootstrap_commitment,
+    )
+
+
+def _new_acquisition_venue_context(
+    book: VenueRecoveryBook,
+    execution: ExecutionSnapshot,
+    position_scope: PositionScope,
+    serving: bool,
+) -> AcquisitionVenueContext:
+    scope_execution_commitment = _acquisition_scope_execution_commitment(
+        book,
+        execution,
+        position_scope,
+    )
+    venue_commitment = _acquisition_venue_book_token(
+        book,
+        position_scope,
+        scope_execution_commitment,
+    )
+    cursor = book._protection_cursor_by_scope.get(
+        _position_scope_index_key(position_scope)
+    )
+    if cursor is None:
+        cursor = _protection_genesis_cursor()
+    commitment = _commit_parts(
+        b"execution-core/acquisition-venue/context-seal/v1",
+        _encode_text(book.scope.generation.value),
+        _position_scope_index_key(position_scope),
+        scope_execution_commitment,
+        venue_commitment,
+        execution.commitment,
+        _encode_int(cursor.ordinal),
+        cursor.head,
+        b"1" if serving else b"0",
+    )
+    result = object.__new__(AcquisitionVenueContext)
+    object.__setattr__(result, "application_generation_id", book.scope.generation)
+    object.__setattr__(result, "position_scope", position_scope)
+    object.__setattr__(result, "scope_execution_commitment", scope_execution_commitment)
+    object.__setattr__(result, "commitment", venue_commitment)
+    object.__setattr__(result, "_source_execution_commitment", execution.commitment)
+    object.__setattr__(result, "_source_protection_cursor_ordinal", cursor.ordinal)
+    object.__setattr__(result, "_source_protection_cursor_head", cursor.head)
+    object.__setattr__(result, "_serving", serving)
+    object.__setattr__(result, "_seal", commitment)
+    return result
+
+
+def _acquisition_venue_context_is_authentic(value: object) -> bool:
+    if type(value) is not AcquisitionVenueContext:
+        return False
+    try:
+        application_generation_id = value.application_generation_id
+        position_scope = value.position_scope
+        scope_execution_commitment = value.scope_execution_commitment
+        commitment = value.commitment
+        source_execution_commitment = value._source_execution_commitment
+        source_protection_cursor_ordinal = value._source_protection_cursor_ordinal
+        source_protection_cursor_head = value._source_protection_cursor_head
+        serving = value._serving
+        seal = value._seal
+    except AttributeError:
+        return False
+    return (
+        type(application_generation_id) is ApplicationGenerationId
+        and type(position_scope) is PositionScope
+        and type(scope_execution_commitment) is bytes
+        and len(scope_execution_commitment) == 32
+        and type(commitment) is bytes
+        and len(commitment) == 32
+        and type(source_execution_commitment) is bytes
+        and len(source_execution_commitment) == 32
+        and type(source_protection_cursor_ordinal) is int
+        and source_protection_cursor_ordinal >= 0
+        and type(source_protection_cursor_head) is bytes
+        and len(source_protection_cursor_head) == 32
+        and type(serving) is bool
+        and type(seal) is bytes
+        and seal
+        == _commit_parts(
+            b"execution-core/acquisition-venue/context-seal/v1",
+            _encode_text(application_generation_id.value),
+            _position_scope_index_key(position_scope),
+            scope_execution_commitment,
+            commitment,
+            source_execution_commitment,
+            _encode_int(source_protection_cursor_ordinal),
+            source_protection_cursor_head,
+            b"1" if serving else b"0",
+        )
+    )
+
+
+def _acquisition_fact_relation_is_authentic(value: object) -> bool:
+    if type(value) is not AcquisitionFactRelation:
+        return False
+    try:
+        application_generation_id = value.application_generation_id
+        position_scope = value.position_scope
+        fact_key = value.fact_key
+        root_key = value.root_key
+        effect_id = value.effect_id
+        request_occurrence_id = value.request_occurrence_id
+        leg_key = value.leg_key
+        source = value.source_commitment
+        seal = value._seal
+    except AttributeError:
+        return False
+    if (
+        type(application_generation_id) is not ApplicationGenerationId
+        or type(position_scope) is not PositionScope
+        or type(fact_key) is not ExecutionFactKey
+        or type(root_key) is not RootFillKey
+        or type(effect_id) is not EffectId
+        or type(request_occurrence_id) is not RequestOccurrenceId
+        or type(leg_key) is not VenueLegKey
+        or type(source) is not bytes
+        or len(source) != 32
+        or type(seal) is not bytes
+        or len(seal) != 32
+    ):
+        return False
+    if (
+        application_generation_id.value == ""
+        or fact_key.broker != position_scope.broker
+        or fact_key.environment != position_scope.environment
+        or fact_key.account != position_scope.account
+        or root_key.broker != position_scope.broker
+        or root_key.environment != position_scope.environment
+        or root_key.account != position_scope.account
+        or leg_key.broker != position_scope.broker
+        or leg_key.environment != position_scope.environment
+        or leg_key.account != position_scope.account
+    ):
+        return False
+    return seal == _commit_parts(
+        b"execution-core/acquisition-fact-relation-seal/v1",
+        _encode_text(application_generation_id.value),
+        _position_scope_index_key(position_scope),
+        _canonical_value_commitment(fact_key),
+        _canonical_value_commitment(root_key),
+        _canonical_value_commitment(effect_id),
+        _canonical_value_commitment(request_occurrence_id),
+        _canonical_value_commitment(leg_key),
+        source,
+    )
+
+
+def _optional_acquisition_digest_is_exact(value: object) -> bool:
+    return value is None or (type(value) is bytes and len(value) == 32)
+
+
+def _acquisition_venue_projection_seal(
+    source_kind: AcquisitionVenueSourceKind,
+    application_generation_id: ApplicationGenerationId,
+    position_scope: PositionScope,
+    predecessor_execution_snapshot_commitment: bytes | None,
+    execution_snapshot_commitment: bytes,
+    predecessor_scope_execution_commitment: bytes | None,
+    scope_execution_commitment: bytes,
+    predecessor_venue_commitment: bytes | None,
+    venue_commitment: bytes,
+    source_commitment: bytes,
+    fact_relation: AcquisitionFactRelation | None,
+    serving: bool,
+) -> bytes:
+    return _commit_parts(
+        b"execution-core/acquisition-venue/projection-seal/v2",
+        _encode_text(source_kind.value),
+        _encode_text(application_generation_id.value),
+        _position_scope_index_key(position_scope),
+        predecessor_execution_snapshot_commitment or b"",
+        execution_snapshot_commitment,
+        predecessor_scope_execution_commitment or b"",
+        scope_execution_commitment,
+        predecessor_venue_commitment or b"",
+        venue_commitment,
+        source_commitment,
+        b"" if fact_relation is None else fact_relation._seal,
+        b"1" if serving else b"0",
+    )
+
+
+def _acquisition_venue_projection_is_authentic(value: object) -> bool:
+    if type(value) is not AcquisitionVenueProjection:
+        return False
+    try:
+        source_kind = value.source_kind
+        application_generation_id = value.application_generation_id
+        position_scope = value.position_scope
+        predecessor_execution_snapshot_commitment = (
+            value.predecessor_execution_snapshot_commitment
+        )
+        execution_snapshot_commitment = value.execution_snapshot_commitment
+        predecessor_scope_execution_commitment = (
+            value.predecessor_scope_execution_commitment
+        )
+        scope_execution_commitment = value.scope_execution_commitment
+        predecessor_venue_commitment = value.predecessor_venue_commitment
+        venue_commitment = value.venue_commitment
+        source_commitment = value.source_commitment
+        fact_relation = value._fact_relation
+        serving = value._serving
+        seal = value._seal
+    except AttributeError:
+        return False
+    return bool(
+        type(source_kind) is AcquisitionVenueSourceKind
+        and type(application_generation_id) is ApplicationGenerationId
+        and type(position_scope) is PositionScope
+        and type(execution_snapshot_commitment) is bytes
+        and len(execution_snapshot_commitment) == 32
+        and type(scope_execution_commitment) is bytes
+        and len(scope_execution_commitment) == 32
+        and type(venue_commitment) is bytes
+        and len(venue_commitment) == 32
+        and type(source_commitment) is bytes
+        and len(source_commitment) == 32
+        and _optional_acquisition_digest_is_exact(
+            predecessor_execution_snapshot_commitment
+        )
+        and _optional_acquisition_digest_is_exact(
+            predecessor_scope_execution_commitment
+        )
+        and _optional_acquisition_digest_is_exact(predecessor_venue_commitment)
+        and (
+            fact_relation is None
+            or _acquisition_fact_relation_is_authentic(fact_relation)
+        )
+        and type(serving) is bool
+        and type(seal) is bytes
+        and len(seal) == 32
+        and (
+            not serving
+            or (
+                source_kind is AcquisitionVenueSourceKind.BOOTSTRAP
+                and fact_relation is None
+            )
+            or (
+                source_kind
+                in {
+                    AcquisitionVenueSourceKind.CANONICAL_ECONOMIC_FACT,
+                    AcquisitionVenueSourceKind.CANONICAL_ECONOMIC_FACT_RECONCILIATION,
+                }
+                and fact_relation is not None
+                and fact_relation.application_generation_id == application_generation_id
+                and fact_relation.position_scope == position_scope
+            )
+        )
+        and seal
+        == _acquisition_venue_projection_seal(
+            source_kind,
+            application_generation_id,
+            position_scope,
+            predecessor_execution_snapshot_commitment,
+            execution_snapshot_commitment,
+            predecessor_scope_execution_commitment,
+            scope_execution_commitment,
+            predecessor_venue_commitment,
+            venue_commitment,
+            source_commitment,
+            fact_relation,
+            serving,
+        )
+    )
+
+
+def _new_acquisition_venue_projection(
+    *,
+    source_kind: AcquisitionVenueSourceKind,
+    context: AcquisitionVenueContext,
+    predecessor_execution_snapshot_commitment: bytes | None,
+    predecessor_scope_execution_commitment: bytes | None,
+    predecessor_venue_commitment: bytes | None,
+    source_commitment: bytes,
+    fact_relation: AcquisitionFactRelation | None,
+    serving: bool,
+) -> AcquisitionVenueProjection:
+    if (
+        type(source_kind) is not AcquisitionVenueSourceKind
+        or not _acquisition_venue_context_is_authentic(context)
+        or type(source_commitment) is not bytes
+        or len(source_commitment) != 32
+        or not _optional_acquisition_digest_is_exact(
+            predecessor_execution_snapshot_commitment
+        )
+        or not _optional_acquisition_digest_is_exact(
+            predecessor_scope_execution_commitment
+        )
+        or not _optional_acquisition_digest_is_exact(predecessor_venue_commitment)
+        or (
+            fact_relation is not None
+            and not _acquisition_fact_relation_is_authentic(fact_relation)
+        )
+    ):
+        raise TypeError("acquisition venue projection requires owner-sealed inputs")
+    if serving:
+        if (
+            source_kind is AcquisitionVenueSourceKind.BOOTSTRAP
+            and fact_relation is not None
+        ):
+            raise ValueError("bootstrap projection cannot retain a fact relation")
+        if (
+            source_kind
+            in {
+                AcquisitionVenueSourceKind.CANONICAL_ECONOMIC_FACT,
+                AcquisitionVenueSourceKind.CANONICAL_ECONOMIC_FACT_RECONCILIATION,
+            }
+            and fact_relation is None
+        ):
+            raise ValueError("serving fact projection requires a fact relation")
+    elif fact_relation is not None:
+        raise ValueError("non-serving projection cannot retain a fact relation")
+    result = object.__new__(AcquisitionVenueProjection)
+    object.__setattr__(result, "source_kind", source_kind)
+    object.__setattr__(
+        result, "application_generation_id", context.application_generation_id
+    )
+    object.__setattr__(result, "position_scope", context.position_scope)
+    object.__setattr__(
+        result,
+        "predecessor_execution_snapshot_commitment",
+        predecessor_execution_snapshot_commitment,
+    )
+    object.__setattr__(
+        result,
+        "execution_snapshot_commitment",
+        context._source_execution_commitment,
+    )
+    object.__setattr__(
+        result,
+        "predecessor_scope_execution_commitment",
+        predecessor_scope_execution_commitment,
+    )
+    object.__setattr__(
+        result,
+        "scope_execution_commitment",
+        context.scope_execution_commitment,
+    )
+    object.__setattr__(
+        result,
+        "predecessor_venue_commitment",
+        predecessor_venue_commitment,
+    )
+    object.__setattr__(result, "venue_commitment", context.commitment)
+    object.__setattr__(result, "source_commitment", source_commitment)
+    object.__setattr__(result, "_fact_relation", fact_relation)
+    object.__setattr__(result, "_serving", serving)
+    object.__setattr__(
+        result,
+        "_seal",
+        _acquisition_venue_projection_seal(
+            source_kind,
+            context.application_generation_id,
+            context.position_scope,
+            predecessor_execution_snapshot_commitment,
+            context._source_execution_commitment,
+            predecessor_scope_execution_commitment,
+            context.scope_execution_commitment,
+            predecessor_venue_commitment,
+            context.commitment,
+            source_commitment,
+            fact_relation,
+            serving,
+        ),
+    )
+    return result
+
+
+def _new_acquisition_fact_relation(
+    proof: _AcquisitionFactProof,
+) -> AcquisitionFactRelation:
+    if not _acquisition_fact_proof_is_authentic(proof):
+        raise ValueError("acquisition fact proof is not authentic")
+    result = object.__new__(AcquisitionFactRelation)
+    object.__setattr__(
+        result, "application_generation_id", proof.application_generation_id
+    )
+    object.__setattr__(result, "position_scope", proof.position_scope)
+    object.__setattr__(result, "fact_key", proof.fact_key)
+    object.__setattr__(result, "root_key", proof.root_key)
+    object.__setattr__(result, "effect_id", proof.effect_id)
+    object.__setattr__(result, "request_occurrence_id", proof.request_occurrence_id)
+    object.__setattr__(result, "leg_key", proof.leg_key)
+    object.__setattr__(result, "source_commitment", proof.commitment)
+    object.__setattr__(
+        result,
+        "_seal",
+        _commit_parts(
+            b"execution-core/acquisition-fact-relation-seal/v1",
+            _encode_text(proof.application_generation_id.value),
+            _position_scope_index_key(proof.position_scope),
+            _canonical_value_commitment(proof.fact_key),
+            _canonical_value_commitment(proof.root_key),
+            _canonical_value_commitment(proof.effect_id),
+            _canonical_value_commitment(proof.request_occurrence_id),
+            _canonical_value_commitment(proof.leg_key),
+            proof.commitment,
+        ),
+    )
+    return result
+
+
+def _acquisition_fact_source_item_is_exact(item: object) -> bool:
+    from .recovery import RecordBrokerFillEvidence, RecordBrokerRevisionEvidence
+
+    if type(item) is RecordBrokerFillEvidence:
+        return type(cast(RecordBrokerFillEvidence, item).fact) is BrokerFillFact
+    return type(item) is RecordBrokerRevisionEvidence and type(
+        cast(RecordBrokerRevisionEvidence, item).fact
+    ) in {BrokerTradeCorrectFact, BrokerTradeBustFact}
+
+
+def _acquisition_fact_proof_is_authentic(value: object) -> bool:
+    from .recovery import RecordBrokerFillEvidence, RecordBrokerRevisionEvidence
+
+    if type(value) is not _AcquisitionFactProof:
+        return False
+    try:
+        application_generation_id = value.application_generation_id
+        position_scope = value.position_scope
+        fact_key = value.fact_key
+        root_key = value.root_key
+        effect_id = value.effect_id
+        request_occurrence_id = value.request_occurrence_id
+        leg_key = value.leg_key
+        predecessor_execution_snapshot_commitment = (
+            value.predecessor_execution_snapshot_commitment
+        )
+        execution_snapshot_commitment = value.execution_snapshot_commitment
+        predecessor_scope_execution_commitment = (
+            value.predecessor_scope_execution_commitment
+        )
+        scope_execution_commitment = value.scope_execution_commitment
+        predecessor_venue_commitment = value.predecessor_venue_commitment
+        venue_commitment = value.venue_commitment
+        command_commitment = value.command_commitment
+        source_kind = value.source_kind
+        source_item = value._source_item
+    except AttributeError:
+        return False
+    if (
+        type(application_generation_id) is not ApplicationGenerationId
+        or type(position_scope) is not PositionScope
+        or type(fact_key) is not ExecutionFactKey
+        or type(root_key) is not RootFillKey
+        or type(effect_id) is not EffectId
+        or type(request_occurrence_id) is not RequestOccurrenceId
+        or type(leg_key) is not VenueLegKey
+        or type(source_kind) is not AcquisitionVenueSourceKind
+        or not _acquisition_fact_source_item_is_exact(source_item)
+    ):
+        return False
+    exact_source = cast(
+        RecordBrokerFillEvidence | RecordBrokerRevisionEvidence,
+        source_item,
+    )
+    for digest in (
+        predecessor_execution_snapshot_commitment,
+        execution_snapshot_commitment,
+        predecessor_scope_execution_commitment,
+        scope_execution_commitment,
+        predecessor_venue_commitment,
+        venue_commitment,
+        command_commitment,
+    ):
+        if type(digest) is not bytes or len(digest) != 32:
+            return False
+    fact = exact_source.fact
+    if (
+        fact.key != fact_key
+        or fact.root_key != root_key
+        or fact.scope.position_scope != position_scope
+        or exact_source.effect_id != effect_id
+        or exact_source.leg_key != leg_key
+        or _protection_command_commitment(exact_source) != command_commitment
+        or fact_key.broker != position_scope.broker
+        or fact_key.environment != position_scope.environment
+        or fact_key.account != position_scope.account
+        or root_key.broker != position_scope.broker
+        or root_key.environment != position_scope.environment
+        or root_key.account != position_scope.account
+        or leg_key.broker != position_scope.broker
+        or leg_key.environment != position_scope.environment
+        or leg_key.account != position_scope.account
+    ):
+        return False
+    return source_kind in {
+        AcquisitionVenueSourceKind.CANONICAL_ECONOMIC_FACT,
+        AcquisitionVenueSourceKind.CANONICAL_ECONOMIC_FACT_RECONCILIATION,
+    }
+
+
+def _canonical_acquisition_fact_observation_matches(
+    execution: ExecutionSnapshot,
+    proof: _AcquisitionFactProof,
+) -> bool:
+    from .recovery import RecordBrokerFillEvidence, RecordBrokerRevisionEvidence
+
+    source = cast(
+        RecordBrokerFillEvidence | RecordBrokerRevisionEvidence,
+        proof._source_item,
+    )
+    observation = execution.seen_facts.get(proof.fact_key)
+    if type(observation) is not SeenFact:
+        return False
+    if (
+        observation.fact != source.fact
+        or observation.position_scope != proof.position_scope
+        or observation.classification
+        in {
+            FirstObservationClassification.CORROBORATED_ZERO_ECONOMIC,
+            FirstObservationClassification.RECONCILIATION_REQUIRED,
+        }
+    ):
+        return False
+    return _execution_head_matches_fact(
+        execution.root_heads.get(proof.root_key),
+        source.fact,
+    )
+
+
+def _direct_acquisition_relation_matches_book(
+    book: VenueRecoveryBook,
+    application_generation_id: ApplicationGenerationId,
+    position_scope: PositionScope,
+    request_occurrence_id: RequestOccurrenceId,
+    effect_id: EffectId,
+    leg_key: VenueLegKey,
+    root_key: RootFillKey,
+) -> bool:
+    """Recheck one fact relation through bounded, current venue indexes only."""
+
+    if (
+        type(book) is not VenueRecoveryBook
+        or type(application_generation_id) is not ApplicationGenerationId
+        or type(position_scope) is not PositionScope
+        or type(request_occurrence_id) is not RequestOccurrenceId
+        or type(effect_id) is not EffectId
+        or type(leg_key) is not VenueLegKey
+        or type(root_key) is not RootFillKey
+        or application_generation_id != book.scope.generation
+    ):
+        return False
+    entry = book._acquisition_correlation_by_root.get(
+        _coverage_root_index_key(root_key)
+    )
+    current = book._effect_by_id.get(_effect_index_key(effect_id))
+    owner = book._owner_by_leg.get(_leg_index_key(leg_key))
+    mapped_effect_id = book._effect_by_request_occurrence.get(
+        _request_occurrence_index_key(request_occurrence_id)
+    )
+    if (
+        type(entry) is not _AcquisitionCorrelationEntry
+        or type(current) is not _EffectCurrent
+        or type(owner) is not VenueIdentityOwner
+        or mapped_effect_id != effect_id
+    ):
+        return False
+    effect_scope = current.effect.scope
+    return (
+        entry.application_generation_id == application_generation_id
+        and entry.position_scope == position_scope
+        and entry.request_occurrence_id == request_occurrence_id
+        and entry.effect_id == effect_id
+        and entry.leg_key == leg_key
+        and entry.root_key == root_key
+        and effect_scope.generation == application_generation_id
+        and effect_scope.position_scope == position_scope
+        and effect_scope.request_occurrence_id == request_occurrence_id
+        and effect_scope.effect_id == effect_id
+        and owner.leg_key == leg_key
+        and owner.effect_id == effect_id
+        and owner.effect_scope == effect_scope
+    )
+
+
+def _mint_acquisition_fact_proof(
+    predecessor_book: VenueRecoveryBook,
+    predecessor_execution: ExecutionSnapshot,
+    book: VenueRecoveryBook,
+    execution: ExecutionSnapshot,
+    item: object,
+    protection_proof: _ProtectionTransitionProof,
+    disposition: VenueRecoveryDisposition,
+) -> _AcquisitionFactProof | None:
+    """Capture one direct canonical-fact relation at the reducer boundary."""
+
+    from .recovery import RecordBrokerFillEvidence, RecordBrokerRevisionEvidence
+
+    if (
+        type(predecessor_book) is not VenueRecoveryBook
+        or type(predecessor_execution) is not ExecutionSnapshot
+        or type(book) is not VenueRecoveryBook
+        or type(execution) is not ExecutionSnapshot
+        or not _acquisition_fact_source_item_is_exact(item)
+        or not _protection_transition_proof_is_authentic(protection_proof)
+        or disposition
+        not in {
+            VenueRecoveryDisposition.APPLIED,
+            VenueRecoveryDisposition.RECONCILIATION_REQUIRED,
+        }
+    ):
+        return None
+    exact_item = cast(
+        RecordBrokerFillEvidence | RecordBrokerRevisionEvidence,
+        item,
+    )
+    fact = exact_item.fact
+    position_scope = fact.scope.position_scope
+    if (
+        position_scope != protection_proof.position_scope
+        or book.scope.generation != protection_proof.book_scope.generation
+        or protection_proof.execution_commitment != execution.commitment
+        or protection_proof.predecessor_execution_commitment
+        != predecessor_execution.commitment
+        or protection_proof.disposition is not disposition
+        or protection_proof.command_commitment
+        != _protection_command_commitment(exact_item)
+    ):
+        return None
+    predecessor_context = predecessor_book.project_acquisition_context(
+        predecessor_execution,
+        position_scope,
+    )
+    context = book.project_acquisition_context(execution, position_scope)
+    if not predecessor_context._serving or not context._serving:
+        return None
+    entry = book._acquisition_correlation_by_root.get(
+        _coverage_root_index_key(fact.root_key)
+    )
+    if (
+        type(entry) is not _AcquisitionCorrelationEntry
+        or entry.application_generation_id != book.scope.generation
+        or entry.position_scope != position_scope
+        or entry.effect_id != exact_item.effect_id
+        or entry.leg_key != exact_item.leg_key
+        or entry.root_key != fact.root_key
+    ):
+        return None
+    if not _direct_acquisition_relation_matches_book(
+        book,
+        entry.application_generation_id,
+        entry.position_scope,
+        entry.request_occurrence_id,
+        entry.effect_id,
+        entry.leg_key,
+        entry.root_key,
+    ):
+        return None
+    source_kind = (
+        AcquisitionVenueSourceKind.CANONICAL_ECONOMIC_FACT_RECONCILIATION
+        if disposition is VenueRecoveryDisposition.RECONCILIATION_REQUIRED
+        else AcquisitionVenueSourceKind.CANONICAL_ECONOMIC_FACT
+    )
+    proof = _AcquisitionFactProof(
+        application_generation_id=book.scope.generation,
+        position_scope=position_scope,
+        fact_key=fact.key,
+        root_key=fact.root_key,
+        effect_id=exact_item.effect_id,
+        request_occurrence_id=entry.request_occurrence_id,
+        leg_key=exact_item.leg_key,
+        predecessor_execution_snapshot_commitment=predecessor_execution.commitment,
+        execution_snapshot_commitment=execution.commitment,
+        predecessor_scope_execution_commitment=(
+            predecessor_context.scope_execution_commitment
+        ),
+        scope_execution_commitment=context.scope_execution_commitment,
+        predecessor_venue_commitment=predecessor_context.commitment,
+        venue_commitment=context.commitment,
+        command_commitment=protection_proof.command_commitment,
+        source_kind=source_kind,
+        _source_item=exact_item,
+    )
+    if not _acquisition_fact_proof_is_authentic(
+        proof
+    ) or not _canonical_acquisition_fact_observation_matches(execution, proof):
+        return None
+    return proof
+
+
+def _acquisition_fact_proof_matches_transition(
+    book: VenueRecoveryBook,
+    transition: VenueRecoveryTransition,
+) -> bool:
+    if (
+        type(book) is not VenueRecoveryBook
+        or type(transition) is not VenueRecoveryTransition
+    ):
+        return False
+    if book is not transition.book:
+        return False
+    proof = transition._acquisition_fact_proof
+    proof_commitment = transition._acquisition_fact_proof_commitment
+    protection_proof = transition._protection_proof
+    protection_commitment = transition._protection_proof_commitment
+    if (
+        type(proof) is not _AcquisitionFactProof
+        or type(proof_commitment) is not bytes
+        or len(proof_commitment) != 32
+        or proof.commitment != proof_commitment
+        or type(protection_proof) is not _ProtectionTransitionProof
+        or type(protection_commitment) is not bytes
+        or len(protection_commitment) != 32
+        or protection_proof.commitment != protection_commitment
+        or not _acquisition_fact_proof_is_authentic(proof)
+        or not _protection_transition_proof_is_authentic(protection_proof)
+    ):
+        return False
+    if (
+        proof.application_generation_id != book.scope.generation
+        or proof.position_scope != protection_proof.position_scope
+        or proof.predecessor_execution_snapshot_commitment
+        != protection_proof.predecessor_execution_commitment
+        or proof.execution_snapshot_commitment != transition.execution.commitment
+        or proof.execution_snapshot_commitment != protection_proof.execution_commitment
+        or proof.command_commitment != protection_proof.command_commitment
+        or proof.source_kind
+        != (
+            AcquisitionVenueSourceKind.CANONICAL_ECONOMIC_FACT_RECONCILIATION
+            if transition.disposition
+            is VenueRecoveryDisposition.RECONCILIATION_REQUIRED
+            else AcquisitionVenueSourceKind.CANONICAL_ECONOMIC_FACT
+        )
+        or transition.disposition
+        not in {
+            VenueRecoveryDisposition.APPLIED,
+            VenueRecoveryDisposition.RECONCILIATION_REQUIRED,
+        }
+    ):
+        return False
+    context = book.project_acquisition_context(
+        transition.execution, proof.position_scope
+    )
+    if (
+        not context._serving
+        or context.scope_execution_commitment != proof.scope_execution_commitment
+        or context.commitment != proof.venue_commitment
+    ):
+        return False
+    if not _direct_acquisition_relation_matches_book(
+        book,
+        proof.application_generation_id,
+        proof.position_scope,
+        proof.request_occurrence_id,
+        proof.effect_id,
+        proof.leg_key,
+        proof.root_key,
+    ):
+        return False
+    return _canonical_acquisition_fact_observation_matches(transition.execution, proof)
+
+
 @dataclass(frozen=True, slots=True)
 class _AcquisitionCorrelationEntry:
     """Private immutable root provenance retained by the venue reducer."""
@@ -1255,6 +2339,7 @@ def _require_input_record_shape(value: object) -> VenueInputRecord:
         ObserveVenueStatus,
         CloseAcceptanceSet,
         CatchUpExecutionRegistry,
+        _BootstrapTargetRegistryInput,
         IngestHumanAttestedFill,
         ReleaseVenueLeg,
         RecordBrokerFillEvidence,
@@ -1745,6 +2830,55 @@ class _ProtectionTransitionProof:
         return _protection_transition_proof_is_authentic(self)
 
 
+@dataclass(frozen=True, slots=True)
+class _AcquisitionFactProof:
+    """Private, direct provenance envelope for one applied broker fact.
+
+    The venue reducer retains the exact economic command only inside this
+    envelope.  The later acquisition projection exposes a small, sealed key
+    relation instead of the command, an effect history, or a venue collection.
+    """
+
+    application_generation_id: ApplicationGenerationId
+    position_scope: PositionScope
+    fact_key: ExecutionFactKey
+    root_key: RootFillKey
+    effect_id: EffectId
+    request_occurrence_id: RequestOccurrenceId
+    leg_key: VenueLegKey
+    predecessor_execution_snapshot_commitment: bytes
+    execution_snapshot_commitment: bytes
+    predecessor_scope_execution_commitment: bytes
+    scope_execution_commitment: bytes
+    predecessor_venue_commitment: bytes
+    venue_commitment: bytes
+    command_commitment: bytes
+    source_kind: AcquisitionVenueSourceKind
+    _source_item: object = field(repr=False)
+
+    @property
+    def commitment(self) -> bytes:
+        return _commit_parts(
+            b"execution-core/acquisition-fact-proof/v1",
+            _encode_text(self.application_generation_id.value),
+            _position_scope_index_key(self.position_scope),
+            _canonical_value_commitment(self.fact_key),
+            _canonical_value_commitment(self.root_key),
+            _canonical_value_commitment(self.effect_id),
+            _canonical_value_commitment(self.request_occurrence_id),
+            _canonical_value_commitment(self.leg_key),
+            self.predecessor_execution_snapshot_commitment,
+            self.execution_snapshot_commitment,
+            self.predecessor_scope_execution_commitment,
+            self.scope_execution_commitment,
+            self.predecessor_venue_commitment,
+            self.venue_commitment,
+            self.command_commitment,
+            _encode_text(self.source_kind.value),
+            _canonical_value_commitment(self._source_item),
+        )
+
+
 @dataclass(frozen=True, slots=True, init=False)
 class VenueRecoveryTransition:
     book: VenueRecoveryBook
@@ -1753,6 +2887,8 @@ class VenueRecoveryTransition:
     quantity_delta: int
     _protection_proof: _ProtectionTransitionProof
     _protection_proof_commitment: bytes
+    _acquisition_fact_proof: _AcquisitionFactProof | None
+    _acquisition_fact_proof_commitment: bytes | None
 
     def __init__(self, *args: object, **kwargs: object) -> None:
         del args, kwargs
@@ -1763,6 +2899,989 @@ class VenueRecoveryTransition:
     def __init_subclass__(cls, **kwargs: object) -> None:
         del cls, kwargs
         raise TypeError("VenueRecoveryTransition cannot be subclassed")
+
+
+class _BootstrapSourceKind(str, Enum):
+    """The only owner-selected origins for an unbound target checkpoint."""
+
+    EMPTY_ACCOUNT = "EMPTY_ACCOUNT"
+    SAME_ACCOUNT_SOURCE = "SAME_ACCOUNT_SOURCE"
+
+
+@dataclass(frozen=True, slots=True, init=False)
+class _BootstrapTargetRegistryInput:
+    """Private, deterministic provenance for one first target checkpoint.
+
+    This is intentionally not a public reducer input.  Authority derives every
+    component from the exact venue/source boundary, then the venue reducer
+    retains the command only as permanent provenance for the sealed target
+    record.  It carries commitments rather than a caller-supplied snapshot or
+    input identity.
+    """
+
+    input_id: VenueInputId = field(init=False)
+    application_generation_id: ApplicationGenerationId = field(init=False)
+    source_kind: _BootstrapSourceKind = field(init=False)
+    position_scope: PositionScope = field(init=False)
+    source_execution_commitment: bytes = field(init=False)
+    target_genesis_execution_commitment: bytes = field(init=False)
+    target_execution_commitment: bytes = field(init=False)
+    prior_account_registry_count: int = field(init=False)
+    prior_account_registry_commitment: bytes = field(init=False)
+    reconciliation_transition_count: int = field(init=False)
+    reconciliation_transition_head: bytes = field(init=False)
+    commitment: bytes = field(init=False)
+    _seal: bytes = field(init=False, repr=False)
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise TypeError("bootstrap target registry input is venue-constructed only")
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        del cls, kwargs
+        raise TypeError("bootstrap target registry input cannot be subclassed")
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.input_id) is not VenueInputId
+            or type(self.application_generation_id) is not ApplicationGenerationId
+            or type(self.source_kind) is not _BootstrapSourceKind
+            or type(self.position_scope) is not PositionScope
+            or type(self.prior_account_registry_count) is not int
+            or self.prior_account_registry_count < 0
+            or type(self.reconciliation_transition_count) is not int
+            or self.reconciliation_transition_count < 0
+        ):
+            raise TypeError("bootstrap target input has an invalid exact shape")
+        for name in (
+            "source_execution_commitment",
+            "target_genesis_execution_commitment",
+            "target_execution_commitment",
+            "prior_account_registry_commitment",
+            "reconciliation_transition_head",
+            "commitment",
+            "_seal",
+        ):
+            _require_digest(name, getattr(self, name))
+
+
+@dataclass(frozen=True, slots=True, init=False)
+class _BootstrapBoundTargetRecord:
+    """Sealed bounded current-state evidence for one unbound target bootstrap."""
+
+    application_generation_id: ApplicationGenerationId = field(init=False)
+    position_scope: PositionScope = field(init=False)
+    source_kind: _BootstrapSourceKind = field(init=False)
+    source_execution_commitment: bytes = field(init=False)
+    target_genesis_execution_commitment: bytes = field(init=False)
+    target_execution_commitment: bytes = field(init=False)
+    binding: VenueExecutionBinding = field(init=False)
+    account_registry_count: int = field(init=False)
+    account_registry_commitment: bytes = field(init=False)
+    reconciliation_transition_count: int = field(init=False)
+    reconciliation_transition_head: bytes = field(init=False)
+    bootstrap_input_id: VenueInputId = field(init=False)
+    bootstrap_input_commitment: bytes = field(init=False)
+    # Bootstrap provenance remains immutable even when the bounded serving
+    # checkpoint later advances through one ordinary zero-economic catch-up.
+    bootstrap_target_execution_commitment: bytes = field(init=False)
+    bootstrap_account_registry_count: int = field(init=False)
+    bootstrap_account_registry_commitment: bytes = field(init=False)
+    bootstrap_reconciliation_transition_count: int = field(init=False)
+    bootstrap_reconciliation_transition_head: bytes = field(init=False)
+    bootstrap_neutral_checkpoint_proof_commitment: bytes = field(init=False)
+    _bootstrap_neutral_checkpoint_proof: _ProtectionTransitionProof = field(
+        init=False,
+        repr=False,
+    )
+    checkpoint_input_id: VenueInputId = field(init=False)
+    checkpoint_command_commitment: bytes = field(init=False)
+    neutral_checkpoint_proof_commitment: bytes = field(init=False)
+    _neutral_checkpoint_proof: _ProtectionTransitionProof = field(
+        init=False,
+        repr=False,
+    )
+    _map_seal: bytes = field(init=False, repr=False)
+    commitment: bytes = field(init=False)
+    _seal: bytes = field(init=False, repr=False)
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise TypeError("bootstrap-bound target records are venue-constructed only")
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        del cls, kwargs
+        raise TypeError("bootstrap-bound target records cannot be subclassed")
+
+
+def _bootstrap_target_registry_input_commitment(
+    *,
+    application_generation_id: ApplicationGenerationId,
+    source_kind: _BootstrapSourceKind,
+    position_scope: PositionScope,
+    source_execution_commitment: bytes,
+    target_genesis_execution_commitment: bytes,
+    target_execution_commitment: bytes,
+    prior_account_registry_count: int,
+    prior_account_registry_commitment: bytes,
+    reconciliation_transition_count: int,
+    reconciliation_transition_head: bytes,
+) -> bytes:
+    return _commit_parts(
+        b"execution-core/bootstrap-target-registry-input/v1",
+        _encode_text(application_generation_id.value),
+        _encode_text(source_kind.value),
+        _position_scope_index_key(position_scope),
+        source_execution_commitment,
+        target_genesis_execution_commitment,
+        target_execution_commitment,
+        _encode_int(prior_account_registry_count),
+        prior_account_registry_commitment,
+        _encode_int(reconciliation_transition_count),
+        reconciliation_transition_head,
+    )
+
+
+def _bootstrap_target_registry_input_id(commitment: bytes) -> VenueInputId:
+    _require_digest("bootstrap input commitment", commitment)
+    return VenueInputId(
+        _commit_parts(
+            b"execution-core/bootstrap-target-registry-input-id/v1",
+            commitment,
+        ).hex()
+    )
+
+
+def _new_bootstrap_target_registry_input(
+    *,
+    application_generation_id: ApplicationGenerationId,
+    source_kind: _BootstrapSourceKind,
+    position_scope: PositionScope,
+    source_execution_commitment: bytes,
+    target_genesis_execution_commitment: bytes,
+    target_execution_commitment: bytes,
+    prior_account_registry_count: int,
+    prior_account_registry_commitment: bytes,
+    reconciliation_transition_count: int,
+    reconciliation_transition_head: bytes,
+) -> _BootstrapTargetRegistryInput:
+    if (
+        type(application_generation_id) is not ApplicationGenerationId
+        or type(source_kind) is not _BootstrapSourceKind
+        or type(position_scope) is not PositionScope
+        or type(prior_account_registry_count) is not int
+        or prior_account_registry_count < 0
+        or type(reconciliation_transition_count) is not int
+        or reconciliation_transition_count < 0
+    ):
+        raise TypeError("bootstrap target input requires exact owner values")
+    for name, value in (
+        ("source_execution_commitment", source_execution_commitment),
+        ("target_genesis_execution_commitment", target_genesis_execution_commitment),
+        ("target_execution_commitment", target_execution_commitment),
+        ("prior_account_registry_commitment", prior_account_registry_commitment),
+        ("reconciliation_transition_head", reconciliation_transition_head),
+    ):
+        _require_digest(name, value)
+    commitment = _bootstrap_target_registry_input_commitment(
+        application_generation_id=application_generation_id,
+        source_kind=source_kind,
+        position_scope=position_scope,
+        source_execution_commitment=source_execution_commitment,
+        target_genesis_execution_commitment=target_genesis_execution_commitment,
+        target_execution_commitment=target_execution_commitment,
+        prior_account_registry_count=prior_account_registry_count,
+        prior_account_registry_commitment=prior_account_registry_commitment,
+        reconciliation_transition_count=reconciliation_transition_count,
+        reconciliation_transition_head=reconciliation_transition_head,
+    )
+    result = object.__new__(_BootstrapTargetRegistryInput)
+    object.__setattr__(
+        result, "input_id", _bootstrap_target_registry_input_id(commitment)
+    )
+    object.__setattr__(result, "application_generation_id", application_generation_id)
+    object.__setattr__(result, "source_kind", source_kind)
+    object.__setattr__(result, "position_scope", position_scope)
+    object.__setattr__(
+        result, "source_execution_commitment", source_execution_commitment
+    )
+    object.__setattr__(
+        result,
+        "target_genesis_execution_commitment",
+        target_genesis_execution_commitment,
+    )
+    object.__setattr__(
+        result, "target_execution_commitment", target_execution_commitment
+    )
+    object.__setattr__(
+        result, "prior_account_registry_count", prior_account_registry_count
+    )
+    object.__setattr__(
+        result,
+        "prior_account_registry_commitment",
+        prior_account_registry_commitment,
+    )
+    object.__setattr__(
+        result,
+        "reconciliation_transition_count",
+        reconciliation_transition_count,
+    )
+    object.__setattr__(
+        result,
+        "reconciliation_transition_head",
+        reconciliation_transition_head,
+    )
+    object.__setattr__(result, "commitment", commitment)
+    object.__setattr__(
+        result,
+        "_seal",
+        _commit_parts(
+            b"execution-core/bootstrap-target-registry-input-seal/v1",
+            result.input_id.value.encode("utf-8"),
+            commitment,
+        ),
+    )
+    result.__post_init__()
+    return result
+
+
+def _bootstrap_target_registry_input_is_authentic(value: object) -> bool:
+    if type(value) is not _BootstrapTargetRegistryInput:
+        return False
+    try:
+        value.__post_init__()
+        expected = _bootstrap_target_registry_input_commitment(
+            application_generation_id=value.application_generation_id,
+            source_kind=value.source_kind,
+            position_scope=value.position_scope,
+            source_execution_commitment=value.source_execution_commitment,
+            target_genesis_execution_commitment=(
+                value.target_genesis_execution_commitment
+            ),
+            target_execution_commitment=value.target_execution_commitment,
+            prior_account_registry_count=value.prior_account_registry_count,
+            prior_account_registry_commitment=value.prior_account_registry_commitment,
+            reconciliation_transition_count=value.reconciliation_transition_count,
+            reconciliation_transition_head=value.reconciliation_transition_head,
+        )
+    except (AttributeError, TypeError, ValueError):
+        return False
+    return bool(
+        value.commitment == expected
+        and value.input_id == _bootstrap_target_registry_input_id(expected)
+        and value._seal
+        == _commit_parts(
+            b"execution-core/bootstrap-target-registry-input-seal/v1",
+            value.input_id.value.encode("utf-8"),
+            expected,
+        )
+    )
+
+
+def _bootstrap_bound_target_record_map_seal(
+    *,
+    application_generation_id: ApplicationGenerationId,
+    position_scope: PositionScope,
+    source_kind: _BootstrapSourceKind,
+    source_execution_commitment: bytes,
+    target_genesis_execution_commitment: bytes,
+    target_execution_commitment: bytes,
+    binding: VenueExecutionBinding,
+    account_registry_count: int,
+    account_registry_commitment: bytes,
+    reconciliation_transition_count: int,
+    reconciliation_transition_head: bytes,
+    bootstrap_input_id: VenueInputId,
+    bootstrap_input_commitment: bytes,
+    bootstrap_target_execution_commitment: bytes,
+    bootstrap_account_registry_count: int,
+    bootstrap_account_registry_commitment: bytes,
+    bootstrap_reconciliation_transition_count: int,
+    bootstrap_reconciliation_transition_head: bytes,
+    checkpoint_input_id: VenueInputId,
+    checkpoint_command_commitment: bytes,
+) -> bytes:
+    return _commit_parts(
+        b"execution-core/bootstrap-bound-target-record/map-seal/v2",
+        _encode_text(application_generation_id.value),
+        _position_scope_index_key(position_scope),
+        _encode_text(source_kind.value),
+        source_execution_commitment,
+        target_genesis_execution_commitment,
+        bootstrap_target_execution_commitment,
+        _encode_int(bootstrap_account_registry_count),
+        bootstrap_account_registry_commitment,
+        _encode_int(bootstrap_reconciliation_transition_count),
+        bootstrap_reconciliation_transition_head,
+        target_execution_commitment,
+        _canonical_value_commitment(binding),
+        _encode_int(account_registry_count),
+        account_registry_commitment,
+        _encode_int(reconciliation_transition_count),
+        reconciliation_transition_head,
+        _canonical_value_commitment(bootstrap_input_id),
+        bootstrap_input_commitment,
+        _canonical_value_commitment(checkpoint_input_id),
+        checkpoint_command_commitment,
+    )
+
+
+def _bootstrap_bound_target_record_commitment(
+    *,
+    map_seal: bytes,
+    bootstrap_neutral_checkpoint_proof_commitment: bytes,
+    neutral_checkpoint_proof_commitment: bytes,
+) -> bytes:
+    """Bind the current map seal to immutable bootstrap and current proofs."""
+
+    _require_digest("bootstrap record map seal", map_seal)
+    _require_digest(
+        "bootstrap neutral checkpoint proof commitment",
+        bootstrap_neutral_checkpoint_proof_commitment,
+    )
+    _require_digest(
+        "neutral checkpoint proof commitment", neutral_checkpoint_proof_commitment
+    )
+    return _commit_parts(
+        b"execution-core/bootstrap-bound-target-record/v3",
+        map_seal,
+        bootstrap_neutral_checkpoint_proof_commitment,
+        neutral_checkpoint_proof_commitment,
+    )
+
+
+def _new_bootstrap_bound_target_record(
+    *,
+    application_generation_id: ApplicationGenerationId,
+    position_scope: PositionScope,
+    source_kind: _BootstrapSourceKind,
+    source_execution_commitment: bytes,
+    target_genesis_execution_commitment: bytes,
+    target_execution_commitment: bytes,
+    binding: VenueExecutionBinding,
+    account_registry_count: int,
+    account_registry_commitment: bytes,
+    reconciliation_transition_count: int,
+    reconciliation_transition_head: bytes,
+    bootstrap_input: _BootstrapTargetRegistryInput,
+    neutral_checkpoint_proof: _ProtectionTransitionProof,
+    bootstrap_neutral_checkpoint_proof: _ProtectionTransitionProof | None = None,
+    checkpoint_input_id: VenueInputId | None = None,
+    checkpoint_command_commitment: bytes | None = None,
+) -> _BootstrapBoundTargetRecord:
+    if (
+        type(application_generation_id) is not ApplicationGenerationId
+        or type(position_scope) is not PositionScope
+        or type(source_kind) is not _BootstrapSourceKind
+        or type(binding) is not VenueExecutionBinding
+        or binding.position_scope != position_scope
+        or type(account_registry_count) is not int
+        or account_registry_count < 0
+        or not _bootstrap_target_registry_input_is_authentic(bootstrap_input)
+        or not _protection_transition_proof_is_authentic(neutral_checkpoint_proof)
+    ):
+        raise TypeError("bootstrap record requires exact venue-owned components")
+    for name, value in (
+        ("source_execution_commitment", source_execution_commitment),
+        ("target_genesis_execution_commitment", target_genesis_execution_commitment),
+        ("target_execution_commitment", target_execution_commitment),
+        ("account_registry_commitment", account_registry_commitment),
+        ("reconciliation_transition_head", reconciliation_transition_head),
+    ):
+        _require_digest(name, value)
+    if bootstrap_neutral_checkpoint_proof is None:
+        bootstrap_neutral_checkpoint_proof = neutral_checkpoint_proof
+    if not _protection_transition_proof_is_authentic(
+        bootstrap_neutral_checkpoint_proof
+    ):
+        raise TypeError("bootstrap record requires one exact anchor proof")
+    if checkpoint_input_id is None:
+        checkpoint_input_id = bootstrap_input.input_id
+    if checkpoint_command_commitment is None:
+        checkpoint_command_commitment = _protection_command_commitment(bootstrap_input)
+    if type(checkpoint_input_id) is not VenueInputId:
+        raise TypeError("bootstrap record checkpoint input must be exact")
+    _require_digest("checkpoint command commitment", checkpoint_command_commitment)
+    if (
+        bootstrap_input.application_generation_id != application_generation_id
+        or bootstrap_input.source_kind is not source_kind
+        or bootstrap_input.position_scope != position_scope
+        or bootstrap_input.source_execution_commitment != source_execution_commitment
+        or bootstrap_input.target_genesis_execution_commitment
+        != target_genesis_execution_commitment
+    ):
+        raise ValueError("bootstrap record contradicts its private input")
+    # Without an explicitly retained older anchor, this is the initial record
+    # and its serving values must still be identical to bootstrap provenance.
+    if bootstrap_neutral_checkpoint_proof is neutral_checkpoint_proof and (
+        bootstrap_input.target_execution_commitment != target_execution_commitment
+        or bootstrap_input.prior_account_registry_count != account_registry_count
+        or bootstrap_input.prior_account_registry_commitment
+        != account_registry_commitment
+        or bootstrap_input.reconciliation_transition_count
+        != reconciliation_transition_count
+        or bootstrap_input.reconciliation_transition_head
+        != reconciliation_transition_head
+        or checkpoint_input_id != bootstrap_input.input_id
+        or checkpoint_command_commitment
+        != _protection_command_commitment(bootstrap_input)
+    ):
+        raise ValueError("initial bootstrap record must match its private input")
+    bootstrap_proof_commitment = bootstrap_neutral_checkpoint_proof.commitment
+    proof_commitment = neutral_checkpoint_proof.commitment
+    map_seal = _bootstrap_bound_target_record_map_seal(
+        application_generation_id=application_generation_id,
+        position_scope=position_scope,
+        source_kind=source_kind,
+        source_execution_commitment=source_execution_commitment,
+        target_genesis_execution_commitment=target_genesis_execution_commitment,
+        target_execution_commitment=target_execution_commitment,
+        binding=binding,
+        account_registry_count=account_registry_count,
+        account_registry_commitment=account_registry_commitment,
+        reconciliation_transition_count=reconciliation_transition_count,
+        reconciliation_transition_head=reconciliation_transition_head,
+        bootstrap_input_id=bootstrap_input.input_id,
+        bootstrap_input_commitment=bootstrap_input.commitment,
+        bootstrap_target_execution_commitment=(
+            bootstrap_input.target_execution_commitment
+        ),
+        bootstrap_account_registry_count=bootstrap_input.prior_account_registry_count,
+        bootstrap_account_registry_commitment=(
+            bootstrap_input.prior_account_registry_commitment
+        ),
+        bootstrap_reconciliation_transition_count=(
+            bootstrap_input.reconciliation_transition_count
+        ),
+        bootstrap_reconciliation_transition_head=(
+            bootstrap_input.reconciliation_transition_head
+        ),
+        checkpoint_input_id=checkpoint_input_id,
+        checkpoint_command_commitment=checkpoint_command_commitment,
+    )
+    commitment = _bootstrap_bound_target_record_commitment(
+        map_seal=map_seal,
+        bootstrap_neutral_checkpoint_proof_commitment=bootstrap_proof_commitment,
+        neutral_checkpoint_proof_commitment=proof_commitment,
+    )
+    result = object.__new__(_BootstrapBoundTargetRecord)
+    object.__setattr__(result, "application_generation_id", application_generation_id)
+    object.__setattr__(result, "position_scope", position_scope)
+    object.__setattr__(result, "source_kind", source_kind)
+    object.__setattr__(
+        result, "source_execution_commitment", source_execution_commitment
+    )
+    object.__setattr__(
+        result,
+        "target_genesis_execution_commitment",
+        target_genesis_execution_commitment,
+    )
+    object.__setattr__(
+        result, "target_execution_commitment", target_execution_commitment
+    )
+    object.__setattr__(result, "binding", binding)
+    object.__setattr__(result, "account_registry_count", account_registry_count)
+    object.__setattr__(
+        result,
+        "account_registry_commitment",
+        account_registry_commitment,
+    )
+    object.__setattr__(
+        result,
+        "reconciliation_transition_count",
+        reconciliation_transition_count,
+    )
+    object.__setattr__(
+        result,
+        "reconciliation_transition_head",
+        reconciliation_transition_head,
+    )
+    object.__setattr__(result, "bootstrap_input_id", bootstrap_input.input_id)
+    object.__setattr__(result, "bootstrap_input_commitment", bootstrap_input.commitment)
+    object.__setattr__(
+        result,
+        "bootstrap_target_execution_commitment",
+        bootstrap_input.target_execution_commitment,
+    )
+    object.__setattr__(
+        result,
+        "bootstrap_account_registry_count",
+        bootstrap_input.prior_account_registry_count,
+    )
+    object.__setattr__(
+        result,
+        "bootstrap_account_registry_commitment",
+        bootstrap_input.prior_account_registry_commitment,
+    )
+    object.__setattr__(
+        result,
+        "bootstrap_reconciliation_transition_count",
+        bootstrap_input.reconciliation_transition_count,
+    )
+    object.__setattr__(
+        result,
+        "bootstrap_reconciliation_transition_head",
+        bootstrap_input.reconciliation_transition_head,
+    )
+    object.__setattr__(
+        result,
+        "bootstrap_neutral_checkpoint_proof_commitment",
+        bootstrap_proof_commitment,
+    )
+    object.__setattr__(
+        result,
+        "_bootstrap_neutral_checkpoint_proof",
+        bootstrap_neutral_checkpoint_proof,
+    )
+    object.__setattr__(result, "checkpoint_input_id", checkpoint_input_id)
+    object.__setattr__(
+        result,
+        "checkpoint_command_commitment",
+        checkpoint_command_commitment,
+    )
+    object.__setattr__(result, "neutral_checkpoint_proof_commitment", proof_commitment)
+    object.__setattr__(result, "_neutral_checkpoint_proof", neutral_checkpoint_proof)
+    object.__setattr__(result, "_map_seal", map_seal)
+    object.__setattr__(result, "commitment", commitment)
+    object.__setattr__(
+        result,
+        "_seal",
+        _commit_parts(
+            b"execution-core/bootstrap-bound-target-record-seal/v1",
+            commitment,
+            map_seal,
+        ),
+    )
+    return result
+
+
+def _bootstrap_bound_target_record_is_authentic(value: object) -> bool:
+    if type(value) is not _BootstrapBoundTargetRecord:
+        return False
+    try:
+        if (
+            type(value.application_generation_id) is not ApplicationGenerationId
+            or type(value.position_scope) is not PositionScope
+            or type(value.source_kind) is not _BootstrapSourceKind
+            or type(value.binding) is not VenueExecutionBinding
+            or value.binding.position_scope != value.position_scope
+            or type(value.account_registry_count) is not int
+            or value.account_registry_count < 0
+            or type(value.bootstrap_input_id) is not VenueInputId
+            or type(value.bootstrap_account_registry_count) is not int
+            or value.bootstrap_account_registry_count < 0
+            or type(value.checkpoint_input_id) is not VenueInputId
+            or type(value._bootstrap_neutral_checkpoint_proof)
+            is not _ProtectionTransitionProof
+            or not _protection_transition_proof_is_authentic(
+                value._bootstrap_neutral_checkpoint_proof
+            )
+            or type(value._neutral_checkpoint_proof) is not _ProtectionTransitionProof
+            or not _protection_transition_proof_is_authentic(
+                value._neutral_checkpoint_proof
+            )
+        ):
+            return False
+        for digest in (
+            value.source_execution_commitment,
+            value.target_genesis_execution_commitment,
+            value.target_execution_commitment,
+            value.account_registry_commitment,
+            value.reconciliation_transition_head,
+            value.bootstrap_input_commitment,
+            value.bootstrap_target_execution_commitment,
+            value.bootstrap_account_registry_commitment,
+            value.bootstrap_reconciliation_transition_head,
+            value.bootstrap_neutral_checkpoint_proof_commitment,
+            value.checkpoint_command_commitment,
+            value.neutral_checkpoint_proof_commitment,
+            value._map_seal,
+            value.commitment,
+            value._seal,
+        ):
+            if type(digest) is not bytes or len(digest) != 32:
+                return False
+        expected_map_seal = _bootstrap_bound_target_record_map_seal(
+            application_generation_id=value.application_generation_id,
+            position_scope=value.position_scope,
+            source_kind=value.source_kind,
+            source_execution_commitment=value.source_execution_commitment,
+            target_genesis_execution_commitment=(
+                value.target_genesis_execution_commitment
+            ),
+            target_execution_commitment=value.target_execution_commitment,
+            binding=value.binding,
+            account_registry_count=value.account_registry_count,
+            account_registry_commitment=value.account_registry_commitment,
+            reconciliation_transition_count=value.reconciliation_transition_count,
+            reconciliation_transition_head=value.reconciliation_transition_head,
+            bootstrap_input_id=value.bootstrap_input_id,
+            bootstrap_input_commitment=value.bootstrap_input_commitment,
+            bootstrap_target_execution_commitment=(
+                value.bootstrap_target_execution_commitment
+            ),
+            bootstrap_account_registry_count=value.bootstrap_account_registry_count,
+            bootstrap_account_registry_commitment=(
+                value.bootstrap_account_registry_commitment
+            ),
+            bootstrap_reconciliation_transition_count=(
+                value.bootstrap_reconciliation_transition_count
+            ),
+            bootstrap_reconciliation_transition_head=(
+                value.bootstrap_reconciliation_transition_head
+            ),
+            checkpoint_input_id=value.checkpoint_input_id,
+            checkpoint_command_commitment=value.checkpoint_command_commitment,
+        )
+        expected = _bootstrap_bound_target_record_commitment(
+            map_seal=expected_map_seal,
+            bootstrap_neutral_checkpoint_proof_commitment=(
+                value.bootstrap_neutral_checkpoint_proof_commitment
+            ),
+            neutral_checkpoint_proof_commitment=(
+                value.neutral_checkpoint_proof_commitment
+            ),
+        )
+    except (AttributeError, TypeError, ValueError):
+        return False
+    return bool(
+        value.bootstrap_neutral_checkpoint_proof_commitment
+        == value._bootstrap_neutral_checkpoint_proof.commitment
+        and value.neutral_checkpoint_proof_commitment
+        == value._neutral_checkpoint_proof.commitment
+        and value._map_seal == expected_map_seal
+        and value.commitment == expected
+        and value._seal
+        == _commit_parts(
+            b"execution-core/bootstrap-bound-target-record-seal/v1",
+            expected,
+            expected_map_seal,
+        )
+    )
+
+
+@dataclass(frozen=True, slots=True, init=False)
+class _StagedBootstrapBoundTargetRecord:
+    """Ephemeral proof-independent replacement during one exact catch-up.
+
+    A normal venue transition must mint its protection proof after its next
+    compact book root is known.  This private staging value commits the future
+    map root while retaining the prior immutable anchor.  It is finalized to
+    an authenticated active record before any transition is returned.
+    """
+
+    active_record: _BootstrapBoundTargetRecord = field(init=False, repr=False)
+    target_execution_commitment: bytes = field(init=False)
+    account_registry_count: int = field(init=False)
+    account_registry_commitment: bytes = field(init=False)
+    reconciliation_transition_count: int = field(init=False)
+    reconciliation_transition_head: bytes = field(init=False)
+    checkpoint_input_id: VenueInputId = field(init=False)
+    checkpoint_command_commitment: bytes = field(init=False)
+    _map_seal: bytes = field(init=False, repr=False)
+    _seal: bytes = field(init=False, repr=False)
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise TypeError("staged bootstrap records are venue-constructed only")
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        del cls, kwargs
+        raise TypeError("staged bootstrap records cannot be subclassed")
+
+
+def _new_staged_bootstrap_bound_target_record(
+    *,
+    active_record: _BootstrapBoundTargetRecord,
+    target_execution: ExecutionSnapshot,
+    binding: VenueExecutionBinding,
+    catch_up: CatchUpExecutionRegistry,
+) -> _StagedBootstrapBoundTargetRecord:
+    if (
+        not _bootstrap_bound_target_record_is_authentic(active_record)
+        or type(target_execution) is not ExecutionSnapshot
+        or type(binding) is not VenueExecutionBinding
+        or type(catch_up) is not CatchUpExecutionRegistry
+        or target_execution.position.scope != active_record.position_scope
+        or binding != active_record.binding
+        or catch_up.target_scope != active_record.position_scope
+        or target_execution.position.raw_quantity != 0
+        or target_execution.position.root_count != 0
+        or target_execution.integrity is not PositionIntegrity.CONSISTENT
+        or target_execution.account_reconciliation_required
+    ):
+        raise TypeError("staged bootstrap record requires one exact neutral refresh")
+    map_seal = _bootstrap_bound_target_record_map_seal(
+        application_generation_id=active_record.application_generation_id,
+        position_scope=active_record.position_scope,
+        source_kind=active_record.source_kind,
+        source_execution_commitment=active_record.source_execution_commitment,
+        target_genesis_execution_commitment=(
+            active_record.target_genesis_execution_commitment
+        ),
+        target_execution_commitment=target_execution.commitment,
+        binding=binding,
+        account_registry_count=target_execution.seen_facts.count,
+        account_registry_commitment=target_execution.seen_facts.commitment,
+        reconciliation_transition_count=(
+            target_execution.reconciliation_transition_count
+        ),
+        reconciliation_transition_head=target_execution.reconciliation_transition_head,
+        bootstrap_input_id=active_record.bootstrap_input_id,
+        bootstrap_input_commitment=active_record.bootstrap_input_commitment,
+        bootstrap_target_execution_commitment=(
+            active_record.bootstrap_target_execution_commitment
+        ),
+        bootstrap_account_registry_count=active_record.bootstrap_account_registry_count,
+        bootstrap_account_registry_commitment=(
+            active_record.bootstrap_account_registry_commitment
+        ),
+        bootstrap_reconciliation_transition_count=(
+            active_record.bootstrap_reconciliation_transition_count
+        ),
+        bootstrap_reconciliation_transition_head=(
+            active_record.bootstrap_reconciliation_transition_head
+        ),
+        checkpoint_input_id=catch_up.input_id,
+        checkpoint_command_commitment=_protection_command_commitment(catch_up),
+    )
+    result = object.__new__(_StagedBootstrapBoundTargetRecord)
+    object.__setattr__(result, "active_record", active_record)
+    object.__setattr__(
+        result,
+        "target_execution_commitment",
+        target_execution.commitment,
+    )
+    object.__setattr__(
+        result,
+        "account_registry_count",
+        target_execution.seen_facts.count,
+    )
+    object.__setattr__(
+        result,
+        "account_registry_commitment",
+        target_execution.seen_facts.commitment,
+    )
+    object.__setattr__(
+        result,
+        "reconciliation_transition_count",
+        target_execution.reconciliation_transition_count,
+    )
+    object.__setattr__(
+        result,
+        "reconciliation_transition_head",
+        target_execution.reconciliation_transition_head,
+    )
+    object.__setattr__(result, "checkpoint_input_id", catch_up.input_id)
+    object.__setattr__(
+        result,
+        "checkpoint_command_commitment",
+        _protection_command_commitment(catch_up),
+    )
+    object.__setattr__(result, "_map_seal", map_seal)
+    object.__setattr__(
+        result,
+        "_seal",
+        _commit_parts(
+            b"execution-core/bootstrap-bound-target-record/stage/v1",
+            active_record.commitment,
+            map_seal,
+        ),
+    )
+    return result
+
+
+def _staged_bootstrap_bound_target_record_is_authentic(value: object) -> bool:
+    if type(value) is not _StagedBootstrapBoundTargetRecord:
+        return False
+    try:
+        active = value.active_record
+        if (
+            not _bootstrap_bound_target_record_is_authentic(active)
+            or type(value.account_registry_count) is not int
+            or value.account_registry_count < 0
+            or type(value.checkpoint_input_id) is not VenueInputId
+        ):
+            return False
+        for digest in (
+            value.target_execution_commitment,
+            value.account_registry_commitment,
+            value.reconciliation_transition_head,
+            value.checkpoint_command_commitment,
+            value._map_seal,
+            value._seal,
+        ):
+            _require_digest("staged bootstrap record digest", digest)
+        expected_map_seal = _bootstrap_bound_target_record_map_seal(
+            application_generation_id=active.application_generation_id,
+            position_scope=active.position_scope,
+            source_kind=active.source_kind,
+            source_execution_commitment=active.source_execution_commitment,
+            target_genesis_execution_commitment=(
+                active.target_genesis_execution_commitment
+            ),
+            target_execution_commitment=value.target_execution_commitment,
+            binding=active.binding,
+            account_registry_count=value.account_registry_count,
+            account_registry_commitment=value.account_registry_commitment,
+            reconciliation_transition_count=value.reconciliation_transition_count,
+            reconciliation_transition_head=value.reconciliation_transition_head,
+            bootstrap_input_id=active.bootstrap_input_id,
+            bootstrap_input_commitment=active.bootstrap_input_commitment,
+            bootstrap_target_execution_commitment=(
+                active.bootstrap_target_execution_commitment
+            ),
+            bootstrap_account_registry_count=active.bootstrap_account_registry_count,
+            bootstrap_account_registry_commitment=(
+                active.bootstrap_account_registry_commitment
+            ),
+            bootstrap_reconciliation_transition_count=(
+                active.bootstrap_reconciliation_transition_count
+            ),
+            bootstrap_reconciliation_transition_head=(
+                active.bootstrap_reconciliation_transition_head
+            ),
+            checkpoint_input_id=value.checkpoint_input_id,
+            checkpoint_command_commitment=value.checkpoint_command_commitment,
+        )
+    except (AttributeError, TypeError, ValueError):
+        return False
+    return bool(
+        value._map_seal == expected_map_seal
+        and value._seal
+        == _commit_parts(
+            b"execution-core/bootstrap-bound-target-record/stage/v1",
+            active.commitment,
+            expected_map_seal,
+        )
+    )
+
+
+@dataclass(frozen=True, slots=True, init=False)
+class _ConsumedBootstrapBoundTargetRecord:
+    """Permanent proof that one active R8 bootstrap record became one effect.
+
+    ``_PersistentKeyMap`` intentionally has no deletion operation.  Replacing
+    the active entry with this sealed non-serving record preserves the original
+    zero-economic provenance while making the active record unavailable to any
+    later bootstrap or ordinary request route.
+    """
+
+    active_record: _BootstrapBoundTargetRecord = field(init=False, repr=False)
+    effect_id: EffectId = field(init=False)
+    request_occurrence_id: RequestOccurrenceId = field(init=False)
+    request_input_id: VenueInputId = field(init=False)
+    effect_scope_commitment: bytes = field(init=False)
+    commitment: bytes = field(init=False)
+    _seal: bytes = field(init=False, repr=False)
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise TypeError("consumed bootstrap records are venue-constructed only")
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        del cls, kwargs
+        raise TypeError("consumed bootstrap records cannot be subclassed")
+
+
+_BootstrapBoundTargetValue = (
+    _BootstrapBoundTargetRecord
+    | _StagedBootstrapBoundTargetRecord
+    | _ConsumedBootstrapBoundTargetRecord
+    | bytes
+)
+
+
+def _consumed_bootstrap_bound_target_record_commitment(
+    *,
+    active_record: _BootstrapBoundTargetRecord,
+    effect_id: EffectId,
+    request_occurrence_id: RequestOccurrenceId,
+    request_input_id: VenueInputId,
+    effect_scope_commitment: bytes,
+) -> bytes:
+    if not _bootstrap_bound_target_record_is_authentic(active_record):
+        raise TypeError("consumed bootstrap record requires an active record")
+    _require("effect_id", effect_id, EffectId)
+    _require("request_occurrence_id", request_occurrence_id, RequestOccurrenceId)
+    _require("request_input_id", request_input_id, VenueInputId)
+    _require_digest("effect_scope_commitment", effect_scope_commitment)
+    return _commit_parts(
+        b"execution-core/bootstrap-bound-target-record/consumed/v1",
+        active_record.commitment,
+        _canonical_value_commitment(effect_id),
+        _canonical_value_commitment(request_occurrence_id),
+        _canonical_value_commitment(request_input_id),
+        effect_scope_commitment,
+    )
+
+
+def _new_consumed_bootstrap_bound_target_record(
+    *,
+    active_record: _BootstrapBoundTargetRecord,
+    effect: BrokerEffect,
+    request_input_id: VenueInputId,
+) -> _ConsumedBootstrapBoundTargetRecord:
+    if (
+        not _bootstrap_bound_target_record_is_authentic(active_record)
+        or type(effect) is not BrokerEffect
+        or type(request_input_id) is not VenueInputId
+        or effect.scope.position_scope != active_record.position_scope
+        or effect.scope.kind is not EffectKind.SUBMIT
+        or effect.scope.side is not ExecutionSide.BUY
+    ):
+        raise TypeError("bootstrap consumption requires one exact BUY effect")
+    scope_commitment = _canonical_value_commitment(effect.scope)
+    commitment = _consumed_bootstrap_bound_target_record_commitment(
+        active_record=active_record,
+        effect_id=effect.effect_id,
+        request_occurrence_id=effect.scope.request_occurrence_id,
+        request_input_id=request_input_id,
+        effect_scope_commitment=scope_commitment,
+    )
+    result = object.__new__(_ConsumedBootstrapBoundTargetRecord)
+    object.__setattr__(result, "active_record", active_record)
+    object.__setattr__(result, "effect_id", effect.effect_id)
+    object.__setattr__(
+        result,
+        "request_occurrence_id",
+        effect.scope.request_occurrence_id,
+    )
+    object.__setattr__(result, "request_input_id", request_input_id)
+    object.__setattr__(result, "effect_scope_commitment", scope_commitment)
+    object.__setattr__(result, "commitment", commitment)
+    object.__setattr__(
+        result,
+        "_seal",
+        _commit_parts(
+            b"execution-core/bootstrap-bound-target-record/consumed-seal/v1",
+            commitment,
+        ),
+    )
+    return result
+
+
+def _consumed_bootstrap_bound_target_record_is_authentic(value: object) -> bool:
+    if type(value) is not _ConsumedBootstrapBoundTargetRecord:
+        return False
+    try:
+        commitment = _consumed_bootstrap_bound_target_record_commitment(
+            active_record=value.active_record,
+            effect_id=value.effect_id,
+            request_occurrence_id=value.request_occurrence_id,
+            request_input_id=value.request_input_id,
+            effect_scope_commitment=value.effect_scope_commitment,
+        )
+    except (AttributeError, TypeError, ValueError):
+        return False
+    return bool(
+        value.commitment == commitment
+        and value._seal
+        == _commit_parts(
+            b"execution-core/bootstrap-bound-target-record/consumed-seal/v1",
+            commitment,
+        )
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -1929,6 +4048,7 @@ class _SymbolAuthoritySummary:
 class _VenueAuthorityView:
     execution_binding_matches: bool
     account_reconciliation_clear: bool
+    bootstrap_bound_target_active: bool
     blocking_effect_count: int
     blocking_buy_effect_count: int
     target_exemptible_count: int
@@ -2090,6 +4210,12 @@ class VenueRecoveryBook:
     )
     _execution_snapshot_by_scope: _PersistentKeyMap[ExecutionSnapshot] = field(
         default_factory=_PersistentKeyMap.empty
+    )
+    # A bootstrap checkpoint briefly holds one static map-seal before its
+    # proof-bound record replaces that staging value at the identical key.
+    # A fully published book always contains only _BootstrapBoundTargetRecord.
+    _bootstrap_bound_target_by_scope: _PersistentKeyMap[_BootstrapBoundTargetValue] = (
+        field(default_factory=_PersistentKeyMap.empty)
     )
     _protection_cursor_by_scope: _PersistentKeyMap[_ProtectionCursor] = field(
         default_factory=_PersistentKeyMap.empty
@@ -2318,6 +4444,7 @@ class VenueRecoveryBook:
         self._validate_effect_edges(effects, claims, owners, heads)
         self._validate_cancel_target_reservations()
         self._validate_authority_indexes()
+        self._validated_execution_snapshots(effects)
 
     def _validate_cancel_target_reservations(self) -> None:
         expected = _rebuild_cancel_target_reservations(self)
@@ -2521,6 +4648,86 @@ class VenueRecoveryBook:
         if type(scope.economic_scope) is not bytes or not scope.economic_scope:
             raise ValueError("effect scope economic_scope must be nonempty bytes")
 
+    def _validated_bootstrap_bound_target_records(
+        self,
+        effects: dict[EffectId, BrokerEffect],
+    ) -> tuple[
+        dict[PositionScope, _BootstrapBoundTargetRecord],
+        dict[PositionScope, _ConsumedBootstrapBoundTargetRecord],
+    ]:
+        """Validate active and consumed R8 records through direct indexes only."""
+
+        if type(self._bootstrap_bound_target_by_scope) is not type(
+            _PersistentKeyMap.empty()
+        ):
+            raise TypeError("bootstrap target index must be a persistent key map")
+        active_records: dict[PositionScope, _BootstrapBoundTargetRecord] = {}
+        consumed_records: dict[PositionScope, _ConsumedBootstrapBoundTargetRecord] = {}
+        for binding in self.execution_bindings:
+            scope = binding.position_scope
+            record = self._bootstrap_bound_target_by_scope.get(
+                _position_scope_index_key(scope)
+            )
+            if record is None:
+                continue
+            snapshot = self._execution_snapshot_by_scope.get(
+                _position_scope_index_key(scope)
+            )
+            if _bootstrap_bound_target_record_is_authentic(record):
+                if (
+                    record.application_generation_id != self.scope.generation
+                    or record.position_scope != scope
+                    or record.binding != binding
+                    or type(snapshot) is not ExecutionSnapshot
+                    or not self._bootstrap_bound_target_pair_matches(snapshot, scope)
+                    or scope in active_records
+                    or scope in consumed_records
+                ):
+                    raise ValueError("bootstrap target record contradicts its binding")
+                active_records[scope] = record
+                continue
+            if not _consumed_bootstrap_bound_target_record_is_authentic(record):
+                raise ValueError("bootstrap target index contains an unknown record")
+            active = record.active_record
+            effect = effects.get(record.effect_id)
+            input_record = self._input_record(record.request_input_id)
+            requested = (
+                input_record.item if type(input_record) is VenueInputRecord else None
+            )
+            if (
+                active.application_generation_id != self.scope.generation
+                or active.position_scope != scope
+                or active.binding != binding
+                or not self._bootstrap_bound_target_anchor_matches(active, scope)
+                or type(snapshot) is not ExecutionSnapshot
+                or effect is None
+                or effect.scope.position_scope != scope
+                or effect.scope.kind is not EffectKind.SUBMIT
+                or effect.scope.side is not ExecutionSide.BUY
+                or effect.effect_id != record.effect_id
+                or effect.scope.request_occurrence_id != record.request_occurrence_id
+                or _canonical_value_commitment(effect.scope)
+                != record.effect_scope_commitment
+                or type(requested) is not RequestedEffect
+                or requested.input_id != record.request_input_id
+                or requested.effect_id != record.effect_id
+                or requested.request_occurrence_id != record.request_occurrence_id
+                or requested.kind is not EffectKind.SUBMIT
+                or requested.side is not ExecutionSide.BUY
+                or requested.symbol_id != scope.symbol_id
+                or scope in active_records
+                or scope in consumed_records
+            ):
+                raise ValueError("consumed bootstrap record contradicts its effect")
+            consumed_records[scope] = record
+        if self._bootstrap_bound_target_by_scope.size != len(active_records) + len(
+            consumed_records
+        ):
+            raise ValueError(
+                "bootstrap target index contains an unbound or extra record"
+            )
+        return active_records, consumed_records
+
     def _validated_execution_bindings(
         self, effects: dict[EffectId, BrokerEffect]
     ) -> None:
@@ -2532,13 +4739,22 @@ class VenueRecoveryBook:
         )
         bound_scopes = {binding.position_scope for binding in self.execution_bindings}
         effect_scopes = {effect.scope.position_scope for effect in effects.values()}
-        if bound_scopes != effect_scopes:
+        records, consumed_records = self._validated_bootstrap_bound_target_records(
+            effects
+        )
+        bootstrap_scopes = set(records)
+        if effect_scopes & bootstrap_scopes:
+            raise ValueError("an active bootstrap target cannot share an effect scope")
+        if not set(consumed_records) <= effect_scopes:
+            raise ValueError("a consumed bootstrap target requires its exact effect")
+        if bound_scopes != effect_scopes | bootstrap_scopes:
             raise ValueError(
-                "every effect symbol requires exactly one execution high-water binding"
+                "every effect symbol requires exactly one binding; every binding must "
+                "belong to exactly one effect or bootstrap target"
             )
-        if bool(effects) != (self.execution_registry_commitment is not None):
+        if bool(effects or records) != (self.execution_registry_commitment is not None):
             raise ValueError(
-                "effect checkpoints require one account execution-registry commitment"
+                "effect or bootstrap checkpoints require one account registry commitment"
             )
 
     def _validated_protection_transition_history(
@@ -2613,11 +4829,15 @@ class VenueRecoveryBook:
                 terminal.binding != binding and unresolved_for_scope == 0
             ):
                 raise ValueError(
-                    "terminal protection proof contradicts current venue authority"
+                    "terminal protection provenance contradicts current venue authority "
+                    "and registry transition"
                 )
         return terminal_by_scope
 
-    def _validated_execution_snapshots(self) -> None:
+    def _validated_execution_snapshots(
+        self,
+        effects: dict[EffectId, BrokerEffect] | None = None,
+    ) -> None:
         """Validate private scope material against retained transition history."""
 
         terminal_by_scope = self._validated_protection_transition_history()
@@ -2701,6 +4921,142 @@ class VenueRecoveryBook:
             rebuilt = _upsert_execution_snapshot_value(rebuilt, snapshot)
         if rebuilt.commitment != self._execution_snapshot_by_scope.commitment:
             raise ValueError("execution snapshot index commitment is not authentic")
+
+        # The ordinary snapshot/cursor checks above establish every binding.
+        # Bootstrap is the one pre-effect exception, so audit validation also
+        # proves its sealed input and neutral checkpoint against those exact
+        # bounded records.  This scan is deliberately confined to the explicit
+        # audit validator; serving paths use the direct predicate below.
+        if effects is None:
+            effects = self._validated_effects()
+        active_records, consumed_records = (
+            self._validated_bootstrap_bound_target_records(effects)
+        )
+
+        def retained_proof_index(proof: _ProtectionTransitionProof) -> int | None:
+            found: int | None = None
+            for index in range(self._protection_transition_ledger.length):
+                retained = self._protection_transition_ledger.get(index)
+                if retained == proof:
+                    if found is not None:
+                        return None
+                    found = index
+            return found
+
+        def is_retained_catch_up(
+            proof: _ProtectionTransitionProof,
+            position_scope: PositionScope,
+        ) -> bool:
+            for index in range(self._input_ledger.length):
+                input_record = self._input_ledger.get(index)
+                if (
+                    type(input_record) is VenueInputRecord
+                    and type(input_record.item) is CatchUpExecutionRegistry
+                    and input_record.item.target_scope == position_scope
+                    and _protection_command_commitment(input_record.item)
+                    == proof.command_commitment
+                ):
+                    return True
+            return False
+
+        for position_scope, record in active_records.items():
+            scope_key = _position_scope_index_key(position_scope)
+            snapshot = self._execution_snapshot_by_scope.get(scope_key)
+            anchor_index = retained_proof_index(
+                record._bootstrap_neutral_checkpoint_proof
+            )
+            current_index = retained_proof_index(record._neutral_checkpoint_proof)
+            if (
+                type(snapshot) is not ExecutionSnapshot
+                or not self._bootstrap_bound_target_anchor_matches(
+                    record,
+                    position_scope,
+                )
+                or not self._bootstrap_bound_target_pair_matches(
+                    snapshot,
+                    position_scope,
+                )
+                or anchor_index is None
+                or current_index is None
+                or anchor_index > current_index
+                or terminal_by_scope.get(position_scope)
+                != record._neutral_checkpoint_proof
+            ):
+                raise ValueError(
+                    "bootstrap target record lacks its exact neutral checkpoint proof"
+                )
+            for index in range(anchor_index + 1, current_index + 1):
+                retained = self._protection_transition_ledger.get(index)
+                # The ledger is account-global, while a bootstrap record owns
+                # exactly one target scope.  Sibling proofs may legitimately
+                # interleave before the target's ordinary CatchUp checkpoint;
+                # validate only the target's contiguous cursor chain here.
+                if (
+                    type(retained) is _ProtectionTransitionProof
+                    and retained.position_scope != position_scope
+                ):
+                    continue
+                if (
+                    type(retained) is not _ProtectionTransitionProof
+                    or retained.position_scope != position_scope
+                    or retained.disposition is not VenueRecoveryDisposition.APPLIED
+                    or retained.quantity_delta != 0
+                    or not is_retained_catch_up(retained, position_scope)
+                ):
+                    raise ValueError(
+                        "bootstrap checkpoint retained a non-neutral refresh proof"
+                    )
+
+        for position_scope, consumed in consumed_records.items():
+            active = consumed.active_record
+            request_input = self._input_record(consumed.request_input_id)
+            requested = (
+                request_input.item if type(request_input) is VenueInputRecord else None
+            )
+            consumption_proof: _ProtectionTransitionProof | None = None
+            for index in range(self._protection_transition_ledger.length):
+                retained = self._protection_transition_ledger.get(index)
+                if (
+                    type(retained) is _ProtectionTransitionProof
+                    and retained.position_scope == position_scope
+                    and type(requested) is RequestedEffect
+                    and retained.command_commitment
+                    == _protection_command_commitment(requested)
+                ):
+                    if consumption_proof is not None:
+                        consumption_proof = None
+                        break
+                    consumption_proof = retained
+            if (
+                not self._bootstrap_bound_target_anchor_matches(active, position_scope)
+                or retained_proof_index(active._bootstrap_neutral_checkpoint_proof)
+                is None
+                or retained_proof_index(active._neutral_checkpoint_proof) is None
+                or type(requested) is not RequestedEffect
+                or requested.input_id != consumed.request_input_id
+                or requested.effect_id != consumed.effect_id
+                or requested.request_occurrence_id != consumed.request_occurrence_id
+                or requested.kind is not EffectKind.SUBMIT
+                or requested.side is not ExecutionSide.BUY
+                or consumption_proof is None
+                or consumption_proof.disposition is not VenueRecoveryDisposition.APPLIED
+                or consumption_proof.quantity_delta != 0
+                or consumption_proof.predecessor_cursor
+                != active._neutral_checkpoint_proof.cursor
+                or consumption_proof.predecessor_execution_commitment
+                != active.target_execution_commitment
+                or consumption_proof.execution_commitment
+                != active.target_execution_commitment
+                or consumption_proof.predecessor_execution_checkpoint
+                != active._neutral_checkpoint_proof.execution_checkpoint
+                or consumption_proof.execution_checkpoint
+                != active._neutral_checkpoint_proof.execution_checkpoint
+                or consumption_proof.predecessor_binding != active.binding
+                or consumption_proof.binding != active.binding
+            ):
+                raise ValueError(
+                    "consumed bootstrap record lacks its exact consumption provenance"
+                )
 
     def _validated_claims(
         self, effects: dict[EffectId, BrokerEffect]
@@ -4344,6 +6700,7 @@ class VenueRecoveryBook:
             ("_binding_order", _PersistentSequence.empty()),
             ("_binding_by_scope", _PersistentKeyMap.empty()),
             ("_execution_snapshot_by_scope", _PersistentKeyMap.empty()),
+            ("_bootstrap_bound_target_by_scope", _PersistentKeyMap.empty()),
             ("_protection_cursor_by_scope", _PersistentKeyMap.empty()),
             ("_protection_transition_ledger", _PersistentSequence.empty()),
         ):
@@ -4450,10 +6807,442 @@ class VenueRecoveryBook:
         )
         return result
 
+    def project_acquisition_context(
+        self,
+        execution: ExecutionSnapshot,
+        position_scope: PositionScope,
+    ) -> AcquisitionVenueContext:
+        """Mint one bounded target context without materializing account history.
+
+        The returned value may be non-serving when the exact full-input checks
+        fail.  It is still opaque and has no mutation authority; consumers must
+        call ``matches_current`` before using its retained target token.
+        """
+
+        _require("execution", execution, ExecutionSnapshot)
+        _require("position_scope", position_scope, PositionScope)
+        scope_matches_book = (
+            position_scope.broker == self.scope.broker
+            and position_scope.environment == self.scope.environment
+            and position_scope.account == self.scope.account
+        )
+        serving = bool(
+            scope_matches_book
+            and not execution.account_reconciliation_required
+            and not self._has_unresolved_execution_reconciliation(position_scope)
+            and self._execution_matches(execution, position_scope)
+        )
+        return _new_acquisition_venue_context(
+            self,
+            execution,
+            position_scope,
+            serving,
+        )
+
+    def project_acquisition_bootstrap(
+        self,
+        execution: ExecutionSnapshot,
+        position_scope: PositionScope,
+    ) -> AcquisitionVenueProjection:
+        """Produce a fail-closed target bootstrap proof from direct summaries."""
+
+        context = self.project_acquisition_context(execution, position_scope)
+        summary = self._authority_summary_by_scope.get(
+            _position_scope_index_key(position_scope)
+        )
+        if summary is None:
+            summary = _SymbolAuthoritySummary()
+        bootstrap_target = self._bootstrap_bound_target_pair_matches(
+            execution,
+            position_scope,
+        )
+        completed_target = bool(
+            not bootstrap_target
+            and summary.effect_count > 0
+            and execution.position.raw_quantity == 0
+        )
+        serving = bool(
+            context._serving
+            and (bootstrap_target or completed_target)
+            and execution.position.raw_quantity == 0
+            and (completed_target or execution.position.root_count == 0)
+            and execution.integrity is PositionIntegrity.CONSISTENT
+            and summary.blocking_effect_count == 0
+            and summary.blocking_buy_effect_count == 0
+            and summary.waiting_buy_parent_count == 0
+            and summary.unknown_buy_effect_count == 0
+            and not self._has_unresolved_execution_reconciliation(position_scope)
+        )
+        return _new_acquisition_venue_projection(
+            source_kind=AcquisitionVenueSourceKind.BOOTSTRAP,
+            context=context,
+            predecessor_execution_snapshot_commitment=None,
+            predecessor_scope_execution_commitment=None,
+            predecessor_venue_commitment=None,
+            source_commitment=_commit_parts(
+                b"execution-core/acquisition-venue/bootstrap/v1",
+                context._seal,
+            ),
+            fact_relation=None,
+            serving=serving,
+        )
+
+    def project_acquisition_fact(
+        self,
+        transition: VenueRecoveryTransition,
+    ) -> AcquisitionVenueProjection:
+        """Expose one current canonical fact through retained direct indexes."""
+
+        _require("transition", transition, VenueRecoveryTransition)
+        protection_proof = transition._protection_proof
+        position_scope = (
+            protection_proof.position_scope
+            if type(protection_proof) is _ProtectionTransitionProof
+            else transition.execution.position.scope
+        )
+        context = self.project_acquisition_context(transition.execution, position_scope)
+        proof = transition._acquisition_fact_proof
+        serving = _acquisition_fact_proof_matches_transition(self, transition)
+        source_kind = (
+            proof.source_kind
+            if serving and type(proof) is _AcquisitionFactProof
+            else (
+                AcquisitionVenueSourceKind.CANONICAL_ECONOMIC_FACT_RECONCILIATION
+                if transition.disposition
+                is VenueRecoveryDisposition.RECONCILIATION_REQUIRED
+                else AcquisitionVenueSourceKind.CANONICAL_ECONOMIC_FACT
+            )
+        )
+        predecessor_execution_snapshot_commitment = (
+            proof.predecessor_execution_snapshot_commitment
+            if serving and type(proof) is _AcquisitionFactProof
+            else None
+        )
+        predecessor_scope_execution_commitment = (
+            proof.predecessor_scope_execution_commitment
+            if serving and type(proof) is _AcquisitionFactProof
+            else None
+        )
+        predecessor_venue_commitment = (
+            proof.predecessor_venue_commitment
+            if serving and type(proof) is _AcquisitionFactProof
+            else None
+        )
+        source_commitment = (
+            proof.commitment
+            if serving and type(proof) is _AcquisitionFactProof
+            else _commit_parts(
+                b"execution-core/acquisition-venue/refused-fact/v1",
+                (
+                    transition._protection_proof_commitment
+                    if type(transition._protection_proof_commitment) is bytes
+                    and len(transition._protection_proof_commitment) == 32
+                    else b""
+                ),
+            )
+        )
+        return _new_acquisition_venue_projection(
+            source_kind=source_kind,
+            context=context,
+            predecessor_execution_snapshot_commitment=(
+                predecessor_execution_snapshot_commitment
+            ),
+            predecessor_scope_execution_commitment=(
+                predecessor_scope_execution_commitment
+            ),
+            predecessor_venue_commitment=predecessor_venue_commitment,
+            source_commitment=source_commitment,
+            fact_relation=(
+                _new_acquisition_fact_relation(proof)
+                if serving and type(proof) is _AcquisitionFactProof
+                else None
+            ),
+            serving=serving,
+        )
+
     def execution_binding(
         self, position_scope: PositionScope
     ) -> VenueExecutionBinding | None:
         return self._binding_by_scope.get(_position_scope_index_key(position_scope))
+
+    def _bootstrap_bound_target_record(
+        self,
+        position_scope: PositionScope,
+    ) -> _BootstrapBoundTargetRecord | None:
+        """Return one sealed active-target record through its direct index only."""
+
+        record = self._bootstrap_bound_target_by_scope.get(
+            _position_scope_index_key(position_scope)
+        )
+        return record if type(record) is _BootstrapBoundTargetRecord else None
+
+    def _staged_bootstrap_bound_target_record(
+        self,
+        position_scope: PositionScope,
+    ) -> _StagedBootstrapBoundTargetRecord | None:
+        """Return an internal, not-yet-returnable checkpoint stage."""
+
+        record = self._bootstrap_bound_target_by_scope.get(
+            _position_scope_index_key(position_scope)
+        )
+        return record if type(record) is _StagedBootstrapBoundTargetRecord else None
+
+    def _bootstrap_bound_target_anchor_matches(
+        self,
+        record: _BootstrapBoundTargetRecord,
+        position_scope: PositionScope,
+    ) -> bool:
+        """Validate immutable bootstrap provenance through direct retained keys."""
+
+        if (
+            not _bootstrap_bound_target_record_is_authentic(record)
+            or record.application_generation_id != self.scope.generation
+            or record.position_scope != position_scope
+        ):
+            return False
+        input_record = self._input_record(record.bootstrap_input_id)
+        bootstrap_input = (
+            input_record.item if type(input_record) is VenueInputRecord else None
+        )
+        proof = record._bootstrap_neutral_checkpoint_proof
+        target_genesis = ExecutionSnapshot.flat(position_scope)
+        return bool(
+            type(bootstrap_input) is _BootstrapTargetRegistryInput
+            and _bootstrap_target_registry_input_is_authentic(bootstrap_input)
+            and bootstrap_input.input_id == record.bootstrap_input_id
+            and bootstrap_input.commitment == record.bootstrap_input_commitment
+            and bootstrap_input.application_generation_id
+            == record.application_generation_id
+            and bootstrap_input.source_kind is record.source_kind
+            and bootstrap_input.position_scope == position_scope
+            and bootstrap_input.source_execution_commitment
+            == record.source_execution_commitment
+            and bootstrap_input.target_genesis_execution_commitment
+            == record.target_genesis_execution_commitment
+            and bootstrap_input.target_execution_commitment
+            == record.bootstrap_target_execution_commitment
+            and bootstrap_input.prior_account_registry_count
+            == record.bootstrap_account_registry_count
+            and bootstrap_input.prior_account_registry_commitment
+            == record.bootstrap_account_registry_commitment
+            and bootstrap_input.reconciliation_transition_count
+            == record.bootstrap_reconciliation_transition_count
+            and bootstrap_input.reconciliation_transition_head
+            == record.bootstrap_reconciliation_transition_head
+            and record.target_genesis_execution_commitment == target_genesis.commitment
+            and proof.position_scope == position_scope
+            and proof.predecessor_cursor == _protection_genesis_cursor()
+            and proof.cursor.ordinal == 1
+            and proof.predecessor_execution_commitment == target_genesis.commitment
+            and proof.execution_commitment
+            == record.bootstrap_target_execution_commitment
+            and proof.predecessor_execution_checkpoint
+            == VenueExecutionCheckpoint.from_execution(target_genesis)
+            and proof.predecessor_summary == _SymbolAuthoritySummary()
+            and proof.summary == _SymbolAuthoritySummary()
+            and proof.predecessor_binding is None
+            and proof.binding == record.binding
+            and not proof.predecessor_execution_binding_matches
+            and proof.execution_binding_matches
+            and proof.predecessor_account_reconciliation_clear
+            and proof.account_reconciliation_clear
+            and proof.command_commitment
+            == _protection_command_commitment(bootstrap_input)
+            and proof.disposition is VenueRecoveryDisposition.APPLIED
+            and proof.quantity_delta == 0
+            and proof.book_scope == self.scope
+            and proof.predecessor_book_scope == self.scope
+            and proof.lineage_is_authentic
+        )
+
+    def _bootstrap_bound_target_current_pair_matches(
+        self,
+        record: _BootstrapBoundTargetRecord,
+        execution: ExecutionSnapshot,
+        position_scope: PositionScope,
+    ) -> bool:
+        """Validate the current bounded checkpoint without scanning history."""
+
+        if (
+            execution.position.scope != position_scope
+            or execution.position.raw_quantity != 0
+            or execution.position.root_count != 0
+            or execution.integrity is not PositionIntegrity.CONSISTENT
+            or execution.account_reconciliation_required
+            or self._has_unresolved_execution_reconciliation(position_scope)
+            or self.execution_registry_count != execution.seen_facts.count
+            or self.execution_registry_commitment != execution.seen_facts.commitment
+            or self.execution_registry_count != record.account_registry_count
+            or self.execution_registry_commitment != record.account_registry_commitment
+            or record.target_execution_commitment != execution.commitment
+            or record.reconciliation_transition_count
+            != execution.reconciliation_transition_count
+            or record.reconciliation_transition_head
+            != execution.reconciliation_transition_head
+            or not self._execution_reconciliation_cursor_matches(execution)
+        ):
+            return False
+        binding = self.execution_binding(position_scope)
+        snapshot = self._execution_snapshot_by_scope.get(
+            _position_scope_index_key(position_scope)
+        )
+        cursor = self._protection_cursor_by_scope.get(
+            _position_scope_index_key(position_scope)
+        )
+        input_record = self._input_record(record.checkpoint_input_id)
+        checkpoint_input = (
+            input_record.item if type(input_record) is VenueInputRecord else None
+        )
+        proof = record._neutral_checkpoint_proof
+        summary = (
+            self._authority_summary_by_scope.get(
+                _position_scope_index_key(position_scope)
+            )
+            or _SymbolAuthoritySummary()
+        )
+        exact_checkpoint: _BootstrapTargetRegistryInput | CatchUpExecutionRegistry
+        if type(checkpoint_input) is _BootstrapTargetRegistryInput:
+            exact_checkpoint = checkpoint_input
+            if (
+                exact_checkpoint.input_id != record.bootstrap_input_id
+                or exact_checkpoint.commitment != record.bootstrap_input_commitment
+                or record.target_execution_commitment
+                != record.bootstrap_target_execution_commitment
+                or record.account_registry_count
+                != record.bootstrap_account_registry_count
+                or record.account_registry_commitment
+                != record.bootstrap_account_registry_commitment
+                or record.reconciliation_transition_count
+                != record.bootstrap_reconciliation_transition_count
+                or record.reconciliation_transition_head
+                != record.bootstrap_reconciliation_transition_head
+                or proof != record._bootstrap_neutral_checkpoint_proof
+            ):
+                return False
+        elif type(checkpoint_input) is CatchUpExecutionRegistry:
+            exact_checkpoint = checkpoint_input
+            if exact_checkpoint.target_scope != position_scope:
+                return False
+        else:
+            return False
+        return bool(
+            binding == record.binding
+            and snapshot == execution
+            and type(cursor) is _ProtectionCursor
+            and exact_checkpoint.input_id == record.checkpoint_input_id
+            and _protection_command_commitment(exact_checkpoint)
+            == record.checkpoint_command_commitment
+            and proof.position_scope == position_scope
+            and proof.cursor == cursor
+            and proof.execution_commitment == execution.commitment
+            and proof.execution_checkpoint
+            == VenueExecutionCheckpoint.from_execution(execution)
+            and proof.summary == summary
+            and proof.binding == binding
+            and proof.execution_binding_matches
+            and proof.account_reconciliation_clear
+            and proof.command_commitment == record.checkpoint_command_commitment
+            and proof.disposition is VenueRecoveryDisposition.APPLIED
+            and proof.quantity_delta == 0
+            and proof.book_commitment == _protection_book_commitment(self)
+            and proof.book_scope == self.scope
+            and proof.predecessor_book_scope == self.scope
+            and summary.effect_count == 0
+            and summary.blocking_effect_count == 0
+            and summary.blocking_buy_effect_count == 0
+            and summary.waiting_buy_parent_count == 0
+            and summary.unknown_buy_effect_count == 0
+            and proof.lineage_is_authentic
+        )
+
+    def _staged_bootstrap_bound_target_pair_matches(
+        self,
+        stage: _StagedBootstrapBoundTargetRecord,
+        execution: ExecutionSnapshot,
+        position_scope: PositionScope,
+    ) -> bool:
+        """Validate an internal stage before its standard proof is minted."""
+
+        if (
+            not _staged_bootstrap_bound_target_record_is_authentic(stage)
+            or not self._bootstrap_bound_target_anchor_matches(
+                stage.active_record,
+                position_scope,
+            )
+            or execution.position.scope != position_scope
+            or execution.position.raw_quantity != 0
+            or execution.position.root_count != 0
+            or execution.integrity is not PositionIntegrity.CONSISTENT
+            or execution.account_reconciliation_required
+            or self._has_unresolved_execution_reconciliation(position_scope)
+            or stage.target_execution_commitment != execution.commitment
+            or stage.account_registry_count != execution.seen_facts.count
+            or stage.account_registry_commitment != execution.seen_facts.commitment
+            or stage.reconciliation_transition_count
+            != execution.reconciliation_transition_count
+            or stage.reconciliation_transition_head
+            != execution.reconciliation_transition_head
+            or self.execution_registry_count != execution.seen_facts.count
+            or self.execution_registry_commitment != execution.seen_facts.commitment
+            or not self._execution_reconciliation_cursor_matches(execution)
+        ):
+            return False
+        binding = self.execution_binding(position_scope)
+        snapshot = self._execution_snapshot_by_scope.get(
+            _position_scope_index_key(position_scope)
+        )
+        input_record = self._input_record(stage.checkpoint_input_id)
+        checkpoint_input = (
+            input_record.item if type(input_record) is VenueInputRecord else None
+        )
+        summary = (
+            self._authority_summary_by_scope.get(
+                _position_scope_index_key(position_scope)
+            )
+            or _SymbolAuthoritySummary()
+        )
+        return bool(
+            binding == stage.active_record.binding
+            and snapshot == execution
+            and type(checkpoint_input) is CatchUpExecutionRegistry
+            and checkpoint_input.input_id == stage.checkpoint_input_id
+            and checkpoint_input.target_scope == position_scope
+            and _protection_command_commitment(checkpoint_input)
+            == stage.checkpoint_command_commitment
+            and summary == _SymbolAuthoritySummary()
+        )
+
+    def _bootstrap_bound_target_pair_matches(
+        self,
+        execution: ExecutionSnapshot,
+        position_scope: PositionScope,
+    ) -> bool:
+        """Authenticate the active zero-effect exception from bounded indexes.
+
+        This intentionally does not materialize the protection ledger or any
+        venue history.  The record carries the one sealed neutral proof and the
+        per-scope cursor lets us re-derive its head directly.
+        """
+
+        record = self._bootstrap_bound_target_record(position_scope)
+        if record is not None:
+            return bool(
+                self._bootstrap_bound_target_anchor_matches(record, position_scope)
+                and self._bootstrap_bound_target_current_pair_matches(
+                    record,
+                    execution,
+                    position_scope,
+                )
+            )
+        stage = self._staged_bootstrap_bound_target_record(position_scope)
+        return bool(
+            stage is not None
+            and self._staged_bootstrap_bound_target_pair_matches(
+                stage,
+                execution,
+                position_scope,
+            )
+        )
 
     def _reconciliation_cursor(self) -> tuple[int, bytes]:
         return (
@@ -4501,12 +7290,25 @@ class VenueRecoveryBook:
             or not self._execution_reconciliation_cursor_matches(execution)
         ):
             return False
-
-        return True
+        if self._bootstrap_bound_target_record(position_scope) is not None:
+            return self._bootstrap_bound_target_pair_matches(
+                execution,
+                position_scope,
+            )
+        summary = (
+            self._authority_summary_by_scope.get(
+                _position_scope_index_key(position_scope)
+            )
+            or _SymbolAuthoritySummary()
+        )
+        return summary.effect_count > 0
 
     def _execution_pair_matches_fast(self, execution: ExecutionSnapshot) -> bool:
         """Authenticate one usable transition without touching either audit ledger."""
 
+        position_scope = execution.position.scope
+        if self._bootstrap_bound_target_record(position_scope) is not None:
+            return self._bootstrap_bound_target_pair_matches(execution, position_scope)
         if not self._effect_order.length:
             return (
                 self.execution_registry_count is None
@@ -5097,7 +7899,13 @@ def _venue_authority_view(
         or _SymbolAuthoritySummary()
     )
     binding = book.execution_binding(position_scope)
-    if summary.effect_count == 0:
+    bootstrap_bound_target_active = book._bootstrap_bound_target_pair_matches(
+        execution,
+        position_scope,
+    )
+    if bootstrap_bound_target_active:
+        execution_binding_matches = True
+    elif summary.effect_count == 0:
         execution_binding_matches = bool(
             binding is None
             and (
@@ -5133,6 +7941,7 @@ def _venue_authority_view(
         account_reconciliation_clear=(
             book._unresolved_account_execution_reconciliation_count == 0
         ),
+        bootstrap_bound_target_active=bootstrap_bound_target_active,
         blocking_effect_count=summary.blocking_effect_count,
         blocking_buy_effect_count=summary.blocking_buy_effect_count,
         target_exemptible_count=(
@@ -5163,7 +7972,12 @@ def _protection_genesis_cursor() -> _ProtectionCursor:
 
 
 def _protection_book_commitment(book: VenueRecoveryBook) -> bytes:
-    """Commit compact book roots while excluding derived protection proofs."""
+    """Commit compact book roots while excluding derived protection proofs.
+
+    Legacy map-empty books retain their v1 commitment exactly.  R8 bootstrap
+    checkpoints use a domain-separated v2 envelope which commits the static
+    bootstrap-record map root before that record's neutral proof is minted.
+    """
 
     if type(book) is not VenueRecoveryBook:
         raise TypeError("protection book commitment requires VenueRecoveryBook")
@@ -5172,6 +7986,7 @@ def _protection_book_commitment(book: VenueRecoveryBook) -> bytes:
         if retained.name in {
             "_protection_cursor_by_scope",
             "_protection_transition_ledger",
+            "_bootstrap_bound_target_by_scope",
         }:
             continue
         value = getattr(book, retained.name)
@@ -5188,7 +8003,15 @@ def _protection_book_commitment(book: VenueRecoveryBook) -> bytes:
             parts.append(_canonical_value_commitment(value))
         else:
             parts.append(value.commitment)
-    return _commit_parts(b"execution-core/protection-book-envelope/v1", *parts)
+    legacy = _commit_parts(b"execution-core/protection-book-envelope/v1", *parts)
+    bootstrap_records = book._bootstrap_bound_target_by_scope
+    if bootstrap_records.size == 0:
+        return legacy
+    return _commit_parts(
+        b"execution-core/protection-book-envelope/bootstrap/v2",
+        legacy,
+        bootstrap_records.commitment,
+    )
 
 
 def _protection_position_scope(
@@ -5330,6 +8153,347 @@ def _with_execution_snapshot_index(
         )
         object.__setattr__(result, retained.name, value)
     return result
+
+
+def _bootstrap_record_map_value_commitment(map_seal: bytes) -> bytes:
+    _require_digest("bootstrap record map seal", map_seal)
+    return _commit_parts(
+        b"execution-core/bootstrap-bound-target-index-value/v1",
+        map_seal,
+    )
+
+
+def _bootstrap_record_value_commitment(record: object) -> bytes:
+    """Commit an active, staged, or permanently consumed record."""
+
+    if _bootstrap_bound_target_record_is_authentic(record):
+        return _bootstrap_record_map_value_commitment(
+            cast(_BootstrapBoundTargetRecord, record)._map_seal
+        )
+    if _staged_bootstrap_bound_target_record_is_authentic(record):
+        return _bootstrap_record_map_value_commitment(
+            cast(_StagedBootstrapBoundTargetRecord, record)._map_seal
+        )
+    if _consumed_bootstrap_bound_target_record_is_authentic(record):
+        return _bootstrap_record_map_value_commitment(
+            cast(_ConsumedBootstrapBoundTargetRecord, record).commitment
+        )
+    raise TypeError("bootstrap target record must be exact and sealed")
+
+
+def _copy_book_with_bootstrap_values(
+    book: VenueRecoveryBook,
+    **replacements: object,
+) -> VenueRecoveryBook:
+    """Copy only the narrow private checkpoint roots owned by bootstrap."""
+
+    allowed = {
+        "execution_registry_count",
+        "execution_registry_commitment",
+        "_binding_order",
+        "_binding_by_scope",
+        "_execution_snapshot_by_scope",
+        "_bootstrap_bound_target_by_scope",
+        "_input_ledger",
+        "_input_by_id",
+        "_direct_input_by_semantic",
+        "_first_input_by_fact",
+    }
+    unknown = set(replacements) - allowed
+    if unknown:
+        raise TypeError(f"unsupported bootstrap checkpoint fields: {sorted(unknown)!r}")
+    result = object.__new__(VenueRecoveryBook)
+    for retained in fields(book):
+        object.__setattr__(
+            result,
+            retained.name,
+            replacements.get(retained.name, getattr(book, retained.name)),
+        )
+    return result
+
+
+def _book_with_bootstrap_target_checkpoint(
+    book: VenueRecoveryBook,
+    execution: ExecutionSnapshot,
+    item: _BootstrapTargetRegistryInput,
+) -> tuple[VenueRecoveryBook, VenueExecutionBinding]:
+    """Install the pre-proof target roots for the private bootstrap reducer."""
+
+    if (
+        type(book) is not VenueRecoveryBook
+        or type(execution) is not ExecutionSnapshot
+        or not _bootstrap_target_registry_input_is_authentic(item)
+    ):
+        raise TypeError("bootstrap checkpoint requires exact venue-owned inputs")
+    position_scope = item.position_scope
+    scope_key = _position_scope_index_key(position_scope)
+    if (
+        execution.position.scope != position_scope
+        or book.execution_binding(position_scope) is not None
+        or book._execution_snapshot_by_scope.get(scope_key) is not None
+        or book._bootstrap_bound_target_by_scope.get(scope_key) is not None
+        or book._input_record(item.input_id) is not None
+        or execution.seen_facts.count != item.prior_account_registry_count
+        or execution.seen_facts.commitment != item.prior_account_registry_commitment
+        or execution.reconciliation_transition_count
+        != item.reconciliation_transition_count
+        or execution.reconciliation_transition_head
+        != item.reconciliation_transition_head
+    ):
+        raise ValueError("bootstrap checkpoint contradicts its exact target boundary")
+    binding = VenueExecutionBinding(
+        position_scope=position_scope,
+        position_commitment=execution.position.commitment,
+        root_heads_commitment=execution.root_heads.commitment,
+        integrity_bits=execution.integrity.value,
+    )
+    binding_order, binding_by_scope = _upsert_binding_value(
+        book._binding_order,
+        book._binding_by_scope,
+        binding,
+    )
+    snapshots = _upsert_execution_snapshot_value(
+        book._execution_snapshot_by_scope,
+        execution,
+    )
+    (
+        input_ledger,
+        input_by_id,
+        direct_inputs,
+        first_inputs,
+    ) = _append_input_proof(book, item)
+    return (
+        _copy_book_with_bootstrap_values(
+            book,
+            execution_registry_count=execution.seen_facts.count,
+            execution_registry_commitment=execution.seen_facts.commitment,
+            _binding_order=binding_order,
+            _binding_by_scope=binding_by_scope,
+            _execution_snapshot_by_scope=snapshots,
+            _input_ledger=input_ledger,
+            _input_by_id=input_by_id,
+            _direct_input_by_semantic=direct_inputs,
+            _first_input_by_fact=first_inputs,
+        ),
+        binding,
+    )
+
+
+def _book_with_bootstrap_bound_target_record(
+    book: VenueRecoveryBook,
+    record: _BootstrapBoundTargetRecord,
+) -> VenueRecoveryBook:
+    """Finalize one staged bootstrap record without changing its map root."""
+
+    if type(
+        book
+    ) is not VenueRecoveryBook or not _bootstrap_bound_target_record_is_authentic(
+        record
+    ):
+        raise TypeError("bootstrap target record requires exact owner values")
+    key = _position_scope_index_key(record.position_scope)
+    retained = book._bootstrap_bound_target_by_scope
+    staged = retained.get(key)
+    if staged is None:
+        retained = retained.insert_new(
+            key,
+            record,
+            _bootstrap_record_value_commitment(record),
+        )
+    elif type(staged) is bytes and staged == record._map_seal:
+        retained = retained.replace_existing(
+            key,
+            record,
+            _bootstrap_record_value_commitment(record),
+        )
+    else:
+        raise ValueError("bootstrap target record already exists for this scope")
+    return _copy_book_with_bootstrap_values(
+        book,
+        _bootstrap_bound_target_by_scope=retained,
+    )
+
+
+def _consume_bootstrap_bound_target_record(
+    book: VenueRecoveryBook,
+    effect: BrokerEffect,
+    request_input_id: VenueInputId,
+) -> _PersistentKeyMap[_BootstrapBoundTargetValue]:
+    """Replace one active bootstrap record with its non-serving proof record."""
+
+    if (
+        type(book) is not VenueRecoveryBook
+        or type(effect) is not BrokerEffect
+        or type(request_input_id) is not VenueInputId
+    ):
+        raise TypeError("bootstrap consumption requires exact venue-owned inputs")
+    scope = effect.scope.position_scope
+    key = _position_scope_index_key(scope)
+    active = book._bootstrap_bound_target_by_scope.get(key)
+    if not _bootstrap_bound_target_record_is_authentic(active):
+        raise ValueError("bootstrap consumption requires one active target record")
+    active = cast(_BootstrapBoundTargetRecord, active)
+    consumed = _new_consumed_bootstrap_bound_target_record(
+        active_record=active,
+        effect=effect,
+        request_input_id=request_input_id,
+    )
+    return book._bootstrap_bound_target_by_scope.replace_existing(
+        key,
+        consumed,
+        _bootstrap_record_value_commitment(consumed),
+    )
+
+
+def _book_with_staged_bootstrap_refresh(
+    book: VenueRecoveryBook,
+    target_execution: ExecutionSnapshot,
+    binding: VenueExecutionBinding,
+    catch_up: CatchUpExecutionRegistry,
+) -> VenueRecoveryBook:
+    """Stage the next sealed checkpoint during one ordinary registry catch-up."""
+
+    if (
+        type(book) is not VenueRecoveryBook
+        or type(target_execution) is not ExecutionSnapshot
+        or type(binding) is not VenueExecutionBinding
+        or type(catch_up) is not CatchUpExecutionRegistry
+    ):
+        raise TypeError("bootstrap refresh staging requires exact venue-owned values")
+    key = _position_scope_index_key(target_execution.position.scope)
+    active = book._bootstrap_bound_target_by_scope.get(key)
+    if not _bootstrap_bound_target_record_is_authentic(active):
+        raise ValueError("bootstrap refresh requires one active target record")
+    active = cast(_BootstrapBoundTargetRecord, active)
+    staged = _new_staged_bootstrap_bound_target_record(
+        active_record=active,
+        target_execution=target_execution,
+        binding=binding,
+        catch_up=catch_up,
+    )
+    retained = book._bootstrap_bound_target_by_scope.replace_existing(
+        key,
+        staged,
+        _bootstrap_record_value_commitment(staged),
+    )
+    return _copy_book_with_bootstrap_values(
+        book,
+        _bootstrap_bound_target_by_scope=retained,
+    )
+
+
+def _finalize_staged_bootstrap_refresh(
+    book: VenueRecoveryBook,
+    target_execution: ExecutionSnapshot,
+    proof: _ProtectionTransitionProof,
+) -> VenueRecoveryBook:
+    """Replace one staged map value with its exact standard transition proof."""
+
+    if (
+        type(book) is not VenueRecoveryBook
+        or type(target_execution) is not ExecutionSnapshot
+        or not _protection_transition_proof_is_authentic(proof)
+    ):
+        raise TypeError("bootstrap refresh finalization requires exact owner values")
+    scope = target_execution.position.scope
+    key = _position_scope_index_key(scope)
+    staged = book._bootstrap_bound_target_by_scope.get(key)
+    if not _staged_bootstrap_bound_target_record_is_authentic(staged):
+        raise ValueError("bootstrap refresh finalization requires one staged record")
+    staged = cast(_StagedBootstrapBoundTargetRecord, staged)
+    active = staged.active_record
+    bootstrap_input_record = book._input_record(active.bootstrap_input_id)
+    bootstrap_input = (
+        bootstrap_input_record.item
+        if type(bootstrap_input_record) is VenueInputRecord
+        else None
+    )
+    checkpoint_input_record = book._input_record(staged.checkpoint_input_id)
+    checkpoint_input = (
+        checkpoint_input_record.item
+        if type(checkpoint_input_record) is VenueInputRecord
+        else None
+    )
+    cursor = book._protection_cursor_by_scope.get(key)
+    if (
+        type(bootstrap_input) is not _BootstrapTargetRegistryInput
+        or not _bootstrap_target_registry_input_is_authentic(bootstrap_input)
+        or bootstrap_input.input_id != active.bootstrap_input_id
+        or bootstrap_input.commitment != active.bootstrap_input_commitment
+        or type(checkpoint_input) is not CatchUpExecutionRegistry
+        or checkpoint_input.input_id != staged.checkpoint_input_id
+        or _protection_command_commitment(checkpoint_input)
+        != staged.checkpoint_command_commitment
+        or proof.position_scope != scope
+        or proof.cursor != cursor
+        or proof.execution_commitment != target_execution.commitment
+        or proof.execution_checkpoint
+        != VenueExecutionCheckpoint.from_execution(target_execution)
+        or proof.binding != active.binding
+        or proof.command_commitment != staged.checkpoint_command_commitment
+        or proof.disposition is not VenueRecoveryDisposition.APPLIED
+        or proof.quantity_delta != 0
+        or proof.book_commitment != _protection_book_commitment(book)
+    ):
+        raise ValueError("bootstrap refresh proof contradicts its staged checkpoint")
+    record = _new_bootstrap_bound_target_record(
+        application_generation_id=active.application_generation_id,
+        position_scope=active.position_scope,
+        source_kind=active.source_kind,
+        source_execution_commitment=active.source_execution_commitment,
+        target_genesis_execution_commitment=(
+            active.target_genesis_execution_commitment
+        ),
+        target_execution_commitment=target_execution.commitment,
+        binding=active.binding,
+        account_registry_count=target_execution.seen_facts.count,
+        account_registry_commitment=target_execution.seen_facts.commitment,
+        reconciliation_transition_count=(
+            target_execution.reconciliation_transition_count
+        ),
+        reconciliation_transition_head=target_execution.reconciliation_transition_head,
+        bootstrap_input=bootstrap_input,
+        neutral_checkpoint_proof=proof,
+        bootstrap_neutral_checkpoint_proof=(active._bootstrap_neutral_checkpoint_proof),
+        checkpoint_input_id=staged.checkpoint_input_id,
+        checkpoint_command_commitment=staged.checkpoint_command_commitment,
+    )
+    if record._map_seal != staged._map_seal:
+        raise ValueError("bootstrap refresh changed its staged map root")
+    retained = book._bootstrap_bound_target_by_scope.replace_existing(
+        key,
+        record,
+        _bootstrap_record_value_commitment(record),
+    )
+    return _copy_book_with_bootstrap_values(
+        book,
+        _bootstrap_bound_target_by_scope=retained,
+    )
+
+
+def _book_with_staged_bootstrap_record_map_seal(
+    book: VenueRecoveryBook,
+    position_scope: PositionScope,
+    map_seal: bytes,
+) -> VenueRecoveryBook:
+    """Stage one proof-independent record core for the internal R8 transaction."""
+
+    if type(book) is not VenueRecoveryBook or type(position_scope) is not PositionScope:
+        raise TypeError("bootstrap record staging requires exact venue-owned inputs")
+    _require_digest("bootstrap record map seal", map_seal)
+    key = _position_scope_index_key(position_scope)
+    retained = book._bootstrap_bound_target_by_scope
+    if retained.get(key) is not None:
+        raise ValueError("bootstrap target record already exists for this scope")
+    retained = retained.insert_new(
+        key,
+        map_seal,
+        _bootstrap_record_map_value_commitment(map_seal),
+    )
+    return _copy_book_with_bootstrap_values(
+        book,
+        _bootstrap_bound_target_by_scope=retained,
+    )
 
 
 def _protection_command_commitment(item: object) -> bytes:
@@ -7318,6 +10482,11 @@ def _audit_hydrate_book(
     )
     object.__setattr__(
         result,
+        "_bootstrap_bound_target_by_scope",
+        book._bootstrap_bound_target_by_scope,
+    )
+    object.__setattr__(
+        result,
         "_protection_cursor_by_scope",
         book._protection_cursor_by_scope,
     )
@@ -8048,7 +11217,11 @@ def _register_effect(
     book: VenueRecoveryBook,
     execution: ExecutionSnapshot,
     item: RequestedEffect,
+    *,
+    consume_bootstrap_target: bool = False,
 ) -> VenueRecoveryBook | None:
+    if type(consume_bootstrap_target) is not bool:
+        raise TypeError("bootstrap consumption flag must be an exact bool")
     if book._current_effect(item.effect_id) is not None:
         return None
     if (
@@ -8057,6 +11230,20 @@ def _register_effect(
     ) or book._has_request_occurrence(item.request_occurrence_id):
         return None
     scope = _effect_scope(book, item)
+    active_bootstrap = book._bootstrap_bound_target_record(scope.position_scope)
+    if active_bootstrap is not None:
+        if not (
+            consume_bootstrap_target
+            and item.kind is EffectKind.SUBMIT
+            and item.side is ExecutionSide.BUY
+            and book._bootstrap_bound_target_pair_matches(
+                execution,
+                scope.position_scope,
+            )
+        ):
+            return None
+    elif consume_bootstrap_target:
+        return None
     if scope.kind in {EffectKind.CANCEL, EffectKind.REPLACE} and not (
         _target_is_exact_active(book, scope)
     ):
@@ -8069,6 +11256,7 @@ def _register_effect(
         execution,
         execution,
         _effect_append=effect,
+        _consume_bootstrap_target=consume_bootstrap_target,
     )
 
 
@@ -8438,6 +11626,7 @@ _VENUE_INPUTS = (
     ObserveVenueStatus,
     CloseAcceptanceSet,
     CatchUpExecutionRegistry,
+    _BootstrapTargetRegistryInput,
 )
 
 
@@ -8457,7 +11646,7 @@ def _execution_is_exact_genesis(execution: ExecutionSnapshot) -> bool:
     """Authenticate the only snapshot admitted to a brand-new venue book."""
 
     genesis = ExecutionSnapshot.flat(execution.position.scope)
-    return execution.commitment == genesis.commitment
+    return execution == genesis
 
 
 def _apply_execution_registry_catch_up(
@@ -8751,6 +11940,9 @@ def _apply_execution_registry_catch_up(
             execution_registry_commitment=source.seen_facts.commitment,
             _binding_upserts=(_execution_binding_for_snapshot(next_execution),),
             _execution_reconciliation_append=projection_outcome,
+            _refresh_bootstrap_target=(
+                book._bootstrap_bound_target_record(target_scope) is not None
+            ),
         )
         return transition(
             next_book,
@@ -8819,10 +12011,156 @@ def _apply_execution_registry_catch_up(
     )
 
 
+@dataclass(frozen=True, slots=True, init=False)
+class _BootstrapPromotionPermit:
+    """Ephemeral venue-owned proof for the one specialized R8 promotion."""
+
+    position_scope: PositionScope = field(init=False)
+    book_commitment: bytes = field(init=False)
+    execution_commitment: bytes = field(init=False)
+    active_record_commitment: bytes = field(init=False)
+    request_commitment: bytes = field(init=False)
+    commitment: bytes = field(init=False)
+    _seal: bytes = field(init=False, repr=False)
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise TypeError("bootstrap promotion permits are venue-constructed only")
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        del cls, kwargs
+        raise TypeError("bootstrap promotion permits cannot be subclassed")
+
+
+def _bootstrap_promotion_permit_commitment(
+    *,
+    position_scope: PositionScope,
+    book_commitment: bytes,
+    execution_commitment: bytes,
+    active_record_commitment: bytes,
+    request_commitment: bytes,
+) -> bytes:
+    if type(position_scope) is not PositionScope:
+        raise TypeError("promotion permit position_scope must be exact")
+    for name, value in (
+        ("promotion permit book commitment", book_commitment),
+        ("promotion permit execution commitment", execution_commitment),
+        ("promotion permit active record commitment", active_record_commitment),
+        ("promotion permit request commitment", request_commitment),
+    ):
+        _require_digest(name, value)
+    return _commit_parts(
+        b"execution-core/bootstrap-promotion-permit/v1",
+        _encode_position_scope(position_scope),
+        book_commitment,
+        execution_commitment,
+        active_record_commitment,
+        request_commitment,
+    )
+
+
+def _mint_bootstrap_promotion_permit(
+    book: VenueRecoveryBook,
+    execution: ExecutionSnapshot,
+    item: RequestedEffect,
+) -> _BootstrapPromotionPermit:
+    """Mint the sole token that may consume a live bootstrap record."""
+
+    if (
+        type(book) is not VenueRecoveryBook
+        or type(execution) is not ExecutionSnapshot
+        or type(item) is not RequestedEffect
+        or item.kind is not EffectKind.SUBMIT
+        or item.side is not ExecutionSide.BUY
+        or item.symbol_id != execution.position.scope.symbol_id
+    ):
+        raise TypeError("bootstrap promotion requires one exact BUY request")
+    position_scope = execution.position.scope
+    active = book._bootstrap_bound_target_record(position_scope)
+    if active is None or not book._bootstrap_bound_target_pair_matches(
+        execution, position_scope
+    ):
+        raise ValueError("bootstrap promotion requires one exact active target record")
+    book_commitment = _protection_book_commitment(book)
+    request_commitment = _protection_command_commitment(item)
+    commitment = _bootstrap_promotion_permit_commitment(
+        position_scope=position_scope,
+        book_commitment=book_commitment,
+        execution_commitment=execution.commitment,
+        active_record_commitment=active.commitment,
+        request_commitment=request_commitment,
+    )
+    result = object.__new__(_BootstrapPromotionPermit)
+    object.__setattr__(result, "position_scope", position_scope)
+    object.__setattr__(result, "book_commitment", book_commitment)
+    object.__setattr__(result, "execution_commitment", execution.commitment)
+    object.__setattr__(result, "active_record_commitment", active.commitment)
+    object.__setattr__(result, "request_commitment", request_commitment)
+    object.__setattr__(result, "commitment", commitment)
+    object.__setattr__(
+        result,
+        "_seal",
+        _commit_parts(b"execution-core/bootstrap-promotion-permit-seal/v1", commitment),
+    )
+    return result
+
+
+def _bootstrap_promotion_permit_is_current(
+    permit: object,
+    book: VenueRecoveryBook,
+    execution: ExecutionSnapshot,
+    item: object,
+) -> bool:
+    """Require an unmodified token to match this exact pre-transition pair."""
+
+    if (
+        type(permit) is not _BootstrapPromotionPermit
+        or type(book) is not VenueRecoveryBook
+        or type(execution) is not ExecutionSnapshot
+        or type(item) is not RequestedEffect
+        or item.kind is not EffectKind.SUBMIT
+        or item.side is not ExecutionSide.BUY
+        or item.symbol_id != execution.position.scope.symbol_id
+    ):
+        return False
+    try:
+        position_scope = permit.position_scope
+        book_commitment = permit.book_commitment
+        execution_commitment = permit.execution_commitment
+        active_record_commitment = permit.active_record_commitment
+        request_commitment = permit.request_commitment
+        commitment = permit.commitment
+        seal = permit._seal
+        expected = _bootstrap_promotion_permit_commitment(
+            position_scope=position_scope,
+            book_commitment=book_commitment,
+            execution_commitment=execution_commitment,
+            active_record_commitment=active_record_commitment,
+            request_commitment=request_commitment,
+        )
+    except (AttributeError, TypeError, ValueError):
+        return False
+    active = book._bootstrap_bound_target_record(execution.position.scope)
+    return bool(
+        position_scope == execution.position.scope
+        and active is not None
+        and book._bootstrap_bound_target_pair_matches(execution, position_scope)
+        and book_commitment == _protection_book_commitment(book)
+        and execution_commitment == execution.commitment
+        and active_record_commitment == active.commitment
+        and request_commitment == _protection_command_commitment(item)
+        and commitment == expected
+        and seal
+        == _commit_parts(b"execution-core/bootstrap-promotion-permit-seal/v1", expected)
+    )
+
+
 def _apply_venue_input(
     book: VenueRecoveryBook,
     execution: ExecutionSnapshot,
     item: object,
+    *,
+    promotion: _BootstrapPromotionPermit | None = None,
 ) -> VenueRecoveryTransition:
     """Apply one exact immutable input through the complete private reducer."""
 
@@ -8830,6 +12168,8 @@ def _apply_venue_input(
         raise TypeError("book must be the exact opaque VenueRecoveryBook type")
     if type(execution) is not ExecutionSnapshot:
         raise TypeError("execution must be the exact ExecutionSnapshot type")
+    if promotion is not None and type(promotion) is not _BootstrapPromotionPermit:
+        raise TypeError("bootstrap promotion must be an exact private permit or None")
     _require_execution_components(
         execution.position,
         execution.integrity,
@@ -8861,6 +12201,8 @@ def _apply_venue_input(
         )
         effect_append = changes.pop("_effect_append", None)
         effect_replace = changes.pop("_effect_replace", None)
+        consume_bootstrap_target = changes.pop("_consume_bootstrap_target", False)
+        refresh_bootstrap_target = changes.pop("_refresh_bootstrap_target", False)
         contradiction_append = changes.pop("_contradiction_append", None)
         claim_append = changes.pop("_claim_append", None)
         owner_and_attempt_append = changes.pop("_owner_and_attempt_append", None)
@@ -8872,6 +12214,12 @@ def _apply_venue_input(
             raise TypeError(
                 f"unsupported venue checkpoint evolution: {sorted(unknown)!r}"
             )
+        if type(consume_bootstrap_target) is not bool:
+            raise TypeError("bootstrap consumption flag must be an exact bool")
+        if type(refresh_bootstrap_target) is not bool:
+            raise TypeError("bootstrap refresh flag must be an exact bool")
+        if consume_bootstrap_target and refresh_bootstrap_target:
+            raise ValueError("bootstrap checkpoint cannot refresh and consume together")
         prior_pair_matches = current._execution_pair_matches_fast(prior_execution)
         registering_new_symbol = bool(
             isinstance(item, RequestedEffect)
@@ -9105,6 +12453,24 @@ def _apply_venue_input(
                 account_authority_epoch,
                 effect_replace,
             )
+        bootstrap_bound_target_by_scope = current._bootstrap_bound_target_by_scope
+        if consume_bootstrap_target:
+            if (
+                type(item) is not RequestedEffect
+                or type(effect_append) is not BrokerEffect
+                or item.kind is not EffectKind.SUBMIT
+                or item.side is not ExecutionSide.BUY
+                or effect_append.scope.position_scope
+                != _effect_scope(current, item).position_scope
+            ):
+                raise ValueError(
+                    "bootstrap consumption requires one exact specialized BUY request"
+                )
+            bootstrap_bound_target_by_scope = _consume_bootstrap_bound_target_record(
+                current,
+                effect_append,
+                item.input_id,
+            )
         cancel_target_reservation_by_leg = current._cancel_target_reservation_by_leg
         if isinstance(effect_append, BrokerEffect):
             cancel_target_reservation_by_leg = _evolve_cancel_target_reservations(
@@ -9292,6 +12658,35 @@ def _apply_venue_input(
                 snapshot,
             )
 
+        if refresh_bootstrap_target:
+            if (
+                type(item) is not CatchUpExecutionRegistry
+                or effect_append is not None
+                or effect_replace is not None
+                or resulting_execution.position.scope != item.target_scope
+            ):
+                raise ValueError(
+                    "bootstrap refresh requires one exact ordinary catch-up"
+                )
+            resulting_binding = binding_by_scope.get(
+                _position_scope_index_key(resulting_execution.position.scope)
+            )
+            if type(resulting_binding) is not VenueExecutionBinding:
+                raise ValueError("bootstrap refresh requires its exact binding")
+            staged_book = _copy_book_with_bootstrap_values(
+                current,
+                _bootstrap_bound_target_by_scope=bootstrap_bound_target_by_scope,
+            )
+            staged_book = _book_with_staged_bootstrap_refresh(
+                staged_book,
+                resulting_execution,
+                resulting_binding,
+                item,
+            )
+            bootstrap_bound_target_by_scope = (
+                staged_book._bootstrap_bound_target_by_scope
+            )
+
         coverage_provenance_by_scope = _evolve_coverage_provenance(
             current._coverage_provenance_by_scope,
             prior_execution,
@@ -9366,6 +12761,11 @@ def _apply_venue_input(
             result,
             "_execution_snapshot_by_scope",
             execution_snapshot_by_scope,
+        )
+        object.__setattr__(
+            result,
+            "_bootstrap_bound_target_by_scope",
+            bootstrap_bound_target_by_scope,
         )
         object.__setattr__(
             result,
@@ -9631,6 +13031,19 @@ def _apply_venue_input(
             resulting_execution,
             item,
         )
+        staged_bootstrap_refresh = resulting_book._staged_bootstrap_bound_target_record(
+            position_scope
+        )
+        if staged_bootstrap_refresh is not None and not (
+            disposition is VenueRecoveryDisposition.APPLIED
+            and type(item) is CatchUpExecutionRegistry
+            and resulting_book._staged_bootstrap_bound_target_pair_matches(
+                staged_bootstrap_refresh,
+                resulting_execution,
+                position_scope,
+            )
+        ):
+            raise ValueError("bootstrap refresh stage is not an exact catch-up")
         retained_predecessor = book._execution_snapshot_by_scope.get(
             _position_scope_index_key(position_scope)
         )
@@ -9771,6 +13184,28 @@ def _apply_venue_input(
                 cursor,
                 protection_proof,
             )
+        if staged_bootstrap_refresh is not None:
+            if not advance_cursor:
+                raise ValueError("bootstrap refresh requires one advancing proof")
+            resulting_book = _finalize_staged_bootstrap_refresh(
+                resulting_book,
+                resulting_execution,
+                protection_proof,
+            )
+            if not resulting_book._execution_pair_matches_fast(resulting_execution):
+                raise ValueError(
+                    "bootstrap refresh finalization produced a stale execution pair"
+                )
+
+        acquisition_fact_proof = _mint_acquisition_fact_proof(
+            book,
+            proof_predecessor_execution,
+            resulting_book,
+            resulting_execution,
+            item,
+            protection_proof,
+            disposition,
+        )
 
         result = object.__new__(VenueRecoveryTransition)
         object.__setattr__(result, "book", resulting_book)
@@ -9783,9 +13218,51 @@ def _apply_venue_input(
             "_protection_proof_commitment",
             protection_proof.commitment,
         )
+        object.__setattr__(result, "_acquisition_fact_proof", acquisition_fact_proof)
+        object.__setattr__(
+            result,
+            "_acquisition_fact_proof_commitment",
+            (
+                None
+                if acquisition_fact_proof is None
+                else acquisition_fact_proof.commitment
+            ),
+        )
         return result
 
     input_id = _require_input_id("item.input_id", getattr(item, "input_id", None))
+    if promotion is not None and not _bootstrap_promotion_permit_is_current(
+        promotion,
+        book,
+        execution,
+        item,
+    ):
+        return transition(
+            book,
+            execution,
+            execution,
+            VenueRecoveryDisposition.REFUSED,
+            item=item,
+            quantity_delta=0,
+        )
+    if isinstance(item, RequestedEffect):
+        requested_scope = _effect_scope(book, item)
+        if (
+            promotion is None
+            and book._bootstrap_bound_target_record(requested_scope.position_scope)
+            is not None
+        ):
+            # An active R8 record is not a generic zero-effect admission.  The
+            # sole ordinary request that may start from it must carry the
+            # exact venue-minted promotion proof validated above.
+            return transition(
+                book,
+                execution,
+                execution,
+                VenueRecoveryDisposition.REFUSED,
+                item=item,
+                quantity_delta=0,
+            )
     if isinstance(item, CatchUpExecutionRegistry):
         return _apply_execution_registry_catch_up(
             book,
@@ -9909,7 +13386,13 @@ def _apply_venue_input(
             next_book = None
             disposition = VenueRecoveryDisposition.REFUSED
         else:
-            next_book = _register_effect(evolve, book, execution, item)
+            next_book = _register_effect(
+                evolve,
+                book,
+                execution,
+                item,
+                consume_bootstrap_target=promotion is not None,
+            )
             disposition = (
                 VenueRecoveryDisposition.APPLIED
                 if next_book is not None
@@ -10080,6 +13563,8 @@ def apply_venue_recovery_input(
         raise TypeError("book must be the exact opaque VenueRecoveryBook type")
     if type(execution) is not ExecutionSnapshot:
         raise TypeError("execution must be the exact ExecutionSnapshot type")
+    if type(item) is _BootstrapTargetRegistryInput:
+        raise TypeError("bootstrap target input is internal and not publicly admitted")
     _require_exact_venue_recovery_input(item)
     if type(item) in {
         RequestedEffect,
@@ -10102,6 +13587,28 @@ def _authority_request_effect(
     if type(item) is not RequestedEffect:
         raise TypeError("item must be the exact RequestedEffect type")
     return _apply_venue_input(book, execution, item)
+
+
+def _authority_request_acquisition_effect(
+    book: VenueRecoveryBook,
+    execution: ExecutionSnapshot,
+    item: RequestedEffect,
+) -> VenueRecoveryTransition:
+    """Apply the one authority-sealed first acquisition BUY promotion.
+
+    This is deliberately distinct from the generic authority bridge.  Only
+    authority's specialized permit handler may reach it, and the venue reducer
+    still requires the exact active R8 target record before it may consume it.
+    """
+
+    if type(item) is not RequestedEffect:
+        raise TypeError("item must be the exact RequestedEffect type")
+    promotion = (
+        _mint_bootstrap_promotion_permit(book, execution, item)
+        if book._bootstrap_bound_target_record(execution.position.scope) is not None
+        else None
+    )
+    return _apply_venue_input(book, execution, item, promotion=promotion)
 
 
 def _authority_claim_effect(
@@ -10210,6 +13717,339 @@ def _authority_execution_for_scope(
     ):
         return None
     return caught_up.book, caught_up.execution, (caught_up,)
+
+
+def _authority_execution_pair_for_scope(
+    book: VenueRecoveryBook,
+    source_execution: ExecutionSnapshot | None,
+    position_scope: PositionScope,
+    namespace: str,
+) -> (
+    tuple[
+        VenueRecoveryBook,
+        ExecutionSnapshot,
+        VenueRecoveryBook,
+        ExecutionSnapshot,
+        tuple[VenueRecoveryTransition, ...],
+    ]
+    | None
+):
+    """Resolve one bounded authority refresh without exposing venue internals.
+
+    The source must already be the exact account-current snapshot.  The pair
+    contains only the retained target predecessor, at most one authenticated
+    catch-up transition, and its resulting target snapshot.  It never
+    materializes effects, owners, closures, or historical records.
+    """
+
+    if (
+        type(source_execution) is not ExecutionSnapshot
+        or type(position_scope) is not PositionScope
+        or not _authority_registry_source_is_current(book, source_execution)
+        or source_execution.account_reconciliation_required
+    ):
+        return None
+    source_scope = source_execution.position.scope
+    if not (
+        position_scope.broker == source_scope.broker == book.scope.broker
+        and position_scope.environment
+        == source_scope.environment
+        == book.scope.environment
+        and position_scope.account == source_scope.account == book.scope.account
+    ):
+        return None
+    predecessor_execution = book._execution_snapshot_by_scope.get(
+        _position_scope_index_key(position_scope)
+    )
+    if type(predecessor_execution) is not ExecutionSnapshot:
+        return None
+    resolved = _authority_execution_for_scope(
+        book,
+        source_execution,
+        position_scope,
+        namespace,
+    )
+    if resolved is None:
+        return None
+    resulting_book, resulting_execution, transitions = resolved
+    if transitions == ():
+        if (
+            resulting_book is not book
+            or resulting_execution is not predecessor_execution
+        ):
+            return None
+    elif (
+        len(transitions) != 1
+        or transitions[0].book is not resulting_book
+        or transitions[0].execution is not resulting_execution
+    ):
+        return None
+    return (
+        book,
+        predecessor_execution,
+        resulting_book,
+        resulting_execution,
+        transitions,
+    )
+
+
+def _authority_bootstrap_unbound_target_pair_for_scope(
+    book: VenueRecoveryBook,
+    source_execution: ExecutionSnapshot,
+    position_scope: PositionScope,
+) -> tuple[VenueRecoveryBook, ExecutionSnapshot, VenueRecoveryTransition] | None:
+    """Mint the one private, neutral first checkpoint for an absent target.
+
+    Ordinary refresh and generic catch-up intentionally cannot reach this
+    function.  It accepts either the exact empty-account genesis or one
+    current bound same-account source, projects only that source's registry
+    high-water onto the owner-derived flat target, and publishes the result
+    with a sealed direct record before returning it to authority.
+    """
+
+    if (
+        type(book) is not VenueRecoveryBook
+        or type(source_execution) is not ExecutionSnapshot
+        or type(position_scope) is not PositionScope
+    ):
+        raise TypeError("bootstrap target pair requires exact venue-owned inputs")
+    venue_scope = book.scope
+    source_scope = source_execution.position.scope
+    if not (
+        position_scope.broker == source_scope.broker == venue_scope.broker
+        and position_scope.environment
+        == source_scope.environment
+        == venue_scope.environment
+        and position_scope.account == source_scope.account == venue_scope.account
+    ):
+        return None
+    target_genesis = ExecutionSnapshot.flat(position_scope)
+    target_key = _position_scope_index_key(position_scope)
+    target_summary = (
+        book._authority_summary_by_scope.get(target_key) or _SymbolAuthoritySummary()
+    )
+    if (
+        book.execution_binding(position_scope) is not None
+        or book._execution_snapshot_by_scope.get(target_key) is not None
+        or book._bootstrap_bound_target_by_scope.get(target_key) is not None
+        or book._has_unresolved_execution_reconciliation(position_scope)
+        or target_summary != _SymbolAuthoritySummary()
+    ):
+        return None
+
+    source_kind: _BootstrapSourceKind
+    target_execution: ExecutionSnapshot
+    if source_execution == target_genesis:
+        # Exact equality with a freshly constructed empty book rules out a
+        # hidden input, binding, registry, reconciliation cursor, or another
+        # account-level history item.  No broader account scan is involved.
+        if book != VenueRecoveryBook.empty(venue_scope):
+            return None
+        source_kind = _BootstrapSourceKind.EMPTY_ACCOUNT
+        target_execution = target_genesis
+    else:
+        if (
+            source_scope == position_scope
+            or book._bootstrap_bound_target_record(source_scope) is not None
+            or source_execution.account_reconciliation_required
+            or not _authority_registry_source_is_current(book, source_execution)
+            or not book._execution_reconciliation_cursor_matches(source_execution)
+            or not book._execution_matches(source_execution, source_scope)
+            or not source_execution.seen_facts.has_prefix(
+                target_genesis.seen_facts.count,
+                target_genesis.seen_facts.commitment,
+            )
+        ):
+            return None
+        source_kind = _BootstrapSourceKind.SAME_ACCOUNT_SOURCE
+        transition_count, transition_head = book._reconciliation_cursor()
+        try:
+            target_execution = _project_execution_registry(
+                target_genesis,
+                source_execution,
+                reconciliation_transition_count=transition_count,
+                reconciliation_transition_head=transition_head,
+            )
+        except (TypeError, ValueError):
+            return None
+        if (
+            target_execution.position.raw_quantity != 0
+            or target_execution.position.root_count != 0
+            or target_execution.integrity is not PositionIntegrity.CONSISTENT
+            or target_execution.account_reconciliation_required
+        ):
+            return None
+
+    if (
+        target_execution.position.scope != position_scope
+        or target_execution.reconciliation_transition_count
+        != book._reconciliation_cursor()[0]
+        or target_execution.reconciliation_transition_head
+        != book._reconciliation_cursor()[1]
+    ):
+        return None
+    bootstrap_input = _new_bootstrap_target_registry_input(
+        application_generation_id=venue_scope.generation,
+        source_kind=source_kind,
+        position_scope=position_scope,
+        source_execution_commitment=source_execution.commitment,
+        target_genesis_execution_commitment=target_genesis.commitment,
+        target_execution_commitment=target_execution.commitment,
+        prior_account_registry_count=target_execution.seen_facts.count,
+        prior_account_registry_commitment=target_execution.seen_facts.commitment,
+        reconciliation_transition_count=(
+            target_execution.reconciliation_transition_count
+        ),
+        reconciliation_transition_head=target_execution.reconciliation_transition_head,
+    )
+    try:
+        checkpoint_book, binding = _book_with_bootstrap_target_checkpoint(
+            book,
+            target_execution,
+            bootstrap_input,
+        )
+        checkpoint_book = _book_with_staged_bootstrap_record_map_seal(
+            checkpoint_book,
+            position_scope,
+            _bootstrap_bound_target_record_map_seal(
+                application_generation_id=venue_scope.generation,
+                position_scope=position_scope,
+                source_kind=source_kind,
+                source_execution_commitment=source_execution.commitment,
+                target_genesis_execution_commitment=target_genesis.commitment,
+                target_execution_commitment=target_execution.commitment,
+                binding=binding,
+                account_registry_count=target_execution.seen_facts.count,
+                account_registry_commitment=target_execution.seen_facts.commitment,
+                reconciliation_transition_count=(
+                    target_execution.reconciliation_transition_count
+                ),
+                reconciliation_transition_head=(
+                    target_execution.reconciliation_transition_head
+                ),
+                bootstrap_input_id=bootstrap_input.input_id,
+                bootstrap_input_commitment=bootstrap_input.commitment,
+                bootstrap_target_execution_commitment=(target_execution.commitment),
+                bootstrap_account_registry_count=target_execution.seen_facts.count,
+                bootstrap_account_registry_commitment=(
+                    target_execution.seen_facts.commitment
+                ),
+                bootstrap_reconciliation_transition_count=(
+                    target_execution.reconciliation_transition_count
+                ),
+                bootstrap_reconciliation_transition_head=(
+                    target_execution.reconciliation_transition_head
+                ),
+                checkpoint_input_id=bootstrap_input.input_id,
+                checkpoint_command_commitment=(
+                    _protection_command_commitment(bootstrap_input)
+                ),
+            ),
+        )
+    except (TypeError, ValueError):
+        return None
+    predecessor_cursor = _protection_genesis_cursor()
+    summary = _SymbolAuthoritySummary()
+    command_commitment = _protection_command_commitment(bootstrap_input)
+    predecessor_book_commitment = _protection_book_commitment(book)
+    checkpoint_book_commitment = _protection_book_commitment(checkpoint_book)
+    target_checkpoint = VenueExecutionCheckpoint.from_execution(target_execution)
+    target_genesis_checkpoint = VenueExecutionCheckpoint.from_execution(target_genesis)
+    cursor = _next_protection_cursor(
+        predecessor_cursor,
+        position_scope,
+        None,
+        book.scope,
+        checkpoint_book.scope,
+        predecessor_book_commitment,
+        checkpoint_book_commitment,
+        target_genesis.commitment,
+        target_execution.commitment,
+        target_genesis_checkpoint,
+        target_checkpoint,
+        summary,
+        summary,
+        None,
+        binding,
+        False,
+        True,
+        True,
+        True,
+        command_commitment,
+        VenueRecoveryDisposition.APPLIED,
+        0,
+    )
+    proof = _ProtectionTransitionProof(
+        position_scope=position_scope,
+        predecessor_cursor=predecessor_cursor,
+        cursor=cursor,
+        predecessor_book_scope=book.scope,
+        book_scope=checkpoint_book.scope,
+        predecessor_book_commitment=predecessor_book_commitment,
+        book_commitment=checkpoint_book_commitment,
+        predecessor_execution_commitment=target_genesis.commitment,
+        execution_commitment=target_execution.commitment,
+        predecessor_execution_checkpoint=target_genesis_checkpoint,
+        execution_checkpoint=target_checkpoint,
+        predecessor_summary=summary,
+        summary=summary,
+        predecessor_binding=None,
+        binding=binding,
+        predecessor_execution_binding_matches=False,
+        execution_binding_matches=True,
+        predecessor_account_reconciliation_clear=True,
+        account_reconciliation_clear=True,
+        command_commitment=command_commitment,
+        disposition=VenueRecoveryDisposition.APPLIED,
+        quantity_delta=0,
+    )
+    try:
+        checkpoint_book = _with_protection_cursor(
+            checkpoint_book,
+            position_scope,
+            cursor,
+            proof,
+        )
+        record = _new_bootstrap_bound_target_record(
+            application_generation_id=venue_scope.generation,
+            position_scope=position_scope,
+            source_kind=source_kind,
+            source_execution_commitment=source_execution.commitment,
+            target_genesis_execution_commitment=target_genesis.commitment,
+            target_execution_commitment=target_execution.commitment,
+            binding=binding,
+            account_registry_count=target_execution.seen_facts.count,
+            account_registry_commitment=target_execution.seen_facts.commitment,
+            reconciliation_transition_count=(
+                target_execution.reconciliation_transition_count
+            ),
+            reconciliation_transition_head=(
+                target_execution.reconciliation_transition_head
+            ),
+            bootstrap_input=bootstrap_input,
+            neutral_checkpoint_proof=proof,
+        )
+        resulting_book = _book_with_bootstrap_bound_target_record(
+            checkpoint_book,
+            record,
+        )
+    except (TypeError, ValueError):
+        return None
+    if not resulting_book._bootstrap_bound_target_pair_matches(
+        target_execution,
+        position_scope,
+    ):
+        return None
+    result = object.__new__(VenueRecoveryTransition)
+    object.__setattr__(result, "book", resulting_book)
+    object.__setattr__(result, "execution", target_execution)
+    object.__setattr__(result, "disposition", VenueRecoveryDisposition.APPLIED)
+    object.__setattr__(result, "quantity_delta", 0)
+    object.__setattr__(result, "_protection_proof", proof)
+    object.__setattr__(result, "_protection_proof_commitment", proof.commitment)
+    object.__setattr__(result, "_acquisition_fact_proof", None)
+    object.__setattr__(result, "_acquisition_fact_proof_commitment", None)
+    return resulting_book, target_execution, result
 
 
 def _authority_stand_down_requested_effect(

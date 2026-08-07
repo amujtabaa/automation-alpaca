@@ -329,3 +329,13 @@
   both retained review results, and only the directly necessary active-WO, PKL, ledger, and
   provenance reconciliation. It contains no application or test implementation and claims no
   implementation gate or external CI result.
+- 2026-08-07: Filed the pure WO-0151 E2 implementation closeout at remediation manifest
+  `2538656a49ea643c6befc8e4c55882cf27534f266d2335ef4a630a73182af853`. Final independent
+  result `96d08654369894eeaeda0b1b22f8e869735d179daa336c5c3e69d7f19e0e68fd` returned `ACCEPT`,
+  P0=0/P1=0/P2=0 and explicitly closed the predecessor review's sole fact-matrix/mutation P1.
+  Author and reviewer each completed the 1,353-test pure execution-core suite; focused matrix and
+  mutation controls passed 17/17, with Ruff, mypy, import, scope, ledger, PKL, disposition, and diff
+  gates green. The earlier local R2 temp-root failure ran no fixture, SQL/DDL, database, or test body
+  and is not acceptance evidence. Effective lifecycle remains `REVIEW` until unchanged exact-head
+  Python 3.11/3.12 CI succeeds. WO-0152, runtime, persistence, database, broker/network,
+  credentials, M2, merge, deletion, and cleanup remain inactive.

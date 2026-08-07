@@ -9,6 +9,7 @@ the focused gate red even when that dependency is never exercised by an example.
 from __future__ import annotations
 
 import ast
+from copy import deepcopy
 from collections import Counter
 from dataclasses import dataclass
 import json
@@ -141,6 +142,12 @@ _PROTECTION_OPAQUE_VALUE_TYPES = {
     "ProtectionVenueProjection",
 }
 
+_PROTECTION_E2_OPAQUE_VALUE_TYPES = {
+    "AcquisitionMixedRecoveryProof",
+    "AcquisitionProtectionContext",
+    "AcquisitionProtectionRebaseProjection",
+}
+
 _PROTECTION_ALLOWED_STDLIB_IMPORTED_CALLS = {
     ("dataclasses", "dataclass"),
     ("decimal", "Decimal"),
@@ -200,6 +207,9 @@ _PROTECTION_ALLOWED_IMPORTED_BINDINGS = (
         ("dataclasses", "field"),
         ("enum", "Enum"),
         ("app.execution_core.fills", "ExecutionSide"),
+        ("app.execution_core.identity", "ApplicationGenerationId"),
+        ("app.execution_core.identity", "AcquisitionGenerationId"),
+        ("app.execution_core.identity", "EmergencyRecoveryCompatibilityId"),
         ("app.execution_core.identity", "MandateId"),
         ("app.execution_core.identity", "MarketDataSourceId"),
         ("app.execution_core.identity", "MarketOccurrenceId"),
@@ -209,8 +219,10 @@ _PROTECTION_ALLOWED_IMPORTED_BINDINGS = (
         ("app.execution_core.position", "ExecutionSnapshot"),
         ("app.execution_core.position", "PositionIntegrity"),
         ("app.execution_core.venue", "VenueExecutionBinding"),
+        ("app.execution_core.venue", "AcquisitionVenueContext"),
         ("app.execution_core.venue", "VenueRecoveryDisposition"),
         ("app.execution_core.venue", "VenueRecoveryTransition"),
+        ("app.execution_core.venue", "VenueRecoveryBook"),
         ("app.execution_core.venue", "_ProtectionCursor"),
         ("app.execution_core.venue", "_ProtectionTransitionProof"),
         ("app.execution_core.venue", "_SymbolAuthoritySummary"),
@@ -221,6 +233,7 @@ _PROTECTION_FIXED_STATE_LEAF_IMPORTS = {
     ("enum", "Enum"),
     ("fractions", "Fraction"),
     ("app.execution_core.fills", "PositionScope"),
+    ("app.execution_core.identity", "EmergencyRecoveryCompatibilityId"),
     ("app.execution_core.identity", "MandateId"),
     ("app.execution_core.identity", "MarketDataSourceId"),
     ("app.execution_core.identity", "MarketOccurrenceId"),
@@ -247,8 +260,21 @@ _PROTECTION_FORBIDDEN_BINDING_ATTRIBUTES = {
 
 _PUBLIC_SURFACE = {
     "AccountId",
+    "AcquisitionControllerDisposition",
+    "AcquisitionControllerState",
+    "AcquisitionControllerStatus",
+    "AcquisitionControllerTransition",
+    "AcquisitionEffectTerms",
     "AcquisitionGenerationId",
     "AcquisitionLineageIndex",
+    "AcquisitionMixedRecoveryProof",
+    "AcquisitionMandate",
+    "AcquisitionMandateId",
+    "AcquisitionOrderType",
+    "AcquisitionProtectionContext",
+    "AcquisitionProtectionRebaseKind",
+    "AcquisitionProtectionRebaseProjection",
+    "AcquisitionRecoveryClass",
     "AcceptanceSetState",
     "ActorId",
     "AdvanceManualFlatten",
@@ -278,6 +304,9 @@ _PUBLIC_SURFACE = {
     "DiscoverVenueLeg",
     "EffectId",
     "EffectKind",
+    "DualMandateBinding",
+    "EmergencyRecoveryCompatibility",
+    "EmergencyRecoveryCompatibilityId",
     "EmergencyGrantId",
     "EngageKill",
     "EnginePhase",
@@ -354,6 +383,7 @@ _PUBLIC_SURFACE = {
     "SessionId",
     "SourceEventId",
     "SupervisorFence",
+    "SymbolAcquisitionController",
     "SymbolId",
     "TickMetadata",
     "TradingMode",
@@ -376,14 +406,26 @@ _PUBLIC_SURFACE = {
     "apply_broker_execution_fact",
     "apply_execution_authority_input",
     "apply_venue_recovery_input",
+    "begin_acquisition_generation",
+    "begin_acquisition_preemption",
     "bind_venue_execution_snapshot",
+    "claim_acquisition_effect",
+    "create_acquisition_effect",
+    "create_acquisition_protection_exit",
     "derive_ordered_basis_candidate",
     "initial_execution_authority_state",
+    "initialize_acquisition_controller",
     "initialize_position_protection",
     "invalidate_position_protection_market",
+    "project_acquisition_protection_context",
+    "project_acquisition_protection_rebase",
+    "project_acquisition_controller",
     "project_protection_venue",
     "reduce_position_protection",
     "reduce_position_protection_market",
+    "force_acquisition_mixed_recovery",
+    "rebase_acquisition_protection",
+    "reduce_acquisition_controller",
 }
 
 _PROTECTION_PUBLIC_TRANSITIONS = {
@@ -392,6 +434,30 @@ _PROTECTION_PUBLIC_TRANSITIONS = {
     "project_protection_venue": ("transition", "mandate"),
     "reduce_position_protection": ("state", "projection"),
     "reduce_position_protection_market": ("state", "projection", "occurrence"),
+}
+
+_PROTECTION_E2_PUBLIC_PROJECTORS = {
+    "project_acquisition_protection_context": (
+        "state",
+        "book",
+        "execution",
+        "venue_context",
+    ),
+    "project_acquisition_protection_rebase": (
+        "prior_state",
+        "transition",
+        "predecessor_context",
+        "current_context",
+    ),
+}
+
+_PROTECTION_E2_PUBLIC_TRANSITIONS = {
+    "force_acquisition_mixed_recovery": (
+        "prior_state",
+        "mandate",
+        "venue_projection",
+        "proof",
+    ),
 }
 
 _PROTECTION_MARKET_ROOTS = {
@@ -495,6 +561,413 @@ def _python_files() -> list[Path]:
     return files
 
 
+_LEGACY_PROTECTION_E2_IMPORTS = {
+    ("identity", "ApplicationGenerationId"),
+    ("identity", "EmergencyRecoveryCompatibilityId"),
+    ("venue", "AcquisitionVenueContext"),
+    ("venue", "VenueRecoveryBook"),
+}
+
+_LEGACY_PROTECTION_E2_CLASSES = {
+    "AcquisitionMixedRecoveryProof",
+    "EmergencyRecoveryCompatibility",
+    "AcquisitionProtectionRebaseKind",
+    "AcquisitionProtectionContext",
+    "AcquisitionProtectionRebaseProjection",
+    "_AcquisitionPreemptionIntent",
+    "_AcquisitionProtectionExitIntent",
+}
+
+_LEGACY_PROTECTION_E2_FUNCTIONS = {
+    "_acquisition_commitment_is_exact",
+    "_acquisition_mixed_recovery_proof_commitment",
+    "_acquisition_mixed_recovery_proof_is_authentic",
+    "_acquisition_preemption_intent_is_authentic",
+    "_acquisition_preemption_intent_seal",
+    "_acquisition_protection_context_is_authentic",
+    "_acquisition_protection_exit_intent_is_authentic",
+    "_acquisition_protection_exit_intent_seal",
+    "_acquisition_protection_rebase_projection_is_authentic",
+    "_acquisition_protection_rebase_seal",
+    "_emergency_recovery_compatibility_commitment",
+    "_emergency_recovery_compatibility_is_authentic",
+    "_execution_goal_commitment",
+    "_mint_acquisition_protection_context",
+    "_mint_acquisition_mixed_recovery_proof",
+    "_mint_acquisition_protection_rebase_projection",
+    "_mint_protection_transition",
+    "_new_acquisition_protection_context",
+    "_new_acquisition_mixed_recovery_proof",
+    "_new_acquisition_preemption_intent",
+    "_new_acquisition_protection_exit_intent",
+    "_new_acquisition_protection_rebase_projection",
+    "_new_protection_transition",
+    "_optional_acquisition_protection_commitment",
+    "_project_acquisition_neutral_reprojection",
+    "_project_acquisition_preemption_intent",
+    "_project_acquisition_protection_exit_intent",
+    "_project_protection_venue_owned",
+    "_protection_mandate_commitment",
+    "_protection_transition_is_authentic",
+    "_protection_transition_seal",
+    "_reduce_acquisition_mixed_recovery",
+    "_scope_protection_commitment",
+    "_source_venue_transition_commitment",
+    "_state_matches_projection_current",
+    "_state_matches_projection_predecessor",
+    "force_acquisition_mixed_recovery",
+    "project_acquisition_protection_context",
+    "project_acquisition_protection_rebase",
+}
+
+
+def _legacy_protection_transition_declaration() -> ast.ClassDef:
+    """Return the pre-E2 transition shape for the retained ADR-023 oracle."""
+
+    source = """
+@_dataclass(frozen=True, slots=True)
+class ProtectionTransition:
+    state: PositionProtectionState
+    disposition: ProtectionDisposition
+    goal: ExecutionGoal | None
+    critical_alert: ProtectionAlert | None
+
+    def __post_init__(self) -> None:
+        if type(self.state) is not PositionProtectionState:
+            raise TypeError("state must be PositionProtectionState")
+        if type(self.disposition) is not ProtectionDisposition:
+            raise TypeError("disposition must be ProtectionDisposition")
+        if self.goal is not None and type(self.goal) is not ExecutionGoal:
+            raise TypeError("goal must be ExecutionGoal or None")
+        if (
+            self.critical_alert is not None
+            and type(self.critical_alert) is not ProtectionAlert
+        ):
+            raise TypeError("critical_alert must be ProtectionAlert or None")
+"""
+    (declaration,) = ast.parse(source).body
+    assert isinstance(declaration, ast.ClassDef)
+    return declaration
+
+
+def _legacy_commit_mandate_declaration() -> ast.FunctionDef:
+    """Return the exact pre-E2 mandate commitment body for the legacy view."""
+
+    source = """
+def _commit_mandate(mandate: ProtectionMandate) -> bytes:
+    return _commit_parts(
+        b"execution-core/protection-mandate/v1",
+        _encode_text(mandate.mandate_id.value),
+        _encode_position_scope(mandate.position_scope),
+        _encode_text(mandate.session_id.value),
+        _encode_text(mandate.configuration_version),
+        _encode_fraction(mandate.loss_fraction),
+        _encode_fraction(mandate.approved_gain),
+        _encode_fraction(mandate.percent_trail_fraction),
+        _encode_fraction(mandate.atr_multiple),
+        _encode_int(mandate.tick.tick_units.value),
+        _encode_fraction(_Fraction(mandate.tick.scale.value)),
+        _encode_text(mandate.normal_guard.guard_id),
+        mandate.normal_guard.policy_commitment,
+        _encode_text(mandate.emergency_guard.guard_id),
+        mandate.emergency_guard.policy_commitment,
+        _encode_text(mandate.evidence_policy.source_id.value),
+        _encode_text(mandate.evidence_policy.stream_generation.value),
+        _encode_text(mandate.evidence_policy.sequence_mode.value),
+        _encode_int(mandate.evidence_policy.max_age),
+        _encode_int(mandate.evidence_policy.corroboration_window),
+        _encode_fraction(mandate.evidence_policy.max_step_fraction),
+        _encode_int(mandate.maximum_quantity.value),
+        _encode_int(mandate.maximum_goal_rate),
+        _encode_int(mandate.deadline),
+    )
+"""
+    (declaration,) = ast.parse(source).body
+    assert isinstance(declaration, ast.FunctionDef)
+    return declaration
+
+
+def _mentions_name(node: ast.AST, name: str) -> bool:
+    return any(
+        (isinstance(candidate, ast.Name) and candidate.id == name)
+        or (isinstance(candidate, ast.Attribute) and candidate.attr == name)
+        for candidate in ast.walk(node)
+    )
+
+
+def _mentions_plain_name(node: ast.AST, name: str) -> bool:
+    return any(
+        isinstance(candidate, ast.Name) and candidate.id == name
+        for candidate in ast.walk(node)
+    )
+
+
+def _assignment_target_name(statement: ast.stmt) -> str | None:
+    if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
+        target = statement.targets[0]
+        return target.id if isinstance(target, ast.Name) else None
+    if isinstance(statement, ast.AnnAssign) and isinstance(statement.target, ast.Name):
+        return statement.target.id
+    return None
+
+
+def _is_commitment_setter(statement: ast.stmt) -> bool:
+    if not isinstance(statement, ast.Expr) or not isinstance(statement.value, ast.Call):
+        return False
+    call = statement.value
+    return bool(
+        _static_attribute_path(call.func) == ("object", "__setattr__")
+        and len(call.args) == 3
+        and isinstance(call.args[1], ast.Constant)
+        and call.args[1].value == "commitment"
+    )
+
+
+def _legacy_protection_mandate_declaration(
+    declaration: ast.ClassDef,
+) -> ast.ClassDef:
+    """Remove only E2's linked compatibility and derived-commitment additions."""
+
+    legacy = deepcopy(declaration)
+    body: list[ast.stmt] = []
+    removed_fields: set[str] = set()
+    removed_lifecycle_statements = 0
+    for statement in legacy.body:
+        if isinstance(statement, ast.AnnAssign) and isinstance(
+            statement.target, ast.Name
+        ):
+            if statement.target.id in {
+                "emergency_recovery_compatibility",
+                "commitment",
+            }:
+                removed_fields.add(statement.target.id)
+                continue
+        if isinstance(statement, ast.FunctionDef) and statement.name == "__post_init__":
+            retained: list[ast.stmt] = []
+            for lifecycle_statement in statement.body:
+                if _mentions_name(
+                    lifecycle_statement, "emergency_recovery_compatibility"
+                ):
+                    removed_lifecycle_statements += 1
+                    continue
+                if _is_commitment_setter(lifecycle_statement):
+                    removed_lifecycle_statements += 1
+                    continue
+                retained.append(lifecycle_statement)
+            statement.body = retained
+        body.append(statement)
+    assert removed_fields == {"emergency_recovery_compatibility", "commitment"}
+    assert removed_lifecycle_statements == 6
+    legacy.body = body
+    return legacy
+
+
+def _legacy_function_without_e2_statements(
+    declaration: ast.FunctionDef,
+) -> ast.FunctionDef:
+    """Remove the exact E2 defensive checks from retained legacy functions."""
+
+    legacy = deepcopy(declaration)
+    if declaration.name == "_projection_is_authentic":
+        removed = [
+            statement
+            for statement in legacy.body
+            if _mentions_name(statement, "_mandate_commitment")
+            and _mentions_name(statement, "len")
+        ]
+        assert len(removed) == 1
+        legacy.body = [
+            statement for statement in legacy.body if statement not in removed
+        ]
+        return legacy
+    if declaration.name == "_state_is_authentic":
+        body: list[ast.stmt] = []
+        removed = 0
+        for statement in legacy.body:
+            if _assignment_target_name(statement) == "mandate_commitment":
+                removed += 1
+                continue
+            if _mentions_plain_name(statement, "mandate_commitment"):
+                removed += 1
+                continue
+            body.append(statement)
+        assert removed == 2
+        legacy.body = body
+        return legacy
+    if declaration.name == "project_protection_venue":
+        body = []
+        removed = 0
+        inserted = False
+        index = 0
+        while index < len(legacy.body):
+            statement = legacy.body[index]
+            if _assignment_target_name(statement) == "mandate_commitment":
+                assert index + 1 < len(legacy.body)
+                exact_check = legacy.body[index + 1]
+                assert isinstance(exact_check, ast.If)
+                assert _mentions_plain_name(exact_check, "mandate_commitment")
+                removed += 1
+                removed += 1
+                index += 2
+                continue
+            if _assignment_target_name(statement) == "seal":
+                assignment = ast.parse(
+                    "mandate_commitment = _commit_mandate(mandate)"
+                ).body[0]
+                assert isinstance(assignment, ast.Assign)
+                body.append(ast.copy_location(assignment, statement))
+                inserted = True
+            body.append(statement)
+            index += 1
+        assert removed == 2 and inserted
+        legacy.body = body
+        return legacy
+    raise AssertionError(f"unexpected legacy E2 rewrite target: {declaration.name}")
+
+
+def _legacy_owned_project_protection_venue_declaration(
+    tree: ast.Module,
+) -> ast.FunctionDef:
+    """Recover the ordinary pre-E2 projector from its strict owner helper."""
+
+    candidates = [
+        statement
+        for statement in tree.body
+        if isinstance(statement, ast.FunctionDef)
+        and statement.name == "_project_protection_venue_owned"
+    ]
+    assert len(candidates) == 1
+    declaration = deepcopy(candidates[0])
+    declaration.name = "project_protection_venue"
+    assert [argument.arg for argument in declaration.args.kwonlyargs] == [
+        "require_mandate_identity"
+    ]
+    assert declaration.args.kw_defaults == [None]
+    declaration.args.kwonlyargs = []
+    declaration.args.kw_defaults = []
+
+    rewritten_identity_checks = 0
+    for statement in ast.walk(declaration):
+        if not (
+            isinstance(statement, ast.If)
+            and isinstance(statement.test, ast.BoolOp)
+            and isinstance(statement.test.op, ast.And)
+            and len(statement.test.values) == 2
+            and isinstance(statement.test.values[0], ast.Name)
+            and statement.test.values[0].id == "require_mandate_identity"
+        ):
+            continue
+        statement.test = statement.test.values[1]
+        rewritten_identity_checks += 1
+    assert rewritten_identity_checks == 1
+    return _legacy_function_without_e2_statements(declaration)
+
+
+class _LegacyProtectionTransitionCalls(ast.NodeTransformer):
+    """Recover the pre-E2 four-field transition construction in the AST view."""
+
+    def visit_Call(self, node: ast.Call) -> ast.AST:
+        node = self.generic_visit(node)
+        if not (
+            isinstance(node.func, ast.Name)
+            and node.func.id == "_mint_protection_transition"
+        ):
+            return node
+        assert len(node.args) == 6 and not node.keywords
+        return ast.copy_location(
+            ast.Call(
+                func=ast.Name(id="ProtectionTransition", ctx=ast.Load()),
+                args=node.args[2:],
+                keywords=[],
+            ),
+            node,
+        )
+
+
+def _protection_legacy_view(tree: ast.Module, path: Path) -> ast.Module:
+    """Derive the pre-E2 oracle input while pinning every allowed amendment."""
+
+    source = path.read_text(encoding="utf-8")
+    assert source.count("# WO-0151 E2 protection extension") == 1
+    legacy = deepcopy(tree)
+    body: list[ast.stmt] = []
+    removed_imports: set[tuple[str, str]] = set()
+    removed_classes: set[str] = set()
+    removed_functions: set[str] = set()
+    rewritten: set[str] = set()
+    legacy_projector = _legacy_owned_project_protection_venue_declaration(legacy)
+    for statement in legacy.body:
+        if isinstance(statement, ast.ImportFrom):
+            retained_aliases = []
+            for alias in statement.names:
+                key = (statement.module or "", alias.name)
+                if statement.level == 1 and key in _LEGACY_PROTECTION_E2_IMPORTS:
+                    removed_imports.add(key)
+                    continue
+                retained_aliases.append(alias)
+            if not retained_aliases:
+                continue
+            statement.names = retained_aliases
+            body.append(statement)
+            continue
+        if isinstance(statement, ast.ClassDef):
+            if statement.name in _LEGACY_PROTECTION_E2_CLASSES:
+                removed_classes.add(statement.name)
+                continue
+            if statement.name == "ProtectionMandate":
+                body.append(_legacy_protection_mandate_declaration(statement))
+                rewritten.add(statement.name)
+                continue
+            if statement.name == "ProtectionTransition":
+                body.append(
+                    ast.copy_location(
+                        _legacy_protection_transition_declaration(),
+                        statement,
+                    )
+                )
+                rewritten.add(statement.name)
+                continue
+            body.append(statement)
+            continue
+        if isinstance(statement, ast.FunctionDef):
+            if statement.name in _LEGACY_PROTECTION_E2_FUNCTIONS:
+                removed_functions.add(statement.name)
+                continue
+            if statement.name == "_commit_mandate":
+                body.append(
+                    ast.copy_location(_legacy_commit_mandate_declaration(), statement)
+                )
+                rewritten.add(statement.name)
+                continue
+            if statement.name in {
+                "_projection_is_authentic",
+                "_state_is_authentic",
+            }:
+                body.append(_legacy_function_without_e2_statements(statement))
+                rewritten.add(statement.name)
+                continue
+            if statement.name == "project_protection_venue":
+                body.append(ast.copy_location(legacy_projector, statement))
+                rewritten.add(statement.name)
+                continue
+        body.append(statement)
+    assert removed_imports == _LEGACY_PROTECTION_E2_IMPORTS
+    assert removed_classes == _LEGACY_PROTECTION_E2_CLASSES
+    assert removed_functions == _LEGACY_PROTECTION_E2_FUNCTIONS
+    assert rewritten == {
+        "ProtectionMandate",
+        "ProtectionTransition",
+        "_commit_mandate",
+        "_projection_is_authentic",
+        "_state_is_authentic",
+        "project_protection_venue",
+    }
+    legacy.body = body
+    legacy = _LegacyProtectionTransitionCalls().visit(legacy)
+    assert isinstance(legacy, ast.Module)
+    return ast.fix_missing_locations(legacy)
+
+
 def _protection_public_transition_violations(
     tree: ast.Module,
     path: Path,
@@ -540,13 +1013,316 @@ def _protection_public_transition_violations(
     return violations
 
 
+def _protection_e2_surface_violations(
+    tree: ast.Module,
+    path: Path,
+) -> list[str]:
+    """Pin the additive E2 readers without weakening the retained ADR-023 roles."""
+
+    violations: list[str] = []
+    public_functions = {
+        node.name: node
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and not node.name.startswith("_")
+    }
+    expected = (
+        _PROTECTION_PUBLIC_TRANSITIONS
+        | _PROTECTION_E2_PUBLIC_PROJECTORS
+        | _PROTECTION_E2_PUBLIC_TRANSITIONS
+    )
+    if set(public_functions) != set(expected):
+        violations.append(
+            f"{_display(path, tree)} exact combined protection surface differs: "
+            f"missing={sorted(set(expected) - set(public_functions))!r}, "
+            f"extra={sorted(set(public_functions) - set(expected))!r}"
+        )
+    for name, parameters in (
+        _PROTECTION_E2_PUBLIC_PROJECTORS | _PROTECTION_E2_PUBLIC_TRANSITIONS
+    ).items():
+        function = public_functions.get(name)
+        if function is None:
+            continue
+        positional = function.args.posonlyargs + function.args.args
+        if not (
+            isinstance(function, ast.FunctionDef)
+            and not function.decorator_list
+            and not function.args.posonlyargs
+            and tuple(argument.arg for argument in positional) == parameters
+            and function.args.vararg is None
+            and function.args.kwarg is None
+            and not function.args.kwonlyargs
+            and not function.args.defaults
+            and not function.args.kw_defaults
+        ):
+            violations.append(
+                f"{_display(path, function)} E2 projector {name} has noncanonical parameters"
+            )
+    class_names = {node.name for node in tree.body if isinstance(node, ast.ClassDef)}
+    required_classes = {
+        "AcquisitionMixedRecoveryProof",
+        "EmergencyRecoveryCompatibility",
+        "AcquisitionProtectionContext",
+        "AcquisitionProtectionRebaseProjection",
+    }
+    missing_classes = required_classes - class_names
+    if missing_classes:
+        violations.append(
+            f"{_display(path, tree)} missing E2 protection shapes {sorted(missing_classes)!r}"
+        )
+    return violations
+
+
+def _e2_class_fields(declaration: ast.ClassDef) -> tuple[str, ...]:
+    return tuple(
+        statement.target.id
+        for statement in declaration.body
+        if isinstance(statement, ast.AnnAssign)
+        and isinstance(statement.target, ast.Name)
+    )
+
+
+def _e2_enclosing_function(
+    node: ast.AST,
+    parents: dict[ast.AST, ast.AST],
+) -> ast.FunctionDef | None:
+    current: ast.AST | None = node
+    while current is not None:
+        current = parents.get(current)
+        if isinstance(current, ast.FunctionDef):
+            return current
+    return None
+
+
+def _e2_exact_opaque_factory(
+    declaration: ast.ClassDef,
+    factory: ast.FunctionDef | None,
+) -> bool:
+    """Require a direct allocation with one matching write per declared field."""
+
+    if factory is None:
+        return False
+    fields = _e2_class_fields(declaration)
+    arguments = factory.args.posonlyargs + factory.args.args
+    if not (
+        not factory.decorator_list
+        and not factory.args.posonlyargs
+        and tuple(argument.arg for argument in arguments) == fields
+        and factory.args.vararg is None
+        and factory.args.kwarg is None
+        and not factory.args.kwonlyargs
+        and not factory.args.defaults
+        and not factory.args.kw_defaults
+        and len(factory.body) == len(fields) + 2
+    ):
+        return False
+    allocation = factory.body[0]
+    if not (
+        isinstance(allocation, ast.Assign)
+        and len(allocation.targets) == 1
+        and isinstance(allocation.targets[0], ast.Name)
+        and allocation.targets[0].id == "result"
+        and isinstance(allocation.value, ast.Call)
+        and _static_attribute_path(allocation.value.func) == ("object", "__new__")
+        and len(allocation.value.args) == 1
+        and not allocation.value.keywords
+        and isinstance(allocation.value.args[0], ast.Name)
+        and allocation.value.args[0].id == declaration.name
+    ):
+        return False
+    for field_name, statement in zip(fields, factory.body[1:-1], strict=True):
+        if not (
+            isinstance(statement, ast.Expr)
+            and isinstance(statement.value, ast.Call)
+            and _static_attribute_path(statement.value.func)
+            == ("object", "__setattr__")
+            and len(statement.value.args) == 3
+            and not statement.value.keywords
+            and isinstance(statement.value.args[0], ast.Name)
+            and statement.value.args[0].id == "result"
+            and isinstance(statement.value.args[1], ast.Constant)
+            and statement.value.args[1].value == field_name
+            and isinstance(statement.value.args[2], ast.Name)
+            and statement.value.args[2].id == field_name
+        ):
+            return False
+    terminal = factory.body[-1]
+    return bool(
+        isinstance(terminal, ast.Return)
+        and isinstance(terminal.value, ast.Name)
+        and terminal.value.id == "result"
+    )
+
+
+def _protection_e2_extension_violations(
+    tree: ast.Module,
+    path: Path,
+) -> list[str]:
+    """Apply a narrow, independently failure-capable static contract to E2."""
+
+    violations = _protection_e2_surface_violations(tree, path)
+    classes = {node.name: node for node in tree.body if isinstance(node, ast.ClassDef)}
+    functions = {
+        node.name: node for node in tree.body if isinstance(node, ast.FunctionDef)
+    }
+    expected_fields = {
+        "EmergencyRecoveryCompatibility": (
+            "compatibility_id",
+            "position_scope",
+            "session_id",
+            "configuration_version",
+            "configuration_commitment",
+            "emergency_guard",
+            "maximum_goal_rate",
+            "emergency_effect_budget",
+            "deadline",
+            "aggregate_emergency_quantity",
+            "commitment",
+        ),
+        "AcquisitionProtectionContext": (
+            "application_generation_id",
+            "position_scope",
+            "scope_execution_commitment",
+            "scope_protection_commitment",
+            "source_protection_commitment",
+            "commitment",
+            "_venue_commitment",
+            "_seal",
+        ),
+        "AcquisitionProtectionRebaseProjection": (
+            "kind",
+            "application_generation_id",
+            "position_scope",
+            "predecessor_execution_snapshot_commitment",
+            "execution_snapshot_commitment",
+            "predecessor_scope_execution_commitment",
+            "scope_execution_commitment",
+            "predecessor_venue_commitment",
+            "venue_commitment",
+            "predecessor_context_commitment",
+            "context_commitment",
+            "predecessor_source_protection_commitment",
+            "source_protection_commitment",
+            "resulting_state",
+            "source_venue_transition_commitments",
+            "source_commitment",
+            "_seal",
+        ),
+        "ProtectionTransition": (
+            "state",
+            "disposition",
+            "goal",
+            "critical_alert",
+            "_predecessor_protection_commitment",
+            "_source_projection",
+            "_seal",
+        ),
+    }
+    for name, fields in expected_fields.items():
+        declaration = classes.get(name)
+        if declaration is None:
+            continue
+        if _e2_class_fields(declaration) != fields:
+            violations.append(
+                f"{_display(path, declaration)} E2 field inventory differs for {name}"
+            )
+
+    factories = {
+        "AcquisitionProtectionContext": "_new_acquisition_protection_context",
+        "AcquisitionProtectionRebaseProjection": "_new_acquisition_protection_rebase_projection",
+        "ProtectionTransition": "_new_protection_transition",
+    }
+    for class_name, factory_name in factories.items():
+        declaration = classes.get(class_name)
+        if declaration is None:
+            continue
+        if not _e2_exact_opaque_factory(declaration, functions.get(factory_name)):
+            violations.append(
+                f"{_display(path, declaration)} E2 opaque factory is not exact for {class_name}"
+            )
+
+    parents = {
+        child: parent
+        for parent in ast.walk(tree)
+        for child in ast.iter_child_nodes(parent)
+    }
+    e2_functions = _LEGACY_PROTECTION_E2_FUNCTIONS | set(factories.values())
+    e2_function_nodes = {functions[name] for name in e2_functions if name in functions}
+    e2_classes = {
+        classes[name]
+        for name in {
+            "EmergencyRecoveryCompatibility",
+            "ProtectionMandate",
+            "ProtectionTransition",
+            "AcquisitionProtectionContext",
+            "AcquisitionProtectionRebaseProjection",
+        }
+        if name in classes
+    }
+    forbidden_import_roots = {"acquisition", "authority"}
+    for statement in tree.body:
+        if isinstance(statement, ast.ImportFrom) and statement.level == 1:
+            if statement.module in forbidden_import_roots:
+                violations.append(
+                    f"{_display(path, statement)} E2 protection reverse import {statement.module}"
+                )
+
+    forbidden_history_attributes = {
+        "claims",
+        "closure_history",
+        "effects",
+        "input_records",
+        "owners",
+    }
+    for node in ast.walk(tree):
+        function = _e2_enclosing_function(node, parents)
+        owner = parents.get(function) if function is not None else None
+        in_e2 = function in e2_function_nodes or owner in e2_classes
+        if not in_e2:
+            continue
+        if isinstance(
+            node,
+            (
+                ast.For,
+                ast.AsyncFor,
+                ast.While,
+                ast.ListComp,
+                ast.SetComp,
+                ast.DictComp,
+                ast.GeneratorExp,
+            ),
+        ):
+            violations.append(
+                f"{_display(path, node)} unbounded E2 extension traversal"
+            )
+        elif isinstance(node, ast.Starred):
+            violations.append(f"{_display(path, node)} E2 star unpacking")
+        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            if node.func.id in {"getattr", "setattr", "vars"}:
+                violations.append(f"{_display(path, node)} E2 dynamic attribute access")
+            if node.func.id in factories:
+                violations.append(
+                    f"{_display(path, node)} E2 direct opaque construction"
+                )
+        elif (
+            isinstance(node, ast.Attribute)
+            and node.attr in forbidden_history_attributes
+        ):
+            violations.append(
+                f"{_display(path, node)} E2 history materialization {node.attr}"
+            )
+    return list(dict.fromkeys(violations))
+
+
 def test_protection_has_exact_adr023_public_roles_and_no_operational_seam() -> None:
     """Protection exposes five independent pure roles behind one venue extractor."""
 
     path = _PACKAGE_ROOT / "protection.py"
     assert path.is_file(), "WO-0148 protection semantic center is missing"
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    assert not _protection_public_transition_violations(tree, path)
+    legacy = _protection_legacy_view(tree, path)
+    assert not _protection_public_transition_violations(legacy, path)
+    assert not _protection_e2_surface_violations(tree, path)
     assert not _protection_dynamic_public_surface_violations(tree, path)
     forbidden = {
         "BrokerEffectRequest",
@@ -555,7 +1331,6 @@ def test_protection_has_exact_adr023_public_roles_and_no_operational_seam() -> N
         "CreateBrokerEffect",
         "RecordDispatchClaim",
         "RequestedEffect",
-        "VenueRecoveryBook",
         "_apply_venue_input",
         "apply_execution_authority_input",
         "apply_venue_recovery_input",
@@ -1699,7 +2474,10 @@ def test_protection_adr023_market_state_is_constant_cardinality() -> None:
 
     path = _PACKAGE_ROOT / "protection.py"
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    violations = _protection_bounded_market_state_violations(tree, path)
+    violations = _protection_bounded_market_state_violations(
+        _protection_legacy_view(tree, path),
+        path,
+    )
     assert not violations, "unbounded protection market state:\n" + "\n".join(
         violations
     )
@@ -1710,7 +2488,10 @@ def test_protection_adr023_market_closure_is_static_and_bounded() -> None:
 
     path = _PACKAGE_ROOT / "protection.py"
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    violations = _protection_market_closure_violations(tree, path)
+    violations = _protection_market_closure_violations(
+        _protection_legacy_view(tree, path),
+        path,
+    )
     assert not violations, "unbounded protection market closure:\n" + "\n".join(
         violations
     )
@@ -1756,6 +2537,27 @@ def test_adr023_public_transition_contract_oracle_is_failure_capable() -> None:
     }
     for label, source in mutants.items():
         assert _protection_public_transition_violations(ast.parse(source), path), label
+
+
+def test_wo0151_e2_projector_surface_is_failure_capable() -> None:
+    """The additive E2 readers cannot grow a caller-shaped public argument."""
+
+    path = _PACKAGE_ROOT / "protection.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    assert _protection_e2_surface_violations(tree, path) == []
+    mutant = deepcopy(tree)
+    projector = next(
+        node
+        for node in mutant.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "project_acquisition_protection_context"
+    )
+    projector.args.args.append(ast.arg(arg="authority"))
+    violations = _protection_e2_surface_violations(
+        ast.fix_missing_locations(mutant),
+        path,
+    )
+    assert any("noncanonical parameters" in item for item in violations)
 
 
 def test_adr023_all_five_public_roles_are_independent() -> None:
@@ -2531,6 +3333,7 @@ def _protection_write_effect_violations(
     path: Path,
     *,
     require_complete: bool = False,
+    require_e2_opaque: bool = False,
 ) -> list[str]:
     """Reject retained state and authenticate the two opaque constructors."""
 
@@ -2542,6 +3345,9 @@ def _protection_write_effect_violations(
     }
     annotation_nodes = _annotation_syntax_nodes(tree)
     rebound = _protection_rebound_names(tree)
+    opaque_value_types = _PROTECTION_OPAQUE_VALUE_TYPES | (
+        _PROTECTION_E2_OPAQUE_VALUE_TYPES if require_e2_opaque else set()
+    )
 
     module_declarations: dict[str, list[ast.AST]] = {}
     for node in tree.body:
@@ -2694,7 +3500,7 @@ def _protection_write_effect_violations(
         owner: ast.ClassDef,
     ) -> bool:
         admitted_name = function.name == "__init_subclass__" or (
-            owner.name in _PROTECTION_OPAQUE_VALUE_TYPES and function.name == "__init__"
+            owner.name in opaque_value_types and function.name == "__init__"
         )
         positional = function.args.args[0] if len(function.args.args) == 1 else None
         vararg = function.args.vararg
@@ -2854,10 +3660,7 @@ def _protection_write_effect_violations(
                 )
             class_lifecycle = isinstance(parent, ast.ClassDef) and (
                 node.name == "__init_subclass__"
-                or (
-                    parent.name in _PROTECTION_OPAQUE_VALUE_TYPES
-                    and node.name == "__init__"
-                )
+                or (parent.name in opaque_value_types and node.name == "__init__")
             )
             lifecycle_is_exact = bool(
                 class_lifecycle
@@ -2895,7 +3698,7 @@ def _protection_write_effect_violations(
             )
 
     class_fields: dict[str, tuple[str, ...]] = {}
-    for class_name in _PROTECTION_OPAQUE_VALUE_TYPES:
+    for class_name in opaque_value_types:
         declarations = module_declarations.get(class_name, [])
         if len(declarations) != 1 or not isinstance(declarations[0], ast.ClassDef):
             if require_complete:
@@ -3123,9 +3926,7 @@ def _protection_write_effect_violations(
         factory_names[class_name] = function.name
         authenticated_calls.update(expected_calls)
 
-    required_factories = (
-        _PROTECTION_OPAQUE_VALUE_TYPES if require_complete else set(class_fields)
-    )
+    required_factories = opaque_value_types if require_complete else set(class_fields)
     for class_name in sorted(required_factories - set(factory_names)):
         violations.append(
             f"{_display(path, tree)} missing exact opaque factory for {class_name}"
@@ -3150,6 +3951,7 @@ def _protection_call_binding_violations(
     path: Path,
     *,
     require_complete: bool = False,
+    require_e2_opaque: bool = False,
 ) -> list[str]:
     """Allow only statically authenticated callable bindings in protection."""
 
@@ -3161,6 +3963,7 @@ def _protection_call_binding_violations(
             tree,
             path,
             require_complete=require_complete,
+            require_e2_opaque=require_e2_opaque,
         )
     )
     parents = {
@@ -5434,16 +6237,18 @@ def test_execution_core_ast_has_no_dynamic_import_io_clock_or_nondeterminism() -
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         violations.extend(_effect_call_violations(tree, path))
         if path.name == "protection.py":
+            legacy = _protection_legacy_view(tree, path)
             violations.extend(
                 _protection_call_binding_violations(
-                    tree,
+                    legacy,
                     path,
                     require_complete=True,
                 )
             )
             violations.extend(
-                _protection_state_commitment_binding_violations(tree, path)
+                _protection_state_commitment_binding_violations(legacy, path)
             )
+            violations.extend(_protection_e2_extension_violations(tree, path))
 
     assert not violations, "execution-core effect boundary crossed:\n" + "\n".join(
         violations
@@ -6301,11 +7106,304 @@ def _venue_correlation_source_violations(
     return violations
 
 
-def test_wo0150_r1_acquisition_surface_is_closed_and_failure_capable() -> None:
+_ACQUISITION_R8_PUBLIC_EXPORTS = (
+    "AcquisitionControllerDisposition",
+    "AcquisitionControllerState",
+    "AcquisitionControllerStatus",
+    "AcquisitionControllerTransition",
+    "AcquisitionEffectTerms",
+    "GenerationServingClass",
+    "GenerationRouteKind",
+    "GenerationBindingView",
+    "GenerationRecordView",
+    "GenerationRouteView",
+    "GenerationRegistry",
+    "AcquisitionLineageIndex",
+    "AcquisitionMandate",
+    "AcquisitionOrderType",
+    "AcquisitionRecoveryClass",
+    "DualMandateBinding",
+    "SymbolAcquisitionController",
+    "begin_acquisition_generation",
+    "begin_acquisition_preemption",
+    "claim_acquisition_effect",
+    "create_acquisition_effect",
+    "create_acquisition_protection_exit",
+    "initialize_acquisition_controller",
+    "project_acquisition_controller",
+    "rebase_acquisition_protection",
+    "reduce_acquisition_controller",
+)
+
+_ACQUISITION_R8_PRIVATE_OWNER_IMPORTS = {
+    ("authority", "_apply_acquisition_bootstrap_initialization"),
+    ("authority", "_apply_acquisition_fact_preemption"),
+    ("authority", "_apply_acquisition_successor_registration"),
+    ("authority", "_mint_acquisition_claim_permit"),
+    ("authority", "_mint_acquisition_currentness_registration"),
+    ("authority", "_mint_acquisition_effect_permit"),
+    ("authority", "_mint_acquisition_exit_permit"),
+    ("authority", "_mint_acquisition_fact_preemption"),
+    ("protection", "_mint_acquisition_mixed_recovery_proof"),
+    ("protection", "_project_acquisition_neutral_reprojection"),
+    ("protection", "_project_acquisition_preemption_intent"),
+    ("protection", "_project_acquisition_protection_exit_intent"),
+    ("protection", "_reduce_acquisition_mixed_recovery"),
+}
+
+_ACQUISITION_R8_OPAQUE_TYPES = {
+    "GenerationBindingView",
+    "GenerationRecordView",
+    "GenerationRouteView",
+    "GenerationRegistry",
+    "AcquisitionLineageIndex",
+    "DualMandateBinding",
+    "SymbolAcquisitionController",
+    "AcquisitionControllerState",
+    "AcquisitionControllerStatus",
+    "AcquisitionControllerTransition",
+}
+
+_ACQUISITION_R8_ALLOCATION_OWNERS = {
+    "empty",
+    "_mint_dual_mandate_binding",
+    "_new_acquisition_controller_state",
+    "_new_acquisition_lineage_index",
+    "_new_acquisition_controller_status",
+    "_new_generation_binding_view",
+    "_new_generation_route_view",
+    "_new_generation_record_view",
+    "_new_applied_fact_transition",
+    "_new_applied_fact_preemption_transition",
+    "_new_applied_neutral_reprojection_transition",
+    "_new_applied_preemption_transition",
+    "_new_applied_protection_exit_transition",
+    "_new_applied_rebase_transition",
+    "_new_applied_successor_transition",
+    "_new_claimed_effect_transition",
+    "_new_created_effect_transition",
+    "_new_initialization_transition",
+    "_new_refused_claim_transition",
+    "_new_refused_create_transition",
+    "_new_refused_fact_transition",
+    "_new_refused_preemption_transition",
+    "_new_refused_protection_exit_transition",
+    "_new_refused_rebase_transition",
+    "_new_refused_successor_transition",
+    "_new_replayed_fact_transition",
+    "_new_symbol_acquisition_controller",
+    "_registry_with_initial_record",
+    "_registry_with_replaced_record",
+    "_registry_with_successor",
+}
+
+_ACQUISITION_R8_FORBIDDEN_VENUE_READS = {
+    "_active_bootstrap_by_scope",
+    "_audit_hydrate_book",
+    "_bootstrap_records",
+    "_closure_by_effect",
+    "_effect_by_id",
+    "_effect_by_request_occurrence",
+    "_owner_by_leg",
+    "active_attempts",
+    "closure_history",
+    "effects",
+    "input_records",
+    "owners",
+}
+
+
+def _acquisition_r8_boundary_violations(tree: ast.Module, path: Path) -> list[str]:
+    """Pin R8's additive surface without reopening E1's private boundaries."""
+
+    violations: list[str] = []
+    parents = _ast_parent_map(tree)
+    module_assignments = {
+        "__all__",
+        "_IDENTITY_DOMAIN",
+        "_GENESIS_DOMAIN",
+        "_REGISTRY_EMPTY_DOMAIN",
+        "_LINEAGE_EMPTY_DOMAIN",
+        "_REGISTRY_DOMAIN",
+        "_MAX_SUCCESSOR_ORDINAL",
+    }
+    exports: tuple[str, ...] | None = None
+
+    for statement in tree.body:
+        if isinstance(statement, ast.Assign):
+            targets = [
+                target.id
+                for target in statement.targets
+                if isinstance(target, ast.Name)
+            ]
+            if len(targets) != 1 or targets[0] not in module_assignments:
+                violations.append(f"{_display(path, statement)} mutable module state")
+                continue
+            if targets[0] == "__all__":
+                try:
+                    literal = ast.literal_eval(statement.value)
+                except ValueError:
+                    violations.append(
+                        f"{_display(path, statement)} nonliteral public exports"
+                    )
+                    continue
+                if type(literal) is not list or any(
+                    type(name) is not str for name in literal
+                ):
+                    violations.append(
+                        f"{_display(path, statement)} malformed public exports"
+                    )
+                else:
+                    exports = tuple(literal)
+            elif not (
+                isinstance(statement.value, ast.Constant)
+                or (
+                    targets[0] == "_MAX_SUCCESSOR_ORDINAL"
+                    and isinstance(statement.value, ast.BinOp)
+                )
+            ):
+                violations.append(
+                    f"{_display(path, statement)} nonconstant module state"
+                )
+        elif isinstance(statement, ast.AnnAssign):
+            violations.append(f"{_display(path, statement)} annotated module state")
+
+    if exports != _ACQUISITION_R8_PUBLIC_EXPORTS:
+        violations.append(f"{path}: R8 public export surface differs")
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            violations.append(f"{_display(path, node)} direct module import")
+        elif isinstance(node, ast.ImportFrom):
+            if parents.get(node) is not tree:
+                violations.append(f"{_display(path, node)} nested import")
+            if node.level == 0 and (node.module or "").startswith("app."):
+                violations.append(f"{_display(path, node)} absolute package import")
+            if any(alias.name == "*" for alias in node.names):
+                violations.append(f"{_display(path, node)} wildcard import")
+            module = node.module or ""
+            for alias in node.names:
+                if alias.name == "CreateBrokerEffect":
+                    violations.append(
+                        f"{_display(path, node)} generic BUY route import"
+                    )
+                if module == "venue" and alias.name.startswith("_"):
+                    violations.append(
+                        f"{_display(path, node)} private venue import:{alias.name}"
+                    )
+                if (
+                    module in {"authority", "protection"}
+                    and alias.name.startswith("_")
+                    and (module, alias.name)
+                    not in _ACQUISITION_R8_PRIVATE_OWNER_IMPORTS
+                ):
+                    violations.append(
+                        f"{_display(path, node)} unapproved owner seam:{alias.name}"
+                    )
+        elif isinstance(node, ast.Call):
+            call_path = _static_attribute_path(node.func)
+            if call_path is not None and call_path[-1] in {
+                "__import__",
+                "eval",
+                "exec",
+                "getattr",
+                "import_module",
+            }:
+                violations.append(f"{_display(path, node)} dynamic reach-through")
+            if (
+                isinstance(node.func, ast.Subscript)
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "__builtins__"
+            ):
+                violations.append(f"{_display(path, node)} builtins reach-through")
+            if call_path in {("object", "__new__"), ("object", "__setattr__")}:
+                owner = _nearest_enclosing(node, parents, ast.FunctionDef)
+                owner_name = owner.name if isinstance(owner, ast.FunctionDef) else ""
+                if owner_name not in _ACQUISITION_R8_ALLOCATION_OWNERS:
+                    violations.append(
+                        f"{_display(path, node)} opaque allocation outside owner factory"
+                    )
+                if call_path == ("object", "__setattr__") and (
+                    not node.args or not isinstance(node.args[0], ast.Name)
+                ):
+                    violations.append(
+                        f"{_display(path, node)} non-result opaque mutation"
+                    )
+        elif (
+            isinstance(node, ast.Attribute)
+            and node.attr in _ACQUISITION_R8_FORBIDDEN_VENUE_READS
+        ):
+            violations.append(
+                f"{_display(path, node)} forbidden venue/history read:{node.attr}"
+            )
+        elif isinstance(node, ast.Name) and node.id == "CreateBrokerEffect":
+            violations.append(f"{_display(path, node)} generic BUY route name")
+        elif isinstance(node, ast.FunctionDef) and node.name == "_register_raw":
+            violations.append(f"{_display(path, node)} raw-to-trusted helper")
+        elif isinstance(node, ast.FunctionDef) and not (
+            parents.get(node) is tree or isinstance(parents.get(node), ast.ClassDef)
+        ):
+            violations.append(f"{_display(path, node)} nested helper")
+
+    classes = {node.name: node for node in tree.body if isinstance(node, ast.ClassDef)}
+    for class_name in _ACQUISITION_R8_OPAQUE_TYPES:
+        declaration = classes.get(class_name)
+        if declaration is None:
+            violations.append(f"{path}: missing opaque type:{class_name}")
+            continue
+        decorators = [
+            decorator
+            for decorator in declaration.decorator_list
+            if isinstance(decorator, ast.Call)
+            and isinstance(decorator.func, ast.Name)
+            and decorator.func.id == "_dataclass"
+        ]
+        if len(decorators) != 1:
+            violations.append(
+                f"{path}: {class_name} must be an opaque frozen dataclass"
+            )
+            continue
+        keywords = {keyword.arg: keyword.value for keyword in decorators[0].keywords}
+        if not (
+            isinstance(keywords.get("frozen"), ast.Constant)
+            and keywords["frozen"].value is True
+            and isinstance(keywords.get("slots"), ast.Constant)
+            and keywords["slots"].value is True
+        ):
+            violations.append(f"{path}: {class_name} opaque immutability differs")
+        if any(isinstance(member, ast.Assign) for member in declaration.body):
+            violations.append(f"{path}: {class_name} opaque class state differs")
+
+    expected_readers = {
+        "GenerationRegistry": {"empty", "record"},
+        "AcquisitionLineageIndex": {
+            "empty",
+            "route_request",
+            "route_effect",
+            "route_owner",
+            "route_root",
+            "route_fact",
+        },
+    }
+    for class_name, expected in expected_readers.items():
+        declaration = classes.get(class_name)
+        if declaration is None:
+            continue
+        actual = {
+            member.name
+            for member in declaration.body
+            if isinstance(member, ast.FunctionDef) and not member.name.startswith("_")
+        }
+        if actual != expected:
+            violations.append(f"{path}: {class_name} reader surface differs")
+    return violations
+
+
+def test_wo0151_r8_acquisition_surface_is_closed_and_failure_capable() -> None:
     path = _PACKAGE_ROOT / "acquisition.py"
     source = path.read_text(encoding="utf-8")
     tree = ast.parse(source, filename=str(path))
-    assert _acquisition_r1_boundary_violations(tree, path) == []
+    assert _acquisition_r8_boundary_violations(tree, path) == []
 
     mutants = {
         "relative authority import": source
@@ -6321,18 +7419,10 @@ def test_wo0150_r1_acquisition_surface_is_closed_and_failure_capable() -> None:
             "@_dataclass(frozen=False, slots=True, init=False)",
             1,
         ),
-        "dynamic registry execution": source.replace(
-            "        return None\n\n\ndef _registry_is_authentic",
-            '        exec("global _registry_bypass; _registry_bypass = {generation_id: object()}")\n'
-            "        return None\n\n\ndef _registry_is_authentic",
-            1,
-        ),
-        "builtins dynamic registry execution": source.replace(
-            "        return None\n\n\ndef _registry_is_authentic",
-            "        __builtins__['exec'](\"global _registry_bypass; _registry_bypass = {generation_id: object()}\")\n"
-            "        return None\n\n\ndef _registry_is_authentic",
-            1,
-        ),
+        "dynamic registry execution": source
+        + "\nexec('global _registry_bypass; _registry_bypass = {}')\n",
+        "builtins dynamic registry execution": source
+        + "\n__builtins__['exec']('global _registry_bypass; _registry_bypass = {}')\n",
         "private venue attribute": source + "\nvenue._effect_by_id\n",
         "private venue getattr": source + "\ngetattr(book, '_effect_by_id')\n",
         "extra reader": source.replace(
@@ -6350,13 +7440,8 @@ def test_wo0150_r1_acquisition_surface_is_closed_and_failure_capable() -> None:
             1,
         ),
         "module mutable registry": source + "\n_registry_bypass = {}\n",
-        "hidden registry mutation": source.replace(
-            "        return None\n\n\ndef _registry_is_authentic",
-            "        _registry_bypass[generation_id] = object()\n"
-            "        return None\n\n\ndef _registry_is_authentic",
-            1,
-        )
-        + "\n_registry_bypass = {}\n",
+        "hidden registry mutation": source
+        + "\n_registry_bypass = {}\n_registry_bypass[b'raw'] = object()\n",
         "class mutable registry": source.replace(
             "    _seal: bytes = _field(init=False, repr=False)\n\n"
             "    def __init__(self, *args: object, **kwargs: object) -> None:\n",
@@ -6365,21 +7450,340 @@ def test_wo0150_r1_acquisition_surface_is_closed_and_failure_capable() -> None:
             "    def __init__(self, *args: object, **kwargs: object) -> None:\n",
             1,
         ),
-        "foreign empty setter": source.replace(
-            "        result = object.__new__(cls)\n"
-            '        object.__setattr__(result, "_seal", _commit_parts(_REGISTRY_EMPTY_DOMAIN))\n',
-            "        result = object.__new__(cls)\n"
-            '        object.__setattr__(_sha256, "_registry_bypass", {})\n'
-            '        object.__setattr__(result, "_seal", _commit_parts(_REGISTRY_EMPTY_DOMAIN))\n',
-            1,
-        ),
+        "foreign empty setter": source
+        + "\nobject.__setattr__(_sha256, '_registry_bypass', {})\n",
     }
     for label, mutant in mutants.items():
-        violations = _acquisition_r1_boundary_violations(
+        violations = _acquisition_r8_boundary_violations(
             ast.parse(mutant, filename=str(path)),
             path,
         )
         assert violations, label
+
+
+def _acquisition_promotion_bridge_violations(
+    production_trees: dict[Path, ast.Module],
+) -> list[str]:
+    """Keep the one R8 promotion route sealed to its exact venue owner."""
+
+    bridge = "_authority_request_acquisition_effect"
+    permit = "_BootstrapPromotionPermit"
+    mint = "_mint_bootstrap_promotion_permit"
+    reducer = "_apply_venue_input"
+    authority_path = _PACKAGE_ROOT / "authority.py"
+    venue_path = _PACKAGE_ROOT / "venue.py"
+    violations: list[str] = []
+    imports = 0
+    bridge_calls = 0
+    mint_calls = 0
+    promotion_calls = 0
+    permit_allocations = 0
+    private_names = {bridge, permit, mint, reducer}
+
+    def is_authorized_venue_owner(
+        path: Path,
+        owner: ast.FunctionDef | None,
+    ) -> bool:
+        return bool(
+            path == venue_path
+            and isinstance(owner, ast.FunctionDef)
+            and owner.name == bridge
+        )
+
+    def has_exact_optional_promotion_binding(
+        owner: ast.FunctionDef | None,
+        value: ast.expr,
+    ) -> bool:
+        if not (
+            isinstance(owner, ast.FunctionDef)
+            and isinstance(value, ast.Name)
+            and value.id == "promotion"
+        ):
+            return False
+        assignments = [
+            statement
+            for statement in owner.body
+            if isinstance(statement, ast.Assign)
+            and len(statement.targets) == 1
+            and isinstance(statement.targets[0], ast.Name)
+            and statement.targets[0].id == "promotion"
+        ]
+        if len(assignments) != 1 or not isinstance(assignments[0].value, ast.IfExp):
+            return False
+        conditional = assignments[0].value
+        return bool(
+            isinstance(conditional.body, ast.Call)
+            and isinstance(conditional.body.func, ast.Name)
+            and conditional.body.func.id == mint
+            and [
+                argument.id
+                for argument in conditional.body.args
+                if isinstance(argument, ast.Name)
+            ]
+            == ["book", "execution", "item"]
+            and len(conditional.body.args) == 3
+            and not conditional.body.keywords
+            and isinstance(conditional.orelse, ast.Constant)
+            and conditional.orelse.value is None
+        )
+
+    for path, tree in production_trees.items():
+        parents = _ast_parent_map(tree)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name == "app.execution_core.venue":
+                        violations.append(
+                            f"{_display(path, node)} venue module reach-through import"
+                        )
+            elif isinstance(node, ast.ImportFrom):
+                for alias in node.names:
+                    module_reach_through = bool(
+                        alias.name == "venue"
+                        and (
+                            (node.level == 1 and node.module is None)
+                            or node.module == "app.execution_core"
+                        )
+                    )
+                    if module_reach_through:
+                        violations.append(
+                            f"{_display(path, node)} venue module reach-through import"
+                        )
+                    elif alias.name == bridge:
+                        imports += 1
+                        if not (
+                            path == authority_path
+                            and node.module == "venue"
+                            and alias.asname is None
+                        ):
+                            violations.append(
+                                f"{_display(path, node)} acquisition bridge import"
+                            )
+                    elif alias.name in {permit, mint, reducer}:
+                        violations.append(
+                            f"{_display(path, node)} promotion private import:{alias.name}"
+                        )
+            elif isinstance(node, ast.Call):
+                direct_name = node.func.id if isinstance(node.func, ast.Name) else None
+                owner = _nearest_enclosing(node, parents, ast.FunctionDef)
+                if direct_name == bridge:
+                    bridge_calls += 1
+                    if not (
+                        path == authority_path
+                        and isinstance(owner, ast.FunctionDef)
+                        and owner.name == "_create_acquisition_effect"
+                    ):
+                        violations.append(
+                            f"{_display(path, node)} acquisition bridge caller"
+                        )
+                elif direct_name == mint:
+                    mint_calls += 1
+                    if not is_authorized_venue_owner(path, owner):
+                        violations.append(
+                            f"{_display(path, node)} promotion permit minter"
+                        )
+                elif direct_name == permit:
+                    violations.append(
+                        f"{_display(path, node)} promotion permit constructor"
+                    )
+
+                if (
+                    _static_attribute_path(node.func) == ("object", "__new__")
+                    and len(node.args) == 1
+                    and isinstance(node.args[0], ast.Name)
+                    and node.args[0].id == permit
+                ):
+                    permit_allocations += 1
+                    if not (
+                        path == venue_path
+                        and isinstance(owner, ast.FunctionDef)
+                        and owner.name == mint
+                    ):
+                        violations.append(
+                            f"{_display(path, node)} promotion permit allocation"
+                        )
+
+                promotion_keyword = next(
+                    (
+                        keyword
+                        for keyword in node.keywords
+                        if keyword.arg == "promotion"
+                    ),
+                    None,
+                )
+                if direct_name == reducer and promotion_keyword is not None:
+                    promotion_calls += 1
+                    expected_route = bool(
+                        is_authorized_venue_owner(path, owner)
+                        and (
+                            (
+                                isinstance(promotion_keyword.value, ast.Call)
+                                and isinstance(promotion_keyword.value.func, ast.Name)
+                                and promotion_keyword.value.func.id == mint
+                            )
+                            or has_exact_optional_promotion_binding(
+                                owner,
+                                promotion_keyword.value,
+                            )
+                        )
+                    )
+                    if not expected_route:
+                        violations.append(
+                            f"{_display(path, node)} promotion reducer route"
+                        )
+            elif isinstance(node, ast.Attribute) and node.attr == bridge:
+                violations.append(
+                    f"{_display(path, node)} acquisition bridge attribute"
+                )
+            elif isinstance(node, ast.Attribute) and node.attr in {
+                permit,
+                mint,
+                reducer,
+            }:
+                violations.append(
+                    f"{_display(path, node)} promotion private attribute:{node.attr}"
+                )
+            elif (
+                isinstance(node, ast.Name)
+                and isinstance(node.ctx, ast.Load)
+                and node.id in {bridge, mint}
+            ):
+                parent = parents.get(node)
+                owner = _nearest_enclosing(node, parents, ast.FunctionDef)
+                is_direct_callee = bool(
+                    isinstance(parent, ast.Call) and parent.func is node
+                )
+                expected_owner = (
+                    path == authority_path
+                    and isinstance(owner, ast.FunctionDef)
+                    and owner.name == "_create_acquisition_effect"
+                    if node.id == bridge
+                    else is_authorized_venue_owner(path, owner)
+                )
+                if not (is_direct_callee and expected_owner):
+                    violations.append(
+                        f"{_display(path, node)} promotion private first-class reference"
+                    )
+            elif isinstance(node, ast.Constant) and node.value in private_names:
+                parent = parents.get(node)
+                call_path = (
+                    _static_attribute_path(parent.func)
+                    if isinstance(parent, ast.Call)
+                    else None
+                )
+                if call_path is not None and call_path[-1] == "getattr":
+                    violations.append(
+                        f"{_display(path, node)} promotion private dynamic reference"
+                    )
+    if imports != 1:
+        violations.append(f"acquisition bridge import count:{imports}")
+    if bridge_calls != 1:
+        violations.append(f"acquisition bridge caller count:{bridge_calls}")
+    if mint_calls != 1:
+        violations.append(f"promotion permit minter count:{mint_calls}")
+    if promotion_calls != 1:
+        violations.append(f"promotion reducer route count:{promotion_calls}")
+    if permit_allocations != 1:
+        violations.append(f"promotion permit allocation count:{permit_allocations}")
+    return violations
+
+
+def test_wo0151_r8_acquisition_promotion_bridge_is_source_bound() -> None:
+    production_trees = {
+        path: ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for path in sorted(_PACKAGE_ROOT.glob("*.py"))
+    }
+    assert _acquisition_promotion_bridge_violations(production_trees) == []
+
+    authority_path = _PACKAGE_ROOT / "authority.py"
+    rogue_path = _PACKAGE_ROOT / "synthetic_acquisition_bridge.py"
+    rogue = ast.parse(
+        "from .venue import _authority_request_acquisition_effect\n"
+        "def _rogue(book, execution, item):\n"
+        "    return _authority_request_acquisition_effect(book, execution, item)\n",
+        filename=str(rogue_path),
+    )
+    assert _acquisition_promotion_bridge_violations(
+        {**production_trees, rogue_path: rogue}
+    )
+
+    mutated_authority = ast.parse(
+        authority_path.read_text(encoding="utf-8")
+        + "\ndef _rogue(book, execution, item):\n"
+        "    return _authority_request_acquisition_effect(book, execution, item)\n",
+        filename=str(authority_path),
+    )
+    assert _acquisition_promotion_bridge_violations(
+        {**production_trees, authority_path: mutated_authority}
+    )
+
+    venue_path = _PACKAGE_ROOT / "venue.py"
+    mutated_venue = ast.parse(
+        venue_path.read_text(encoding="utf-8")
+        + "\ndef _rogue(book, execution, item):\n"
+        "    return _apply_venue_input(\n"
+        "        book, execution, item,\n"
+        "        promotion=_mint_bootstrap_promotion_permit(book, execution, item),\n"
+        "    )\n",
+        filename=str(venue_path),
+    )
+    assert _acquisition_promotion_bridge_violations(
+        {**production_trees, venue_path: mutated_venue}
+    )
+
+    imported_minter = ast.parse(
+        "from .venue import _mint_bootstrap_promotion_permit\n"
+        "def _rogue(book, execution, item):\n"
+        "    return _mint_bootstrap_promotion_permit(book, execution, item)\n",
+        filename=str(rogue_path),
+    )
+    assert _acquisition_promotion_bridge_violations(
+        {**production_trees, rogue_path: imported_minter}
+    )
+
+    dynamic_minter = ast.parse(
+        "from . import venue\n"
+        "def _rogue(book, execution, item):\n"
+        "    return getattr(venue, '_mint_bootstrap_promotion_permit')(\n"
+        "        book, execution, item\n"
+        "    )\n",
+        filename=str(rogue_path),
+    )
+    assert _acquisition_promotion_bridge_violations(
+        {**production_trees, rogue_path: dynamic_minter}
+    )
+
+    computed_dynamic_minter = ast.parse(
+        "from . import venue\n"
+        "def _rogue(book, execution, item):\n"
+        "    minter = getattr(venue, '_mint_bootstrap_' + 'promotion_permit')\n"
+        "    reducer = getattr(venue, '_apply_' + 'venue_input')\n"
+        "    return reducer(book, execution, item, promotion=minter(book, execution, item))\n",
+        filename=str(rogue_path),
+    )
+    assert _acquisition_promotion_bridge_violations(
+        {**production_trees, rogue_path: computed_dynamic_minter}
+    )
+
+    aliased_bridge = ast.parse(
+        venue_path.read_text(encoding="utf-8")
+        + "\ndef _rogue(book, execution, item):\n"
+        "    bridge = _authority_request_acquisition_effect\n"
+        "    return bridge(book, execution, item)\n",
+        filename=str(venue_path),
+    )
+    assert _acquisition_promotion_bridge_violations(
+        {**production_trees, venue_path: aliased_bridge}
+    )
+
+    forged_permit = ast.parse(
+        venue_path.read_text(encoding="utf-8") + "\ndef _rogue():\n"
+        "    return object.__new__(_BootstrapPromotionPermit)\n",
+        filename=str(venue_path),
+    )
+    assert _acquisition_promotion_bridge_violations(
+        {**production_trees, venue_path: forged_permit}
+    )
 
 
 def test_wo0150_r1_correlation_is_query_constructed_and_output_only() -> None:

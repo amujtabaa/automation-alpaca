@@ -7,6 +7,9 @@ inputs or later gates; no test infers them from a terminal order.
 
 from __future__ import annotations
 
+import ast
+import inspect
+import textwrap
 from copy import copy
 from dataclasses import replace
 
@@ -34,6 +37,10 @@ from app.execution_core.identity import (
 from app.execution_core.position import ExecutionSnapshot
 from app.execution_core.values import Quantity
 from app.execution_core.venue import (
+    AcquisitionFactRelation,
+    AcquisitionVenueContext,
+    AcquisitionVenueProjection,
+    AcquisitionVenueSourceKind,
     AcceptanceProof,
     AcceptanceProofKind,
     AcceptanceSetState,
@@ -1615,3 +1622,186 @@ def test_exact_types_and_full_scope_are_not_coerced() -> None:
         )
     with pytest.raises(TypeError):
         replace(_request(), economic_scope=bytearray(b"economic"))
+
+
+def test_acquisition_venue_surface_is_exact_opaque_and_has_no_selector_methods() -> (
+    None
+):
+    """WO-0151: venue alone mints bounded bootstrap, fact, and context readers."""
+
+    assert {member.name: member.value for member in AcquisitionVenueSourceKind} == {
+        "BOOTSTRAP": "BOOTSTRAP",
+        "CANONICAL_ECONOMIC_FACT": "CANONICAL_ECONOMIC_FACT",
+        "CANONICAL_ECONOMIC_FACT_RECONCILIATION": (
+            "CANONICAL_ECONOMIC_FACT_RECONCILIATION"
+        ),
+    }
+
+    expected_parameters = {
+        "project_acquisition_context": ("self", "execution", "position_scope"),
+        "project_acquisition_bootstrap": ("self", "execution", "position_scope"),
+        "project_acquisition_fact": ("self", "transition"),
+    }
+    for method_name, parameters in expected_parameters.items():
+        method = getattr(VenueRecoveryBook, method_name)
+        assert callable(method)
+        assert tuple(inspect.signature(method).parameters) == parameters
+
+    for opaque_type in (
+        AcquisitionFactRelation,
+        AcquisitionVenueProjection,
+        AcquisitionVenueContext,
+    ):
+        assert opaque_type.__module__ == "app.execution_core.venue"
+        with pytest.raises(TypeError):
+            opaque_type()  # type: ignore[call-arg]
+        with pytest.raises(TypeError):
+            type(f"Forged{opaque_type.__name__}", (opaque_type,), {})
+
+
+def test_acquisition_fact_projection_requires_one_current_direct_canonical_relation() -> (
+    None
+):
+    """WO-0151: only the exact current canonical broker fact may serve."""
+
+    book, execution = recovery_fixtures._seed_needs_review(capacity=10)
+    first_command = recovery_fixtures.RecordBrokerFillEvidence(
+        input_id=VenueInputId("wo0151-fact-first-input"),
+        effect_id=recovery_fixtures.EFFECT,
+        leg_key=recovery_fixtures.LEG_A,
+        prior_cumulative_quantity=Quantity(0),
+        resulting_cumulative_quantity=Quantity(4),
+        fact=recovery_fixtures._broker_fill(
+            "wo0151-fact-first-source",
+            "wo0151-fact-first-root",
+            quantity=4,
+        ),
+        evidence_digest=b"\x81" * 32,
+    )
+    first = recovery_fixtures.apply_venue_recovery_input(
+        book,
+        execution,
+        first_command,
+    )
+    assert first.disposition is VenueRecoveryDisposition.APPLIED
+
+    projection = first.book.project_acquisition_fact(first)
+    relation = projection.fact_relation()
+
+    assert projection.source_kind is AcquisitionVenueSourceKind.CANONICAL_ECONOMIC_FACT
+    assert projection.matches_fact_transition(first, POSITION_SCOPE)
+    assert relation is not None
+    assert relation.application_generation_id == GENERATION
+    assert relation.position_scope == POSITION_SCOPE
+    assert relation.fact_key == first_command.fact.key
+    assert relation.root_key == first_command.fact.root_key
+    assert relation.effect_id == first_command.effect_id
+    assert relation.request_occurrence_id == recovery_fixtures.REQUEST
+    assert relation.leg_key == first_command.leg_key
+
+    method_tree = ast.parse(
+        textwrap.dedent(inspect.getsource(VenueRecoveryBook.project_acquisition_fact))
+    )
+    assert not {
+        node.attr for node in ast.walk(method_tree) if isinstance(node, ast.Attribute)
+    } & {
+        "active_attempts",
+        "broker_coverages",
+        "closure_heads",
+        "effects",
+        "human_coverages",
+        "input_records",
+        "owners",
+        "_closure_ledger",
+        "_input_ledger",
+        "_owner_order",
+        "_protection_transition_ledger",
+        "_reconciliation_ledger",
+    }
+
+    forged = copy(first)
+    object.__setattr__(forged, "_protection_proof_commitment", b"\\x00" * 32)
+    assert first.book.project_acquisition_fact(forged).fact_relation() is None
+    assert (
+        VenueRecoveryBook.empty(VENUE_SCOPE)
+        .project_acquisition_fact(first)
+        .fact_relation()
+        is None
+    )
+
+    second_command = recovery_fixtures.RecordBrokerFillEvidence(
+        input_id=VenueInputId("wo0151-fact-second-input"),
+        effect_id=recovery_fixtures.EFFECT,
+        leg_key=recovery_fixtures.LEG_A,
+        prior_cumulative_quantity=Quantity(4),
+        resulting_cumulative_quantity=Quantity(6),
+        fact=recovery_fixtures._broker_fill(
+            "wo0151-fact-second-source",
+            "wo0151-fact-second-root",
+            quantity=2,
+        ),
+        evidence_digest=b"\x82" * 32,
+    )
+    second = recovery_fixtures.apply_venue_recovery_input(
+        first.book,
+        first.execution,
+        second_command,
+    )
+    assert second.disposition is VenueRecoveryDisposition.APPLIED
+    assert second.book.project_acquisition_fact(first).fact_relation() is None
+
+
+def test_acquisition_fact_projection_rejects_tampered_private_source_proof() -> None:
+    """The E2 fact envelope is separately sealed from the protection proof."""
+
+    book, execution = recovery_fixtures._seed_needs_review(capacity=10)
+    command = recovery_fixtures.RecordBrokerFillEvidence(
+        input_id=VenueInputId("wo0151-fact-proof-input"),
+        effect_id=recovery_fixtures.EFFECT,
+        leg_key=recovery_fixtures.LEG_A,
+        prior_cumulative_quantity=Quantity(0),
+        resulting_cumulative_quantity=Quantity(4),
+        fact=recovery_fixtures._broker_fill(
+            "wo0151-fact-proof-source",
+            "wo0151-fact-proof-root",
+            quantity=4,
+        ),
+        evidence_digest=b"\x83" * 32,
+    )
+    transition = recovery_fixtures.apply_venue_recovery_input(
+        book,
+        execution,
+        command,
+    )
+    proof = transition._acquisition_fact_proof
+    assert proof is not None
+    assert (
+        transition.book.project_acquisition_fact(transition).fact_relation() is not None
+    )
+
+    for field_name, replacement in (
+        ("command_commitment", b"\x00" * 32),
+        ("execution_snapshot_commitment", b"\x01" * 32),
+        ("venue_commitment", b"\x02" * 32),
+        ("effect_id", EffectId("wo0151-forged-effect")),
+    ):
+        forged_proof = replace(proof, **{field_name: replacement})
+        forged = copy(transition)
+        object.__setattr__(forged, "_acquisition_fact_proof", forged_proof)
+        object.__setattr__(
+            forged,
+            "_acquisition_fact_proof_commitment",
+            forged_proof.commitment,
+        )
+        assert transition.book.project_acquisition_fact(forged).fact_relation() is None
+
+    forged_commitment = copy(transition)
+    object.__setattr__(
+        forged_commitment,
+        "_acquisition_fact_proof_commitment",
+        b"\x00" * 32,
+    )
+    assert (
+        transition.book.project_acquisition_fact(forged_commitment).fact_relation()
+        is None
+    )

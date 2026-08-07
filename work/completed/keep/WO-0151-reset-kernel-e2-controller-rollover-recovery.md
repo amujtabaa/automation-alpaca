@@ -1,12 +1,12 @@
 ---
 type: Work Order
 title: "Reset kernel E2: aggregate controller, successor admission, and mixed recovery"
-status: ACTIVE
+status: CLOSED
 work_order_id: WO-0151
 wave: RESET-M1E-2
 model_tier: strong
 risk: high
-disposition: []
+disposition: [PKL_UPDATED, RESULT_SUMMARY_KEPT]
 owner: Codex implementation seat
 created: 2026-08-05
 branch: codex/arch-reset-2026-07-r1
@@ -22,6 +22,11 @@ r10_regated: 2026-08-06
 r10_regate_commit: 638c73cff1e02a8834309362cc5dc762b165871b
 r11_r1_regated: 2026-08-06
 r11_r1_regate_commit: 8ebe9350520e28409c33c28cc958ee926639f28e
+closed: 2026-08-07
+implementation_manifest: "work/review/REV-0058/WO-0151-R11-R1-IMPLEMENTATION-REMEDIATION-01-CANDIDATE-MANIFEST.md (SHA-256 2538656a49ea643c6befc8e4c55882cf27534f266d2335ef4a630a73182af853)"
+implementation_result: "work/review/REV-0058/WO-0151-R11-R1-IMPLEMENTATION-REMEDIATION-01-RECHECK-RESULT.md (SHA-256 96d08654369894eeaeda0b1b22f8e869735d179daa336c5c3e69d7f19e0e68fd; ACCEPT, P0=0/P1=0/P2=0)"
+closeout_handoff: "work/review/REV-0058/WO-0151-R11-R1-IMPLEMENTATION-CLOSEOUT.md (SHA-256 971a18fab876d84e2e49a0cfe960e38828bc2f9853e187529e374f7ee58cdcdc)"
+external_exact_head: "PENDING - unchanged Python 3.11/3.12 CI on the immutable closeout commit is required before effective closure or any WO-0152 activation"
 ---
 
 # WO-0151 - Reset kernel E2: aggregate controller, successor admission, and mixed recovery
@@ -348,3 +353,67 @@ cannot hide it.
 ## Expected completion disposition
 
 [PKL_UPDATED, RESULT_SUMMARY_KEPT]
+
+## Implementation closeout - filed 2026-08-07, external exact-head CI pending
+
+The exact local implementation candidate is frozen by
+`work/review/REV-0058/WO-0151-R11-R1-IMPLEMENTATION-REMEDIATION-01-CANDIDATE-MANIFEST.md`,
+SHA-256 `2538656a49ea643c6befc8e4c55882cf27534f266d2335ef4a630a73182af853`.
+Its final independent focused recheck is retained at
+`work/review/REV-0058/WO-0151-R11-R1-IMPLEMENTATION-REMEDIATION-01-RECHECK-RESULT.md`,
+SHA-256 `96d08654369894eeaeda0b1b22f8e869735d179daa336c5c3e69d7f19e0e68fd`,
+and returned `ACCEPT`, P0=0/P1=0/P2=0. The predecessor implementation result
+remains retained `ACCEPT-WITH-CHANGES` evidence only; its sole applied-fact
+matrix and mutation-evidence P1 is explicitly closed by this exact recheck.
+
+Fresh author and independent evidence comprises the complete 1,353-test pure
+execution-core suite, the 17-case focused fact/mutation gate, 13 named
+fail/restore mutations, Ruff lint and exact-path format, mypy over 87
+application files, six kept import-boundary contracts, and passing scope,
+ledger, PKL, disposition, and diff checks. The complete interface and deferred-
+gate handoff is retained at
+`work/review/REV-0058/WO-0151-R11-R1-IMPLEMENTATION-CLOSEOUT.md`, SHA-256
+`971a18fab876d84e2e49a0cfe960e38828bc2f9853e187529e374f7ee58cdcdc`.
+
+The matrix exposed one exact owner-level defect and the remediation fixes its
+root cause: a retired non-tail canonical fact with no live successor BUY may
+use ordinary canonical-fact registration, while an exact active successor BUY
+still uses atomic fact-plus-preemption and every stale, forked, cross-scope, or
+mismatched input remains fail-closed.
+
+One earlier local R2 command stopped at inaccessible pytest temporary-root
+setup before collection, fixture, SQL/DDL, database, or test-body execution.
+It is inadmissible as acceptance evidence; no closeout conclusion relies on it.
+
+```yaml
+fable_done:
+  task: "WO-0151 reset kernel E2: aggregate controller, serial successor, and constrained recovery"
+  done_when_results:
+    - item: "One pure symbol controller owns serial A-to-B-to-C generation, bounded direct lineage, protection rebase, canonical-fact totality, preemption, and exit composition."
+      status: MET
+      evidence: "Exact remediation manifest and final Sol recheck ACCEPT at P0=0/P1=0/P2=0."
+    - item: "Current and retired FILL/CORRECT/BUST, successor, rebase, preemption, exit, and final-claim fences are failure-capable."
+      status: MET
+      evidence: "1,353-test pure suite; 17/17 focused controls; 13/13 named mutations turned RED and were restored."
+    - item: "Static quality, imports, lifecycle scope, and retained evidence are coherent."
+      status: MET
+      evidence: "Ruff, mypy, import-linter, scope, ledger, PKL, disposition, hashes, and diff gates passed."
+    - item: "The immutable closeout commit passes unchanged Python 3.11 and 3.12 CI."
+      status: DEFERRED
+      evidence: "External exact-head CI is required after this closeout is committed and pushed."
+  scope_check:
+    allowed_paths_respected: true
+    drive_by_edits: false
+  debt_check: "No in-scope P0/P1 remains. E3 generated/stateful conformance, persistence, runtime composition, broker behavior, M2, and master landing remain separately gated."
+  deferred:
+    - "Unchanged exact-head Python 3.11/3.12 CI is the sole remaining WO-0151 effectiveness gate."
+  status: VERIFIED
+  verification_scope: "Pure E2 implementation, focused/static/type/import/scope checks, mutation evidence, and final independent acceptance only."
+  acceptance_condition: "EXTERNAL_EXACT_HEAD_CI_REQUIRED_BEFORE_EFFECTIVE_WO_0151_CLOSE_OR_WO_0152_ACTIVATION"
+```
+
+This is a filed `CLOSED` closeout record only. Its effective lifecycle remains
+`REVIEW` until the immutable closeout commit passes unchanged exact-head Python
+3.11 and 3.12 CI. WO-0152 remains DRAFT/inactive. This closeout neither
+activates it nor grants runtime, persistence, database, SQL/DDL, broker/network,
+credential, M2, merge, deletion, or cleanup authority.

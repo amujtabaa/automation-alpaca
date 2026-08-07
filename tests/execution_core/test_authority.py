@@ -16,6 +16,7 @@ from types import ModuleType
 import pytest
 
 import app.execution_core as execution_core
+import app.execution_core.venue as venue_module
 from app.execution_core.fills import (
     BrokerFillFact,
     ExecutionScope,
@@ -644,6 +645,7 @@ def _apply_closed_sell_fill(
     *,
     label: str,
     leg_key: VenueLegKey,
+    symbol_id: SymbolId = SYMBOL,
 ) -> tuple[VenueRecoveryBook, ExecutionSnapshot]:
     effect_id = EffectId(f"{label}-effect")
     claim_id = ClaimOccurrenceId(f"{label}-claim")
@@ -657,7 +659,7 @@ def _apply_closed_sell_fill(
             mandate_id=MandateId(f"{label}-mandate"),
             kind=EffectKind.SUBMIT,
             client_order_id=ClientOrderId(f"{label}-client"),
-            symbol_id=SYMBOL,
+            symbol_id=symbol_id,
             side=ExecutionSide.SELL,
             quantity=Quantity(1),
             economic_scope=f"{label}|SELL|1".encode(),
@@ -704,7 +706,7 @@ def _apply_closed_sell_fill(
             environment=ENVIRONMENT,
             account=ACCOUNT,
             order_id=leg_key.order_id,
-            symbol_id=SYMBOL,
+            symbol_id=symbol_id,
             side=ExecutionSide.SELL,
         ),
         root_fill_id=RootFillId(f"{label}-fill-root"),
@@ -1431,6 +1433,864 @@ def test_authority_state_has_no_normal_constructor_replace_or_subclass() -> None
         replace(state, mode=mode_type.ACTIVE)
     with pytest.raises(TypeError):
         type("ForgedAuthorityState", (state_type,), {})
+
+
+def test_wo0151_authority_refresh_surface_is_opaque_and_rejects_caller_inputs() -> None:
+    module = _authority_module()
+    (
+        disposition_type,
+        refresh_type,
+        authority_context_type,
+        refresher,
+        projector,
+    ) = _required(
+        module,
+        "AcquisitionContextRefreshDisposition",
+        "AcquisitionContextRefresh",
+        "AcquisitionAuthorityContext",
+        "refresh_acquisition_context",
+        "project_acquisition_authority_context",
+    )
+    state = _genesis(module)
+
+    assert tuple(member.value for member in disposition_type) == (
+        "CURRENT",
+        "REFRESHED",
+        "UNBOUND_BOOTSTRAP",
+        "REFUSED",
+    )
+    with pytest.raises(TypeError):
+        refresh_type()  # type: ignore[operator]
+    with pytest.raises(TypeError):
+        authority_context_type()  # type: ignore[operator]
+    with pytest.raises(TypeError):
+        type("ForgedAcquisitionContextRefresh", (refresh_type,), {})
+    with pytest.raises(TypeError):
+        type("ForgedAcquisitionAuthorityContext", (authority_context_type,), {})
+    with pytest.raises(TypeError):
+        projector(state, EXECUTION, object())  # type: ignore[operator]
+
+    # The public refresh seam takes no caller-built venue, authority, or
+    # controller material; malformed arguments must fail before any mutation.
+    with pytest.raises(TypeError):
+        refresher(state, object(), EXECUTION.position.scope)  # type: ignore[operator]
+
+
+def test_wo0151_empty_account_refresh_mints_authenticated_unbound_bootstrap() -> None:
+    """Only authority may turn one exact unbound target into a sealed bootstrap pair."""
+
+    module = _authority_module()
+    disposition_type, refresher = _required(
+        module,
+        "AcquisitionContextRefreshDisposition",
+        "refresh_acquisition_context",
+    )
+    state = _genesis(module)
+    scope = EXECUTION.position.scope
+    before = _iterative_value_fingerprint(state, EXECUTION)
+
+    # A raw exact-flat target has no authority on an empty account.  R8 removes
+    # the historical context shortcut; only the authority-owned refresh may
+    # perform the sealed zero-economic venue transition.
+    raw_context = state.venue.project_acquisition_context(EXECUTION, scope)
+    assert not raw_context.matches_current(state.venue, EXECUTION, GENERATION, scope)
+
+    refresh = refresher(state, EXECUTION, scope)  # type: ignore[operator]
+
+    assert refresh.disposition is disposition_type.UNBOUND_BOOTSTRAP
+    assert refresh.predecessor_authority is state
+    assert refresh.predecessor_execution is None
+    assert refresh.predecessor_venue_context is None
+    assert refresh.predecessor_authority_context is None
+    assert refresh.authority is not None
+    assert refresh.authority is not state
+    assert refresh.execution is not None
+    assert refresh.execution.position.scope == scope
+    assert refresh.execution.position.raw_quantity == 0
+    assert refresh.venue_context is not None
+    assert refresh.authority_context is not None
+    assert refresh.venue_transitions and len(refresh.venue_transitions) == 1
+    assert refresh.venue_transitions[0].disposition is VenueRecoveryDisposition.APPLIED
+    assert refresh.venue_transitions[0].quantity_delta == 0
+    assert refresh.authority.venue.execution_binding(scope) is not None
+    assert refresh.authority._acquisition_currentness_by_scope.size == 0
+    assert refresh.matches_current(refresh.authority, GENERATION, scope)
+    assert before == _iterative_value_fingerprint(state, EXECUTION)
+
+    # A self-consistent copied projection is still not bootstrap authority when
+    # its source binding is altered.  Re-seal it deliberately so this control
+    # reaches the source re-derivation rather than failing only the outer seal.
+    bootstrap = refresh.authority.venue.project_acquisition_bootstrap(
+        refresh.execution,
+        scope,
+    )
+    forged = copy(bootstrap)
+    object.__setattr__(forged, "source_commitment", b"\x00" * 32)
+    object.__setattr__(
+        forged,
+        "_seal",
+        venue_module._acquisition_venue_projection_seal(
+            forged.source_kind,
+            forged.application_generation_id,
+            forged.position_scope,
+            forged.predecessor_execution_snapshot_commitment,
+            forged.execution_snapshot_commitment,
+            forged.predecessor_scope_execution_commitment,
+            forged.scope_execution_commitment,
+            forged.predecessor_venue_commitment,
+            forged.venue_commitment,
+            forged.source_commitment,
+            forged._fact_relation,
+            forged._serving,
+        ),
+    )
+    assert not forged.matches_bootstrap(
+        refresh.execution, refresh.authority.venue, scope
+    )
+
+
+def test_wo0151_authority_refresh_refuses_foreign_source_and_malformed_state() -> None:
+    module = _authority_module()
+    disposition_type, refresh_type, refresher = _required(
+        module,
+        "AcquisitionContextRefreshDisposition",
+        "AcquisitionContextRefresh",
+        "refresh_acquisition_context",
+    )
+    state = _genesis(module)
+    foreign_scope = PositionScope(
+        broker=BROKER,
+        environment=ENVIRONMENT,
+        account=AccountId("foreign-authority-account"),
+        symbol_id=SYMBOL,
+    )
+    foreign_execution = ExecutionSnapshot.flat(foreign_scope)
+    before = _iterative_value_fingerprint(state, foreign_execution)
+
+    refused = refresher(  # type: ignore[operator]
+        state,
+        foreign_execution,
+        EXECUTION.position.scope,
+    )
+
+    assert type(refused) is refresh_type
+    assert refused.disposition is disposition_type.REFUSED
+    assert refused.authority is None
+    assert refused.execution is None
+    assert refused.venue_context is None
+    assert refused.authority_context is None
+    assert refused.predecessor_authority is None
+    assert refused.predecessor_execution is None
+    assert refused.predecessor_venue_context is None
+    assert refused.predecessor_authority_context is None
+    assert refused.venue_transitions == ()
+    assert refused.ordered_venue_transition_commitments == ()
+    assert not refused.matches_current(state, GENERATION, EXECUTION.position.scope)
+    assert before == _iterative_value_fingerprint(state, foreign_execution)
+
+    malformed = copy(state)
+    object.__setattr__(malformed, "venue", object())
+    with pytest.raises(TypeError):
+        refresher(
+            malformed,
+            EXECUTION,
+            EXECUTION.position.scope,
+        )  # type: ignore[operator]
+    assert before == _iterative_value_fingerprint(state, foreign_execution)
+
+
+def test_wo0151_authority_context_excludes_live_command_gates_from_currentness() -> (
+    None
+):
+    """Target currentness survives a non-target change in immediate command gates."""
+
+    module = _authority_module()
+    (projector,) = _required(module, "project_acquisition_authority_context")
+    state = _genesis(module)
+    scope = EXECUTION.position.scope
+    venue_context = state.venue.project_acquisition_context(EXECUTION, scope)
+    before = projector(state, EXECUTION, venue_context)  # type: ignore[operator]
+
+    changed = _forge_positive_predecessor(
+        module,
+        predecessor=state,
+        phase="RECONCILING",
+        mode="HALTED",
+        fence="RECONCILIATION_ONLY",
+        kill_engaged=True,
+        session="different-live-command-session",
+    )
+    after = projector(changed, EXECUTION, venue_context)  # type: ignore[operator]
+
+    assert before.authority_commitment == after.authority_commitment
+    assert before.commitment == after.commitment
+
+
+def test_wo0151_admission_projection_is_target_sealed_and_genesis_only() -> None:
+    """Only a sealed bootstrap handoff makes a fresh target admissible."""
+
+    module = _authority_module()
+    kind_type, admission_type, projector, refresher = _required(
+        module,
+        "AcquisitionAdmissionKind",
+        "AcquisitionAdmissionProjection",
+        "project_acquisition_admission",
+        "refresh_acquisition_context",
+    )
+    state = _genesis(module)
+    scope = EXECUTION.position.scope
+    before = _iterative_value_fingerprint(state, EXECUTION)
+
+    # R8 deliberately makes the raw exact-flat target non-serving.  The
+    # admission proof must be rooted in the one authenticated, venue-owned
+    # bootstrap handoff rather than a caller-held genesis snapshot.
+    raw_admission = projector(state, EXECUTION, scope)  # type: ignore[operator]
+    assert not raw_admission.permits_genesis(GENERATION, EXECUTION, scope)
+    refresh = refresher(state, EXECUTION, scope)  # type: ignore[operator]
+    assert refresh.authority is not None
+    assert refresh.execution is not None
+    admission = projector(  # type: ignore[operator]
+        refresh.authority,
+        refresh.execution,
+        scope,
+    )
+
+    assert tuple(member.value for member in kind_type) == (
+        "GENESIS_EMPTY",
+        "SUCCESSOR",
+    )
+    assert type(admission) is admission_type
+    assert admission.kind is kind_type.GENESIS_EMPTY
+    assert admission.application_generation_id == GENERATION
+    assert admission.position_scope == scope
+    assert admission.permits_genesis(GENERATION, refresh.execution, scope)
+    assert not admission.permits_genesis(
+        ApplicationGenerationId("different-authority-generation"),
+        refresh.execution,
+        scope,
+    )
+    assert not admission.permits_genesis(
+        GENERATION,
+        ExecutionSnapshot.flat(
+            PositionScope(
+                broker=BROKER,
+                environment=ENVIRONMENT,
+                account=ACCOUNT,
+                symbol_id=OTHER_SYMBOL,
+            )
+        ),
+        scope,
+    )
+    assert not hasattr(admission, "authority")
+    assert not hasattr(admission, "execution")
+    assert not hasattr(admission, "venue_context")
+    with pytest.raises(TypeError):
+        admission_type()  # type: ignore[operator]
+    with pytest.raises(TypeError):
+        type("ForgedAcquisitionAdmission", (admission_type,), {})
+
+    forged = copy(admission)
+    object.__setattr__(forged, "_seal", b"\\x00" * 32)
+    assert not forged.permits_genesis(GENERATION, refresh.execution, scope)
+    assert before == _iterative_value_fingerprint(state, EXECUTION)
+
+
+def test_wo0151_bootstrap_currentness_registration_is_single_use_and_replayed() -> None:
+    """The raw internal command cannot bypass the R8 controller composite."""
+
+    import app.execution_core.acquisition as acquisition
+
+    module = _authority_module()
+    (
+        admission_projector,
+        command_mint,
+        refresher,
+    ) = _required(
+        module,
+        "project_acquisition_admission",
+        "_mint_acquisition_bootstrap_registration_command",
+        "refresh_acquisition_context",
+    )
+    state = _forge_positive_predecessor(module)
+    scope = EXECUTION.position.scope
+    refresh = refresher(state, EXECUTION, scope)  # type: ignore[operator]
+    assert (
+        refresh.disposition
+        is module.AcquisitionContextRefreshDisposition.UNBOUND_BOOTSTRAP
+    )
+    assert refresh.authority is not None
+    assert refresh.execution is not None
+    bootstrap = refresh.authority.venue.project_acquisition_bootstrap(
+        refresh.execution,
+        scope,
+    )
+    admission = admission_projector(  # type: ignore[operator]
+        refresh.authority,
+        refresh.execution,
+        scope,
+    )
+    head = acquisition._acquisition_controller_genesis_head(GENERATION, scope)
+    generation = acquisition._derive_acquisition_generation_id(
+        GENERATION,
+        scope,
+        0,
+        bytes([0x31]) * 32,
+        head,
+        bytes([0x32]) * 32,
+    )
+
+    # The authority factory owns both the registration identity and its
+    # dispatcher command.  The caller provides no AuthorityInputId.
+    command = command_mint(  # type: ignore[operator]
+        application_generation_id=GENERATION,
+        position_scope=scope,
+        session_id=refresh.authority.session_id,
+        generation_id=generation,
+        acquisition_mandate_id=module.AcquisitionMandateId(
+            "wo0151-bootstrap-currentness-acquisition"
+        ),
+        protection_mandate_id=module.MandateId(
+            "wo0151-bootstrap-currentness-protection"
+        ),
+        binding_commitment=bytes([0x31]) * 32,
+        emergency_recovery_compatibility_commitment=bytes([0x32]) * 32,
+        controller_head=head,
+        refresh=refresh,
+        bootstrap=bootstrap,
+        admission=admission,
+    )
+    before = _iterative_value_fingerprint(state, EXECUTION, command)
+
+    refused = module.apply_execution_authority_input(
+        refresh.authority,
+        refresh.execution,
+        command,
+    )
+
+    assert refused.disposition is module.AuthorityDisposition.REFUSED
+    assert refused.reason is module.AuthorityReason.VENUE_UNCERTAIN
+    assert refused.state is refresh.authority
+    assert refused.acquisition_receipt is None
+    assert refused.acquisition_claim_receipt is None
+    assert refused.created_effect_ids == ()
+    assert refused.venue_transitions == ()
+    assert before == _iterative_value_fingerprint(state, EXECUTION, command)
+
+    replay = module.apply_execution_authority_input(
+        refresh.authority,
+        refresh.execution,
+        command,
+    )
+    assert replay.disposition is module.AuthorityDisposition.REFUSED
+    assert replay.state is refresh.authority
+
+    # The sealed command cannot be publicly reconstructed with a changed key.
+    with pytest.raises(TypeError):
+        type(command)(  # type: ignore[call-arg]
+            input_id=module.AuthorityInputId("wo0151-bootstrap-register-stale"),
+            registration=command.registration,
+        )
+
+
+def test_wo0151_other_symbol_history_mints_target_bootstrap_handoff() -> None:
+    """A clean sibling source is freshness evidence, never target authority."""
+
+    module = _authority_module()
+    admission_projector, refresher = _required(
+        module,
+        "project_acquisition_admission",
+        "refresh_acquisition_context",
+    )
+    scope = EXECUTION.position.scope
+    other_scope = PositionScope(
+        broker=BROKER,
+        environment=ENVIRONMENT,
+        account=ACCOUNT,
+        symbol_id=OTHER_SYMBOL,
+    )
+    other_execution = ExecutionSnapshot.flat(other_scope)
+    book, other_execution = _apply_closed_sell_fill(
+        VenueRecoveryBook.empty(VENUE_SCOPE),
+        other_execution,
+        label="wo0151-other-history",
+        leg_key=VenueLegKey(
+            broker=BROKER,
+            environment=ENVIRONMENT,
+            account=ACCOUNT,
+            order_id=OrderId("wo0151-other-history-leg"),
+        ),
+        symbol_id=OTHER_SYMBOL,
+    )
+    assert book.execution_registry_count == other_execution.seen_facts.count
+    assert book.execution_registry_count is not None
+    assert book.execution_registry_count > 0
+    assert book.execution_binding(scope) is None
+
+    state = _forge_positive_predecessor(
+        module,
+        predecessor=_forge_venue_predecessor(_genesis(module), book),
+    )
+    before = _iterative_value_fingerprint(state, other_execution)
+    refresh = refresher(state, other_execution, scope)  # type: ignore[operator]
+    assert (
+        refresh.disposition
+        is module.AcquisitionContextRefreshDisposition.UNBOUND_BOOTSTRAP
+    )
+    assert refresh.authority is not None
+    assert refresh.execution is not None
+    bootstrap = refresh.authority.venue.project_acquisition_bootstrap(
+        refresh.execution,
+        scope,
+    )
+    admission = admission_projector(  # type: ignore[operator]
+        refresh.authority,
+        refresh.execution,
+        scope,
+    )
+    assert bootstrap.matches_bootstrap(
+        refresh.execution, refresh.authority.venue, scope
+    )
+    assert admission.permits_genesis(GENERATION, refresh.execution, scope)
+    assert refresh.authority.venue.execution_binding(scope) is not None
+    assert before == _iterative_value_fingerprint(state, other_execution)
+
+
+def test_wo0151_r8_bootstrap_target_refreshes_after_sibling_registry_advance() -> None:
+    """A live R8 target retains its anchor while its neutral checkpoint advances."""
+
+    module = _authority_module()
+    disposition_type, refresher = _required(
+        module,
+        "AcquisitionContextRefreshDisposition",
+        "refresh_acquisition_context",
+    )
+    target_scope = EXECUTION.position.scope
+    other_scope = PositionScope(
+        broker=BROKER,
+        environment=ENVIRONMENT,
+        account=ACCOUNT,
+        symbol_id=OTHER_SYMBOL,
+    )
+    other_execution = ExecutionSnapshot.flat(other_scope)
+    book, other_execution = _apply_closed_sell_fill(
+        VenueRecoveryBook.empty(VENUE_SCOPE),
+        other_execution,
+        label="wo0151-r8-bootstrap-source-one",
+        leg_key=VenueLegKey(
+            broker=BROKER,
+            environment=ENVIRONMENT,
+            account=ACCOUNT,
+            order_id=OrderId("wo0151-r8-bootstrap-source-one-leg"),
+        ),
+        symbol_id=OTHER_SYMBOL,
+    )
+    state = _forge_positive_predecessor(
+        module,
+        predecessor=_forge_venue_predecessor(_genesis(module), book),
+    )
+    bootstrap = refresher(state, other_execution, target_scope)  # type: ignore[operator]
+    assert bootstrap.disposition is disposition_type.UNBOUND_BOOTSTRAP
+    assert bootstrap.authority is not None
+    assert bootstrap.execution is not None
+    assert bootstrap.authority.venue._bootstrap_bound_target_pair_matches(
+        bootstrap.execution,
+        target_scope,
+    )
+
+    advanced_book, advanced_source = _apply_closed_sell_fill(
+        bootstrap.authority.venue,
+        other_execution,
+        label="wo0151-r8-bootstrap-source-two",
+        leg_key=VenueLegKey(
+            broker=BROKER,
+            environment=ENVIRONMENT,
+            account=ACCOUNT,
+            order_id=OrderId("wo0151-r8-bootstrap-source-two-leg"),
+        ),
+        symbol_id=OTHER_SYMBOL,
+    )
+    advanced_state = _forge_venue_predecessor(bootstrap.authority, advanced_book)
+
+    refreshed = refresher(advanced_state, advanced_source, target_scope)  # type: ignore[operator]
+    assert refreshed.disposition is disposition_type.REFRESHED
+    assert refreshed.authority is not None
+    assert refreshed.execution is not None
+    assert len(refreshed.venue_transitions) == 1
+    assert refreshed.authority.venue._bootstrap_bound_target_pair_matches(
+        refreshed.execution,
+        target_scope,
+    )
+    assert not bootstrap.matches_current(
+        refreshed.authority,
+        GENERATION,
+        target_scope,
+    )
+    with recovery_fixtures._test_certified_external_closure():
+        refreshed.authority.venue._validate_full()
+
+    repeated = refresher(
+        refreshed.authority,
+        advanced_source,
+        target_scope,
+    )  # type: ignore[operator]
+    assert repeated.disposition is disposition_type.CURRENT
+    assert repeated.authority is refreshed.authority
+    assert repeated.execution is refreshed.execution
+    assert repeated.venue_transitions == ()
+
+    advanced_again_book, advanced_again_source = _apply_closed_sell_fill(
+        refreshed.authority.venue,
+        advanced_source,
+        label="wo0151-r8-bootstrap-source-three",
+        leg_key=VenueLegKey(
+            broker=BROKER,
+            environment=ENVIRONMENT,
+            account=ACCOUNT,
+            order_id=OrderId("wo0151-r8-bootstrap-source-three-leg"),
+        ),
+        symbol_id=OTHER_SYMBOL,
+    )
+    advanced_again_state = _forge_venue_predecessor(
+        refreshed.authority,
+        advanced_again_book,
+    )
+    refreshed_again = refresher(
+        advanced_again_state,
+        advanced_again_source,
+        target_scope,
+    )  # type: ignore[operator]
+    assert refreshed_again.disposition is disposition_type.REFRESHED
+    assert refreshed_again.authority is not None
+    assert refreshed_again.execution is not None
+    assert len(refreshed_again.venue_transitions) == 1
+    assert refreshed_again.authority.venue._bootstrap_bound_target_pair_matches(
+        refreshed_again.execution,
+        target_scope,
+    )
+    assert (
+        refreshed_again.venue_transitions[0]._protection_proof.predecessor_cursor
+        == refreshed.venue_transitions[0]._protection_proof.cursor
+    )
+    assert refreshed_again.venue_transitions[0].quantity_delta == 0
+    with recovery_fixtures._test_certified_external_closure():
+        refreshed_again.authority.venue._validate_full()
+
+
+def test_wo0151_target_manual_flatten_directly_blocks_acquisition_admission() -> None:
+    """A target manual-flatten pointer fences genesis without a history scan."""
+
+    module = _authority_module()
+    (
+        disposition_type,
+        input_id_type,
+        flatten_id_type,
+        begin_type,
+        admission_projector,
+        authority_projector,
+    ) = _required(
+        module,
+        "AuthorityDisposition",
+        "AuthorityInputId",
+        "ManualFlattenId",
+        "BeginManualFlatten",
+        "project_acquisition_admission",
+        "project_acquisition_authority_context",
+    )
+    state = _forge_positive_predecessor(
+        module,
+        mode="REDUCING",
+        remaining=4,
+        reserve=1,
+    )
+    scope = EXECUTION.position.scope
+    before_venue_context = state.venue.project_acquisition_context(EXECUTION, scope)
+    before_authority_context = authority_projector(  # type: ignore[operator]
+        state,
+        EXECUTION,
+        before_venue_context,
+    )
+    command = begin_type(  # type: ignore[operator]
+        input_id=input_id_type("wo0151-admission-flatten-input"),
+        flatten_id=flatten_id_type("wo0151-admission-flatten"),
+        session_id=state.session_id,
+        symbol_id=SYMBOL,
+        actor=ActorId("wo0151-admission-operator"),
+        reason="fence acquisition while target flatten remains active",
+        evidence_reference=EvidenceReference("wo0151-admission-evidence"),
+        emergency_grant_id=None,
+    )
+    applied = _authority_apply_twice(module, state, EXECUTION, command)
+    assert applied.disposition is disposition_type.APPLIED
+
+    after_venue_context = applied.state.venue.project_acquisition_context(
+        EXECUTION,
+        scope,
+    )
+    after_authority_context = authority_projector(  # type: ignore[operator]
+        applied.state,
+        EXECUTION,
+        after_venue_context,
+    )
+    assert (
+        after_authority_context.authority_commitment
+        != before_authority_context.authority_commitment
+    )
+    assert not before_authority_context.matches_current(
+        applied.state,
+        EXECUTION,
+        after_venue_context,
+    )
+
+    admission = admission_projector(applied.state, EXECUTION, scope)  # type: ignore[operator]
+    assert admission.kind is module.AcquisitionAdmissionKind.SUCCESSOR
+    assert not admission.permits_genesis(
+        GENERATION,
+        EXECUTION,
+        scope,
+    )
+
+
+def _wo0151_same_account_refresh_fixture(
+    module: ModuleType,
+) -> tuple[object, ExecutionSnapshot, ExecutionSnapshot, PositionScope]:
+    book, seeded, _ = _seed_multi_scope_requests("wo0151-same-account-refresh")
+    source_execution = seeded[0][0]
+    target_execution = seeded[1][0]
+    target_scope = target_execution.position.scope
+    book, source_execution = _apply_closed_sell_fill(
+        book,
+        source_execution,
+        label="wo0151-same-account-source",
+        leg_key=VenueLegKey(
+            broker=BROKER,
+            environment=ENVIRONMENT,
+            account=ACCOUNT,
+            order_id=OrderId("wo0151-same-account-source-leg"),
+        ),
+    )
+    state = _forge_venue_predecessor(_genesis(module), book)
+    assert not source_execution.account_reconciliation_required
+    assert book.execution_registry_count == source_execution.seen_facts.count
+    assert book.execution_registry_commitment == source_execution.seen_facts.commitment
+    assert target_execution.seen_facts.count < book.execution_registry_count
+    return state, source_execution, target_execution, target_scope
+
+
+def test_wo0151_same_account_other_symbol_source_refreshes_one_exact_target() -> None:
+    """A current sibling snapshot may advance one stale target checkpoint only."""
+
+    module = _authority_module()
+    disposition_type, refresher = _required(
+        module,
+        "AcquisitionContextRefreshDisposition",
+        "refresh_acquisition_context",
+    )
+    state, source_execution, target_execution, target_scope = (
+        _wo0151_same_account_refresh_fixture(module)
+    )
+    assert source_execution.position.scope != target_scope
+    assert (
+        source_execution.position.scope.broker
+        == target_scope.broker
+        == VENUE_SCOPE.broker
+    )
+    assert (
+        source_execution.position.scope.environment
+        == target_scope.environment
+        == VENUE_SCOPE.environment
+    )
+    assert (
+        source_execution.position.scope.account
+        == target_scope.account
+        == VENUE_SCOPE.account
+    )
+
+    before = _iterative_value_fingerprint(state, source_execution, target_execution)
+
+    stale_target_source = refresher(state, target_execution, target_scope)  # type: ignore[operator]
+    assert stale_target_source.disposition is disposition_type.REFUSED
+    assert stale_target_source.authority is None
+    assert stale_target_source.execution is None
+    assert stale_target_source.venue_transitions == ()
+
+    refresh = refresher(state, source_execution, target_scope)  # type: ignore[operator]
+    assert refresh.disposition is disposition_type.REFRESHED
+    assert refresh.predecessor_authority is state
+    assert refresh.predecessor_execution == target_execution
+    assert refresh.authority is not None
+    assert refresh.authority is not state
+    assert refresh.matches_current(refresh.authority, GENERATION, target_scope)
+    assert refresh.execution is not None
+    assert refresh.venue_context is not None
+    assert refresh.authority_context is not None
+    assert refresh.predecessor_venue_context is not None
+    assert refresh.predecessor_authority_context is not None
+    assert len(refresh.venue_transitions) == 1
+
+    (transition,) = refresh.venue_transitions
+    assert refresh.authority.venue is transition.book
+    assert refresh.execution is transition.execution
+    assert transition.disposition is VenueRecoveryDisposition.APPLIED
+    assert (
+        transition.execution.position.raw_quantity
+        == target_execution.position.raw_quantity
+    )
+    assert refresh.ordered_venue_transition_commitments == (
+        transition._protection_proof_commitment,
+    )
+
+    # Target scope semantics are retained across the account-level catch-up;
+    # only the authenticated raw snapshot/proof pair advances.
+    assert (
+        refresh.predecessor_scope_execution_commitment
+        == refresh.scope_execution_commitment
+    )
+    assert refresh.predecessor_venue_commitment == refresh.venue_commitment
+    assert refresh.predecessor_authority_commitment == refresh.authority_commitment
+    assert (
+        refresh.predecessor_venue_context.commitment == refresh.venue_context.commitment
+    )
+    assert (
+        refresh.predecessor_authority_context.commitment
+        == refresh.authority_context.commitment
+    )
+    assert refresh.predecessor_execution.commitment != refresh.execution.commitment
+    assert (
+        refresh.predecessor_venue_context._source_execution_commitment
+        != refresh.venue_context._source_execution_commitment
+    )
+    assert refresh.predecessor_venue_context._seal != refresh.venue_context._seal
+    assert (
+        refresh.predecessor_authority_context._source_execution_commitment
+        != refresh.authority_context._source_execution_commitment
+    )
+    assert (
+        refresh.predecessor_authority_context._seal != refresh.authority_context._seal
+    )
+
+    assert refresh.predecessor_authority_context.matches_current(
+        state,
+        refresh.predecessor_execution,
+        refresh.predecessor_venue_context,
+    )
+    assert refresh.authority_context.matches_current(
+        refresh.authority,
+        refresh.execution,
+        refresh.venue_context,
+    )
+    assert not refresh.predecessor_venue_context.matches_current(
+        state.venue,
+        refresh.predecessor_execution,
+        GENERATION,
+        target_scope,
+    )
+    assert refresh.venue_context.matches_current(
+        refresh.authority.venue,
+        refresh.execution,
+        GENERATION,
+        target_scope,
+    )
+    assert before == _iterative_value_fingerprint(
+        state, source_execution, target_execution
+    )
+
+
+def test_wo0151_refresh_seals_every_source_and_transition_proof_field() -> None:
+    """Copied refreshes cannot alter source proof or target pairing material."""
+
+    module = _authority_module()
+    (refresher,) = _required(module, "refresh_acquisition_context")
+    state, source_execution, target_execution, target_scope = (
+        _wo0151_same_account_refresh_fixture(module)
+    )
+    refresh = refresher(state, source_execution, target_scope)  # type: ignore[operator]
+    assert refresh.authority is not None
+    assert refresh.matches_current(refresh.authority, GENERATION, target_scope)
+    authenticator = getattr(module, "_acquisition_context_refresh_is_authentic")
+    assert authenticator(refresh)
+
+    for ordinal, field_name in enumerate(
+        (
+            "source_execution_snapshot_commitment",
+            "predecessor_execution_snapshot_commitment",
+            "execution_snapshot_commitment",
+            "predecessor_scope_execution_commitment",
+            "scope_execution_commitment",
+            "predecessor_venue_commitment",
+            "venue_commitment",
+            "predecessor_authority_commitment",
+            "authority_commitment",
+        ),
+        start=1,
+    ):
+        tampered = copy(refresh)
+        object.__setattr__(tampered, field_name, bytes([ordinal]) * 32)
+        assert not authenticator(tampered)
+        assert not tampered.matches_current(
+            refresh.authority,
+            GENERATION,
+            target_scope,
+        )
+
+    for field_name, replacement in (
+        ("_source_execution", target_execution),
+        ("venue_transitions", ()),
+        (
+            "ordered_venue_transition_commitments",
+            (bytes([0x61]) * 32, bytes([0x62]) * 32),
+        ),
+    ):
+        tampered = copy(refresh)
+        object.__setattr__(tampered, field_name, replacement)
+        assert not authenticator(tampered)
+        assert not tampered.matches_current(
+            refresh.authority,
+            GENERATION,
+            target_scope,
+        )
+
+    # Object identity is deliberately not part of durable proof material; the
+    # live pair validation rejects a swapped predecessor authority instead.
+    tampered = copy(refresh)
+    object.__setattr__(tampered, "predecessor_authority", refresh.authority)
+    assert not tampered.matches_current(
+        refresh.authority,
+        GENERATION,
+        target_scope,
+    )
+
+
+def test_wo0151_current_refresh_requires_one_exact_retained_target_pair() -> None:
+    """A current refresh is a zero-transition retained-target proof only."""
+
+    module = _authority_module()
+    disposition_type, refresher = _required(
+        module,
+        "AcquisitionContextRefreshDisposition",
+        "refresh_acquisition_context",
+    )
+    book, execution = _apply_closed_sell_fill(
+        VenueRecoveryBook.empty(VENUE_SCOPE),
+        EXECUTION,
+        label="wo0151-current-refresh",
+        leg_key=VenueLegKey(
+            broker=BROKER,
+            environment=ENVIRONMENT,
+            account=ACCOUNT,
+            order_id=OrderId("wo0151-current-refresh-leg"),
+        ),
+    )
+    state = _forge_venue_predecessor(_genesis(module), book)
+    refresh = refresher(state, execution, execution.position.scope)  # type: ignore[operator]
+
+    assert refresh.disposition is disposition_type.CURRENT
+    assert refresh.authority is state
+    assert refresh.predecessor_authority is state
+    assert refresh.execution is execution
+    assert refresh.predecessor_execution is execution
+    assert refresh.venue_transitions == ()
+    assert refresh.ordered_venue_transition_commitments == ()
+    assert refresh.matches_current(state, GENERATION, execution.position.scope)
 
 
 @pytest.mark.parametrize(

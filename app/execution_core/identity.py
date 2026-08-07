@@ -108,6 +108,16 @@ class MandateId(_ExactIdentity):
 
 
 @dataclass(frozen=True, slots=True)
+class AcquisitionMandateId(_ExactIdentity):
+    """Exact immutable operator-approved acquisition mandate identity."""
+
+
+@dataclass(frozen=True, slots=True)
+class EmergencyRecoveryCompatibilityId(_ExactIdentity):
+    """Exact immutable compatibility identity for mixed-generation recovery."""
+
+
+@dataclass(frozen=True, slots=True)
 class MarketDataSourceId(_ExactIdentity):
     """Exact immutable market-data source identity."""
 

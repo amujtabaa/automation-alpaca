@@ -4,7 +4,7 @@ title: Architecture Map (reset target and frozen Spine v2 evidence)
 status: active
 authority: high
 owner: Ameen
-last_verified: 2026-08-06
+last_verified: 2026-08-07
 tags: [architecture, boundaries, layers]
 source_refs: [docs/adr/ADR-020-current-state-execution-kernel.md, docs/adr/ADR-021-position-protection-liquidity-execution.md, docs/adr/ADR-022-reset-beta-scope-cutover-governance.md, docs/adr/ADR-023-bounded-market-occurrence-authority.md, docs/adr/ARCH-RESET-2026-07-RATIFICATION.md, docs/01_ARCHITECTURE.md]
 supersedes: []
@@ -33,14 +33,12 @@ dual-version CI green and effective `CLOSED`. ADR-020 R2 and ADR-021 R2 now defi
 serial acquisition-generation architecture. The retained `WO-0149` lifecycle record is not
 authority for that R2 scope. WO-0150's pure E1 closeout SHA
 `f1a40d69f301ad7f594a61f202d3bd380607b98a` passed exact-head GitHub Actions run `31089203210`
-(#726) on Python 3.11 and 3.12 and is effective `CLOSED`. WO-0151 is now active only for its
-ratified pure-E2 R2--R11-plus-R11-R1 composite, whose R11 base and R11 R1 correction are
-`00f740561bceb036151ac984b45fd40ac6b4255e5b9c301d411ce7b90a7e526d` and
-`d1931b28cad04f457d2e14233966d48789f758546950763e5a0417b07b80c2a9`, following documentation-only
-activation SHA `466e712b6f507ee165a7fc0c80e826fa8a35a710` and R10 re-gate SHA
-`638c73cff1e02a8834309362cc5dc762b165871b`, with R11 R1 re-gate SHA
-`8ebe9350520e28409c33c28cc958ee926639f28e`; WO-0152 and all
-M2/runtime/persistence work remain inactive until separately gated.
+(#726) on Python 3.11 and 3.12 and is effective `CLOSED`. WO-0151's pure-E2 implementation is
+locally closed at remediation manifest
+`2538656a49ea643c6befc8e4c55882cf27534f266d2335ef4a630a73182af853`; final independent result
+`96d08654369894eeaeda0b1b22f8e869735d179daa336c5c3e69d7f19e0e68fd` returned `ACCEPT`,
+P0=0/P1=0/P2=0. It remains effectively `REVIEW` until unchanged exact-head Python 3.11/3.12 CI
+passes. WO-0152 and all M2/runtime/persistence work remain inactive until separately gated.
 
 ## Current R2 ratification posture
 
@@ -58,8 +56,9 @@ retained but are not an acceptance basis. R10 then independently accepted and th
 the narrow exact-immutable-replay clarification. The initial R11 result is retained negative
 evidence; R11 R1 closes its single P1 by separating cancel-only BUY preemption from goal-bearing
 protective SELL exit. The fresh R11 R1 review accepted the complete route set at P0=0/P1=0/P2=0.
-WO-0151 alone is active under the R2--R11-plus-R11-R1
-composite; WO-0152, M2, and all runtime/persistence work remain inactive until separately gated.
+WO-0151's locally verified implementation closeout is the sole product of the
+R2--R11-plus-R11-R1 composite. Its external exact-head CI gate is pending; WO-0152, M2, and all
+runtime/persistence work remain inactive until separately gated.
 
 ## Rules / facts
 
@@ -101,8 +100,9 @@ composite; WO-0152, M2, and all runtime/persistence work remain inactive until s
   closeout manifest `a68c5897717e0e3ee735af6a95ff768c59951338dff321aca9ab42bc662acfde` was
   independently `ACCEPT`ed at P0=0/P1=0, and its exact closeout SHA is dual-version CI green.
   Successful registry/index population, permanent routing, and late-fact mutation are E2-only.
-  E2 is active under the ratified R2--R11-plus-R11-R1 composite; E3 remains inactive. No runtime, persistent database, broker,
-  credential, or M2 authority is granted.
+  E2 is now locally implemented and independently accepted under the ratified R2--R11-plus-R11-R1
+  composite, with external exact-head CI still pending; E3 remains inactive. No runtime, persistent
+  database, broker, credential, or M2 authority is granted.
 - Current posture amendment (2026-08-05): E1 provides only deterministic non-authoritative identity
   data, immutable view and inert-reader shapes, and the no-history venue correlation bridge.
   Successful direct registry/index population, A-to-B-to-C routing, and late-fact mutation are

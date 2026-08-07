@@ -20,6 +20,9 @@ from .fills import (
     _pack_parts,
 )
 from .identity import (
+    AcquisitionGenerationId as _AcquisitionGenerationId,
+    ApplicationGenerationId as _ApplicationGenerationId,
+    EmergencyRecoveryCompatibilityId as _EmergencyRecoveryCompatibilityId,
     MandateId as _MandateId,
     MarketDataSourceId as _MarketDataSourceId,
     MarketOccurrenceId as _MarketOccurrenceId,
@@ -40,7 +43,10 @@ from .values import (
     TickMetadata as _TickMetadata,
 )
 from .venue import (
+    AcquisitionVenueContext as _AcquisitionVenueContext,
     VenueExecutionBinding as _VenueExecutionBinding,
+    VenueRecoveryBook as _VenueRecoveryBook,
+    VenueRecoveryDisposition as _VenueRecoveryDisposition,
     VenueRecoveryTransition as _VenueRecoveryTransition,
     _ProtectionCursor,
     _ProtectionTransitionProof,
@@ -131,6 +137,64 @@ class ExecutionGuard:
             raise ValueError("policy_commitment must contain exactly 32 bytes")
 
 
+# WO-0151 E2 protection extension
+@_dataclass(frozen=True, slots=True)
+class EmergencyRecoveryCompatibility:
+    """Immutable normal-mandate-independent mixed-recovery compatibility."""
+
+    compatibility_id: _EmergencyRecoveryCompatibilityId
+    position_scope: _PositionScope
+    session_id: _SessionId
+    configuration_version: str
+    configuration_commitment: bytes
+    emergency_guard: ExecutionGuard
+    maximum_goal_rate: int
+    emergency_effect_budget: int
+    deadline: int
+    aggregate_emergency_quantity: _Quantity
+    commitment: bytes = _field(init=False)
+
+    def __post_init__(self) -> None:
+        if type(self.compatibility_id) is not _EmergencyRecoveryCompatibilityId:
+            raise TypeError("compatibility_id must be EmergencyRecoveryCompatibilityId")
+        if type(self.position_scope) is not _PositionScope:
+            raise TypeError("position_scope must be PositionScope")
+        if type(self.session_id) is not _SessionId:
+            raise TypeError("session_id must be SessionId")
+        if type(self.configuration_version) is not str:
+            raise TypeError("configuration_version must be a string")
+        if not self.configuration_version.strip():
+            raise ValueError("configuration_version must be nonblank")
+        if type(self.configuration_commitment) is not bytes:
+            raise TypeError("configuration_commitment must be bytes")
+        if len(self.configuration_commitment) != 32:
+            raise ValueError("configuration_commitment must contain exactly 32 bytes")
+        if type(self.emergency_guard) is not ExecutionGuard:
+            raise TypeError("emergency_guard must be ExecutionGuard")
+        if type(self.maximum_goal_rate) is not int:
+            raise TypeError("maximum_goal_rate must be an exact integer")
+        if self.maximum_goal_rate <= 0:
+            raise ValueError("maximum_goal_rate must be positive")
+        if type(self.emergency_effect_budget) is not int:
+            raise TypeError("emergency_effect_budget must be an exact integer")
+        if self.emergency_effect_budget < 0:
+            raise ValueError("emergency_effect_budget must be non-negative")
+        if type(self.deadline) is not int:
+            raise TypeError("deadline must be an exact integer")
+        if self.deadline < 0:
+            raise ValueError("deadline must be non-negative")
+        if type(self.aggregate_emergency_quantity) is not _Quantity:
+            raise TypeError("aggregate_emergency_quantity must be Quantity")
+        object.__setattr__(
+            self,
+            "commitment",
+            _emergency_recovery_compatibility_commitment(self),
+        )
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        raise TypeError("EmergencyRecoveryCompatibility cannot be subclassed")
+
+
 @_dataclass(frozen=True, slots=True)
 class ProtectionMandate:
     mandate_id: _MandateId
@@ -148,6 +212,8 @@ class ProtectionMandate:
     maximum_quantity: _Quantity
     maximum_goal_rate: int
     deadline: int
+    emergency_recovery_compatibility: EmergencyRecoveryCompatibility
+    commitment: bytes = _field(init=False)
 
     def __post_init__(self) -> None:
         if type(self.mandate_id) is not _MandateId:
@@ -206,9 +272,100 @@ class ProtectionMandate:
             raise TypeError("deadline must be an exact integer")
         if self.deadline < 0:
             raise ValueError("deadline must be non-negative")
+        if (
+            type(self.emergency_recovery_compatibility)
+            is not EmergencyRecoveryCompatibility
+        ):
+            raise TypeError(
+                "emergency_recovery_compatibility must be EmergencyRecoveryCompatibility"
+            )
+        if (
+            type(self.emergency_recovery_compatibility.position_scope)
+            is not _PositionScope
+        ):
+            raise TypeError(
+                "emergency recovery compatibility scope must be PositionScope"
+            )
+        if type(self.emergency_recovery_compatibility.session_id) is not _SessionId:
+            raise TypeError(
+                "emergency recovery compatibility session must be SessionId"
+            )
+        if self.emergency_recovery_compatibility.position_scope != self.position_scope:
+            raise ValueError(
+                "emergency recovery compatibility scope must match mandate"
+            )
+        if self.emergency_recovery_compatibility.session_id != self.session_id:
+            raise ValueError(
+                "emergency recovery compatibility session must match mandate"
+            )
+        object.__setattr__(self, "commitment", _protection_mandate_commitment(self))
 
     def __init_subclass__(cls, **kwargs: object) -> None:
         raise TypeError("ProtectionMandate cannot be subclassed")
+
+
+def _emergency_recovery_compatibility_commitment(
+    compatibility: EmergencyRecoveryCompatibility,
+) -> bytes:
+    return _commit_parts(
+        b"execution-core/emergency-recovery-compatibility/v1",
+        _encode_text(compatibility.compatibility_id.value),
+        _encode_position_scope(compatibility.position_scope),
+        _encode_text(compatibility.session_id.value),
+        _encode_text(compatibility.configuration_version),
+        compatibility.configuration_commitment,
+        _encode_text(compatibility.emergency_guard.guard_id),
+        compatibility.emergency_guard.policy_commitment,
+        _encode_int(compatibility.maximum_goal_rate),
+        _encode_int(compatibility.emergency_effect_budget),
+        _encode_int(compatibility.deadline),
+        _encode_int(compatibility.aggregate_emergency_quantity.value),
+    )
+
+
+def _emergency_recovery_compatibility_is_authentic(
+    compatibility: object,
+) -> bool:
+    if type(compatibility) is not EmergencyRecoveryCompatibility:
+        return False
+    if (
+        type(compatibility.commitment) is not bytes
+        or len(compatibility.commitment) != 32
+    ):
+        return False
+    return compatibility.commitment == _emergency_recovery_compatibility_commitment(
+        compatibility
+    )
+
+
+def _protection_mandate_commitment(mandate: ProtectionMandate) -> bytes:
+    return _commit_parts(
+        b"execution-core/protection-mandate/v2",
+        _encode_text(mandate.mandate_id.value),
+        _encode_position_scope(mandate.position_scope),
+        _encode_text(mandate.session_id.value),
+        _encode_text(mandate.configuration_version),
+        _encode_fraction(mandate.loss_fraction),
+        _encode_fraction(mandate.approved_gain),
+        _encode_fraction(mandate.percent_trail_fraction),
+        _encode_fraction(mandate.atr_multiple),
+        _encode_int(mandate.tick.tick_units.value),
+        _encode_fraction(_Fraction(mandate.tick.scale.value)),
+        _encode_text(mandate.normal_guard.guard_id),
+        mandate.normal_guard.policy_commitment,
+        _encode_text(mandate.emergency_guard.guard_id),
+        mandate.emergency_guard.policy_commitment,
+        _encode_text(mandate.evidence_policy.source_id.value),
+        _encode_text(mandate.evidence_policy.stream_generation.value),
+        _encode_text(mandate.evidence_policy.sequence_mode.value),
+        _encode_int(mandate.evidence_policy.max_age),
+        _encode_int(mandate.evidence_policy.corroboration_window),
+        _encode_fraction(mandate.evidence_policy.max_step_fraction),
+        _encode_int(mandate.maximum_quantity.value),
+        _encode_int(mandate.maximum_goal_rate),
+        _encode_int(mandate.deadline),
+        mandate.emergency_recovery_compatibility.commitment,
+    )
 
 
 @_dataclass(frozen=True, slots=True)
@@ -442,25 +599,1243 @@ class ExecutionGoal:
             raise ValueError("protection_commitment must contain exactly 32 bytes")
 
 
-@_dataclass(frozen=True, slots=True)
+@_dataclass(frozen=True, slots=True, init=False)
 class ProtectionTransition:
+    """One reducer-minted protection outcome and its bounded source proof."""
+
     state: PositionProtectionState
     disposition: ProtectionDisposition
     goal: ExecutionGoal | None
     critical_alert: ProtectionAlert | None
+    _predecessor_protection_commitment: bytes | None
+    _source_projection: ProtectionVenueProjection | None
+    _seal: bytes
 
-    def __post_init__(self) -> None:
-        if type(self.state) is not PositionProtectionState:
-            raise TypeError("state must be PositionProtectionState")
-        if type(self.disposition) is not ProtectionDisposition:
-            raise TypeError("disposition must be ProtectionDisposition")
-        if self.goal is not None and type(self.goal) is not ExecutionGoal:
-            raise TypeError("goal must be ExecutionGoal or None")
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        raise TypeError("ProtectionTransition is reducer-constructed only")
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        raise TypeError("ProtectionTransition cannot be subclassed")
+
+
+@_dataclass(frozen=True, slots=True, init=False)
+class AcquisitionMixedRecoveryProof:
+    """Protection-owned proof for one direct retired-generation recovery."""
+
+    application_generation_id: _ApplicationGenerationId
+    position_scope: _PositionScope
+    retired_generation_id: _AcquisitionGenerationId
+    retired_relation_commitment: bytes
+    predecessor_controller_head: bytes
+    controller_head: bytes
+    execution_commitment: bytes
+    venue_commitment: bytes
+    dual_binding_commitment: bytes
+    compatibility_commitment: bytes
+    mandate_commitment: bytes
+    prior_protection_commitment: bytes | None
+    source_projection_commitment: bytes
+    aggregate_quantity: int
+    commitment: bytes
+    _seal: bytes
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise TypeError("AcquisitionMixedRecoveryProof is reducer-constructed only")
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        del cls, kwargs
+        raise TypeError("AcquisitionMixedRecoveryProof cannot be subclassed")
+
+
+class AcquisitionProtectionRebaseKind(_Enum):
+    """Whether a protection change carries semantics or only source freshness."""
+
+    SEMANTIC_REBASE = "SEMANTIC_REBASE"
+    NEUTRAL_REPROJECTION = "NEUTRAL_REPROJECTION"
+
+
+@_dataclass(frozen=True, slots=True, init=False)
+class AcquisitionProtectionContext:
+    """Protection-owned semantic context for one exact target position scope."""
+
+    application_generation_id: _ApplicationGenerationId
+    position_scope: _PositionScope
+    scope_execution_commitment: bytes
+    scope_protection_commitment: bytes | None
+    source_protection_commitment: bytes | None
+    commitment: bytes
+    _venue_commitment: bytes
+    _seal: bytes
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        raise TypeError("AcquisitionProtectionContext is protection-constructed only")
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        raise TypeError("AcquisitionProtectionContext cannot be subclassed")
+
+    def matches_current(
+        self,
+        book: _VenueRecoveryBook,
+        execution: _ExecutionSnapshot,
+        venue_context: _AcquisitionVenueContext,
+        state: PositionProtectionState | None,
+    ) -> bool:
+        if not _acquisition_protection_context_is_authentic(self):
+            return False
+        current = project_acquisition_protection_context(
+            state,
+            book,
+            execution,
+            venue_context,
+        )
+        return (
+            current is not None
+            and _acquisition_protection_context_is_authentic(current)
+            and current.application_generation_id == self.application_generation_id
+            and current.position_scope == self.position_scope
+            and current.scope_execution_commitment == self.scope_execution_commitment
+            and current.scope_protection_commitment == self.scope_protection_commitment
+            and current.source_protection_commitment
+            == self.source_protection_commitment
+            and current.commitment == self.commitment
+            and current._venue_commitment == self._venue_commitment
+        )
+
+
+@_dataclass(frozen=True, slots=True, init=False)
+class AcquisitionProtectionRebaseProjection:
+    """Sealed protection-owned predecessor/current relation for acquisition."""
+
+    kind: AcquisitionProtectionRebaseKind
+    application_generation_id: _ApplicationGenerationId
+    position_scope: _PositionScope
+    predecessor_execution_snapshot_commitment: bytes | None
+    execution_snapshot_commitment: bytes | None
+    predecessor_scope_execution_commitment: bytes | None
+    scope_execution_commitment: bytes | None
+    predecessor_venue_commitment: bytes | None
+    venue_commitment: bytes | None
+    predecessor_context_commitment: bytes
+    context_commitment: bytes
+    predecessor_source_protection_commitment: bytes | None
+    source_protection_commitment: bytes | None
+    resulting_state: PositionProtectionState | None
+    source_venue_transition_commitments: tuple[bytes, ...]
+    source_commitment: bytes
+    _seal: bytes
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        raise TypeError(
+            "AcquisitionProtectionRebaseProjection is protection-constructed only"
+        )
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        raise TypeError("AcquisitionProtectionRebaseProjection cannot be subclassed")
+
+    def matches_predecessor_scope_protection_commitment(
+        self,
+        expected_scope_protection_commitment: bytes,
+    ) -> bool:
+        """Prove this semantic projection's sealed predecessor semantic relation."""
+
         if (
-            self.critical_alert is not None
-            and type(self.critical_alert) is not ProtectionAlert
+            type(expected_scope_protection_commitment) is not bytes
+            or len(expected_scope_protection_commitment) != 32
+            or not _acquisition_protection_rebase_projection_is_authentic(self)
+            or self.kind is not AcquisitionProtectionRebaseKind.SEMANTIC_REBASE
+            or type(self.predecessor_scope_execution_commitment) is not bytes
+            or len(self.predecessor_scope_execution_commitment) != 32
+            or type(self.predecessor_source_protection_commitment) is not bytes
+            or len(self.predecessor_source_protection_commitment) != 32
+            or type(self.predecessor_context_commitment) is not bytes
+            or len(self.predecessor_context_commitment) != 32
         ):
-            raise TypeError("critical_alert must be ProtectionAlert or None")
+            return False
+        return self.predecessor_context_commitment == _commit_parts(
+            b"execution-core/acquisition-protection/context/v1",
+            _encode_text(self.application_generation_id.value),
+            _encode_position_scope(self.position_scope),
+            self.predecessor_scope_execution_commitment,
+            expected_scope_protection_commitment,
+            self.predecessor_source_protection_commitment,
+        )
+
+    def matches_neutral_reprojection(
+        self,
+        expected_scope_protection_commitment: bytes,
+        current_context: AcquisitionProtectionContext,
+        source_venue_transition_commitment: bytes,
+    ) -> bool:
+        """Authenticate one transport-only raw-state refresh relation."""
+
+        if (
+            type(expected_scope_protection_commitment) is not bytes
+            or len(expected_scope_protection_commitment) != 32
+            or type(source_venue_transition_commitment) is not bytes
+            or len(source_venue_transition_commitment) != 32
+            or not _acquisition_protection_rebase_projection_is_authentic(self)
+            or self.kind is not AcquisitionProtectionRebaseKind.NEUTRAL_REPROJECTION
+            or not _acquisition_protection_context_is_authentic(current_context)
+            or type(self.resulting_state) is not PositionProtectionState
+            or not _state_is_authentic(self.resulting_state)
+            or self.source_venue_transition_commitments
+            != (source_venue_transition_commitment,)
+            or type(self.predecessor_scope_execution_commitment) is not bytes
+            or type(self.scope_execution_commitment) is not bytes
+            or type(self.predecessor_venue_commitment) is not bytes
+            or type(self.venue_commitment) is not bytes
+            or type(self.predecessor_source_protection_commitment) is not bytes
+            or type(self.source_protection_commitment) is not bytes
+            or type(self.predecessor_execution_snapshot_commitment) is not bytes
+            or type(self.execution_snapshot_commitment) is not bytes
+        ):
+            return False
+        predecessor_context = _commit_parts(
+            b"execution-core/acquisition-protection/context/v1",
+            _encode_text(self.application_generation_id.value),
+            _encode_position_scope(self.position_scope),
+            self.predecessor_scope_execution_commitment,
+            expected_scope_protection_commitment,
+            self.predecessor_source_protection_commitment,
+        )
+        return bool(
+            self.predecessor_context_commitment == predecessor_context
+            and self.predecessor_scope_execution_commitment
+            == self.scope_execution_commitment
+            and self.predecessor_venue_commitment == self.venue_commitment
+            and self.predecessor_execution_snapshot_commitment
+            != self.execution_snapshot_commitment
+            and self.predecessor_source_protection_commitment
+            != self.source_protection_commitment
+            and current_context.application_generation_id
+            == self.application_generation_id
+            and current_context.position_scope == self.position_scope
+            and current_context.scope_execution_commitment
+            == self.scope_execution_commitment
+            and current_context.scope_protection_commitment
+            == expected_scope_protection_commitment
+            and current_context.source_protection_commitment
+            == self.source_protection_commitment
+            and current_context.commitment == self.context_commitment
+            and current_context._venue_commitment == self.venue_commitment
+            and current_context.source_protection_commitment
+            == self.resulting_state.commitment
+            and _scope_protection_commitment(self.resulting_state)
+            == expected_scope_protection_commitment
+        )
+
+
+@_dataclass(frozen=True, slots=True, init=False)
+class _AcquisitionPreemptionIntent:
+    """Protection-owned, purpose-bound proof that only BUY stand-down is needed."""
+
+    application_generation_id: _ApplicationGenerationId
+    position_scope: _PositionScope
+    scope_execution_commitment: bytes
+    scope_protection_commitment: bytes
+    source_protection_commitment: bytes
+    context_commitment: bytes
+    mandate_commitment: bytes
+    raw_quantity: int
+    policy: ProtectionPolicy
+    exit_provenance: bytes
+    _purpose: str
+    _seal: bytes
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        raise TypeError("_AcquisitionPreemptionIntent is protection-constructed only")
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        raise TypeError("_AcquisitionPreemptionIntent cannot be subclassed")
+
+    def matches_current(
+        self,
+        state: PositionProtectionState,
+        context: AcquisitionProtectionContext,
+    ) -> bool:
+        """Reprove the immediate owner result without exposing cancel authority."""
+
+        return bool(
+            _acquisition_preemption_intent_is_authentic(self)
+            and type(state) is PositionProtectionState
+            and _state_is_authentic(state)
+            and _acquisition_protection_context_is_authentic(context)
+            and self.application_generation_id == context.application_generation_id
+            and self.position_scope == state.mandate.position_scope
+            and self.position_scope == context.position_scope
+            and self.scope_execution_commitment == context.scope_execution_commitment
+            and self.scope_protection_commitment == context.scope_protection_commitment
+            and self.source_protection_commitment == state.commitment
+            and self.source_protection_commitment
+            == context.source_protection_commitment
+            and self.context_commitment == context.commitment
+            and self.mandate_commitment == _commit_mandate(state.mandate)
+            and self.raw_quantity == state.raw_quantity
+            and self.policy is state.policy
+            and self.exit_provenance == state._exit_provenance
+        )
+
+
+@_dataclass(frozen=True, slots=True, init=False)
+class _AcquisitionProtectionExitIntent:
+    """Protection-owned, purpose-bound proof of one exact protective SELL."""
+
+    application_generation_id: _ApplicationGenerationId
+    position_scope: _PositionScope
+    scope_execution_commitment: bytes
+    scope_protection_commitment: bytes
+    source_protection_commitment: bytes
+    context_commitment: bytes
+    transition_commitment: bytes
+    goal: ExecutionGoal
+    _purpose: str
+    _seal: bytes
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        raise TypeError(
+            "_AcquisitionProtectionExitIntent is protection-constructed only"
+        )
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        raise TypeError("_AcquisitionProtectionExitIntent cannot be subclassed")
+
+    def matches_current(
+        self,
+        transition: ProtectionTransition,
+        context: AcquisitionProtectionContext,
+    ) -> bool:
+        """Reprove one immediate owner goal without exporting a goal factory."""
+
+        return bool(
+            _acquisition_protection_exit_intent_is_authentic(self)
+            and _protection_transition_is_authentic(transition)
+            and _acquisition_protection_context_is_authentic(context)
+            and transition.disposition is ProtectionDisposition.APPLIED
+            and transition.goal is not None
+            and self.application_generation_id == context.application_generation_id
+            and self.position_scope == context.position_scope
+            and self.scope_execution_commitment == context.scope_execution_commitment
+            and self.scope_protection_commitment == context.scope_protection_commitment
+            and self.source_protection_commitment == transition.state.commitment
+            and self.source_protection_commitment
+            == context.source_protection_commitment
+            and self.context_commitment == context.commitment
+            and self.transition_commitment == transition._seal
+            and self.goal == transition.goal
+        )
+
+    def request_coordinates(
+        self,
+        transition: ProtectionTransition,
+        context: AcquisitionProtectionContext,
+    ) -> (
+        tuple[
+            _ExecutionSide,
+            _Quantity,
+            _SessionId,
+            _MandateId,
+            bytes,
+            bytes,
+            bytes,
+        ]
+        | None
+    ):
+        """Return the exact owner-derived SELL coordinates, never policy inputs."""
+
+        if not self.matches_current(transition, context):
+            return None
+        goal = self.goal
+        goal_commitment = _execution_goal_commitment(goal)
+        if goal_commitment is None:
+            return None
+        return (
+            goal.side,
+            goal.residual,
+            goal.session_id,
+            goal.mandate_id,
+            goal.execution_commitment,
+            goal.protection_commitment,
+            goal_commitment,
+        )
+
+
+def _scope_protection_commitment(state: PositionProtectionState) -> bytes:
+    """Commit target protection semantics, excluding raw snapshot/cursor state."""
+
+    return _commit_parts(
+        b"execution-core/acquisition-protection/semantic-context/v1",
+        _commit_mandate(state.mandate),
+        _encode_text(state.policy.value),
+        _encode_int(state.raw_quantity),
+        _encode_int(1 if state.formula_available else 0),
+        _encode_reported_price(state.armed_hard_bail_trigger),
+        _encode_reported_price(state.activation_price),
+        _encode_reported_price(state.high_watermark),
+        _encode_reported_price(state.trail),
+        _encode_int(1 if state.waiting_buy_resolution else 0),
+        state.mandate.evidence_policy.stream_generation._bytes,
+        _encode_text(state.mandate.evidence_policy.sequence_mode.value),
+        _encode_int(state._market_occurrence_epoch or 0),
+        _encode_int(state._market_committed_epoch or 0),
+        _encode_int(state._market_expected_epoch or 0),
+        _encode_int(state._market_source_sequence or 0),
+        _encode_int(state._market_source_time or 0),
+        _encode_int(state._market_evaluation_time or 0),
+        _identity_bytes(state._market_occurrence_identity) or b"",
+        _encode_int(1 if state._market_halted else 0),
+        _encode_int(1 if state._market_baseline_required else 0),
+        _encode_int(1 if state._market_exhausted else 0),
+        _encode_reported_price(state._market_last_primary),
+        _identity_bytes(state._hard_bid_identity) or b"",
+        _encode_int(state._hard_bid_source_time or 0),
+        _identity_bytes(state._trade_identity) or b"",
+        _encode_int(state._trade_source_time or 0),
+        _identity_bytes(state._trail_bid_identity) or b"",
+        _encode_int(state._trail_bid_source_time or 0),
+        state._exit_provenance,
+    )
+
+
+def _new_acquisition_protection_context(
+    application_generation_id: _ApplicationGenerationId,
+    position_scope: _PositionScope,
+    scope_execution_commitment: bytes,
+    scope_protection_commitment: bytes | None,
+    source_protection_commitment: bytes | None,
+    commitment: bytes,
+    _venue_commitment: bytes,
+    _seal: bytes,
+) -> AcquisitionProtectionContext:
+    result = object.__new__(AcquisitionProtectionContext)
+    object.__setattr__(result, "application_generation_id", application_generation_id)
+    object.__setattr__(result, "position_scope", position_scope)
+    object.__setattr__(result, "scope_execution_commitment", scope_execution_commitment)
+    object.__setattr__(
+        result, "scope_protection_commitment", scope_protection_commitment
+    )
+    object.__setattr__(
+        result, "source_protection_commitment", source_protection_commitment
+    )
+    object.__setattr__(result, "commitment", commitment)
+    object.__setattr__(result, "_venue_commitment", _venue_commitment)
+    object.__setattr__(result, "_seal", _seal)
+    return result
+
+
+def _mint_acquisition_protection_context(
+    state: PositionProtectionState | None,
+    venue_context: _AcquisitionVenueContext,
+) -> AcquisitionProtectionContext:
+    source_protection_commitment = None if state is None else state.commitment
+    scope_protection_commitment = (
+        None if state is None else _scope_protection_commitment(state)
+    )
+    commitment = _commit_parts(
+        b"execution-core/acquisition-protection/context/v1",
+        _encode_text(venue_context.application_generation_id.value),
+        _encode_position_scope(venue_context.position_scope),
+        venue_context.scope_execution_commitment,
+        scope_protection_commitment
+        if scope_protection_commitment is not None
+        else _commit_parts(b"execution-core/acquisition-protection/no-state/v1"),
+        source_protection_commitment
+        if source_protection_commitment is not None
+        else _commit_parts(b"execution-core/acquisition-protection/no-source/v1"),
+    )
+    return _new_acquisition_protection_context(
+        venue_context.application_generation_id,
+        venue_context.position_scope,
+        venue_context.scope_execution_commitment,
+        scope_protection_commitment,
+        source_protection_commitment,
+        commitment,
+        venue_context.commitment,
+        _commit_parts(
+            b"execution-core/acquisition-protection/context-seal/v1",
+            commitment,
+            venue_context.commitment,
+        ),
+    )
+
+
+def _acquisition_protection_context_is_authentic(value: object) -> bool:
+    if type(value) is not AcquisitionProtectionContext:
+        return False
+    app_generation = value.application_generation_id
+    position_scope = value.position_scope
+    scope_execution = value.scope_execution_commitment
+    scope_protection = value.scope_protection_commitment
+    source_protection = value.source_protection_commitment
+    commitment = value.commitment
+    venue_commitment = value._venue_commitment
+    seal = value._seal
+    if (
+        type(app_generation) is not _ApplicationGenerationId
+        or type(position_scope) is not _PositionScope
+        or type(scope_execution) is not bytes
+        or len(scope_execution) != 32
+        or type(commitment) is not bytes
+        or len(commitment) != 32
+        or type(venue_commitment) is not bytes
+        or len(venue_commitment) != 32
+        or type(seal) is not bytes
+        or len(seal) != 32
+    ):
+        return False
+    if scope_protection is not None and (
+        type(scope_protection) is not bytes or len(scope_protection) != 32
+    ):
+        return False
+    if source_protection is not None and (
+        type(source_protection) is not bytes or len(source_protection) != 32
+    ):
+        return False
+    expected = _commit_parts(
+        b"execution-core/acquisition-protection/context/v1",
+        _encode_text(app_generation.value),
+        _encode_position_scope(position_scope),
+        scope_execution,
+        scope_protection
+        if scope_protection is not None
+        else _commit_parts(b"execution-core/acquisition-protection/no-state/v1"),
+        source_protection
+        if source_protection is not None
+        else _commit_parts(b"execution-core/acquisition-protection/no-source/v1"),
+    )
+    return commitment == expected and seal == _commit_parts(
+        b"execution-core/acquisition-protection/context-seal/v1",
+        commitment,
+        venue_commitment,
+    )
+
+
+def project_acquisition_protection_context(
+    state: PositionProtectionState | None,
+    book: _VenueRecoveryBook,
+    execution: _ExecutionSnapshot,
+    venue_context: _AcquisitionVenueContext,
+) -> AcquisitionProtectionContext | None:
+    """Return a target semantic context only for exact current raw inputs."""
+
+    if (
+        type(book) is not _VenueRecoveryBook
+        or type(execution) is not _ExecutionSnapshot
+        or type(venue_context) is not _AcquisitionVenueContext
+        or not venue_context.matches_current(
+            book,
+            execution,
+            venue_context.application_generation_id,
+            venue_context.position_scope,
+        )
+    ):
+        return None
+    if state is not None:
+        if (
+            type(state) is not PositionProtectionState
+            or not _state_is_authentic(state)
+            or state.mandate.position_scope != venue_context.position_scope
+            or state.execution_commitment != execution.commitment
+            or state._cursor_ordinal != venue_context._source_protection_cursor_ordinal
+            or state._cursor_head != venue_context._source_protection_cursor_head
+        ):
+            return None
+    return _mint_acquisition_protection_context(state, venue_context)
+
+
+def _optional_acquisition_protection_commitment(value: bytes | None) -> bytes | None:
+    if value is None:
+        return _commit_parts(b"execution-core/acquisition-protection/none/v1")
+    if type(value) is not bytes or len(value) != 32:
+        return None
+    return value
+
+
+def _source_venue_transition_commitment(
+    values: tuple[bytes, ...],
+) -> bytes | None:
+    if type(values) is not tuple:
+        return None
+    if len(values) == 0:
+        return _commit_parts(b"execution-core/acquisition-protection/no-transition/v1")
+    if len(values) != 1:
+        return None
+    value = values[0]
+    if type(value) is not bytes or len(value) != 32:
+        return None
+    return _commit_parts(
+        b"execution-core/acquisition-protection/one-transition/v1",
+        value,
+    )
+
+
+def _acquisition_protection_rebase_seal(
+    kind: AcquisitionProtectionRebaseKind,
+    application_generation_id: _ApplicationGenerationId,
+    position_scope: _PositionScope,
+    predecessor_execution_snapshot_commitment: bytes | None,
+    execution_snapshot_commitment: bytes | None,
+    predecessor_scope_execution_commitment: bytes | None,
+    scope_execution_commitment: bytes | None,
+    predecessor_venue_commitment: bytes | None,
+    venue_commitment: bytes | None,
+    predecessor_context_commitment: bytes,
+    context_commitment: bytes,
+    predecessor_source_protection_commitment: bytes | None,
+    source_protection_commitment: bytes | None,
+    resulting_state: PositionProtectionState | None,
+    source_venue_transition_commitments: tuple[bytes, ...],
+    source_commitment: bytes,
+) -> bytes | None:
+    predecessor_execution = _optional_acquisition_protection_commitment(
+        predecessor_execution_snapshot_commitment
+    )
+    execution = _optional_acquisition_protection_commitment(
+        execution_snapshot_commitment
+    )
+    predecessor_scope = _optional_acquisition_protection_commitment(
+        predecessor_scope_execution_commitment
+    )
+    scope = _optional_acquisition_protection_commitment(scope_execution_commitment)
+    predecessor_venue = _optional_acquisition_protection_commitment(
+        predecessor_venue_commitment
+    )
+    venue = _optional_acquisition_protection_commitment(venue_commitment)
+    predecessor_source = _optional_acquisition_protection_commitment(
+        predecessor_source_protection_commitment
+    )
+    source = _optional_acquisition_protection_commitment(source_protection_commitment)
+    transitions = _source_venue_transition_commitment(
+        source_venue_transition_commitments
+    )
+    resulting = _optional_acquisition_protection_commitment(
+        None if resulting_state is None else resulting_state.commitment
+    )
+    if (
+        predecessor_execution is None
+        or execution is None
+        or predecessor_scope is None
+        or scope is None
+        or predecessor_venue is None
+        or venue is None
+        or predecessor_source is None
+        or source is None
+        or transitions is None
+        or resulting is None
+    ):
+        return None
+    if type(kind) is not AcquisitionProtectionRebaseKind:
+        return None
+    if type(application_generation_id) is not _ApplicationGenerationId:
+        return None
+    if type(position_scope) is not _PositionScope:
+        return None
+    if (
+        type(predecessor_context_commitment) is not bytes
+        or len(predecessor_context_commitment) != 32
+    ):
+        return None
+    if type(context_commitment) is not bytes or len(context_commitment) != 32:
+        return None
+    if type(source_commitment) is not bytes or len(source_commitment) != 32:
+        return None
+    if resulting_state is not None and not _state_is_authentic(resulting_state):
+        return None
+    return _commit_parts(
+        b"execution-core/acquisition-protection/rebase-seal/v2",
+        _encode_text(kind.value),
+        _encode_text(application_generation_id.value),
+        _encode_position_scope(position_scope),
+        predecessor_execution,
+        execution,
+        predecessor_scope,
+        scope,
+        predecessor_venue,
+        venue,
+        predecessor_context_commitment,
+        context_commitment,
+        predecessor_source,
+        source,
+        resulting,
+        transitions,
+        source_commitment,
+    )
+
+
+def _new_acquisition_protection_rebase_projection(
+    kind: AcquisitionProtectionRebaseKind,
+    application_generation_id: _ApplicationGenerationId,
+    position_scope: _PositionScope,
+    predecessor_execution_snapshot_commitment: bytes | None,
+    execution_snapshot_commitment: bytes | None,
+    predecessor_scope_execution_commitment: bytes | None,
+    scope_execution_commitment: bytes | None,
+    predecessor_venue_commitment: bytes | None,
+    venue_commitment: bytes | None,
+    predecessor_context_commitment: bytes,
+    context_commitment: bytes,
+    predecessor_source_protection_commitment: bytes | None,
+    source_protection_commitment: bytes | None,
+    resulting_state: PositionProtectionState | None,
+    source_venue_transition_commitments: tuple[bytes, ...],
+    source_commitment: bytes,
+    _seal: bytes,
+) -> AcquisitionProtectionRebaseProjection:
+    result = object.__new__(AcquisitionProtectionRebaseProjection)
+    object.__setattr__(result, "kind", kind)
+    object.__setattr__(result, "application_generation_id", application_generation_id)
+    object.__setattr__(result, "position_scope", position_scope)
+    object.__setattr__(
+        result,
+        "predecessor_execution_snapshot_commitment",
+        predecessor_execution_snapshot_commitment,
+    )
+    object.__setattr__(
+        result, "execution_snapshot_commitment", execution_snapshot_commitment
+    )
+    object.__setattr__(
+        result,
+        "predecessor_scope_execution_commitment",
+        predecessor_scope_execution_commitment,
+    )
+    object.__setattr__(result, "scope_execution_commitment", scope_execution_commitment)
+    object.__setattr__(
+        result,
+        "predecessor_venue_commitment",
+        predecessor_venue_commitment,
+    )
+    object.__setattr__(result, "venue_commitment", venue_commitment)
+    object.__setattr__(
+        result,
+        "predecessor_context_commitment",
+        predecessor_context_commitment,
+    )
+    object.__setattr__(result, "context_commitment", context_commitment)
+    object.__setattr__(
+        result,
+        "predecessor_source_protection_commitment",
+        predecessor_source_protection_commitment,
+    )
+    object.__setattr__(
+        result,
+        "source_protection_commitment",
+        source_protection_commitment,
+    )
+    object.__setattr__(result, "resulting_state", resulting_state)
+    object.__setattr__(
+        result,
+        "source_venue_transition_commitments",
+        source_venue_transition_commitments,
+    )
+    object.__setattr__(result, "source_commitment", source_commitment)
+    object.__setattr__(result, "_seal", _seal)
+    return result
+
+
+def _mint_acquisition_protection_rebase_projection(
+    kind: AcquisitionProtectionRebaseKind,
+    predecessor_context: AcquisitionProtectionContext,
+    current_context: AcquisitionProtectionContext,
+    predecessor_execution_snapshot_commitment: bytes | None,
+    execution_snapshot_commitment: bytes | None,
+    resulting_state: PositionProtectionState | None,
+    source_venue_transition_commitments: tuple[bytes, ...],
+    source_commitment: bytes,
+) -> AcquisitionProtectionRebaseProjection | None:
+    if type(kind) is not AcquisitionProtectionRebaseKind:
+        return None
+    if not _acquisition_protection_context_is_authentic(predecessor_context):
+        return None
+    if not _acquisition_protection_context_is_authentic(current_context):
+        return None
+    if (
+        predecessor_context.application_generation_id
+        != current_context.application_generation_id
+    ):
+        return None
+    if predecessor_context.position_scope != current_context.position_scope:
+        return None
+    seal = _acquisition_protection_rebase_seal(
+        kind,
+        predecessor_context.application_generation_id,
+        predecessor_context.position_scope,
+        predecessor_execution_snapshot_commitment,
+        execution_snapshot_commitment,
+        predecessor_context.scope_execution_commitment,
+        current_context.scope_execution_commitment,
+        predecessor_context._venue_commitment,
+        current_context._venue_commitment,
+        predecessor_context.commitment,
+        current_context.commitment,
+        predecessor_context.source_protection_commitment,
+        current_context.source_protection_commitment,
+        resulting_state,
+        source_venue_transition_commitments,
+        source_commitment,
+    )
+    if seal is None:
+        return None
+    return _new_acquisition_protection_rebase_projection(
+        kind,
+        predecessor_context.application_generation_id,
+        predecessor_context.position_scope,
+        predecessor_execution_snapshot_commitment,
+        execution_snapshot_commitment,
+        predecessor_context.scope_execution_commitment,
+        current_context.scope_execution_commitment,
+        predecessor_context._venue_commitment,
+        current_context._venue_commitment,
+        predecessor_context.commitment,
+        current_context.commitment,
+        predecessor_context.source_protection_commitment,
+        current_context.source_protection_commitment,
+        resulting_state,
+        source_venue_transition_commitments,
+        source_commitment,
+        seal,
+    )
+
+
+def _acquisition_protection_rebase_projection_is_authentic(value: object) -> bool:
+    if type(value) is not AcquisitionProtectionRebaseProjection:
+        return False
+    expected = _acquisition_protection_rebase_seal(
+        value.kind,
+        value.application_generation_id,
+        value.position_scope,
+        value.predecessor_execution_snapshot_commitment,
+        value.execution_snapshot_commitment,
+        value.predecessor_scope_execution_commitment,
+        value.scope_execution_commitment,
+        value.predecessor_venue_commitment,
+        value.venue_commitment,
+        value.predecessor_context_commitment,
+        value.context_commitment,
+        value.predecessor_source_protection_commitment,
+        value.source_protection_commitment,
+        value.resulting_state,
+        value.source_venue_transition_commitments,
+        value.source_commitment,
+    )
+    return (
+        expected is not None and type(value._seal) is bytes and value._seal == expected
+    )
+
+
+def _state_matches_projection_predecessor(
+    state: PositionProtectionState,
+    projection: ProtectionVenueProjection,
+) -> bool:
+    return (
+        state.execution_commitment == projection.predecessor_execution_commitment
+        and state._cursor_ordinal == projection.predecessor_cursor_ordinal
+        and state._cursor_head == projection.predecessor_cursor_head
+    )
+
+
+def _state_matches_projection_current(
+    state: PositionProtectionState,
+    projection: ProtectionVenueProjection,
+) -> bool:
+    return (
+        state.execution_commitment == projection.execution_commitment
+        and state._cursor_ordinal == projection.cursor_ordinal
+        and state._cursor_head == projection.cursor_head
+    )
+
+
+def project_acquisition_protection_rebase(
+    prior_state: PositionProtectionState | None,
+    transition: ProtectionTransition,
+    predecessor_context: AcquisitionProtectionContext,
+    current_context: AcquisitionProtectionContext,
+) -> AcquisitionProtectionRebaseProjection | None:
+    """Project one semantic reducer outcome; neutral catch-up is a separate route."""
+
+    if prior_state is None or not _state_is_authentic(prior_state):
+        return None
+    if not _protection_transition_is_authentic(transition):
+        return None
+    if transition.disposition is not ProtectionDisposition.APPLIED:
+        return None
+    if transition._predecessor_protection_commitment != prior_state.commitment:
+        return None
+    source_projection = transition._source_projection
+    if source_projection is None:
+        return None
+    if not _state_matches_projection_current(transition.state, source_projection):
+        return None
+    if not (
+        _state_matches_projection_predecessor(prior_state, source_projection)
+        or _state_matches_projection_current(prior_state, source_projection)
+    ):
+        return None
+    if not _acquisition_protection_context_is_authentic(predecessor_context):
+        return None
+    if not _acquisition_protection_context_is_authentic(current_context):
+        return None
+    if predecessor_context.position_scope != current_context.position_scope:
+        return None
+    if transition.state.mandate.position_scope != current_context.position_scope:
+        return None
+    if predecessor_context.source_protection_commitment != prior_state.commitment:
+        return None
+    if current_context.source_protection_commitment != transition.state.commitment:
+        return None
+    if (
+        predecessor_context.scope_protection_commitment
+        == current_context.scope_protection_commitment
+    ):
+        return None
+    source_commitment = _commit_parts(
+        b"execution-core/acquisition-protection/rebase-source/v2",
+        transition._seal,
+        source_projection._seal,
+        prior_state.commitment,
+        transition.state.commitment,
+    )
+    return _mint_acquisition_protection_rebase_projection(
+        AcquisitionProtectionRebaseKind.SEMANTIC_REBASE,
+        predecessor_context,
+        current_context,
+        prior_state.execution_commitment,
+        transition.state.execution_commitment,
+        transition.state,
+        (),
+        source_commitment,
+    )
+
+
+def _project_acquisition_neutral_reprojection(
+    prior_state: PositionProtectionState,
+    predecessor_execution: _ExecutionSnapshot,
+    predecessor_venue_context: _AcquisitionVenueContext,
+    transition: _VenueRecoveryTransition,
+    venue_context: _AcquisitionVenueContext,
+) -> AcquisitionProtectionRebaseProjection | None:
+    """Mint one raw-state-only refresh from a sealed zero-economic catch-up."""
+
+    if (
+        type(prior_state) is not PositionProtectionState
+        or not _state_is_authentic(prior_state)
+        or type(predecessor_execution) is not _ExecutionSnapshot
+        or type(predecessor_venue_context) is not _AcquisitionVenueContext
+        or type(transition) is not _VenueRecoveryTransition
+        or type(venue_context) is not _AcquisitionVenueContext
+        or transition.disposition is not _VenueRecoveryDisposition.APPLIED
+        or transition.quantity_delta != 0
+        or predecessor_execution.position.scope != prior_state.mandate.position_scope
+        or transition.execution.position.scope != prior_state.mandate.position_scope
+        or prior_state.execution_commitment != predecessor_execution.commitment
+        or predecessor_venue_context.position_scope
+        != prior_state.mandate.position_scope
+        or predecessor_venue_context.application_generation_id
+        != venue_context.application_generation_id
+        or predecessor_venue_context.position_scope != venue_context.position_scope
+        or predecessor_venue_context._source_execution_commitment
+        != predecessor_execution.commitment
+        or predecessor_venue_context._source_protection_cursor_ordinal
+        != prior_state._cursor_ordinal
+        or predecessor_venue_context._source_protection_cursor_head
+        != prior_state._cursor_head
+        or not venue_context.matches_current(
+            transition.book,
+            transition.execution,
+            venue_context.application_generation_id,
+            venue_context.position_scope,
+        )
+    ):
+        return None
+    try:
+        source_projection = project_protection_venue(
+            transition,
+            prior_state.mandate,
+        )
+    except (TypeError, ValueError):
+        return None
+    if (
+        not _state_matches_projection_predecessor(prior_state, source_projection)
+        or source_projection._raw_quantity != prior_state.raw_quantity
+        or source_projection.predecessor_execution_commitment
+        != predecessor_execution.commitment
+    ):
+        return None
+    reduced = reduce_position_protection(prior_state, source_projection)
+    if (
+        reduced.disposition is not ProtectionDisposition.APPLIED
+        or reduced.goal is not None
+        or reduced.critical_alert is not None
+        or not _protection_transition_is_authentic(reduced)
+        or _scope_protection_commitment(prior_state)
+        != _scope_protection_commitment(reduced.state)
+    ):
+        return None
+    predecessor_context = _mint_acquisition_protection_context(
+        prior_state,
+        predecessor_venue_context,
+    )
+    current_context = project_acquisition_protection_context(
+        reduced.state,
+        transition.book,
+        transition.execution,
+        venue_context,
+    )
+    if (
+        current_context is None
+        or predecessor_context.scope_execution_commitment
+        != current_context.scope_execution_commitment
+        or predecessor_context._venue_commitment != current_context._venue_commitment
+        or predecessor_context.scope_protection_commitment
+        != current_context.scope_protection_commitment
+        or predecessor_context.source_protection_commitment
+        == current_context.source_protection_commitment
+    ):
+        return None
+    source_commitment = _commit_parts(
+        b"execution-core/acquisition-protection/neutral-source/v1",
+        transition._protection_proof_commitment,
+        reduced._seal,
+        predecessor_context.commitment,
+        current_context.commitment,
+    )
+    return _mint_acquisition_protection_rebase_projection(
+        AcquisitionProtectionRebaseKind.NEUTRAL_REPROJECTION,
+        predecessor_context,
+        current_context,
+        predecessor_execution.commitment,
+        transition.execution.commitment,
+        reduced.state,
+        (transition._protection_proof_commitment,),
+        source_commitment,
+    )
+
+
+def _acquisition_preemption_intent_seal(
+    state: PositionProtectionState,
+    context: AcquisitionProtectionContext,
+) -> bytes:
+    return _commit_parts(
+        b"execution-core/acquisition-protection/preempt-buy-only/v1",
+        _encode_text(context.application_generation_id.value),
+        _encode_position_scope(context.position_scope),
+        context.scope_execution_commitment,
+        context.scope_protection_commitment or b"",
+        context.source_protection_commitment or b"",
+        context.commitment,
+        _commit_mandate(state.mandate),
+        _encode_int(state.raw_quantity),
+        _encode_text(state.policy.value),
+        state._exit_provenance,
+    )
+
+
+def _new_acquisition_preemption_intent(
+    state: PositionProtectionState,
+    context: AcquisitionProtectionContext,
+) -> _AcquisitionPreemptionIntent:
+    result = object.__new__(_AcquisitionPreemptionIntent)
+    object.__setattr__(
+        result, "application_generation_id", context.application_generation_id
+    )
+    object.__setattr__(result, "position_scope", context.position_scope)
+    object.__setattr__(
+        result, "scope_execution_commitment", context.scope_execution_commitment
+    )
+    object.__setattr__(
+        result, "scope_protection_commitment", context.scope_protection_commitment
+    )
+    object.__setattr__(
+        result, "source_protection_commitment", context.source_protection_commitment
+    )
+    object.__setattr__(result, "context_commitment", context.commitment)
+    object.__setattr__(result, "mandate_commitment", _commit_mandate(state.mandate))
+    object.__setattr__(result, "raw_quantity", state.raw_quantity)
+    object.__setattr__(result, "policy", state.policy)
+    object.__setattr__(result, "exit_provenance", state._exit_provenance)
+    object.__setattr__(result, "_purpose", "PREEMPT_BUY_ONLY")
+    object.__setattr__(
+        result,
+        "_seal",
+        _acquisition_preemption_intent_seal(state, context),
+    )
+    return result
+
+
+def _acquisition_commitment_is_exact(value: object) -> bool:
+    return type(value) is bytes and len(value) == 32
+
+
+def _acquisition_preemption_intent_is_authentic(value: object) -> bool:
+    if type(value) is not _AcquisitionPreemptionIntent:
+        return False
+    if (
+        value._purpose != "PREEMPT_BUY_ONLY"
+        or type(value.application_generation_id) is not _ApplicationGenerationId
+        or type(value.position_scope) is not _PositionScope
+        or type(value.raw_quantity) is not int
+        or value.raw_quantity <= 0
+        or type(value.policy) is not ProtectionPolicy
+    ):
+        return False
+    if (
+        not _acquisition_commitment_is_exact(value.scope_execution_commitment)
+        or not _acquisition_commitment_is_exact(value.scope_protection_commitment)
+        or not _acquisition_commitment_is_exact(value.source_protection_commitment)
+        or not _acquisition_commitment_is_exact(value.context_commitment)
+        or not _acquisition_commitment_is_exact(value.mandate_commitment)
+        or not _acquisition_commitment_is_exact(value.exit_provenance)
+        or not _acquisition_commitment_is_exact(value._seal)
+    ):
+        return False
+    return value._seal == _commit_parts(
+        b"execution-core/acquisition-protection/preempt-buy-only/v1",
+        _encode_text(value.application_generation_id.value),
+        _encode_position_scope(value.position_scope),
+        value.scope_execution_commitment,
+        value.scope_protection_commitment,
+        value.source_protection_commitment,
+        value.context_commitment,
+        value.mandate_commitment,
+        _encode_int(value.raw_quantity),
+        _encode_text(value.policy.value),
+        value.exit_provenance,
+    )
+
+
+def _project_acquisition_preemption_intent(
+    state: PositionProtectionState,
+    current_context: AcquisitionProtectionContext,
+) -> _AcquisitionPreemptionIntent | None:
+    """Project cancel-only need without requiring a SELL goal."""
+
+    if (
+        type(state) is not PositionProtectionState
+        or not _state_is_authentic(state)
+        or not _acquisition_protection_context_is_authentic(current_context)
+        or current_context.position_scope != state.mandate.position_scope
+        or current_context.source_protection_commitment != state.commitment
+        or current_context.scope_protection_commitment
+        != _scope_protection_commitment(state)
+        or state.raw_quantity <= 0
+        or state.raw_quantity > state.mandate.maximum_quantity.value
+        or state.policy
+        not in {ProtectionPolicy.EXIT_NORMAL, ProtectionPolicy.HARD_BAIL}
+        or not state.waiting_buy_resolution
+        or not _real_exit(state._exit_provenance)
+    ):
+        return None
+    return _new_acquisition_preemption_intent(state, current_context)
+
+
+def _acquisition_protection_exit_intent_seal(
+    transition: ProtectionTransition,
+    context: AcquisitionProtectionContext,
+) -> bytes:
+    goal_commitment = _execution_goal_commitment(transition.goal)
+    return _commit_parts(
+        b"execution-core/acquisition-protection/create-exit-only/v1",
+        _encode_text(context.application_generation_id.value),
+        _encode_position_scope(context.position_scope),
+        context.scope_execution_commitment,
+        context.scope_protection_commitment or b"",
+        context.source_protection_commitment or b"",
+        context.commitment,
+        transition._seal,
+        goal_commitment or b"",
+    )
+
+
+def _new_acquisition_protection_exit_intent(
+    transition: ProtectionTransition,
+    context: AcquisitionProtectionContext,
+) -> _AcquisitionProtectionExitIntent:
+    result = object.__new__(_AcquisitionProtectionExitIntent)
+    object.__setattr__(
+        result, "application_generation_id", context.application_generation_id
+    )
+    object.__setattr__(result, "position_scope", context.position_scope)
+    object.__setattr__(
+        result, "scope_execution_commitment", context.scope_execution_commitment
+    )
+    object.__setattr__(
+        result, "scope_protection_commitment", context.scope_protection_commitment
+    )
+    object.__setattr__(
+        result, "source_protection_commitment", context.source_protection_commitment
+    )
+    object.__setattr__(result, "context_commitment", context.commitment)
+    object.__setattr__(result, "transition_commitment", transition._seal)
+    object.__setattr__(result, "goal", transition.goal)
+    object.__setattr__(result, "_purpose", "CREATE_PROTECTION_EXIT_ONLY")
+    object.__setattr__(
+        result,
+        "_seal",
+        _acquisition_protection_exit_intent_seal(transition, context),
+    )
+    return result
+
+
+def _acquisition_protection_exit_intent_is_authentic(value: object) -> bool:
+    if type(value) is not _AcquisitionProtectionExitIntent:
+        return False
+    goal_commitment = _execution_goal_commitment(value.goal)
+    if (
+        value._purpose != "CREATE_PROTECTION_EXIT_ONLY"
+        or type(value.application_generation_id) is not _ApplicationGenerationId
+        or type(value.position_scope) is not _PositionScope
+        or goal_commitment is None
+    ):
+        return False
+    if (
+        not _acquisition_commitment_is_exact(value.scope_execution_commitment)
+        or not _acquisition_commitment_is_exact(value.scope_protection_commitment)
+        or not _acquisition_commitment_is_exact(value.source_protection_commitment)
+        or not _acquisition_commitment_is_exact(value.context_commitment)
+        or not _acquisition_commitment_is_exact(value.transition_commitment)
+        or not _acquisition_commitment_is_exact(value._seal)
+    ):
+        return False
+    return value._seal == _commit_parts(
+        b"execution-core/acquisition-protection/create-exit-only/v1",
+        _encode_text(value.application_generation_id.value),
+        _encode_position_scope(value.position_scope),
+        value.scope_execution_commitment,
+        value.scope_protection_commitment,
+        value.source_protection_commitment,
+        value.context_commitment,
+        value.transition_commitment,
+        goal_commitment,
+    )
+
+
+def _project_acquisition_protection_exit_intent(
+    transition: ProtectionTransition,
+    current_context: AcquisitionProtectionContext,
+) -> _AcquisitionProtectionExitIntent | None:
+    """Project one exact goal-bearing protective SELL relation."""
+
+    if (
+        not _protection_transition_is_authentic(transition)
+        or transition.disposition is not ProtectionDisposition.APPLIED
+        or transition.goal is None
+        or not _acquisition_protection_context_is_authentic(current_context)
+    ):
+        return None
+    state = transition.state
+    source_projection = transition._source_projection
+    if (
+        state.policy not in {ProtectionPolicy.EXIT_NORMAL, ProtectionPolicy.HARD_BAIL}
+        or state.raw_quantity <= 0
+        or state.waiting_buy_resolution
+        or current_context.position_scope != state.mandate.position_scope
+        or current_context.source_protection_commitment != state.commitment
+        or current_context.scope_protection_commitment
+        != _scope_protection_commitment(state)
+        or source_projection is None
+        or _goal_for_state(state, source_projection) != transition.goal
+    ):
+        return None
+    return _new_acquisition_protection_exit_intent(transition, current_context)
 
 
 def _new_position_protection_state(
@@ -614,32 +1989,19 @@ def _new_protection_venue_projection(
 
 
 def _commit_mandate(mandate: ProtectionMandate) -> bytes:
-    return _commit_parts(
-        b"execution-core/protection-mandate/v1",
-        _encode_text(mandate.mandate_id.value),
-        _encode_position_scope(mandate.position_scope),
-        _encode_text(mandate.session_id.value),
-        _encode_text(mandate.configuration_version),
-        _encode_fraction(mandate.loss_fraction),
-        _encode_fraction(mandate.approved_gain),
-        _encode_fraction(mandate.percent_trail_fraction),
-        _encode_fraction(mandate.atr_multiple),
-        _encode_int(mandate.tick.tick_units.value),
-        _encode_fraction(_Fraction(mandate.tick.scale.value)),
-        _encode_text(mandate.normal_guard.guard_id),
-        mandate.normal_guard.policy_commitment,
-        _encode_text(mandate.emergency_guard.guard_id),
-        mandate.emergency_guard.policy_commitment,
-        _encode_text(mandate.evidence_policy.source_id.value),
-        _encode_text(mandate.evidence_policy.stream_generation.value),
-        _encode_text(mandate.evidence_policy.sequence_mode.value),
-        _encode_int(mandate.evidence_policy.max_age),
-        _encode_int(mandate.evidence_policy.corroboration_window),
-        _encode_fraction(mandate.evidence_policy.max_step_fraction),
-        _encode_int(mandate.maximum_quantity.value),
-        _encode_int(mandate.maximum_goal_rate),
-        _encode_int(mandate.deadline),
-    )
+    if type(mandate) is not ProtectionMandate:
+        return b""
+    compatibility = mandate.emergency_recovery_compatibility
+    if not _emergency_recovery_compatibility_is_authentic(compatibility):
+        return b""
+    if compatibility.position_scope != mandate.position_scope:
+        return b""
+    if compatibility.session_id != mandate.session_id:
+        return b""
+    expected = _protection_mandate_commitment(mandate)
+    if type(mandate.commitment) is not bytes or mandate.commitment != expected:
+        return b""
+    return expected
 
 
 def _projection_commitment(
@@ -697,6 +2059,11 @@ def _projection_commitment(
 
 def _projection_is_authentic(projection: ProtectionVenueProjection) -> bool:
     if type(projection._seal) is not bytes:
+        return False
+    if (
+        type(projection._mandate_commitment) is not bytes
+        or len(projection._mandate_commitment) != 32
+    ):
         return False
     return projection._seal == _projection_commitment(
         projection.predecessor_cursor_ordinal,
@@ -998,6 +2365,9 @@ def _state_is_authentic(state: PositionProtectionState) -> bool:
         return False
     if type(state.commitment) is not bytes:
         return False
+    mandate_commitment = _commit_mandate(state.mandate)
+    if type(mandate_commitment) is not bytes or len(mandate_commitment) != 32:
+        return False
     if not _market_generation_is_authentic(
         state.mandate.evidence_policy.stream_generation
     ):
@@ -1056,6 +2426,205 @@ def _state_is_authentic(state: PositionProtectionState) -> bool:
         state._trail_bid_source_time,
         state._exit_provenance,
     )
+
+
+def _execution_goal_commitment(goal: ExecutionGoal | None) -> bytes | None:
+    """Return the exact immutable shape of one optional emitted goal."""
+
+    if goal is None:
+        return None
+    if type(goal) is not ExecutionGoal:
+        return None
+    if type(goal.side) is not _ExecutionSide:
+        return None
+    if type(goal.residual) is not _Quantity:
+        return None
+    if type(goal.residual.value) is not int or goal.residual.value <= 0:
+        return None
+    if type(goal.urgency) is not ProtectionUrgency:
+        return None
+    if type(goal.guard) is not ExecutionGuard:
+        return None
+    if type(goal.deadline) is not int or goal.deadline < 0:
+        return None
+    if type(goal.session_id) is not _SessionId:
+        return None
+    if type(goal.mandate_id) is not _MandateId:
+        return None
+    if type(goal.maximum_goal_rate) is not int or goal.maximum_goal_rate <= 0:
+        return None
+    if (
+        type(goal.execution_commitment) is not bytes
+        or len(goal.execution_commitment) != 32
+    ):
+        return None
+    if (
+        type(goal.protection_commitment) is not bytes
+        or len(goal.protection_commitment) != 32
+    ):
+        return None
+    return _commit_parts(
+        b"execution-core/protection-transition/goal/v1",
+        _encode_text(goal.side.value),
+        _encode_int(goal.residual.value),
+        _encode_text(goal.urgency.value),
+        _encode_text(goal.guard.guard_id),
+        goal.guard.policy_commitment,
+        _encode_int(goal.deadline),
+        _encode_text(goal.session_id.value),
+        _encode_text(goal.mandate_id.value),
+        _encode_int(goal.maximum_goal_rate),
+        goal.execution_commitment,
+        goal.protection_commitment,
+    )
+
+
+def _protection_transition_seal(
+    state: PositionProtectionState,
+    disposition: ProtectionDisposition,
+    goal: ExecutionGoal | None,
+    critical_alert: ProtectionAlert | None,
+    predecessor_protection_commitment: bytes | None,
+    source_projection: ProtectionVenueProjection | None,
+) -> bytes:
+    goal_commitment = _execution_goal_commitment(goal)
+    state_commitment = (
+        state.commitment
+        if type(state) is PositionProtectionState
+        and type(state.commitment) is bytes
+        and len(state.commitment) == 32
+        else b""
+    )
+    source_commitment = (
+        source_projection._seal
+        if type(source_projection) is ProtectionVenueProjection
+        and type(source_projection._seal) is bytes
+        and len(source_projection._seal) == 32
+        else b""
+    )
+    return _commit_parts(
+        b"execution-core/protection-transition/v1",
+        state_commitment,
+        _encode_text(disposition.value)
+        if type(disposition) is ProtectionDisposition
+        else b"",
+        goal_commitment if goal_commitment is not None else b"",
+        _encode_text(critical_alert.value)
+        if type(critical_alert) is ProtectionAlert
+        else b"",
+        predecessor_protection_commitment
+        if type(predecessor_protection_commitment) is bytes
+        and len(predecessor_protection_commitment) == 32
+        else b"",
+        source_commitment,
+    )
+
+
+def _new_protection_transition(
+    state: PositionProtectionState,
+    disposition: ProtectionDisposition,
+    goal: ExecutionGoal | None,
+    critical_alert: ProtectionAlert | None,
+    _predecessor_protection_commitment: bytes | None,
+    _source_projection: ProtectionVenueProjection | None,
+    _seal: bytes,
+) -> ProtectionTransition:
+    result = object.__new__(ProtectionTransition)
+    object.__setattr__(result, "state", state)
+    object.__setattr__(result, "disposition", disposition)
+    object.__setattr__(result, "goal", goal)
+    object.__setattr__(result, "critical_alert", critical_alert)
+    object.__setattr__(
+        result,
+        "_predecessor_protection_commitment",
+        _predecessor_protection_commitment,
+    )
+    object.__setattr__(result, "_source_projection", _source_projection)
+    object.__setattr__(result, "_seal", _seal)
+    return result
+
+
+def _mint_protection_transition(
+    predecessor_state: PositionProtectionState,
+    source_projection: ProtectionVenueProjection,
+    state: PositionProtectionState,
+    disposition: ProtectionDisposition,
+    goal: ExecutionGoal | None,
+    critical_alert: ProtectionAlert | None,
+) -> ProtectionTransition:
+    predecessor_protection_commitment = (
+        predecessor_state.commitment if _state_is_authentic(predecessor_state) else None
+    )
+    exact_source_projection = (
+        source_projection
+        if type(source_projection) is ProtectionVenueProjection
+        and _projection_is_authentic(source_projection)
+        else None
+    )
+    seal = _protection_transition_seal(
+        state,
+        disposition,
+        goal,
+        critical_alert,
+        predecessor_protection_commitment,
+        exact_source_projection,
+    )
+    return _new_protection_transition(
+        state,
+        disposition,
+        goal,
+        critical_alert,
+        predecessor_protection_commitment,
+        exact_source_projection,
+        seal,
+    )
+
+
+def _protection_transition_is_authentic(transition: object) -> bool:
+    if type(transition) is not ProtectionTransition:
+        return False
+    state = transition.state
+    disposition = transition.disposition
+    goal = transition.goal
+    critical_alert = transition.critical_alert
+    predecessor = transition._predecessor_protection_commitment
+    source_projection = transition._source_projection
+    seal = transition._seal
+    if not _state_is_authentic(state):
+        return False
+    if type(disposition) is not ProtectionDisposition:
+        return False
+    if _execution_goal_commitment(goal) is None and goal is not None:
+        return False
+    if critical_alert is not None and type(critical_alert) is not ProtectionAlert:
+        return False
+    if predecessor is not None and (
+        type(predecessor) is not bytes or len(predecessor) != 32
+    ):
+        return False
+    if type(source_projection) is not ProtectionVenueProjection:
+        return False
+    if not _projection_is_authentic(source_projection):
+        return False
+    if state.mandate.position_scope != source_projection._position_scope:
+        return False
+    if _commit_mandate(state.mandate) != source_projection._mandate_commitment:
+        return False
+    if state.execution_commitment != source_projection.execution_commitment:
+        return False
+    if state._cursor_ordinal != source_projection.cursor_ordinal:
+        return False
+    if state._cursor_head != source_projection.cursor_head:
+        return False
+    expected = _protection_transition_seal(
+        state,
+        disposition,
+        goal,
+        critical_alert,
+        predecessor,
+        source_projection,
+    )
+    return type(seal) is bytes and seal == expected
 
 
 def _upward_price(value: _Fraction, tick: _TickMetadata) -> _ReportedPrice:
@@ -1439,6 +3008,323 @@ def _new_state_from_projection(
         trail_bid_identity,
         trail_bid_source_time,
         exit_provenance,
+    )
+
+
+def _acquisition_mixed_recovery_proof_commitment(
+    *,
+    application_generation_id: _ApplicationGenerationId,
+    position_scope: _PositionScope,
+    retired_generation_id: _AcquisitionGenerationId,
+    retired_relation_commitment: bytes,
+    predecessor_controller_head: bytes,
+    controller_head: bytes,
+    execution_commitment: bytes,
+    venue_commitment: bytes,
+    dual_binding_commitment: bytes,
+    compatibility_commitment: bytes,
+    mandate_commitment: bytes,
+    prior_protection_commitment: bytes | None,
+    source_projection_commitment: bytes,
+    aggregate_quantity: int,
+) -> bytes:
+    if (
+        type(application_generation_id) is not _ApplicationGenerationId
+        or type(position_scope) is not _PositionScope
+        or type(retired_generation_id) is not _AcquisitionGenerationId
+        or type(aggregate_quantity) is not int
+        or aggregate_quantity < 0
+    ):
+        raise TypeError("mixed recovery proof requires exact owner coordinates")
+    if (
+        not _acquisition_commitment_is_exact(retired_relation_commitment)
+        or not _acquisition_commitment_is_exact(predecessor_controller_head)
+        or not _acquisition_commitment_is_exact(controller_head)
+        or not _acquisition_commitment_is_exact(execution_commitment)
+        or not _acquisition_commitment_is_exact(venue_commitment)
+        or not _acquisition_commitment_is_exact(dual_binding_commitment)
+        or not _acquisition_commitment_is_exact(compatibility_commitment)
+        or not _acquisition_commitment_is_exact(mandate_commitment)
+        or not _acquisition_commitment_is_exact(source_projection_commitment)
+    ):
+        raise ValueError("mixed recovery proof commitment must contain 32 bytes")
+    if prior_protection_commitment is not None and (
+        type(prior_protection_commitment) is not bytes
+        or len(prior_protection_commitment) != 32
+    ):
+        raise ValueError("mixed recovery predecessor commitment must contain 32 bytes")
+    return _commit_parts(
+        b"execution-core/acquisition-protection/mixed-recovery-proof/v1",
+        _encode_text(application_generation_id.value),
+        _encode_position_scope(position_scope),
+        _encode_text(retired_generation_id.value),
+        retired_relation_commitment,
+        predecessor_controller_head,
+        controller_head,
+        execution_commitment,
+        venue_commitment,
+        dual_binding_commitment,
+        compatibility_commitment,
+        mandate_commitment,
+        prior_protection_commitment or b"",
+        source_projection_commitment,
+        _encode_int(aggregate_quantity),
+    )
+
+
+def _new_acquisition_mixed_recovery_proof(
+    *,
+    application_generation_id: _ApplicationGenerationId,
+    position_scope: _PositionScope,
+    retired_generation_id: _AcquisitionGenerationId,
+    retired_relation_commitment: bytes,
+    predecessor_controller_head: bytes,
+    controller_head: bytes,
+    execution_commitment: bytes,
+    venue_commitment: bytes,
+    dual_binding_commitment: bytes,
+    compatibility_commitment: bytes,
+    mandate_commitment: bytes,
+    prior_protection_commitment: bytes | None,
+    source_projection_commitment: bytes,
+    aggregate_quantity: int,
+) -> AcquisitionMixedRecoveryProof:
+    commitment = _acquisition_mixed_recovery_proof_commitment(
+        application_generation_id=application_generation_id,
+        position_scope=position_scope,
+        retired_generation_id=retired_generation_id,
+        retired_relation_commitment=retired_relation_commitment,
+        predecessor_controller_head=predecessor_controller_head,
+        controller_head=controller_head,
+        execution_commitment=execution_commitment,
+        venue_commitment=venue_commitment,
+        dual_binding_commitment=dual_binding_commitment,
+        compatibility_commitment=compatibility_commitment,
+        mandate_commitment=mandate_commitment,
+        prior_protection_commitment=prior_protection_commitment,
+        source_projection_commitment=source_projection_commitment,
+        aggregate_quantity=aggregate_quantity,
+    )
+    result = object.__new__(AcquisitionMixedRecoveryProof)
+    object.__setattr__(result, "application_generation_id", application_generation_id)
+    object.__setattr__(result, "position_scope", position_scope)
+    object.__setattr__(result, "retired_generation_id", retired_generation_id)
+    object.__setattr__(
+        result, "retired_relation_commitment", retired_relation_commitment
+    )
+    object.__setattr__(
+        result, "predecessor_controller_head", predecessor_controller_head
+    )
+    object.__setattr__(result, "controller_head", controller_head)
+    object.__setattr__(result, "execution_commitment", execution_commitment)
+    object.__setattr__(result, "venue_commitment", venue_commitment)
+    object.__setattr__(result, "dual_binding_commitment", dual_binding_commitment)
+    object.__setattr__(result, "compatibility_commitment", compatibility_commitment)
+    object.__setattr__(result, "mandate_commitment", mandate_commitment)
+    object.__setattr__(
+        result, "prior_protection_commitment", prior_protection_commitment
+    )
+    object.__setattr__(
+        result, "source_projection_commitment", source_projection_commitment
+    )
+    object.__setattr__(result, "aggregate_quantity", aggregate_quantity)
+    object.__setattr__(result, "commitment", commitment)
+    object.__setattr__(
+        result,
+        "_seal",
+        _commit_parts(
+            b"execution-core/acquisition-protection/mixed-recovery-proof-seal/v1",
+            commitment,
+        ),
+    )
+    return result
+
+
+def _acquisition_mixed_recovery_proof_is_authentic(value: object) -> bool:
+    if type(value) is not AcquisitionMixedRecoveryProof:
+        return False
+    try:
+        commitment = _acquisition_mixed_recovery_proof_commitment(
+            application_generation_id=value.application_generation_id,
+            position_scope=value.position_scope,
+            retired_generation_id=value.retired_generation_id,
+            retired_relation_commitment=value.retired_relation_commitment,
+            predecessor_controller_head=value.predecessor_controller_head,
+            controller_head=value.controller_head,
+            execution_commitment=value.execution_commitment,
+            venue_commitment=value.venue_commitment,
+            dual_binding_commitment=value.dual_binding_commitment,
+            compatibility_commitment=value.compatibility_commitment,
+            mandate_commitment=value.mandate_commitment,
+            prior_protection_commitment=value.prior_protection_commitment,
+            source_projection_commitment=value.source_projection_commitment,
+            aggregate_quantity=value.aggregate_quantity,
+        )
+    except (AttributeError, TypeError, ValueError):
+        return False
+    return bool(
+        value.commitment == commitment
+        and value._seal
+        == _commit_parts(
+            b"execution-core/acquisition-protection/mixed-recovery-proof-seal/v1",
+            commitment,
+        )
+    )
+
+
+def _mint_acquisition_mixed_recovery_proof(
+    *,
+    application_generation_id: _ApplicationGenerationId,
+    position_scope: _PositionScope,
+    retired_generation_id: _AcquisitionGenerationId,
+    retired_relation_commitment: bytes,
+    predecessor_controller_head: bytes,
+    controller_head: bytes,
+    venue_commitment: bytes,
+    dual_binding_commitment: bytes,
+    compatibility_commitment: bytes,
+    mandate: ProtectionMandate,
+    prior_state: PositionProtectionState | None,
+    transition: _VenueRecoveryTransition,
+) -> tuple[AcquisitionMixedRecoveryProof, ProtectionVenueProjection]:
+    """Mint one direct retired-fact proof and its compatibility-bound projection."""
+
+    venue_projection = _project_protection_venue_owned(
+        transition,
+        mandate,
+        require_mandate_identity=False,
+    )
+
+    if (
+        type(mandate) is not ProtectionMandate
+        or type(venue_projection) is not ProtectionVenueProjection
+        or not _projection_is_authentic(venue_projection)
+        or venue_projection._position_scope != position_scope
+        or venue_projection._mandate_commitment != _commit_mandate(mandate)
+        or venue_projection._raw_quantity < 0
+        or (prior_state is not None and not _state_is_authentic(prior_state))
+        or (prior_state is not None and prior_state.mandate != mandate)
+    ):
+        raise ValueError("mixed recovery proof source is not exact")
+    proof = _new_acquisition_mixed_recovery_proof(
+        application_generation_id=application_generation_id,
+        position_scope=position_scope,
+        retired_generation_id=retired_generation_id,
+        retired_relation_commitment=retired_relation_commitment,
+        predecessor_controller_head=predecessor_controller_head,
+        controller_head=controller_head,
+        execution_commitment=venue_projection.execution_commitment,
+        venue_commitment=venue_commitment,
+        dual_binding_commitment=dual_binding_commitment,
+        compatibility_commitment=compatibility_commitment,
+        mandate_commitment=_commit_mandate(mandate),
+        prior_protection_commitment=(
+            None if prior_state is None else prior_state.commitment
+        ),
+        source_projection_commitment=venue_projection._seal,
+        aggregate_quantity=venue_projection._raw_quantity,
+    )
+    return proof, venue_projection
+
+
+def force_acquisition_mixed_recovery(
+    prior_state: PositionProtectionState | None,
+    mandate: ProtectionMandate,
+    venue_projection: ProtectionVenueProjection,
+    proof: AcquisitionMixedRecoveryProof,
+) -> ProtectionTransition:
+    """Produce the one conservative current state for a direct retired fact."""
+
+    if prior_state is not None and type(prior_state) is not PositionProtectionState:
+        raise TypeError("prior_state must be PositionProtectionState or None")
+    if type(mandate) is not ProtectionMandate:
+        raise TypeError("mandate must be ProtectionMandate")
+    if type(venue_projection) is not ProtectionVenueProjection:
+        raise TypeError("venue_projection must be ProtectionVenueProjection")
+    if type(proof) is not AcquisitionMixedRecoveryProof:
+        raise TypeError("proof must be AcquisitionMixedRecoveryProof")
+    prior_commitment = None if prior_state is None else prior_state.commitment
+    compatible = mandate.emergency_recovery_compatibility
+    if (
+        not _acquisition_mixed_recovery_proof_is_authentic(proof)
+        or not _projection_is_authentic(venue_projection)
+        or venue_projection._position_scope != proof.position_scope
+        or venue_projection.execution_commitment != proof.execution_commitment
+        or venue_projection._seal != proof.source_projection_commitment
+        or venue_projection._raw_quantity != proof.aggregate_quantity
+        or venue_projection._mandate_commitment != _commit_mandate(mandate)
+        or proof.mandate_commitment != _commit_mandate(mandate)
+        or proof.compatibility_commitment != compatible.commitment
+        or proof.position_scope != mandate.position_scope
+        or proof.prior_protection_commitment != prior_commitment
+        or (prior_state is not None and not _state_is_authentic(prior_state))
+        or (prior_state is not None and prior_state.mandate != mandate)
+    ):
+        fallback = prior_state
+        if fallback is None:
+            fallback = _new_state_from_projection(mandate, venue_projection, None)
+        return _mint_protection_transition(
+            fallback,
+            venue_projection,
+            fallback,
+            ProtectionDisposition.REFUSED,
+            None,
+            None,
+        )
+    base = _new_state_from_projection(mandate, venue_projection, prior_state)
+    provenance = _commit_parts(
+        b"execution-core/acquisition-protection/mixed-recovery-origin/v1",
+        proof.commitment,
+    )
+    mixed = _rebuild_state(
+        ProtectionPolicy.HARD_BAIL,
+        mandate,
+        base.raw_quantity,
+        base.execution_commitment,
+        base.formula_available,
+        base.armed_hard_bail_trigger,
+        base.activation_price,
+        None,
+        None,
+        venue_projection.blocking_buy_effect_count > 0,
+        venue_projection.cursor_ordinal,
+        venue_projection.cursor_head,
+        None,
+        None,
+        0,
+        None,
+        None,
+        None,
+        None,
+        False,
+        True,
+        False,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        provenance,
+    )
+    predecessor_commitment = prior_commitment
+    seal = _protection_transition_seal(
+        mixed,
+        ProtectionDisposition.APPLIED,
+        None,
+        ProtectionAlert.MARKET_BASELINE_REQUIRED,
+        predecessor_commitment,
+        venue_projection,
+    )
+    return _new_protection_transition(
+        mixed,
+        ProtectionDisposition.APPLIED,
+        None,
+        ProtectionAlert.MARKET_BASELINE_REQUIRED,
+        predecessor_commitment,
+        venue_projection,
+        seal,
     )
 
 
@@ -2044,14 +3930,18 @@ def _reduce_market_occurrence(
     occurrence: MarketOccurrence,
 ) -> ProtectionTransition:
     if not _market_projection_is_current(state, projection):
-        return ProtectionTransition(
+        return _mint_protection_transition(
+            state,
+            projection,
             state,
             ProtectionDisposition.REFUSED,
             None,
             None,
         )
     if not _market_route_matches(state, occurrence):
-        return ProtectionTransition(
+        return _mint_protection_transition(
+            state,
+            projection,
             state,
             ProtectionDisposition.REFUSED,
             None,
@@ -2061,14 +3951,18 @@ def _reduce_market_occurrence(
     current_coordinate = _current_market_coordinate_matches(state, occurrence)
     if current_coordinate:
         if state._market_occurrence_identity == occurrence.occurrence_id:
-            return ProtectionTransition(
+            return _mint_protection_transition(
+                state,
+                projection,
                 state,
                 ProtectionDisposition.EXACT_REPLAY,
                 None,
                 None,
             )
         if state._market_baseline_required:
-            return ProtectionTransition(
+            return _mint_protection_transition(
+                state,
+                projection,
                 state,
                 ProtectionDisposition.REFUSED,
                 None,
@@ -2080,7 +3974,9 @@ def _reduce_market_occurrence(
             if conflicted._market_exhausted
             else ProtectionAlert.MARKET_BASELINE_REQUIRED
         )
-        return ProtectionTransition(
+        return _mint_protection_transition(
+            state,
+            projection,
             conflicted,
             ProtectionDisposition.APPLIED,
             None,
@@ -2088,7 +3984,9 @@ def _reduce_market_occurrence(
         )
 
     if state._market_exhausted:
-        return ProtectionTransition(
+        return _mint_protection_transition(
+            state,
+            projection,
             state,
             _stale_or_refused_exhausted_market(state, occurrence),
             None,
@@ -2101,21 +3999,27 @@ def _reduce_market_occurrence(
         else state._market_committed_epoch
     )
     if admitted_epoch is None:
-        return ProtectionTransition(
+        return _mint_protection_transition(
+            state,
+            projection,
             state,
             ProtectionDisposition.REFUSED,
             None,
             None,
         )
     if occurrence.market_epoch < admitted_epoch:
-        return ProtectionTransition(
+        return _mint_protection_transition(
+            state,
+            projection,
             state,
             ProtectionDisposition.STALE,
             None,
             None,
         )
     if occurrence.market_epoch > admitted_epoch:
-        return ProtectionTransition(
+        return _mint_protection_transition(
+            state,
+            projection,
             state,
             ProtectionDisposition.REFUSED,
             None,
@@ -2127,7 +4031,9 @@ def _reduce_market_occurrence(
     )
     if sequenced:
         if occurrence.source_sequence is None:
-            return ProtectionTransition(
+            return _mint_protection_transition(
+                state,
+                projection,
                 state,
                 ProtectionDisposition.REFUSED,
                 None,
@@ -2137,7 +4043,9 @@ def _reduce_market_occurrence(
             state._market_source_sequence is not None
             and occurrence.source_sequence <= state._market_source_sequence
         ):
-            return ProtectionTransition(
+            return _mint_protection_transition(
+                state,
+                projection,
                 state,
                 ProtectionDisposition.STALE,
                 None,
@@ -2149,7 +4057,9 @@ def _reduce_market_occurrence(
             state._market_source_time is not None
             and occurrence.source_time <= state._market_source_time
         ):
-            return ProtectionTransition(
+            return _mint_protection_transition(
+                state,
+                projection,
                 state,
                 ProtectionDisposition.STALE,
                 None,
@@ -2200,7 +4110,9 @@ def _reduce_market_occurrence(
             committed_epoch,
             reserved._market_halted,
         )
-        return ProtectionTransition(
+        return _mint_protection_transition(
+            state,
+            projection,
             exhausted,
             ProtectionDisposition.APPLIED,
             None,
@@ -2218,7 +4130,9 @@ def _reduce_market_occurrence(
                 else None
             )
         )
-        return ProtectionTransition(
+        return _mint_protection_transition(
+            state,
+            projection,
             restricted,
             ProtectionDisposition.APPLIED,
             None,
@@ -2236,7 +4150,9 @@ def _reduce_market_occurrence(
                 else None
             )
         )
-        return ProtectionTransition(
+        return _mint_protection_transition(
+            state,
+            projection,
             halted_state,
             ProtectionDisposition.APPLIED,
             None,
@@ -2278,7 +4194,9 @@ def _reduce_market_occurrence(
             reserved._market_baseline_required,
             False,
         )
-        return ProtectionTransition(
+        return _mint_protection_transition(
+            state,
+            projection,
             inert,
             ProtectionDisposition.APPLIED,
             None,
@@ -2287,7 +4205,9 @@ def _reduce_market_occurrence(
 
     if state._market_baseline_required:
         baseline = _state_after_market_baseline(reserved, occurrence, primary)
-        return ProtectionTransition(
+        return _mint_protection_transition(
+            state,
+            projection,
             baseline,
             ProtectionDisposition.APPLIED,
             None,
@@ -2295,7 +4215,9 @@ def _reduce_market_occurrence(
         )
 
     applied = _state_after_eligible_market(reserved, occurrence, primary)
-    return ProtectionTransition(
+    return _mint_protection_transition(
+        state,
+        projection,
         applied,
         ProtectionDisposition.APPLIED,
         _goal_for_state(applied, projection),
@@ -2303,14 +4225,19 @@ def _reduce_market_occurrence(
     )
 
 
-def project_protection_venue(
+def _project_protection_venue_owned(
     transition: _VenueRecoveryTransition,
     mandate: ProtectionMandate,
+    *,
+    require_mandate_identity: bool,
 ) -> ProtectionVenueProjection:
     if type(transition) is not _VenueRecoveryTransition:
         raise TypeError("transition must be VenueRecoveryTransition")
     if type(mandate) is not ProtectionMandate:
         raise TypeError("mandate must be ProtectionMandate")
+    mandate_commitment = _commit_mandate(mandate)
+    if type(mandate_commitment) is not bytes or len(mandate_commitment) != 32:
+        raise ValueError("mandate commitment is not exact")
     proof = transition._protection_proof
     if type(proof) is not _ProtectionTransitionProof:
         raise TypeError("transition protection proof is not exact")
@@ -2338,7 +4265,7 @@ def project_protection_venue(
         raise ValueError("execution binding is not exact")
     if proof.position_scope != mandate.position_scope:
         raise ValueError("transition and mandate position scopes differ")
-    if proof.cursor.mandate_id != mandate.mandate_id:
+    if require_mandate_identity and proof.cursor.mandate_id != mandate.mandate_id:
         raise ValueError("transition and mandate identities differ")
     if proof.disposition is not transition.disposition:
         raise ValueError("transition disposition is not proof-bound")
@@ -2374,7 +4301,6 @@ def project_protection_venue(
             mandate.tick.scale,
             mandate.tick,
         )
-    mandate_commitment = _commit_mandate(mandate)
     seal = _projection_commitment(
         proof.predecessor_cursor.ordinal,
         proof.predecessor_cursor.head,
@@ -2428,6 +4354,61 @@ def project_protection_venue(
     )
 
 
+def project_protection_venue(
+    transition: _VenueRecoveryTransition,
+    mandate: ProtectionMandate,
+) -> ProtectionVenueProjection:
+    """Project an ordinary venue transition under its exact owning mandate."""
+
+    return _project_protection_venue_owned(
+        transition,
+        mandate,
+        require_mandate_identity=True,
+    )
+
+
+def _reduce_acquisition_mixed_recovery(
+    state: PositionProtectionState,
+    transition: _VenueRecoveryTransition,
+) -> ProtectionTransition:
+    """Advance only an exact cross-mandate mixed-recovery cursor."""
+
+    if type(state) is not PositionProtectionState:
+        raise TypeError("state must be PositionProtectionState")
+    if type(transition) is not _VenueRecoveryTransition:
+        raise TypeError("transition must be VenueRecoveryTransition")
+    proof = transition._protection_proof
+    if (
+        not _state_is_authentic(state)
+        or state.policy is not ProtectionPolicy.HARD_BAIL
+        or proof.position_scope != state.mandate.position_scope
+        or proof.predecessor_cursor.mandate_id == state.mandate.mandate_id
+        or proof.cursor.mandate_id == state.mandate.mandate_id
+        or state._cursor_ordinal != proof.predecessor_cursor.ordinal
+        or state._cursor_head != proof.predecessor_cursor.head
+        or state.execution_commitment != proof.predecessor_execution_commitment
+    ):
+        projection = _project_protection_venue_owned(
+            transition,
+            state.mandate,
+            require_mandate_identity=False,
+        )
+        return _mint_protection_transition(
+            state,
+            projection,
+            state,
+            ProtectionDisposition.REFUSED,
+            None,
+            None,
+        )
+    projection = _project_protection_venue_owned(
+        transition,
+        state.mandate,
+        require_mandate_identity=False,
+    )
+    return reduce_position_protection(state, projection)
+
+
 def initialize_position_protection(
     mandate: ProtectionMandate,
     projection: ProtectionVenueProjection,
@@ -2458,18 +4439,48 @@ def reduce_position_protection(
     if type(projection) is not ProtectionVenueProjection:
         raise TypeError("projection must be ProtectionVenueProjection")
     if not _state_is_authentic(state):
-        return ProtectionTransition(state, ProtectionDisposition.REFUSED, None, None)
+        return _mint_protection_transition(
+            state,
+            projection,
+            state,
+            ProtectionDisposition.REFUSED,
+            None,
+            None,
+        )
     if not _projection_is_authentic(projection):
-        return ProtectionTransition(state, ProtectionDisposition.REFUSED, None, None)
+        return _mint_protection_transition(
+            state,
+            projection,
+            state,
+            ProtectionDisposition.REFUSED,
+            None,
+            None,
+        )
     if projection._position_scope != state.mandate.position_scope:
-        return ProtectionTransition(state, ProtectionDisposition.REFUSED, None, None)
+        return _mint_protection_transition(
+            state,
+            projection,
+            state,
+            ProtectionDisposition.REFUSED,
+            None,
+            None,
+        )
     if projection._mandate_commitment != _commit_mandate(state.mandate):
-        return ProtectionTransition(state, ProtectionDisposition.REFUSED, None, None)
+        return _mint_protection_transition(
+            state,
+            projection,
+            state,
+            ProtectionDisposition.REFUSED,
+            None,
+            None,
+        )
     if (
         state._cursor_ordinal == projection.cursor_ordinal
         and state._cursor_head == projection.cursor_head
     ):
-        return ProtectionTransition(
+        return _mint_protection_transition(
+            state,
+            projection,
             state,
             ProtectionDisposition.EXACT_REPLAY,
             None,
@@ -2480,7 +4491,14 @@ def reduce_position_protection(
         or state._cursor_head != projection.predecessor_cursor_head
         or state.execution_commitment != projection.predecessor_execution_commitment
     ):
-        return ProtectionTransition(state, ProtectionDisposition.STALE, None, None)
+        return _mint_protection_transition(
+            state,
+            projection,
+            state,
+            ProtectionDisposition.STALE,
+            None,
+            None,
+        )
     next_state = _new_state_from_projection(
         state.mandate,
         projection,
@@ -2491,7 +4509,9 @@ def reduce_position_protection(
         if state._exit_provenance == _flat_origin() and next_state.raw_quantity > 0
         else None
     )
-    return ProtectionTransition(
+    return _mint_protection_transition(
+        state,
+        projection,
         next_state,
         ProtectionDisposition.APPLIED,
         _goal_for_state(next_state, projection),
@@ -2511,7 +4531,14 @@ def reduce_position_protection_market(
     if type(occurrence) is not MarketOccurrence:
         raise TypeError("occurrence must be MarketOccurrence")
     if not _state_is_authentic(state):
-        return ProtectionTransition(state, ProtectionDisposition.REFUSED, None, None)
+        return _mint_protection_transition(
+            state,
+            projection,
+            state,
+            ProtectionDisposition.REFUSED,
+            None,
+            None,
+        )
     return _reduce_market_occurrence(state, projection, occurrence)
 
 
@@ -2524,11 +4551,27 @@ def invalidate_position_protection_market(
     if type(projection) is not ProtectionVenueProjection:
         raise TypeError("projection must be ProtectionVenueProjection")
     if not _state_is_authentic(state):
-        return ProtectionTransition(state, ProtectionDisposition.REFUSED, None, None)
+        return _mint_protection_transition(
+            state,
+            projection,
+            state,
+            ProtectionDisposition.REFUSED,
+            None,
+            None,
+        )
     if not _market_projection_is_current(state, projection):
-        return ProtectionTransition(state, ProtectionDisposition.REFUSED, None, None)
+        return _mint_protection_transition(
+            state,
+            projection,
+            state,
+            ProtectionDisposition.REFUSED,
+            None,
+            None,
+        )
     if state._market_baseline_required or state._market_exhausted:
-        return ProtectionTransition(
+        return _mint_protection_transition(
+            state,
+            projection,
             state,
             ProtectionDisposition.EXACT_REPLAY,
             None,
@@ -2540,7 +4583,9 @@ def invalidate_position_protection_market(
         if invalidated._market_exhausted
         else ProtectionAlert.MARKET_BASELINE_REQUIRED
     )
-    return ProtectionTransition(
+    return _mint_protection_transition(
+        state,
+        projection,
         invalidated,
         ProtectionDisposition.APPLIED,
         None,
@@ -2549,6 +4594,11 @@ def invalidate_position_protection_market(
 
 
 __all__ = (
+    "AcquisitionMixedRecoveryProof",
+    "AcquisitionProtectionContext",
+    "AcquisitionProtectionRebaseKind",
+    "AcquisitionProtectionRebaseProjection",
+    "EmergencyRecoveryCompatibility",
     "EvidencePolicy",
     "ExecutionGoal",
     "ExecutionGuard",
@@ -2564,7 +4614,10 @@ __all__ = (
     "ProtectionUrgency",
     "ProtectionVenueProjection",
     "initialize_position_protection",
+    "force_acquisition_mixed_recovery",
     "invalidate_position_protection_market",
+    "project_acquisition_protection_context",
+    "project_acquisition_protection_rebase",
     "project_protection_venue",
     "reduce_position_protection",
     "reduce_position_protection_market",
