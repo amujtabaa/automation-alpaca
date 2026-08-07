@@ -295,3 +295,15 @@
   evidence, adds the immutable R8 packet, and reconciles only the active-WO, PKL, ledger, and
   activation-disposition provenance. It contains no application or test implementation and claims
   no implementation gate or external CI result.
+- 2026-08-06: The user ratified immutable WO-0151 R10 contract
+  `081b0e7971912776f6722f037b89f907736b67367cafa340c98128a186a1bdd3` and authorized its
+  narrow re-gate. Frozen manifest
+  `f8d25b3d32e23e3b672991a3d9538c9c5df2bbe2d439a7e4e9d75d8ecacf1f2b` and independent
+  static `ACCEPT` result
+  `dd91f3a1403658cf116767c534ad080daf47acc23458e899c6431db290d6c431` are controlling for
+  the R2--R10 pure-E2 composite. R8 remains ratification provenance; R9 and its initial
+  acceptance remain retained but are not acceptance or ratification authority. Only existing
+  in-scope pure-E2 application/test work, verification, remediation, evidence, normal
+  commits/pushes, and later exact-head CI may continue; SQL/DDL, database, runtime, broker/network,
+  credentials, M2, merge, deletion, cleanup, rebase, force-push, and later activation remain
+  excluded.

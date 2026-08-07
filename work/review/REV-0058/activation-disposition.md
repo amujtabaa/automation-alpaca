@@ -1,6 +1,6 @@
 # WO-0151 activation disposition
 
-Status: **R7 ACTIVATION RECORDED; R8 RE-GATE RECONCILED AT EXACT DOCUMENTATION COMMIT**
+Status: **R7 ACTIVATION RECORDED; R8 RE-GATE RETAINED; R10 RE-GATE AUTHORIZED -- EXACT DOCUMENTATION COMMIT PENDING**
 
 [FABLE - FULL - verification: DIRECT plus independent review - task: WO-0151
 activation and pure E2 implementation]
@@ -12,10 +12,10 @@ fable_gate:
     - claim: "WO-0150 is effectively CLOSED on its exact external CI head."
       status: VERIFIED
       evidence: "GitHub Actions run 31089203210, jobs 92575847934 and 92575848023."
-    - claim: "The R7 contract is retained activation provenance; the ratified R8 contract controls resumed implementation."
+    - claim: "R7/R8 are retained activation provenance; the ratified R2+R3+R4+R5+R6+R7+R8+R9+R10 composite controls resumed implementation."
       status: VERIFIED
-      evidence: "REV-0058 result-r7.md, result-r8.md, and the R8 frozen manifest."
-  approach: "Preserve the published activation record, reconcile the ratified R8 re-gate, write failure-capable RED controls, implement the smallest pure composite reducer, then run bounded and full acceptance gates."
+      evidence: "REV-0058 result-r8.md, result-r9-reconciliation.md, result-r10.md, and the R10 frozen manifest."
+  approach: "Preserve the published activation record, reconcile the ratified R10 re-gate, write failure-capable RED controls, implement the smallest pure composite reducer, then run bounded and full acceptance gates."
   alternatives_considered:
     - "Do not bypass the activation record or use a draft-contract implementation path."
   out_of_scope:
@@ -92,6 +92,21 @@ The exact documentation-only R8 re-gate commit is
 R8 packet and required active-WO, PKL, ledger, and activation-disposition
 reconciliation. It contains no source or test implementation and does not
 constitute implementation acceptance evidence.
+
+## R10 ratification and controlling re-gate
+
+The user ratified exact R10 contract
+`081b0e7971912776f6722f037b89f907736b67367cafa340c98128a186a1bdd3`;
+frozen manifest
+`f8d25b3d32e23e3b672991a3d9538c9c5df2bbe2d439a7e4e9d75d8ecacf1f2b`;
+and independent static `ACCEPT`, P0=0/P1=0/P2=0, result SHA-256
+`dd91f3a1403658cf116767c534ad080daf47acc23458e899c6431db290d6c431`.
+R10 controls the R2--R10 composite solely by replacing R9's impossible
+copy-rejection control. R8 remains retained ratification provenance; R9 and
+its initial acceptance remain retained but are not acceptance or ratification
+authority. Scope and exclusions remain exactly those of the active work order.
+No implementation, test, review, or external CI success is claimed by this
+documentation-only reconciliation.
 
 ## File-level check note
 

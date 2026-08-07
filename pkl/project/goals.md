@@ -28,8 +28,8 @@ serial acquisition-generation foundation. The retained `WO-0149` lifecycle recor
 grant R2 implementation authority. `WO-0150` is effectively `CLOSED`: its exact closeout SHA
 `f1a40d69f301ad7f594a61f202d3bd380607b98a` passed GitHub Actions run `31089203210` (#726) on
 Python 3.11 and 3.12. `WO-0151` is active only for the ratified pure-E2
-R2+R3+R4+R5+R6+R7+R8 composite, whose R8 contract is
-`d6a0295f14652222d9fa05e1f826e77ecd306c07dbf1b8faf4525976396eec1f`; `WO-0152` remains
+R2+R3+R4+R5+R6+R7+R8+R9+R10 composite, whose R10 contract is
+`081b0e7971912776f6722f037b89f907736b67367cafa340c98128a186a1bdd3`; `WO-0152` remains
 DRAFT/inactive. M2 and every runtime/persistence/cutover slice remain inactive. WO-0153
 has completed its bounded cleanup scope with environment-controlled deferred artifacts only; it
 adds no implementation authority.
@@ -46,8 +46,8 @@ implementation closeout is frozen at remediation-03 manifest
 `ACCEPT`, P0=0/P1=0. Its immutable closeout SHA
 `f1a40d69f301ad7f594a61f202d3bd380607b98a` then passed run `31089203210` (#726) on both
 supported Python jobs. The accepted R7 contract remains retained evidence. The ratified
-R2+R3+R4+R5+R6+R7+R8 composite, whose R8 contract is
-`d6a0295f14652222d9fa05e1f826e77ecd306c07dbf1b8faf4525976396eec1f`, now controls only pure
+R2+R3+R4+R5+R6+R7+R8+R9+R10 composite, whose R10 contract is
+`081b0e7971912776f6722f037b89f907736b67367cafa340c98128a186a1bdd3`, now controls only pure
 E2 `WO-0151`; WO-0152 remains DRAFT/inactive. M2 and every runtime/persistence/cutover slice
 remain inactive.
 
@@ -66,13 +66,13 @@ book inside its composite transition. Replacement-02 manifest
 `785b394c3bcdc59f80c9d7a718a45d61da7f5ef9ee108466b01a4469c6541e1f` is accepted; E1 then
 proceeded under its active work order and is now effectively closed.
 
-Current E2 R8 re-gate (2026-08-06): R8 independently accepted the bounded,
-target-local bootstrap representation and neutral checkpoint alignment at P0=0/P1=0/P2=0, then
-received exact user ratification. Only WO-0151 may implement that pure semantic center.
-Documentation-only activation SHA `466e712b6f507ee165a7fc0c80e826fa8a35a710` remains
-live-verified. The exact R8 re-gate documentation SHA is
-`07f169bb6630753b4e12960738e4fb0533686ada`; R7 is retained predecessor evidence and R8 remains
-a contract, not proof of runtime behavior.
+Current E2 R10 re-gate (2026-08-06): R10 independently accepted the narrow
+exact-immutable-replay clarification at P0=0/P1=0/P2=0 and received exact user ratification.
+Manifest `f8d25b3d32e23e3b672991a3d9538c9c5df2bbe2d439a7e4e9d75d8ecacf1f2b`,
+contract `081b0e7971912776f6722f037b89f907736b67367cafa340c98128a186a1bdd3`, and
+result `dd91f3a1403658cf116767c534ad080daf47acc23458e899c6431db290d6c431`
+control only pure E2 WO-0151. R8 is retained ratification provenance; R9 is retained but is
+not a ratification basis. R10 remains a contract, not proof of runtime behavior.
 
 ## Cleanup posture
 

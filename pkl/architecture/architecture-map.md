@@ -34,10 +34,9 @@ serial acquisition-generation architecture. The retained `WO-0149` lifecycle rec
 authority for that R2 scope. WO-0150's pure E1 closeout SHA
 `f1a40d69f301ad7f594a61f202d3bd380607b98a` passed exact-head GitHub Actions run `31089203210`
 (#726) on Python 3.11 and 3.12 and is effective `CLOSED`. WO-0151 is now active only for its
-ratified pure-E2 R2+R3+R4+R5+R6+R7+R8 composite, whose R8 contract is
-`d6a0295f14652222d9fa05e1f826e77ecd306c07dbf1b8faf4525976396eec1f` at documentation-only
-activation SHA `466e712b6f507ee165a7fc0c80e826fa8a35a710` and R8 re-gate SHA
-`07f169bb6630753b4e12960738e4fb0533686ada`; WO-0152 and all
+ratified pure-E2 R2+R3+R4+R5+R6+R7+R8+R9+R10 composite, whose R10 contract is
+`081b0e7971912776f6722f037b89f907736b67367cafa340c98128a186a1bdd3` at documentation-only
+activation SHA `466e712b6f507ee165a7fc0c80e826fa8a35a710`; WO-0152 and all
 M2/runtime/persistence work remain inactive until separately gated.
 
 ## Current R2 ratification posture
@@ -51,9 +50,10 @@ documentation gate is accepted. Its E1 closeout manifest
 `a68c5897717e0e3ee735af6a95ff768c59951338dff321aca9ab42bc662acfde` received final independent
 `ACCEPT` with P0=0/P1=0, and exact closeout SHA
 `f1a40d69f301ad7f594a61f202d3bd380607b98a` passed dual-version CI. R7 remains retained
-predecessor evidence. R8 then independently accepted and the user ratified the target-local
-bootstrap/neutral-checkpoint E2 contract. WO-0151 alone is active; WO-0152, M2, and all
-runtime/persistence work remain inactive until separately gated.
+predecessor evidence. R8 remains ratification provenance. R9 and its initial acceptance remain
+retained but are not an acceptance basis. R10 then independently accepted and the user ratified
+the narrow exact-immutable-replay clarification. WO-0151 alone is active under the R2--R10
+composite; WO-0152, M2, and all runtime/persistence work remain inactive until separately gated.
 
 ## Rules / facts
 
@@ -95,7 +95,7 @@ runtime/persistence work remain inactive until separately gated.
   closeout manifest `a68c5897717e0e3ee735af6a95ff768c59951338dff321aca9ab42bc662acfde` was
   independently `ACCEPT`ed at P0=0/P1=0, and its exact closeout SHA is dual-version CI green.
   Successful registry/index population, permanent routing, and late-fact mutation are E2-only.
-  E2 is active under accepted R7; E3 remains inactive. No runtime, persistent database, broker,
+  E2 is active under the ratified R2--R10 composite; E3 remains inactive. No runtime, persistent database, broker,
   credential, or M2 authority is granted.
 - Current posture amendment (2026-08-05): E1 provides only deterministic non-authoritative identity
   data, immutable view and inert-reader shapes, and the no-history venue correlation bridge.

@@ -12,12 +12,14 @@ created: 2026-08-05
 branch: codex/arch-reset-2026-07-r1
 base_sha: f1a40d69f301ad7f594a61f202d3bd380607b98a
 predecessor: "Effectively CLOSED WO-0150: exact f1a40d69f301ad7f594a61f202d3bd380607b98a passed GitHub Actions run 31089203210 (#726) on Python 3.11 and 3.12"
-implementation_authority: "GRANTED — explicit remaining-M1 authorization after E1 external closure and ratified R8 RED contract"
-activation_required: "SATISFIED — ratified R8 contract d6a0295f14652222d9fa05e1f826e77ecd306c07dbf1b8faf4525976396eec1f independently ACCEPTed at P0=0/P1=0/P2=0; manifest b6faddc624a227382f80ebefe57044ce2e2e372328df3528e027fc4bcd924311; R7 acceptance is retained historical evidence only"
+implementation_authority: "GRANTED — explicit remaining-M1 authorization after E1 external closure and ratified R10 RED contract"
+activation_required: "SATISFIED — ratified R10 contract 081b0e7971912776f6722f037b89f907736b67367cafa340c98128a186a1bdd3 independently ACCEPTed at P0=0/P1=0/P2=0; manifest f8d25b3d32e23e3b672991a3d9538c9c5df2bbe2d439a7e4e9d75d8ecacf1f2b; result dd91f3a1403658cf116767c534ad080daf47acc23458e899c6431db290d6c431; R8 is retained ratification provenance and R9 is retained but not an acceptance basis"
 activated: 2026-08-06
 activation_commit: 466e712b6f507ee165a7fc0c80e826fa8a35a710
 r8_regated: 2026-08-06
 r8_regate_commit: 07f169bb6630753b4e12960738e4fb0533686ada
+r10_regated: 2026-08-06
+r10_regate_commit: PENDING_WO0151_R10_REGATE_COMMIT
 ---
 
 # WO-0151 - Reset kernel E2: aggregate controller, successor admission, and mixed recovery
@@ -28,9 +30,9 @@ rollover and constrained cross-side recovery]
 ## Active status and authority
 
 This exact work order is ACTIVE after the effective WO-0150 external closure,
-the immutable R8 contract's independent `ACCEPT` at P0=0/P1=0/P2=0, and the
-user's explicit R8 ratification and re-gate. R7 acceptance remains retained
-historical evidence only. The activation disposition is retained at
+the immutable R10 contract's independent `ACCEPT` at P0=0/P1=0/P2=0, and the
+user's explicit R10 ratification and re-gate. R8 remains retained ratification
+provenance and R9 remains retained but not an acceptance basis. The activation disposition is retained at
 `work/review/REV-0058/activation-disposition.md`.
 
 It authorizes only the pure, deterministic, I/O-free E2 RED/test/production
@@ -49,11 +51,13 @@ activation.
 - REV-0056 R3 candidate manifest: d2538dedb9f9eb05368eb892e83c7ae0dd2872ea0e991f5ee225c88f7ec4714c.
 - Independent static preflight: c2bbe63a0dd71f5154713554b28af417bef10b86ed6d96847763be09feb2e0e9
   (ACCEPT, P0=0/P1=0/P2=0).
-- Controlling R8 RED contract: d6a0295f14652222d9fa05e1f826e77ecd306c07dbf1b8faf4525976396eec1f.
-- R8 independent pre-flight result: `ACCEPT`, P0=0/P1=0/P2=0, retained at
-  `work/review/REV-0058/result-r8.md` SHA-256
-  5dc43bcaab99af837ee89e83880a1484cb79f649ea67e7218e5a2dd798699e80; the
-  exact review manifest is b6faddc624a227382f80ebefe57044ce2e2e372328df3528e027fc4bcd924311.
+- Controlling R10 RED contract: 081b0e7971912776f6722f037b89f907736b67367cafa340c98128a186a1bdd3.
+- R10 independent pre-flight result: `ACCEPT`, P0=0/P1=0/P2=0, retained at
+  `work/review/REV-0058/result-r10.md` SHA-256
+  dd91f3a1403658cf116767c534ad080daf47acc23458e899c6431db290d6c431; the
+  exact review manifest is f8d25b3d32e23e3b672991a3d9538c9c5df2bbe2d439a7e4e9d75d8ecacf1f2b.
+- R8 and R9 records remain retained exactly as frozen; R8 is ratification provenance and
+  R9 is not an acceptance or ratification basis.
 
 ## R8 re-gate
 
@@ -78,6 +82,31 @@ neutral checkpoint proof specified by R8; it is consumed only by
 `CreateBrokerEffect(BUY)`, generic catch-up, raw snapshots/records, and all
 successor, claim, preemption, exit, and rebase routes reject it.
 
+## R10 re-gate
+
+On 2026-08-06 the user ratified exact R10 contract
+`081b0e7971912776f6722f037b89f907736b67367cafa340c98128a186a1bdd3`,
+its frozen manifest
+`f8d25b3d32e23e3b672991a3d9538c9c5df2bbe2d439a7e4e9d75d8ecacf1f2b`,
+and independent `ACCEPT` result
+`dd91f3a1403658cf116767c534ad080daf47acc23458e899c6431db290d6c431`
+at P0=0/P1=0/P2=0. R10 is the controlling R2+R3+R4+R5+R6+R7+R8+R9+R10
+composite for the exact existing pure E2 paths.
+
+R10 corrects only R9's infeasible object-copy wording: exact immutable replay
+is the same narrow sealed relation and remains subject to every R6/R7
+freshness, controller-head, venue, execution, authority, raw-protection, and
+one-registration check. Altered, spliced, malformed, wrong-type, missing,
+neutral, stale, or mismatched input remains non-serving and non-mutating. R8
+remains ratification provenance. R9, its initial review, and its P1
+reconciliation are retained evidence but are not acceptance or ratification
+authority.
+
+This re-gate adds no identity field, replay ledger, factory, public authority
+route, policy path, runtime, persistence, SQL/DDL, database, broker/network,
+credentials, M2, merge, deletion, cleanup, force-push, rebase, or later
+work-order activation authority.
+
 WO-0149 is formally SUPERSEDED and retained as historical evidence; it grants no authority for
 this serial-generation scope.
 
@@ -101,8 +130,9 @@ do not edit an ADR.
 - The E1 closeout, its immutable public contracts, and independent acceptance.
 - AGENTS.md, CLAUDE.md, ADR-020 R2, ADR-021 R2, ADR-023 R1, and the ratification index.
 - REV-0056 candidate ADRs, clause map, split, and static preflight.
-- The frozen R2+R3+R4+R5+R6+R7+R8 RED composite, its R8 manifest/result, and
-  the R8 re-gate record.
+- The frozen R2+R3+R4+R5+R6+R7+R8+R9+R10 RED composite, its R10
+  manifest/result, the R8 ratification provenance, and the retained R9
+  reconciliation.
 - Completed M1A through M1D contracts for fact truth, venue closure, final claim, and protection.
 - Only source/tests directly named by the accepted RED contract.
 
@@ -255,7 +285,7 @@ scope. No new durable store or broker effect mechanism may be introduced.
 ## Future gate, evidence, and stop conditions
 
 Activation required an effectively CLOSED and independently accepted E1, this work order's
-R2+R3+R4+R5+R6+R7+R8 RED composite and exact independent ACCEPT with P0=0/P1=0, and explicit
+R2+R3+R4+R5+R6+R7+R8+R9+R10 RED composite and exact independent ACCEPT with P0=0/P1=0, and explicit
 human ratification. Future GREEN work requires focused controls, relevant execution-core/R2/static
 gates, scope/type/import checks, independent review, and exact-head evidence only if separately
 authorized.
