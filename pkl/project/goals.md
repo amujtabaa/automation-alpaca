@@ -412,3 +412,10 @@ Roadmapping against an unverified codebase state repeats the failure mode Fable 
   it cannot change the R12 contract, source/test scope, safety boundaries, E3 pause, or paired 93%
   closeout. The WO-0151 top-level implementation authority is historical R11/R11-R1 provenance
   only; R12 remains ungranted until this delta and SHA gate complete.
+- 2026-08-07: The records-only R12 activation delta independently ACCEPTed at P0=0/P1=0/P2=0
+  (manifest `59ab3d16a4057fe2d3e763d5909ba1751ba0266453551ba07830b2c872bb68f4`, result
+  `b8382a504c8bb9ac5456067e758a81ec42f9f546ed6194fae4f31b814378e28d`). Its exact
+  documentation publication SHA is `a124b3cda866e2a5aaf99d4527e7b231dd4f675d`. R12 may now
+  implement its frozen E2 source/test scope only; WO-0152 remains ACTIVE but paused through
+  focused R12 implementation acceptance, then the frozen E3 detector may be rerun. The paired
+  E2/E3 93% exact-head closeout and all exclusions remain unchanged.

@@ -596,3 +596,18 @@ and one constrained exact-SHA reconciliation may occur. The reconciliation may
 only activate the frozen R12 `acquisition.py`/`test_acquisition.py` scope and
 record the first commit's SHA; it cannot alter R12 semantics, public/API scope,
 E3's FR-08 pause, the paired 93% closeout, or any existing safety exclusion.
+
+## WO-0151 R12 activation-delta acceptance and publication - 2026-08-07
+
+The separate R12 activation-delta manifest
+`59ab3d16a4057fe2d3e763d5909ba1751ba0266453551ba07830b2c872bb68f4`
+independently `ACCEPT`ed at P0=0/P1=0/P2=0; its result is
+`b8382a504c8bb9ac5456067e758a81ec42f9f546ed6194fae4f31b814378e28d`.
+Documentation-only commit `a124b3cda866e2a5aaf99d4527e7b231dd4f675d`
+published the accepted R12 packets. This exact-SHA reconciliation activates
+only the frozen pure E2 R12 source/test path and no broader authority.
+
+WO-0152 remains ACTIVE but paused until focused R12 implementation acceptance
+and subsequent public detector confirmation. The R12 contract, public surface,
+E3 evidence, 93% paired exact-head closeout, and every prior operational
+exclusion remain unchanged.

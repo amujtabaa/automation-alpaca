@@ -161,6 +161,19 @@ the frozen public trace is rerun as confirmation. The R2-R5 detector, the
 unchanged 93% paired exact-head gate, and all safety exclusions remain
 unchanged.
 
+### R12 activation publication reconciled -- E3 remains paused
+
+The separately reviewed records-only R12 activation delta independently
+`ACCEPT`ed at P0=0/P1=0/P2=0 (manifest
+`59ab3d16a4057fe2d3e763d5909ba1751ba0266453551ba07830b2c872bb68f4`, result
+`b8382a504c8bb9ac5456067e758a81ec42f9f546ed6194fae4f31b814378e28d`). Its
+documentation publication SHA is
+`a124b3cda866e2a5aaf99d4527e7b231dd4f675d`. This permits only the bounded
+WO-0151 R12 E2 remediation under its active paths. It does not resume E3:
+WO-0152 remains ACTIVE but paused until an independently accepted R12
+implementation reruns the frozen public detector. The unchanged paired 93%
+exact-head closeout and every safety exclusion remain controlling.
+
 ## Authority pins
 
 - ADR-020 R2: eab0c18cc08539a0c2b1dbc6d61f6d2a0ff359d38b71e8d659cb1ff620513653.

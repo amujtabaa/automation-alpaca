@@ -28,10 +28,10 @@ implementation_result: "work/review/REV-0058/WO-0151-R11-R1-IMPLEMENTATION-REMED
 closeout_handoff: "work/review/REV-0058/WO-0151-R11-R1-IMPLEMENTATION-CLOSEOUT.md (SHA-256 971a18fab876d84e2e49a0cfe960e38828bc2f9853e187529e374f7ee58cdcdc)"
 external_exact_head: "REVIEW - exact run #741 on a2b84abc1914517cf591f27fb88f0b20b2a47ef7 passed functional/static Python 3.11/3.12 gates but failed only the unchanged 93% coverage ratchet at 91.34%; paired E2/E3 exact-head success is required before effective closure"
 r12_re_gate: "PENDING - bounded controller-lifetime MarketStreamGenerationId provenance remediation after WO-0152 R2-R5's public FR-08 trace admitted a fresh successor that reused retired A's stream"
-r12_status: "REVIEW - R12 semantic preflight is accepted, but the separately frozen activation-delta review and exact-SHA reconciliation remain required; retained CLOSED filing is historical"
-r12_implementation_authority: "NOT GRANTED - exact R12 activation-delta ACCEPT at P0=0/P1=0 and the explicitly allowed exact-SHA reconciliation are required before R12 acquisition.py or test_acquisition.py edits"
+r12_status: "ACTIVE - semantic and activation-delta reviews ACCEPTed at P0=0/P1=0; exact publication SHA is reconciled below while retained CLOSED filing remains historical"
+r12_implementation_authority: "GRANTED - only after the exact R12 activation publication a124b3cda866e2a5aaf99d4527e7b231dd4f675d and this constrained reconciliation: app/execution_core/acquisition.py, tests/execution_core/test_acquisition.py, and directly necessary current evidence records"
 r12_preflight: "SATISFIED - contract 36c7995deb480400a6573e005d47cc8c4878c8638eb8212a4227fa394a47c13e, manifest a36ff8dcae2bcfeb41bd312960439885cf0b46fcda8a4b0309d075cbb84ca8d0, and independent ACCEPT result 0bd78212be49059fcc87ae02e23d08867c99944bf21ca1bf92af596612a99ac5 at P0=0/P1=0/P2=0"
-r12_activation_commit: "PENDING_R12_ACTIVATION_DELTA_ACCEPTANCE_AND_SHA_RECONCILIATION"
+r12_activation_commit: "a124b3cda866e2a5aaf99d4527e7b231dd4f675d"
 ---
 
 # WO-0151 - Reset kernel E2: aggregate controller, successor admission, and mixed recovery
@@ -519,3 +519,23 @@ frozen `acquisition.py`/`test_acquisition.py` scope. WO-0152 remains ACTIVE but
 paused until the implemented R12 candidate receives its own focused independent
 acceptance. The unchanged paired E2/E3 93% exact-head closeout, all operational
 exclusions, and the retained E3 negative evidence remain controlling.
+
+## R12 activation publication and exact-SHA reconciliation -- 2026-08-07
+
+The independent records-only activation-delta review accepted the exact manifest
+`59ab3d16a4057fe2d3e763d5909ba1751ba0266453551ba07830b2c872bb68f4` at
+P0=0/P1=0/P2=0; its reviewer result is
+`b8382a504c8bb9ac5456067e758a81ec42f9f546ed6194fae4f31b814378e28d`.
+Documentation-only commit
+`a124b3cda866e2a5aaf99d4527e7b231dd4f675d` published the accepted semantic
+and activation-delta packets, and its normal branch push succeeded. This
+follow-on record is the manifest-permitted exact-SHA reconciliation.
+
+R12 may now implement only the frozen private stream-provenance index and named
+E2 RED controls in `app/execution_core/acquisition.py` and
+`tests/execution_core/test_acquisition.py`, subject to red-first evidence and
+the later focused independent implementation acceptance. WO-0152 remains
+ACTIVE but paused; its frozen test module is still negative evidence only. No
+contract/public API, authority, runtime, database/SQL/DDL, broker/network,
+credential, CI, M2, merge, deletion, cleanup, force-push, rebase, or paired
+93% closeout condition changes.

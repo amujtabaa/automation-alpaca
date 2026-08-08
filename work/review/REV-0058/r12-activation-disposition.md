@@ -1,6 +1,6 @@
 # WO-0151 R12 activation-delta disposition
 
-Status: **DRAFT — INDEPENDENT ACTIVATION-DELTA ACCEPTANCE REQUIRED**
+Status: **PUBLISHED — R12 IMPLEMENTATION AUTHORITY GRANTED AT FROZEN PATHS**
 
 ## Semantic predecessor
 
@@ -50,26 +50,23 @@ frozen evidence. The activation-delta review must verify that the diagnostics
 are exactly this set and that a diff check over every other staged path exits
 cleanly. Any additional whitespace diagnostic blocks publication.
 
-## Deterministic post-review reconciliation
+## Publication and exact-SHA reconciliation
 
-No R12 source/test work is allowed after a prospective activation-delta
-`ACCEPT` alone. The following two documentation-only commits remain required:
+The activation-delta manifest
+`59ab3d16a4057fe2d3e763d5909ba1751ba0266453551ba07830b2c872bb68f4` and
+independent result
+`b8382a504c8bb9ac5456067e758a81ec42f9f546ed6194fae4f31b814378e28d`
+returned `ACCEPT`, P0=0/P1=0/P2=0. Documentation-only activation commit
+`a124b3cda866e2a5aaf99d4527e7b231dd4f675d` published the exact accepted
+packet and was pushed normally. This record is the one manifest-permitted
+exact-SHA reconciliation.
 
-1. Publish the exact accepted activation-delta packet and reviewer result.
-2. Reconcile that first commit's exact SHA through the limited changes below.
-
-The second commit may only replace the literal R12 activation placeholders in
-the WO-0151 header and this disposition; change `r12_status` to implementation
-active and `r12_implementation_authority` to the frozen R12 path grant; append
-the first commit SHA to the ratification, PKL log/goals/map, and ledger; and
-record that WO-0152 remains ACTIVE but paused. It may not modify the R12
-contract, either R12 manifest/result, the frozen E3 evidence or detector,
-allowed source/test paths, or any safety/closeout condition.
-
-Only after the second commit's static checks and normal branch push succeed may
-R12 change `app/execution_core/acquisition.py` and
-`tests/execution_core/test_acquisition.py`. The untracked E3 stateful module
-remains frozen negative evidence only.
+R12 may now change only `app/execution_core/acquisition.py`,
+`tests/execution_core/test_acquisition.py`, and directly necessary current
+WO/PKL/ledger/ratification/REV evidence records. The untracked E3 stateful
+module remains frozen negative evidence only. No R12 source/test completion
+claim is made here; red-first controls, static gates, focused independent
+implementation acceptance, and later paired E2/E3 CI still remain required.
 
 ## Preserved boundaries
 

@@ -485,3 +485,10 @@
   top-level WO-0151 authority ambiguity, and permits only a later exact-SHA reconciliation. The
   original R12 contract, manifest, result, E3 evidence, detector, E3 pause, and all exclusions
   remain unchanged.
+- 2026-08-07: The exact R12 activation-delta packet independently ACCEPTed at P0=0/P1=0/P2=0:
+  manifest `59ab3d16a4057fe2d3e763d5909ba1751ba0266453551ba07830b2c872bb68f4`, result
+  `b8382a504c8bb9ac5456067e758a81ec42f9f546ed6194fae4f31b814378e28d`. Documentation-only
+  commit `a124b3cda866e2a5aaf99d4527e7b231dd4f675d` published the packet; this exact-SHA
+  reconciliation activates only the frozen R12 E2 source/test path. E3 remains paused, and no
+  safety/runtime/database/SQL/DDL/broker/network/CI/M2/merge/deletion/cleanup/rebase boundary
+  changes.

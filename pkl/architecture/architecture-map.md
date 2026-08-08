@@ -309,3 +309,9 @@ Seam discipline is what makes the safety invariants structurally enforceable rat
   named fields. This avoids silently treating changed live posture as part of the prior semantic
   review. The owner and architecture stay unchanged: one private GenerationRegistry route map,
   no public reader, duplicate authority, controller history, or scan; E3 remains paused.
+- 2026-08-07: The independently accepted records-only activation delta (manifest
+  `59ab3d16a4057fe2d3e763d5909ba1751ba0266453551ba07830b2c872bb68f4`, result
+  `b8382a504c8bb9ac5456067e758a81ec42f9f546ed6194fae4f31b814378e28d`) is published at
+  `a124b3cda866e2a5aaf99d4527e7b231dd4f675d`. It activates only the frozen R12 E2 repair path;
+  the GenerationRegistry remains the sole owner, and WO-0152 remains paused until focused R12
+  implementation acceptance and public detector confirmation.
