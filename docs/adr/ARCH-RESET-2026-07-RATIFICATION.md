@@ -611,3 +611,41 @@ WO-0152 remains ACTIVE but paused until focused R12 implementation acceptance
 and subsequent public detector confirmation. The R12 contract, public surface,
 E3 evidence, 93% paired exact-head closeout, and every prior operational
 exclusion remain unchanged.
+
+## WO-0151 R12-R1 presence-aware map re-gate - 2026-08-07
+
+Under the standing authorization to resolve bounded in-flight issues while
+preserving all safety exclusions, R12-R1 may be drafted and independently
+preflighted solely because R12's active working copy exposed an internal map
+presence ambiguity. The existing map `get()` cannot distinguish a missing
+exact key from a retained `None` value, so the prior R12 route premise cannot
+yet prove that a malformed present stream route is not fresh.
+
+The authorized root correction is confined to one private presence-aware
+fixed-key primitive in the existing persistent map, the existing private
+GenerationRegistry stream-route consumer, and focused tests. The accepted R12
+semantic packet and activation publication remain retained historical evidence
+only; their former source/test authority is suspended. R12-R1 requires a new
+immutable manifest, independent P0=0/P1=0 semantic ACCEPT, then a separate
+records-only activation-delta review, documentation-only publication, and
+exact-SHA reconciliation before implementation. It adds no public API,
+iterator, history scan, authority duplication, runtime, persistence,
+database/SQL/DDL, broker/network, CI, M2, merge, deletion, cleanup,
+force-push, or rebase authority. WO-0152 remains paused and the paired E2/E3
+unchanged-93% exact-head closeout remains mandatory.
+
+## WO-0151 R12-R1 semantic acceptance - 2026-08-07
+
+The exact R12-R1 semantic candidate independently ACCEPTed at P0=0/P1=0/P2=0:
+its contract SHA-256 is
+9cab228aa392292bc44a8758c60317201cf78388d6ec61848edcb3d1f0497a25 and
+its reviewer result SHA-256 is
+5dfec4ce0425642148561801d69a035f0fb4ddc540fb7baf93d23747dddb581b.
+The acceptance confirms only constructibility and boundedness of the private
+presence-aware map correction. It grants no source/test work by itself.
+
+The next mandatory gate is a separate exact records-only activation-delta
+review. Only after that review, documentation publication, and exact-SHA
+reconciliation may R12-R1 implement its four named paths. WO-0152 remains
+paused, and no operational exclusion or paired E2/E3 93% closeout condition is
+changed.

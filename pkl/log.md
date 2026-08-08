@@ -492,3 +492,19 @@
   reconciliation activates only the frozen R12 E2 source/test path. E3 remains paused, and no
   safety/runtime/database/SQL/DDL/broker/network/CI/M2/merge/deletion/cleanup/rebase boundary
   changes.
+- 2026-08-07: Before R12 implementation acceptance, focused review found a malformed-present-map
+  ambiguity: the persistent-map `get()` result conflates an absent exact key with a retained
+  `None` value. WO-0151 is re-gated as R12-R1 only for a private presence-aware fixed-key map
+  primitive, its sealed GenerationRegistry stream-route consumer, and focused controls. Original
+  R12 acceptance/publication remains retained historical evidence; its former implementation scope
+  is suspended pending fresh R12-R1 semantic and records-only activation gates. WO-0152 remains
+  ACTIVE but paused and its frozen evidence/detector remain untouched. All operational exclusions
+  and the paired E2/E3 unchanged-93% exact-head closeout remain controlling.
+- 2026-08-07: R12-R1 semantic preflight independently ACCEPTed at P0=0/P1=0/P2=0 (contract
+  9cab228aa392292bc44a8758c60317201cf78388d6ec61848edcb3d1f0497a25, result
+  5dfec4ce0425642148561801d69a035f0fb4ddc540fb7baf93d23747dddb581b). It validates the smallest
+  root correction: one internal presence-aware exact-key primitive in the persistent map used by
+  the sealed GenerationRegistry stream route. A separate records-only activation delta,
+  documentation publication, and exact-SHA reconciliation remain mandatory before R12-R1
+  implementation. The E3 pause, frozen detector/evidence, paired 93% closeout, and all exclusions
+  remain unchanged.

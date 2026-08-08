@@ -27,11 +27,15 @@ implementation_manifest: "work/review/REV-0058/WO-0151-R11-R1-IMPLEMENTATION-REM
 implementation_result: "work/review/REV-0058/WO-0151-R11-R1-IMPLEMENTATION-REMEDIATION-01-RECHECK-RESULT.md (SHA-256 96d08654369894eeaeda0b1b22f8e869735d179daa336c5c3e69d7f19e0e68fd; ACCEPT, P0=0/P1=0/P2=0)"
 closeout_handoff: "work/review/REV-0058/WO-0151-R11-R1-IMPLEMENTATION-CLOSEOUT.md (SHA-256 971a18fab876d84e2e49a0cfe960e38828bc2f9853e187529e374f7ee58cdcdc)"
 external_exact_head: "REVIEW - exact run #741 on a2b84abc1914517cf591f27fb88f0b20b2a47ef7 passed functional/static Python 3.11/3.12 gates but failed only the unchanged 93% coverage ratchet at 91.34%; paired E2/E3 exact-head success is required before effective closure"
-r12_re_gate: "PENDING - bounded controller-lifetime MarketStreamGenerationId provenance remediation after WO-0152 R2-R5's public FR-08 trace admitted a fresh successor that reused retired A's stream"
-r12_status: "ACTIVE - semantic and activation-delta reviews ACCEPTed at P0=0/P1=0; exact publication SHA is reconciled below while retained CLOSED filing remains historical"
-r12_implementation_authority: "GRANTED - only after the exact R12 activation publication a124b3cda866e2a5aaf99d4527e7b231dd4f675d and this constrained reconciliation: app/execution_core/acquisition.py, tests/execution_core/test_acquisition.py, and directly necessary current evidence records"
+r12_re_gate: "REPLACED BY R12-R1 - original bounded controller-lifetime MarketStreamGenerationId remediation remains retained, but its map lookup could not distinguish absent from present malformed route entries"
+r12_status: "RE-GATED FOR R12-R1 PREFLIGHT - R12 semantic and activation-delta ACCEPTs remain retained evidence; implementation is paused because PersistentKeyMap.get cannot prove absent-versus-present-malformed route presence"
+r12_implementation_authority: "SUSPENDED - activation SHA a124b3cda866e2a5aaf99d4527e7b231dd4f675d authorized only the former acquisition.py/test_acquisition.py scope and cannot cover the required internal map correction"
 r12_preflight: "SATISFIED - contract 36c7995deb480400a6573e005d47cc8c4878c8638eb8212a4227fa394a47c13e, manifest a36ff8dcae2bcfeb41bd312960439885cf0b46fcda8a4b0309d075cbb84ca8d0, and independent ACCEPT result 0bd78212be49059fcc87ae02e23d08867c99944bf21ca1bf92af596612a99ac5 at P0=0/P1=0/P2=0"
 r12_activation_commit: "a124b3cda866e2a5aaf99d4527e7b231dd4f675d"
+r12_r1_scope: "DRAFT - only app/execution_core/fills.py, app/execution_core/acquisition.py, tests/execution_core/test_fill_position.py, tests/execution_core/test_acquisition.py, and directly necessary current records"
+r12_r1_preflight: "SATISFIED - contract 9cab228aa392292bc44a8758c60317201cf78388d6ec61848edcb3d1f0497a25 and independent ACCEPT result 5dfec4ce0425642148561801d69a035f0fb4ddc540fb7baf93d23747dddb581b at P0=0/P1=0/P2=0"
+r12_r1_status: "SEMANTIC ACCEPTED - former R12 source/test authority remains suspended until a separate R12-R1 records-only activation-delta ACCEPT, documentation publication, and exact-SHA reconciliation"
+r12_r1_activation_required: "PENDING - records-only activation-delta manifest and independent P0=0/P1=0 ACCEPT required before source/test authority"
 ---
 
 # WO-0151 - Reset kernel E2: aggregate controller, successor admission, and mixed recovery
@@ -539,3 +543,23 @@ ACTIVE but paused; its frozen test module is still negative evidence only. No
 contract/public API, authority, runtime, database/SQL/DDL, broker/network,
 credential, CI, M2, merge, deletion, cleanup, force-push, rebase, or paired
 93% closeout condition changes.
+
+## R12-R1 malformed-present-route re-gate -- 2026-08-07
+
+Focused implementation review found that the former R12 direct route lookup
+could not distinguish an absent key from a physically present malformed `None`
+value in `_PersistentKeyMap`. That is a concrete P1 against the accepted R12
+candidate-route refusal rule. The original R12 semantic and activation-delta
+acceptances remain retained historical evidence, but their two-path
+implementation authority is suspended rather than stretched to cover a shared
+container primitive.
+
+R12-R1 replaces only that lookup premise: it may draft/preflight one private,
+fixed-key presence-aware `_PersistentKeyMap._lookup()` in `fills.py`, consume it
+from the existing stream-route owner, and add focused map/acquisition controls.
+It may not add a public reader or API, scan a map, reopen unrelated E2 routes,
+or alter any E3/coverage/operating boundary. The existing uncommitted R12
+source/test delta is preserved as unaccepted working context. No R12-R1 source
+or test implementation may proceed until a fresh immutable manifest receives
+independent `ACCEPT` at P0=0/P1=0 and a separate records-only activation delta
+reconciles its exact publication SHA. WO-0152 remains ACTIVE but paused.

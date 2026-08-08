@@ -315,3 +315,17 @@ Seam discipline is what makes the safety invariants structurally enforceable rat
   `a124b3cda866e2a5aaf99d4527e7b231dd4f675d`. It activates only the frozen R12 E2 repair path;
   the GenerationRegistry remains the sole owner, and WO-0152 remains paused until focused R12
   implementation acceptance and public detector confirmation.
+- 2026-08-07: R12-R1 corrects a container-level constructibility gap before R12 implementation
+  acceptance: a direct radix-map `get()` cannot prove whether `None` means absent or a present
+  malformed value. The sole proposed repair is an internal presence-aware exact-key primitive in
+  the existing persistent map, consumed by the existing sealed GenerationRegistry stream route.
+  It keeps the direct non-enumerable ownership model: no controller history, public reader,
+  authority duplicate, scan, runtime, or persistence surface. R12's accepted packet is retained;
+  R12-R1 needs fresh semantic and activation gates before source/test work, and E3 remains paused.
+- 2026-08-07: R12-R1 independently ACCEPTed at P0=0/P1=0/P2=0 (contract
+  9cab228aa392292bc44a8758c60317201cf78388d6ec61848edcb3d1f0497a25, result
+  5dfec4ce0425642148561801d69a035f0fb4ddc540fb7baf93d23747dddb581b). The accepted model remains
+  a sealed direct GenerationRegistry route map backed by a private fixed-key presence primitive;
+  no public collection, history scan, or authority-side copy is introduced. A records-only
+  activation delta must still be independently accepted before R12-R1 source/test work, and E3
+  stays paused until later implementation acceptance.

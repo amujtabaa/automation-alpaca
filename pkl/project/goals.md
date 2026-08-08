@@ -419,3 +419,19 @@ Roadmapping against an unverified codebase state repeats the failure mode Fable 
   implement its frozen E2 source/test scope only; WO-0152 remains ACTIVE but paused through
   focused R12 implementation acceptance, then the frozen E3 detector may be rerun. The paired
   E2/E3 93% exact-head closeout and all exclusions remain unchanged.
+- 2026-08-07: Before R12 implementation acceptance, focused review found that the shared
+  immutable map cannot distinguish an absent key from a present `None` value. WO-0151 is now
+  narrowly re-gated as R12-R1 for one internal presence-aware fixed-key primitive and its existing
+  GenerationRegistry consumer. The accepted R12 packet remains retained evidence, but its former
+  source/test authority is suspended pending fresh R12-R1 semantic and records-only activation
+  gates. WO-0152 remains ACTIVE but paused; its frozen detector/evidence are unchanged. No public
+  API, authority duplicate, scan, runtime, database/SQL/DDL, broker/network, CI, M2, merge,
+  deletion, cleanup, force-push, or rebase scope is added, and paired E2/E3 93% closeout remains
+  mandatory.
+- 2026-08-07: The R12-R1 semantic replacement independently ACCEPTed at P0=0/P1=0/P2=0:
+  contract 9cab228aa392292bc44a8758c60317201cf78388d6ec61848edcb3d1f0497a25,
+  result 5dfec4ce0425642148561801d69a035f0fb4ddc540fb7baf93d23747dddb581b.
+  It confirms that one private, presence-aware fixed-key map primitive is the smallest bounded
+  repair. R12-R1 source/test work is still ungranted pending a separately reviewed records-only
+  activation delta, documentation publication, and exact-SHA reconciliation. WO-0152 remains
+  paused and frozen; paired E2/E3 93% closeout and all exclusions remain unchanged.
