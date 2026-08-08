@@ -24,6 +24,7 @@ e3_detector_confirmation: "work/review/REV-0059/WO-0152-FR-08-R12-R1-DETECTOR-CO
 e3_baseline_format_normalization: "work/review/REV-0059/WO-0152-E3-BASELINE-FORMAT-NORMALIZATION.md (SHA-256 ac688bae5d510bb14190d8f2cd13ccb4f2fdb6871d238d3d7bd6ed968276f65a; same three controls rerun exit 0)"
 e3_baseline_commit: "2da9f3eab8f5f3febda964857714d0d178e4fb29 — detector confirmation and post-confirmation test-only format normalization"
 e3_b_first_fill_freeze: "work/review/REV-0059/WO-0152-FR-08-B-FIRST-FILL-DETECTOR-FREEZE.md (SHA-256 d83257b7de12dfa440fae5adc3005cf41165b86b83a2c6f7c96295f8712cc9fb; local source SHA-256 c89dc011c359d104d9a2ae851f0a649926e04ac596acf6da444eecbea1774186; focused detector exit 1)"
+e3_b_first_fill_freeze_commit: "c3d8b0a16fd1dd525ff1c404b4044f4733844166 — documentation/evidence-only freeze; detector remains unstaged"
 ---
 
 # WO-0152 - Reset kernel E3: acquisition-generation generated and stateful conformance

@@ -552,3 +552,6 @@
   an E2 P0. WO-0152 remains ACTIVE/PAUSED; WO-0151 remains REVIEW pending bounded root-cause
   re-gate. No production, runtime, database/SQL/DDL, broker/network, CI, M2, merge, deletion,
   cleanup, force-push, or rebase authority is added.
+- 2026-08-07: Exact local commit `c3d8b0a16fd1dd525ff1c404b4044f4733844166` records only the
+  B-first-fill FR-08 documentation/evidence freeze. The failing detector remains unstaged at its
+  recorded source SHA; this reconciliation neither implements E2 remediation nor resumes E3.

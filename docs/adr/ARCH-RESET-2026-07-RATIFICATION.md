@@ -753,3 +753,8 @@ This record does not authorize production changes, runtime/persistence,
 database/SQL/DDL, credentials, broker/network activity, CI workflow changes,
 M2, master merge, PRs, deletion, cleanup, force-push, or rebase. The unchanged
 paired E2/E3 exact-head 93% closure remains mandatory.
+
+The exact local documentation/evidence freeze commit is
+`c3d8b0a16fd1dd525ff1c404b4044f4733844166`. It preserves the detector and
+current posture only; it does not implement, ratify, or externally validate a
+successor-cursor correction.
