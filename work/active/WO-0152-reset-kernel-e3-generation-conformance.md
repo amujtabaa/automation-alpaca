@@ -15,7 +15,7 @@ predecessor: "Accepted frozen WO-0151 E2 implementation plus exact-head run #741
 implementation_authority: "GRANTED AFTER ACCEPTANCE-PUBLICATION COMMIT — test-only E3 implementation under exact R2-R5 only"
 activation_required: "SATISFIED — R2-R3 contract 881334b4af6acb566adc57c30a4199f0340129d244cc3d58536c8e7c109a9936, manifest ee5554bf4e6b380fa7c687324adba7f93168e56168fb84cedf519115e4b7c3f6, and independent ACCEPT result 8752e20fa0aba82885d1d49ae8eabca9901218f5659073adcb4324fa9b189a59 at P0=0/P1=0/P2=0"
 re_gate_required: "SATISFIED — R2-R5 contract 79c734b7c0a929d43aeca83ef00e797b7afc8d97754eb30f1c812b1dd5b3221e, manifest 3fbcffbec46dd43248a1a8b569df39880c96e9d539d5a84a07cf58fde19be946, and independent ACCEPT result f3c86daa71a36108bb2757f853d922e992c7c77eed4d7d7626b5e9091e3d5245 at P0=0/P1=0/P2=0"
-r2_r5_acceptance_commit: PENDING_WO0152_R2_R5_ACCEPTANCE_SHA_RECONCILIATION
+r2_r5_acceptance_commit: ef5e53a5d49e189942545f52b7784ad7648fbf28
 activated: 2026-08-07
 activation_commit: a3ceee237d8635f280bd6f200f492bef919170f9
 activation_push: "SUCCESS — normal git push reported a2b84ab..a3ceee2 to origin/codex/arch-reset-2026-07-r1; subsequent git ls-remote could not acquire Windows credentials, so no independent live-ref query is claimed"
@@ -113,11 +113,12 @@ The exact R2-R5 contract, manifest, and independent result now establish
 `79c734b7c0a929d43aeca83ef00e797b7afc8d97754eb30f1c812b1dd5b3221e`,
 manifest `3fbcffbec46dd43248a1a8b569df39880c96e9d539d5a84a07cf58fde19be946`,
 and result `f3c86daa71a36108bb2757f853d922e992c7c77eed4d7d7626b5e9091e3d5245`.
-WO-0152 remains `ACTIVE`; its exact test-only R2-R5 scope may resume only
-after this acceptance publication is committed and its exact SHA is reconciled
-in the durable records. R2-R3 acceptance and activation remain historical
-prerequisites; R2-R4 remains retained unaccepted evidence; none of their other
-fixture, boundedness, provenance, scope, or safety rules change.
+WO-0152 remains `ACTIVE`. The documentation-only acceptance publication is
+commit `ef5e53a5d49e189942545f52b7784ad7648fbf28`; this reconciliation records
+that exact SHA before further test work resumes. R2-R3 acceptance and activation
+remain historical prerequisites; R2-R4 remains retained unaccepted evidence;
+none of their other fixture, boundedness, provenance, scope, or safety rules
+change.
 
 ## Authority pins
 

@@ -46,9 +46,10 @@ static exception with its inherited fixture table made coherent. Documentation-o
 preceded the first E3 test source. The first permitted public controls are retained as an
 uncommitted baseline; R2-R4 then independently retained one P1 because its
 positive 32-mandate schedule could not create a distinct sealed duplicate-stream
-probe. R2-R5 now independently `ACCEPT`ed at P0=0/P1=0; its documentation-only
-acceptance publication and exact SHA reconciliation precede further E3 test
-implementation, with no production/API/runtime boundary change.
+probe. R2-R5 now independently `ACCEPT`ed at P0=0/P1=0; documentation-only
+acceptance commit `ef5e53a5d49e189942545f52b7784ad7648fbf28` is reconciled
+below, so only the exact test-only E3 scope may resume, with no
+production/API/runtime boundary change.
  M2 and every
  runtime/persistence/cutover slice remain inactive. WO-0153
 has completed its bounded cleanup scope with environment-controlled deferred artifacts only; it
@@ -80,8 +81,9 @@ bounded environment-fixture extension and independently `ACCEPT`ed at P0=0/P1=0/
 fixed positive 32-entry pre-genesis schedule is retained `ACCEPT-WITH-CHANGES`, P1=1, because it
 cannot also mint the distinct sealed duplicate-stream input required for a failure-capable
 nonadjacent-reuse control. R2-R5 replaces only that missing probe construction and independently
-`ACCEPT`ed at P0=0/P1=0; its documentation-only acceptance publication and exact SHA reconciliation
-precede remaining E3 test work. M2 and every runtime/persistence/cutover slice remain inactive.
+`ACCEPT`ed at P0=0/P1=0; documentation-only acceptance commit
+`ef5e53a5d49e189942545f52b7784ad7648fbf28` is reconciled below, so only the
+exact test-only E3 work may resume. M2 and every runtime/persistence/cutover slice remain inactive.
 
 Historical E1 amendment (2026-08-05): the original REV-0057 successor is retained historical evidence.
 WO-0150's narrower R1/E2 boundary contract is independently accepted at P0=0/P1=0. E1 is limited
@@ -378,3 +380,9 @@ Roadmapping against an unverified codebase state repeats the failure mode Fable 
   docs-only acceptance publication and its exact SHA reconciliation may E3 test work resume. The
   public duplicate-stream route remains an E2-disagreement detector, not an E3 production-change
   authority; all exclusions and the paired E2/E3 unchanged 93% closeout remain unchanged.
+- 2026-08-07: Documentation-only commit
+  `ef5e53a5d49e189942545f52b7784ad7648fbf28` published the accepted R2-R4/R2-R5
+  packet and this current-posture reconciliation records that exact SHA. The preserved E3 baseline
+  remains test-only; resumed work may add only R2-R5-controlled test evidence. If the named public
+  duplicate-stream control admits its otherwise valid probe, the trace returns for bounded E2
+  remediation rather than changing production under WO-0152.

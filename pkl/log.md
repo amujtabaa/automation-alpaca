@@ -454,3 +454,9 @@
   publication must commit and reconcile its exact SHA before E3 test expansion. The public
   duplicate-stream control detects an E2 disagreement if current behavior admits it; it does not
   authorize production change, and all existing exclusions and paired E2/E3 93% closeout remain.
+- 2026-08-07: Documentation-only commit
+  `ef5e53a5d49e189942545f52b7784ad7648fbf28` published the accepted R2-R4/R2-R5
+  packet. This follow-on current-posture reconciliation records that exact publication SHA before
+  R2-R5-controlled test work resumes. No production/API, database/SQL/DDL, runtime,
+  broker/network, credential, CI-workflow, M2, merge, deletion, cleanup, force-push, or rebase
+  authority changes.

@@ -524,3 +524,12 @@ force-push, or rebase work. The public duplicate-stream control remains a
 required E2-disagreement detector: if it admits the valid probe, preserve the
 trace and return bounded E2 remediation rather than changing E3 or production
 under this acceptance.
+
+## WO-0152 R2-R5 acceptance-publication SHA reconciliation - 2026-08-07
+
+Documentation-only commit `ef5e53a5d49e189942545f52b7784ad7648fbf28` published
+the exact accepted R2-R4/R2-R5 packet. This append-only reconciliation records
+that immutable publication SHA before resumed E3 work. It grants only the
+already active, test-only R2-R5 scope; every production/API/runtime, database/
+SQL/DDL, broker/network/credential, CI-workflow, M2, merge, deletion, cleanup,
+force-push, and rebase exclusion remains unchanged.

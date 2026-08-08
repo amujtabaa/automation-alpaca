@@ -52,8 +52,9 @@ R2-R4 re-gated only the nonconstructible fixed A/B/C one-mint fixture with a
 statically bounded fixed 32-entry pre-genesis schedule, but independently
 retained one P1 because that positive schedule cannot itself mint the distinct
 sealed duplicate-stream probe. R2-R5 replaces only that probe construction
-and independently `ACCEPT`ed at P0=0/P1=0; its documentation-only acceptance
-publication and exact SHA reconciliation precede remaining E3 test work.
+and independently `ACCEPT`ed at P0=0/P1=0; documentation-only acceptance
+commit `ef5e53a5d49e189942545f52b7784ad7648fbf28` is reconciled below before
+remaining E3 test work resumes.
  All three named setup fixtures and the boundedness tripwire remain test-only and grant no
  production authority. All M2/runtime/persistence work remains inactive.
 
@@ -78,8 +79,8 @@ R2--R11-plus-R11-R1 composite. Its exact-head run #741 is functional/static succ
  coverage-only negative evidence; the unchanged 93% gate is deferred to paired E2/E3 closeout.
  WO-0152 is ACTIVE only for its named test-only scope after R2-R3 independently accepted the bounded
  sibling-history extension, public boundedness tripwire, and inherited fixture limits. Its remaining
- E3 work may resume after the R2-R5 documentation-only acceptance publication and SHA
- reconciliation; M2 and all
+ E3 work may resume after the R2-R5 documentation-only acceptance commit
+ `ef5e53a5d49e189942545f52b7784ad7648fbf28` is reconciled; M2 and all
  runtime/persistence work remain inactive until their applicable gates.
 
 ## Rules / facts
@@ -279,3 +280,7 @@ Seam discipline is what makes the safety invariants structurally enforceable rat
   acceptance publication and exact SHA reconciliation precede further E3 test work. The accepted
   probe provides a public detector for an E2 stream-ownership disagreement; it creates no E3
   production authority. M2/runtime exclusions and paired E2/E3 93% closeout remain controlling.
+- 2026-08-07: Documentation-only commit
+  `ef5e53a5d49e189942545f52b7784ad7648fbf28` published the exact R2-R4/R2-R5
+  packet. This append-only current-posture reconciliation permits only the active R2-R5 test
+  module scope to resume; it changes no production architecture or M2 boundary.
