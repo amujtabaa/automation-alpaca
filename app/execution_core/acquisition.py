@@ -60,10 +60,12 @@ from .identity import (
     EffectId as _EffectId,
     ExecutionFactKey as _ExecutionFactKey,
     MandateId as _MandateId,
+    MarketStreamGenerationId as _MarketStreamGenerationId,
     RequestOccurrenceId as _RequestOccurrenceId,
     RootFillKey as _RootFillKey,
     VenueLegKey as _VenueLegKey,
     _acquisition_generation_id_is_canonical,
+    _market_identity_is_canonical,
 )
 from .position import ExecutionSnapshot as _ExecutionSnapshot
 from .protection import (
@@ -131,7 +133,7 @@ _IDENTITY_DOMAIN = b"execution-core/acquisition-generation-id/v1"
 _GENESIS_DOMAIN = b"execution-core/acquisition-controller-genesis-head/v1"
 _REGISTRY_EMPTY_DOMAIN = b"execution-core/acquisition-generation-registry/empty/v1"
 _LINEAGE_EMPTY_DOMAIN = b"execution-core/acquisition-lineage-index/empty/v1"
-_REGISTRY_DOMAIN = b"execution-core/acquisition-generation-registry/v2"
+_REGISTRY_DOMAIN = b"execution-core/acquisition-generation-registry/v3"
 _MAX_SUCCESSOR_ORDINAL = 2**64 - 1
 
 
@@ -308,6 +310,23 @@ class GenerationRouteView:
 
 
 @_dataclass(frozen=True, slots=True, init=False)
+class _MarketStreamGenerationRoute:
+    """Private sealed ownership relation for one exact market stream."""
+
+    stream_generation: _MarketStreamGenerationId = _field(init=False)
+    binding: GenerationBindingView = _field(init=False)
+    _seal: bytes = _field(init=False, repr=False)
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise TypeError("market stream routes are registry-constructed only")
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        del cls, kwargs
+        raise TypeError("market stream routes cannot be subclassed")
+
+
+@_dataclass(frozen=True, slots=True, init=False)
 class GenerationRegistry:
     """Opaque, non-enumerable direct generation registry.
 
@@ -317,6 +336,10 @@ class GenerationRegistry:
     """
 
     _records: _PersistentKeyMap[GenerationRecordView] = _field(
+        init=False,
+        repr=False,
+    )
+    _market_stream_routes: _PersistentKeyMap[_MarketStreamGenerationRoute] = _field(
         init=False,
         repr=False,
     )
@@ -336,8 +359,16 @@ class GenerationRegistry:
             raise TypeError("GenerationRegistry.empty requires the exact type")
         result = object.__new__(cls)
         records: _PersistentKeyMap[GenerationRecordView] = _PersistentKeyMap.empty()
+        market_stream_routes: _PersistentKeyMap[_MarketStreamGenerationRoute] = (
+            _PersistentKeyMap.empty()
+        )
         object.__setattr__(result, "_records", records)
-        object.__setattr__(result, "_seal", _registry_seal(records))
+        object.__setattr__(result, "_market_stream_routes", market_stream_routes)
+        object.__setattr__(
+            result,
+            "_seal",
+            _registry_seal(records, market_stream_routes),
+        )
         return result
 
     def record(
@@ -363,14 +394,17 @@ def _registry_is_authentic(value: object) -> bool:
         return False
     try:
         records = value._records
+        market_stream_routes = value._market_stream_routes
         seal = value._seal
     except AttributeError:
         return False
     return bool(
         type(records) is _PersistentKeyMap
+        and type(market_stream_routes) is _PersistentKeyMap
+        and records.size == market_stream_routes.size
         and type(seal) is bytes
         and len(seal) == 32
-        and seal == _registry_seal(records)
+        and seal == _registry_seal(records, market_stream_routes)
     )
 
 
@@ -380,19 +414,117 @@ def _generation_registry_key(generation_id: _AcquisitionGenerationId) -> bytes:
     return generation_id.value.encode("ascii")
 
 
-def _registry_seal(records: _PersistentKeyMap[GenerationRecordView]) -> bytes:
+def _market_stream_route_key(stream_generation: _MarketStreamGenerationId) -> bytes:
+    if not _market_identity_is_canonical(stream_generation):
+        raise TypeError("stream_generation must be a canonical market stream identity")
+    return _commit_parts(
+        b"execution-core/acquisition/market-stream-route-key/v1",
+        _encode_text(stream_generation.value),
+    )
+
+
+def _registry_seal(
+    records: _PersistentKeyMap[GenerationRecordView],
+    market_stream_routes: _PersistentKeyMap[_MarketStreamGenerationRoute],
+) -> bytes:
     if type(records) is not _PersistentKeyMap:
         raise TypeError("generation registry records must be a persistent map")
-    if records.size == 0:
+    if type(market_stream_routes) is not _PersistentKeyMap:
+        raise TypeError("generation registry stream routes must be a persistent map")
+    if records.size == 0 and market_stream_routes.size == 0:
         # Preserve E1's exact empty-reader identity and known semantics.
         return _commit_parts(_REGISTRY_EMPTY_DOMAIN)
-    return _commit_parts(_REGISTRY_DOMAIN, records.commitment)
+    return _commit_parts(
+        _REGISTRY_DOMAIN,
+        records.commitment,
+        market_stream_routes.commitment,
+    )
+
+
+def _market_stream_generation_route_commitment(
+    stream_generation: _MarketStreamGenerationId,
+    binding: GenerationBindingView,
+) -> bytes:
+    if not _market_identity_is_canonical(stream_generation):
+        raise TypeError("stream route requires a canonical market stream identity")
+    if not _generation_binding_view_is_authentic(binding):
+        raise TypeError("stream route requires an authentic generation binding")
+    return _commit_parts(
+        b"execution-core/acquisition/market-stream-route/v1",
+        _encode_text(stream_generation.value),
+        binding.binding_commitment,
+    )
+
+
+def _market_stream_generation_route_seal(
+    stream_generation: _MarketStreamGenerationId,
+    binding: GenerationBindingView,
+) -> bytes:
+    commitment = _market_stream_generation_route_commitment(
+        stream_generation,
+        binding,
+    )
+    return _commit_parts(
+        b"execution-core/acquisition/market-stream-route-seal/v1",
+        commitment,
+    )
+
+
+def _market_stream_generation_route_is_authentic(value: object) -> bool:
+    if type(value) is not _MarketStreamGenerationRoute:
+        return False
+    try:
+        return bool(
+            value._seal
+            == _market_stream_generation_route_seal(
+                value.stream_generation,
+                value.binding,
+            )
+        )
+    except (AttributeError, TypeError, ValueError):
+        return False
+
+
+def _registry_market_stream_route(
+    registry: GenerationRegistry,
+    stream_generation: _MarketStreamGenerationId,
+) -> _MarketStreamGenerationRoute | None:
+    """Return one direct retained route; malformed presence never means absent."""
+
+    if not _registry_is_authentic(registry):
+        raise ValueError("generation registry authenticity check failed")
+    if not _market_identity_is_canonical(stream_generation):
+        raise TypeError("stream_generation must be a canonical market stream identity")
+    key = _market_stream_route_key(stream_generation)
+    present, route = registry._market_stream_routes._lookup(key)
+    if not present:
+        return None
+    if route is None or not _market_stream_generation_route_is_authentic(route):
+        raise ValueError("market stream route does not match its retained key")
+    if (
+        route.stream_generation != stream_generation
+        or _market_stream_route_key(route.stream_generation) != key
+    ):
+        raise ValueError("market stream route does not match its retained key")
+    record = registry._records.get(
+        _generation_registry_key(route.binding.generation_id)
+    )
+    if (
+        type(record) is not GenerationRecordView
+        or not _generation_record_is_authentic(record)
+        or record.binding != route.binding
+    ):
+        raise ValueError("market stream route does not match a retained generation")
+    return route
 
 
 def _registry_with_initial_record(
     record: GenerationRecordView,
+    stream_generation: _MarketStreamGenerationId,
 ) -> GenerationRegistry:
-    if not _generation_record_is_authentic(record):
+    if not _generation_record_is_authentic(record) or not _market_identity_is_canonical(
+        stream_generation
+    ):
         raise TypeError("initial generation record must be exact and sealed")
     records: _PersistentKeyMap[GenerationRecordView] = _PersistentKeyMap.empty()
     records = records.insert_new(
@@ -400,9 +532,30 @@ def _registry_with_initial_record(
         record,
         record._seal,
     )
+    market_stream_routes: _PersistentKeyMap[_MarketStreamGenerationRoute] = (
+        _PersistentKeyMap.empty()
+    )
+    route = object.__new__(_MarketStreamGenerationRoute)
+    object.__setattr__(route, "stream_generation", stream_generation)
+    object.__setattr__(route, "binding", record.binding)
+    object.__setattr__(
+        route,
+        "_seal",
+        _market_stream_generation_route_seal(stream_generation, record.binding),
+    )
+    market_stream_routes = market_stream_routes.insert_new(
+        _market_stream_route_key(stream_generation),
+        route,
+        route._seal,
+    )
     result = object.__new__(GenerationRegistry)
     object.__setattr__(result, "_records", records)
-    object.__setattr__(result, "_seal", _registry_seal(records))
+    object.__setattr__(result, "_market_stream_routes", market_stream_routes)
+    object.__setattr__(
+        result,
+        "_seal",
+        _registry_seal(records, market_stream_routes),
+    )
     return result
 
 
@@ -427,7 +580,16 @@ def _registry_with_replaced_record(
     records = registry._records.replace_existing(key, record, record._seal)
     result = object.__new__(GenerationRegistry)
     object.__setattr__(result, "_records", records)
-    object.__setattr__(result, "_seal", _registry_seal(records))
+    object.__setattr__(
+        result,
+        "_market_stream_routes",
+        registry._market_stream_routes,
+    )
+    object.__setattr__(
+        result,
+        "_seal",
+        _registry_seal(records, registry._market_stream_routes),
+    )
     return result
 
 
@@ -435,6 +597,7 @@ def _registry_with_successor(
     registry: GenerationRegistry,
     retired: GenerationRecordView,
     successor: GenerationRecordView,
+    successor_stream_generation: _MarketStreamGenerationId,
 ) -> GenerationRegistry:
     """Retire one exact LIVE record and insert its one direct successor."""
 
@@ -442,6 +605,7 @@ def _registry_with_successor(
         not _registry_is_authentic(registry)
         or not _generation_record_is_authentic(retired)
         or not _generation_record_is_authentic(successor)
+        or not _market_identity_is_canonical(successor_stream_generation)
         or retired.serving_class is not GenerationServingClass.RETIRED_UNSERVING
         or successor.serving_class is not GenerationServingClass.LIVE
         or retired.binding.generation_id == successor.binding.generation_id
@@ -466,9 +630,32 @@ def _registry_with_successor(
         )
     records = registry._records.replace_existing(retired_key, retired, retired._seal)
     records = records.insert_new(successor_key, successor, successor._seal)
+    if _registry_market_stream_route(registry, successor_stream_generation) is not None:
+        raise ValueError("successor registry update cannot reuse a market stream")
+    route = object.__new__(_MarketStreamGenerationRoute)
+    object.__setattr__(route, "stream_generation", successor_stream_generation)
+    object.__setattr__(route, "binding", successor.binding)
+    object.__setattr__(
+        route,
+        "_seal",
+        _market_stream_generation_route_seal(
+            successor_stream_generation,
+            successor.binding,
+        ),
+    )
+    market_stream_routes = registry._market_stream_routes.insert_new(
+        _market_stream_route_key(successor_stream_generation),
+        route,
+        route._seal,
+    )
     result = object.__new__(GenerationRegistry)
     object.__setattr__(result, "_records", records)
-    object.__setattr__(result, "_seal", _registry_seal(records))
+    object.__setattr__(result, "_market_stream_routes", market_stream_routes)
+    object.__setattr__(
+        result,
+        "_seal",
+        _registry_seal(records, market_stream_routes),
+    )
     return result
 
 
@@ -1965,9 +2152,20 @@ def _controller_state_is_authentic(value: object) -> bool:
         if controller.live_generation_id is None:
             return False
         record = value.registry.record(controller.live_generation_id)
+        route = _registry_market_stream_route(
+            value.registry,
+            mandate.protection_mandate.evidence_policy.stream_generation,
+        )
         return bool(
             controller.live_generation_id is not None
             and record is not None
+            and route is not None
+            and route.stream_generation
+            == mandate.protection_mandate.evidence_policy.stream_generation
+            and route.binding == record.binding
+            and route.binding.application_generation_id
+            == controller.application_generation_id
+            and route.binding.position_scope == controller.position_scope
             and record.binding.dual_mandate_binding_commitment
             == controller._binding_commitment
             and record.binding.successor_ordinal == controller.successor_ordinal
@@ -3304,7 +3502,10 @@ def initialize_acquisition_controller(
         serving_class=GenerationServingClass.LIVE,
         closure_summary_commitment=_initial_generation_closure_summary(binding),
     )
-    registry = _registry_with_initial_record(record)
+    registry = _registry_with_initial_record(
+        record,
+        mandate.protection_mandate.evidence_policy.stream_generation,
+    )
     controller = _new_symbol_acquisition_controller(
         application_generation_id=application_generation_id,
         position_scope=scope,
@@ -3968,6 +4169,26 @@ def begin_acquisition_generation(
             protection=protection,
         )
     assert current_record is not None
+    candidate_stream_generation = (
+        successor_mandate.protection_mandate.evidence_policy.stream_generation
+    )
+    try:
+        candidate_stream_route = _registry_market_stream_route(
+            state.registry,
+            candidate_stream_generation,
+        )
+    except ValueError:
+        return _new_refused_successor_transition(
+            state=state,
+            refresh=refresh,
+            protection=protection,
+        )
+    if candidate_stream_route is not None:
+        return _new_refused_successor_transition(
+            state=state,
+            refresh=refresh,
+            protection=protection,
+        )
     successor_ordinal = controller.successor_ordinal + 1
     successor_generation_id = _derive_acquisition_generation_id(
         state.application_generation_id,
@@ -4049,6 +4270,7 @@ def begin_acquisition_generation(
         state.registry,
         retired_record,
         successor_record,
+        candidate_stream_generation,
     )
     next_controller = _new_symbol_acquisition_controller(
         application_generation_id=state.application_generation_id,

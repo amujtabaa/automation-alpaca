@@ -8614,10 +8614,24 @@ def test_protection_projection_never_materializes_slow_venue_histories(
     map_type = getattr(venue_module, "_PersistentKeyMap")
     assert map_type is getattr(fills_module, "_PersistentKeyMap")
     original_map_get = inspect.getattr_static(map_type, "get")
+    original_map_lookup = inspect.getattr_static(map_type, "_lookup")
     _assert_exact_function_dependency_closure(
         original_map_get,
         fills_module,
         qualified_name="_PersistentKeyMap.get",
+        exact_externals={
+            "ValueError": builtins.ValueError,
+            "_ValueT": vars(fills_module)["_ValueT"],
+            "bytes": builtins.bytes,
+            "cast": typing.cast,
+            "isinstance": builtins.isinstance,
+            "len": builtins.len,
+        },
+    )
+    _assert_exact_function_dependency_closure(
+        original_map_lookup,
+        fills_module,
+        qualified_name="_PersistentKeyMap._lookup",
         exact_externals={
             "ValueError": builtins.ValueError,
             "_ValueT": vars(fills_module)["_ValueT"],
@@ -8824,6 +8838,7 @@ def test_bounded_map_provenance_rejects_transitive_global_rebind(
     fills_module = importlib.import_module("app.execution_core.fills")
     map_type = getattr(fills_module, "_PersistentKeyMap")
     map_get = inspect.getattr_static(map_type, "get")
+    map_lookup = inspect.getattr_static(map_type, "_lookup")
     child_at = getattr(fills_module, "_child_at")
     payload_calls: list[str] = []
 
@@ -8834,9 +8849,9 @@ def test_bounded_map_provenance_rejects_transitive_global_rebind(
     monkeypatch.setattr(fills_module, "_child_at", replacement)
     with pytest.raises(AssertionError, match="dependency globals changed"):
         _assert_exact_function_dependency_closure(
-            map_get,
+            map_lookup,
             fills_module,
-            qualified_name="_PersistentKeyMap.get",
+            qualified_name="_PersistentKeyMap._lookup",
             exact_externals={
                 "ValueError": builtins.ValueError,
                 "_ValueT": vars(fills_module)["_ValueT"],

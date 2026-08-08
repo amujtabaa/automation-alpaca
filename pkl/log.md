@@ -515,3 +515,12 @@
   delta remains unaccepted pending RED-first evidence and focused implementation acceptance. E3
   remains paused, frozen evidence/detector stays unchanged, and all exclusions plus paired 93%
   exact-head closeout remain controlling.
+- 2026-08-07: WO-0151 R12-R1 implementation independently `ACCEPT`ed at P0=0/P1=0/P2=0 for
+  immutable candidate manifest `abe0df5d723df536263e99a72d1b612ffcf39032de71753aaee9a6304e8166f0`;
+  final reviewer result is `5631400bf4734c3781dc407b32182a497778a9cac8341f27ed170be433bfaa80`.
+  The accepted root correction makes absence explicit in the private persistent map and keeps
+  the sealed direct market-stream route only in GenerationRegistry. Fresh focused/touched pure
+  tests, Ruff, Mypy, and diff checks passed; no database/SQL/DDL, runtime, broker/network,
+  external CI, or E3 detector ran as part of this acceptance. WO-0151 remains REVIEW pending the
+  unchanged paired E2/E3 93% exact-head gate, and WO-0152 remains ACTIVE but paused until its
+  frozen detector reruns unchanged and is reconciled.

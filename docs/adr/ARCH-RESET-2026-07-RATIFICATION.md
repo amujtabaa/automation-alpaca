@@ -666,3 +666,25 @@ and focused fills/acquisition tests. It does not ratify the unaccepted former
 R12 working delta, resume E3, or alter any public API, runtime, persistence,
 database/SQL/DDL, broker/network, CI, M2, merge, deletion, cleanup,
 force-push, rebase, safety boundary, or paired 93% closeout condition.
+
+## WO-0151 R12-R1 implementation acceptance -- 2026-08-07
+
+Under the existing bounded R12-R1 authority, the exact implementation
+candidate manifest
+`abe0df5d723df536263e99a72d1b612ffcf39032de71753aaee9a6304e8166f0`
+independently `ACCEPT`ed at P0=0/P1=0/P2=0. Its sole review result is
+`work/review/REV-0058/result-r12-r1-implementation.md`, SHA-256
+`5631400bf4734c3781dc407b32182a497778a9cac8341f27ed170be433bfaa80`.
+
+The result confirms only the bounded private repair: a presence-aware exact-key
+map primitive and its existing sealed direct GenerationRegistry stream-route
+consumer, with focused owning tests. It adds no new human authorization, ADR,
+public API, controller history, authority duplicate, runtime/persistence,
+database/SQL/DDL, broker/network, credential, CI-workflow, M2, merge, deletion,
+cleanup, force-push, or rebase authority.
+
+WO-0151 remains effective `REVIEW`: run #741 remains functional/static success
+and coverage-only negative evidence, and paired E2/E3 exact-head Python
+3.11/3.12 success at the unchanged 93% threshold remains mandatory. WO-0152
+remains ACTIVE but paused until its unchanged frozen detector is rerun and
+reconciled.

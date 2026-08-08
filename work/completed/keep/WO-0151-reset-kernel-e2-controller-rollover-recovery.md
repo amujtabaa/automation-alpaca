@@ -32,12 +32,14 @@ r12_status: "RE-GATED FOR R12-R1 PREFLIGHT - R12 semantic and activation-delta A
 r12_implementation_authority: "SUSPENDED - activation SHA a124b3cda866e2a5aaf99d4527e7b231dd4f675d authorized only the former acquisition.py/test_acquisition.py scope and cannot cover the required internal map correction"
 r12_preflight: "SATISFIED - contract 36c7995deb480400a6573e005d47cc8c4878c8638eb8212a4227fa394a47c13e, manifest a36ff8dcae2bcfeb41bd312960439885cf0b46fcda8a4b0309d075cbb84ca8d0, and independent ACCEPT result 0bd78212be49059fcc87ae02e23d08867c99944bf21ca1bf92af596612a99ac5 at P0=0/P1=0/P2=0"
 r12_activation_commit: "a124b3cda866e2a5aaf99d4527e7b231dd4f675d"
-r12_r1_scope: "DRAFT - only app/execution_core/fills.py, app/execution_core/acquisition.py, tests/execution_core/test_fill_position.py, tests/execution_core/test_acquisition.py, and directly necessary current records"
+r12_r1_scope: "COMPLETE - only app/execution_core/fills.py, app/execution_core/acquisition.py, tests/execution_core/test_fill_position.py, tests/execution_core/test_acquisition.py, tests/execution_core/test_protection.py for bounded-map provenance, and directly necessary current records were used"
 r12_r1_preflight: "SATISFIED - contract 9cab228aa392292bc44a8758c60317201cf78388d6ec61848edcb3d1f0497a25 and independent ACCEPT result 5dfec4ce0425642148561801d69a035f0fb4ddc540fb7baf93d23747dddb581b at P0=0/P1=0/P2=0"
-r12_r1_status: "ACTIVE - exact records-only R2 activation accepted, documentation publication SHA reconciled below; authority remains limited to four named pure source/test paths"
+r12_r1_status: "IMPLEMENTATION ACCEPTED - exact candidate and independent result recorded below; R12-R1 authority is consumed while WO-0151 remains effective REVIEW pending paired E2/E3 exact-head 93% closure"
 r12_r1_activation_required: "SATISFIED - R2 activation manifest/result ACCEPT and exact documentation publication SHA 0beee5843304cafd3cb16d5644e14cb256fd17f7"
 r12_r1_activation_commit: "0beee5843304cafd3cb16d5644e14cb256fd17f7"
-r12_r1_implementation_authority: "GRANTED - only app/execution_core/fills.py, app/execution_core/acquisition.py, tests/execution_core/test_fill_position.py, tests/execution_core/test_acquisition.py, and directly necessary evidence/current records; every existing exclusion remains in force"
+r12_r1_implementation_manifest: "work/review/REV-0058/WO-0151-R12-R1-IMPLEMENTATION-CANDIDATE-MANIFEST.md (SHA-256 abe0df5d723df536263e99a72d1b612ffcf39032de71753aaee9a6304e8166f0)"
+r12_r1_implementation_result: "work/review/REV-0058/result-r12-r1-implementation.md (SHA-256 5631400bf4734c3781dc407b32182a497778a9cac8341f27ed170be433bfaa80; ACCEPT, P0=0/P1=0/P2=0)"
+r12_r1_implementation_authority: "CONSUMED - the five named source/test paths and directly necessary evidence/current records completed under accepted R12-R1 scope; every existing exclusion remains in force"
 ---
 
 # WO-0151 - Reset kernel E2: aggregate controller, successor admission, and mixed recovery
@@ -576,9 +578,42 @@ ef5ba3af97bc76b2e1f77fa4bab0fc9d4677f5dfc7f8eb740c2e5c9dad688444.
 Documentation-only commit 0beee5843304cafd3cb16d5644e14cb256fd17f7 published the
 accepted R12-R1 activation packet, and its normal branch push succeeded.
 
-This exact-SHA reconciliation activates only the four R12-R1 pure paths:
-fills.py, acquisition.py, test_fill_position.py, and test_acquisition.py.
+This exact-SHA reconciliation activates only the initial four R12-R1 pure
+paths: fills.py, acquisition.py, test_fill_position.py, and
+test_acquisition.py. The later bounded-map provenance control below adds one
+directly coupled test path only.
 The former R12 working delta remains unaccepted until it satisfies R12-R1
 RED-first controls and focused independent implementation acceptance. WO-0152
 remains ACTIVE but paused; frozen E3 evidence/detector, paired E2/E3 93%
 exact-head closeout, and all operational exclusions remain unchanged.
+
+## R12-R1 bounded-map provenance control -- 2026-08-07
+
+The fresh full pure execution-core gate exposed one directly coupled test-only
+scope correction: `test_bounded_map_provenance_rejects_transitive_global_rebind`
+still inspected `_PersistentKeyMap.get` as though its bounded radix walk lived
+there. R12-R1 correctly moves that walk into the new private `_lookup` owner,
+so the existing provenance guard must inspect that method instead and also
+prove `get` delegates to it. Under the user's standing in-flight root-correction
+authority, this adds only `tests/execution_core/test_protection.py` to the
+R12-R1 test scope. It changes no production authority, public API, runtime,
+database, E3 detector, or operational boundary.
+
+## R12-R1 implementation acceptance -- 2026-08-07
+
+The exact implementation candidate manifest
+`abe0df5d723df536263e99a72d1b612ffcf39032de71753aaee9a6304e8166f0`
+independently `ACCEPT`ed at P0=0/P1=0/P2=0 in
+`work/review/REV-0058/result-r12-r1-implementation.md`, SHA-256
+`5631400bf4734c3781dc407b32182a497778a9cac8341f27ed170be433bfaa80`.
+The review rehashed all six candidate paths, re-derived the direct sealed
+stream-route relation and absence-versus-present-value behavior, and reproduced
+focused controls, touched-module tests, Ruff, Mypy, and the diff gate.
+
+This consumes only the bounded R12-R1 remediation authority. It does not close
+WO-0151: exact run #741 remains functional/static success and coverage-only
+negative evidence, so paired E2/E3 exact-head Python 3.11/3.12 success at the
+unchanged 93% threshold is still required. WO-0152 stays ACTIVE and paused
+until its unchanged frozen detector is rerun and reconciled. No E3 detector,
+external CI, runtime, persistence, database/SQL/DDL, broker/network, credential,
+M2, merge, deletion, cleanup, force-push, or rebase work is claimed here.

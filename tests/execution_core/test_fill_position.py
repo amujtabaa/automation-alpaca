@@ -5129,6 +5129,10 @@ def test_persistent_radix_map_rejects_duplicate_missing_and_empty_keys() -> None
     for key in (b"", "not-bytes"):
         with pytest.raises(ValueError, match="nonempty bytes"):
             empty.get(key)
+        with pytest.raises(ValueError, match="nonempty bytes"):
+            empty._lookup(key)
+
+    assert empty._lookup(b"missing") == (False, None)
 
     with pytest.raises(KeyError):
         empty.replace_existing(b"key", "replacement", b"\x01" * 32)
@@ -5140,10 +5144,25 @@ def test_persistent_radix_map_rejects_duplicate_missing_and_empty_keys() -> None
     with pytest.raises(ValueError, match="already exists"):
         retained.insert_new(b"key", "duplicate", b"\x03" * 32)
 
+    present_none = empty.insert_new(b"present-none", None, b"\x04" * 32)
+    assert present_none._lookup(b"present-none") == (True, None)
+    assert present_none.get(b"present-none") is None
+    with pytest.raises(ValueError, match="already exists"):
+        present_none.insert_new(b"present-none", "duplicate", b"\x05" * 32)
+    with pytest.raises(KeyError):
+        empty.replace_existing(b"present-none", "replacement", b"\x06" * 32)
+    replaced_none = present_none.replace_existing(
+        b"present-none",
+        "replacement",
+        b"\x07" * 32,
+    )
+    assert replaced_none.size == present_none.size
+    assert replaced_none._lookup(b"present-none") == (True, "replacement")
+
     child = fills_module._make_radix_node(
         value="leaf",
         has_value=True,
-        value_commitment=b"\x04" * 32,
+        value_commitment=b"\x08" * 32,
     )
     parent = fills_module._make_radix_node(children=((7, child),))
     assert parent.children == ((7, child),)

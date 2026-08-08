@@ -309,7 +309,12 @@ def _r8_initialized_controller():
     return authority, scope, initialized
 
 
-def _successor_mandate(prior: object, label: str) -> object:
+def _successor_mandate(
+    prior: object,
+    label: str,
+    *,
+    stream_generation: kernel.MarketStreamGenerationId | None = None,
+) -> object:
     """Mint one distinct mandate/stream with the retained recovery contract."""
 
     protection = protection_fixtures._protection_module()
@@ -318,8 +323,12 @@ def _successor_mandate(prior: object, label: str) -> object:
         mandate_id=kernel.MandateId(f"wo0151-{label}-protection-mandate"),
         position_scope=prior.position_scope,
         session_id=prior.session_id,
-        stream_generation=kernel.MarketStreamGenerationId(
-            sha256(f"wo0151-{label}-stream".encode("ascii")).hexdigest()
+        stream_generation=(
+            kernel.MarketStreamGenerationId(
+                sha256(f"wo0151-{label}-stream".encode("ascii")).hexdigest()
+            )
+            if stream_generation is None
+            else stream_generation
         ),
         configuration_version=f"wo0151-{label}-protection-v1",
         emergency_recovery_compatibility=(
@@ -1474,6 +1483,399 @@ def test_wo0151_r11_serial_aborted_successors_advance_a_to_b_to_c() -> None:
         scope,
     )
     assert current.disposition is authority.AcquisitionContextRefreshDisposition.CURRENT
+
+
+def _r12_successor_attempt(
+    authority: object,
+    current: object,
+    scope: PositionScope,
+    mandate: object,
+) -> object:
+    """Use the one ordinary public successor path for focused R12 controls."""
+
+    refresh = authority.refresh_acquisition_context(
+        current.authority,
+        current.execution,
+        scope,
+    )
+    assert refresh.disposition is authority.AcquisitionContextRefreshDisposition.CURRENT
+    bootstrap = current.venue.project_acquisition_bootstrap(current.execution, scope)
+    admission = authority.project_acquisition_admission(
+        current.authority,
+        current.execution,
+        scope,
+    )
+    assert admission.kind is authority.AcquisitionAdmissionKind.SUCCESSOR
+    return acquisition.begin_acquisition_generation(
+        current.state,
+        mandate,
+        bootstrap,
+        admission,
+        refresh,
+        current.protection,
+    )
+
+
+def _r12_state_with_resealed_registry(
+    state: object,
+    *,
+    records: object,
+    market_stream_routes: object,
+) -> object:
+    """Forge only a test-owned sealed registry relation for R12 negatives."""
+
+    registry = object.__new__(acquisition.GenerationRegistry)
+    object.__setattr__(registry, "_records", records)
+    object.__setattr__(registry, "_market_stream_routes", market_stream_routes)
+    object.__setattr__(
+        registry,
+        "_seal",
+        acquisition._registry_seal(records, market_stream_routes),
+    )
+    assert acquisition._registry_is_authentic(registry)
+    return acquisition._new_acquisition_controller_state(
+        controller=state._controller,
+        mandate=state._mandate,
+        registry=registry,
+        lineage=state.lineage,
+    )
+
+
+def test_wo0151_r12_refuses_nonadjacent_market_stream_reuse() -> None:
+    """A distinct successor cannot reuse any retired generation's stream."""
+
+    authority, scope, initialized = _r8_initialized_controller()
+
+    def advance(
+        current: object,
+        label: str,
+        *,
+        stream_generation: kernel.MarketStreamGenerationId | None = None,
+    ) -> object:
+        refresh = authority.refresh_acquisition_context(
+            current.authority,
+            current.execution,
+            scope,
+        )
+        assert (
+            refresh.disposition
+            is authority.AcquisitionContextRefreshDisposition.CURRENT
+        )
+        bootstrap = current.venue.project_acquisition_bootstrap(
+            current.execution,
+            scope,
+        )
+        admission = authority.project_acquisition_admission(
+            current.authority,
+            current.execution,
+            scope,
+        )
+        assert admission.kind is authority.AcquisitionAdmissionKind.SUCCESSOR
+        mandate = _successor_mandate(
+            current.state._mandate,
+            label,
+            stream_generation=stream_generation,
+        )
+        return acquisition.begin_acquisition_generation(
+            current.state,
+            mandate,
+            bootstrap,
+            admission,
+            refresh,
+            current.protection,
+        )
+
+    a_stream = (
+        initialized.state._mandate.protection_mandate.evidence_policy.stream_generation
+    )
+    b = advance(initialized, "r12-successor-b")
+    assert b.disposition is acquisition.AcquisitionControllerDisposition.APPLIED
+
+    refused = advance(
+        b,
+        "r12-fresh-binding-with-retired-a-stream",
+        stream_generation=a_stream,
+    )
+
+    assert refused.disposition is acquisition.AcquisitionControllerDisposition.REFUSED
+    assert refused.state is b.state
+    assert refused.authority is b.authority
+    assert refused.execution is b.execution
+    assert refused.venue is b.venue
+    assert refused.protection is b.protection
+    assert refused.created_effect_id is None
+    assert refused.fresh_claim is None
+    assert refused._registration_receipt is None
+
+
+@pytest.mark.parametrize(
+    "malformed_kind",
+    ("present-none", "wrong-key-route", "wrong-runtime-type"),
+)
+def test_wo0151_r12_r1_refuses_a_present_malformed_candidate_stream_route(
+    malformed_kind: str,
+) -> None:
+    """Only absence is fresh; a malformed retained candidate route is refused."""
+
+    authority, scope, initialized = _r8_initialized_controller()
+    b = _r12_successor_attempt(
+        authority,
+        initialized,
+        scope,
+        _successor_mandate(initialized.state._mandate, "r12-r1-successor-b"),
+    )
+    assert b.disposition is acquisition.AcquisitionControllerDisposition.APPLIED
+    retired_a_stream = (
+        initialized.state._mandate.protection_mandate.evidence_policy.stream_generation
+    )
+    candidate = _successor_mandate(
+        b.state._mandate,
+        "r12-r1-fresh-binding-with-retired-a-stream",
+        stream_generation=retired_a_stream,
+    )
+    candidate_stream = candidate.protection_mandate.evidence_policy.stream_generation
+    candidate_key = acquisition._market_stream_route_key(candidate_stream)
+    if malformed_kind == "present-none":
+        route_value = None
+        route_commitment = b"\x96" * 32
+    elif malformed_kind == "wrong-key-route":
+        current_stream = (
+            b.state._mandate.protection_mandate.evidence_policy.stream_generation
+        )
+        current_route = b.state.registry._market_stream_routes.get(
+            acquisition._market_stream_route_key(current_stream)
+        )
+        assert current_route is not None
+        route_value = current_route
+        route_commitment = current_route._seal
+    else:
+        route_value = object()
+        route_commitment = b"\x99" * 32
+    routes = b.state.registry._market_stream_routes.replace_existing(
+        candidate_key,
+        route_value,
+        route_commitment,
+    )
+    forged_state = _r12_state_with_resealed_registry(
+        b.state,
+        records=b.state.registry._records,
+        market_stream_routes=routes,
+    )
+    assert acquisition._controller_state_is_authentic(forged_state)
+
+    refresh = authority.refresh_acquisition_context(b.authority, b.execution, scope)
+    assert refresh.disposition is authority.AcquisitionContextRefreshDisposition.CURRENT
+    bootstrap = b.venue.project_acquisition_bootstrap(b.execution, scope)
+    admission = authority.project_acquisition_admission(b.authority, b.execution, scope)
+    assert admission.kind is authority.AcquisitionAdmissionKind.SUCCESSOR
+    refused = acquisition.begin_acquisition_generation(
+        forged_state,
+        candidate,
+        bootstrap,
+        admission,
+        refresh,
+        b.protection,
+    )
+
+    assert refused.disposition is acquisition.AcquisitionControllerDisposition.REFUSED
+    assert refused.state is forged_state
+    assert refused.authority is b.authority
+    assert refused.execution is b.execution
+    assert refused.venue is b.venue
+    assert refused.protection is b.protection
+    assert refused.created_effect_id is None
+    assert refused.fresh_claim is None
+    assert refused._registration_receipt is None
+
+
+def test_wo0151_r12_r1_rejects_a_malformed_current_stream_route_as_input() -> None:
+    """The retained live stream relation is an authenticity fence, not REFUSED."""
+
+    authority, scope, initialized = _r8_initialized_controller()
+    current_stream = (
+        initialized.state._mandate.protection_mandate.evidence_policy.stream_generation
+    )
+    current_key = acquisition._market_stream_route_key(current_stream)
+    routes = initialized.state.registry._market_stream_routes.replace_existing(
+        current_key,
+        None,
+        b"\x97" * 32,
+    )
+    forged_state = _r12_state_with_resealed_registry(
+        initialized.state,
+        records=initialized.state.registry._records,
+        market_stream_routes=routes,
+    )
+    assert not acquisition._controller_state_is_authentic(forged_state)
+    candidate = _successor_mandate(
+        initialized.state._mandate,
+        "r12-r1-current-route-invalid-candidate",
+    )
+    refresh = authority.refresh_acquisition_context(
+        initialized.authority,
+        initialized.execution,
+        scope,
+    )
+    bootstrap = initialized.venue.project_acquisition_bootstrap(
+        initialized.execution,
+        scope,
+    )
+    admission = authority.project_acquisition_admission(
+        initialized.authority,
+        initialized.execution,
+        scope,
+    )
+
+    with pytest.raises(ValueError, match="incompatible components"):
+        acquisition.begin_acquisition_generation(
+            forged_state,
+            candidate,
+            bootstrap,
+            admission,
+            refresh,
+            initialized.protection,
+        )
+
+
+def test_wo0151_r12_r1_accepts_a_value_equivalent_current_stream_route() -> None:
+    """Immutable sealed route values authenticate by relation, not object identity."""
+
+    authority, scope, initialized = _r8_initialized_controller()
+    current_stream = (
+        initialized.state._mandate.protection_mandate.evidence_policy.stream_generation
+    )
+    current_key = acquisition._market_stream_route_key(current_stream)
+    route = initialized.state.registry._market_stream_routes.get(current_key)
+    assert route is not None
+    copied_route = copy(route)
+    assert copied_route is not route
+    assert copied_route == route
+    routes = initialized.state.registry._market_stream_routes.replace_existing(
+        current_key,
+        copied_route,
+        copied_route._seal,
+    )
+    copied_state = _r12_state_with_resealed_registry(
+        initialized.state,
+        records=initialized.state.registry._records,
+        market_stream_routes=routes,
+    )
+    assert acquisition._controller_state_is_authentic(copied_state)
+    assert (
+        acquisition._registry_market_stream_route(
+            copied_state.registry,
+            current_stream,
+        )
+        is copied_route
+    )
+
+    applied = _r12_successor_attempt(
+        authority,
+        SimpleNamespace(
+            state=copied_state,
+            authority=initialized.authority,
+            execution=initialized.execution,
+            venue=initialized.venue,
+            protection=initialized.protection,
+        ),
+        scope,
+        _successor_mandate(copied_state._mandate, "r12-r1-value-equivalent-b"),
+    )
+
+    assert applied.disposition is acquisition.AcquisitionControllerDisposition.APPLIED
+    assert applied._registration_receipt is not None
+
+
+def test_wo0151_r12_r1_stream_route_lookup_cannot_fall_back_to_get() -> None:
+    """Successor admission uses exact presence, not legacy ``None`` reads."""
+
+    authority, scope, initialized = _r8_initialized_controller()
+    b = _r12_successor_attempt(
+        authority,
+        initialized,
+        scope,
+        _successor_mandate(initialized.state._mandate, "r12-r1-get-trap-b"),
+    )
+    assert b.disposition is acquisition.AcquisitionControllerDisposition.APPLIED
+    stream_routes = b.state.registry._market_stream_routes
+    original_get = acquisition._PersistentKeyMap.get
+
+    def _forbid_stream_route_get(self: object, key: bytes) -> object:
+        if self is stream_routes:
+            raise AssertionError("stream-route lookup fell back to legacy get")
+        return original_get(self, key)
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(
+            acquisition._PersistentKeyMap,
+            "get",
+            _forbid_stream_route_get,
+        )
+        applied = _r12_successor_attempt(
+            authority,
+            b,
+            scope,
+            _successor_mandate(b.state._mandate, "r12-r1-get-trap-c"),
+        )
+
+    assert applied.disposition is acquisition.AcquisitionControllerDisposition.APPLIED
+    assert applied._registration_receipt is not None
+    restored = _r12_successor_attempt(
+        authority,
+        b,
+        scope,
+        _successor_mandate(b.state._mandate, "r12-r1-get-trap-restored-c"),
+    )
+    assert restored.disposition is acquisition.AcquisitionControllerDisposition.APPLIED
+
+
+def test_wo0151_r12_r1_candidate_lookup_bypass_turns_reuse_control_red() -> None:
+    """The early route check is required for an ordinary duplicate-stream REFUSED."""
+
+    authority, scope, initialized = _r8_initialized_controller()
+    b = _r12_successor_attempt(
+        authority,
+        initialized,
+        scope,
+        _successor_mandate(initialized.state._mandate, "r12-r1-bypass-b"),
+    )
+    assert b.disposition is acquisition.AcquisitionControllerDisposition.APPLIED
+    retired_a_stream = (
+        initialized.state._mandate.protection_mandate.evidence_policy.stream_generation
+    )
+    candidate = _successor_mandate(
+        b.state._mandate,
+        "r12-r1-bypass-reused-a-stream",
+        stream_generation=retired_a_stream,
+    )
+    original = acquisition._registry_market_stream_route
+    calls = 0
+
+    def _bypass_only_the_candidate_lookup(
+        registry: object,
+        stream_generation: object,
+    ) -> object:
+        nonlocal calls
+        if stream_generation == retired_a_stream:
+            calls += 1
+            if calls == 1:
+                return None
+        return original(registry, stream_generation)
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(
+            acquisition,
+            "_registry_market_stream_route",
+            _bypass_only_the_candidate_lookup,
+        )
+        with pytest.raises(ValueError, match="cannot reuse a market stream"):
+            _r12_successor_attempt(authority, b, scope, candidate)
+
+    assert calls == 2
+    restored = _r12_successor_attempt(authority, b, scope, candidate)
+    assert restored.disposition is acquisition.AcquisitionControllerDisposition.REFUSED
+    assert restored.state is b.state
+    assert restored._registration_receipt is None
 
 
 def test_wo0151_r11_successor_refuses_changed_recovery_compatibility() -> None:
@@ -3225,6 +3627,9 @@ def _r11_completed_successor_fixture():
         acknowledged=True,
         prefill_needs_review=False,
     )
+    retired_stream_generation = (
+        claimed.state._mandate.protection_mandate.evidence_policy.stream_generation
+    )
     rooted = acquisition.reduce_acquisition_controller(
         claimed.state,
         filled,
@@ -3344,13 +3749,21 @@ def _r11_completed_successor_fixture():
         successor.state.registry.record(prior_generation).serving_class
         is acquisition.GenerationServingClass.RETIRED_UNSERVING
     )
-    return authority, scope, relation, bust, successor, prior_generation
+    return (
+        authority,
+        scope,
+        relation,
+        bust,
+        successor,
+        prior_generation,
+        retired_stream_generation,
+    )
 
 
 def test_wo0151_r11_completed_generation_retires_into_fresh_successor() -> None:
     """A rooted, flat, exactly closed predecessor admits one new generation."""
 
-    authority, scope, _, _, successor, _ = _r11_completed_successor_fixture()
+    authority, scope, _, _, successor, _, _ = _r11_completed_successor_fixture()
     next_refresh = authority.refresh_acquisition_context(
         successor.authority,
         successor.execution,
@@ -3370,6 +3783,128 @@ def test_wo0151_r11_completed_generation_retires_into_fresh_successor() -> None:
     )
     assert created.disposition is acquisition.AcquisitionControllerDisposition.APPLIED
     assert created.created_effect_id is not None
+
+
+def test_wo0151_r12_retains_retired_stream_route_after_record_replacement() -> None:
+    """A fact-replaced retired record cannot release its stream for reuse."""
+
+    authority, scope, _, _, successor, retired_generation, retired_stream = (
+        _r11_completed_successor_fixture()
+    )
+    retired_record = successor.state.registry.record(retired_generation)
+    assert retired_record is not None
+    assert retired_record.economics_head_commitment != (
+        acquisition._initial_generation_economics_head(retired_record.binding)
+    )
+    retained_route = acquisition._registry_market_stream_route(
+        successor.state.registry,
+        retired_stream,
+    )
+    assert retained_route is not None
+    assert retained_route.binding == retired_record.binding
+
+    refresh = authority.refresh_acquisition_context(
+        successor.authority,
+        successor.execution,
+        scope,
+    )
+    assert refresh.disposition is authority.AcquisitionContextRefreshDisposition.CURRENT
+    bootstrap = successor.venue.project_acquisition_bootstrap(
+        successor.execution,
+        scope,
+    )
+    admission = authority.project_acquisition_admission(
+        successor.authority,
+        successor.execution,
+        scope,
+    )
+    assert admission.kind is authority.AcquisitionAdmissionKind.SUCCESSOR
+    refused = acquisition.begin_acquisition_generation(
+        successor.state,
+        _successor_mandate(
+            successor.state._mandate,
+            "r12-replacement-retained-stream",
+            stream_generation=retired_stream,
+        ),
+        bootstrap,
+        admission,
+        refresh,
+        successor.protection,
+    )
+
+    assert refused.disposition is acquisition.AcquisitionControllerDisposition.REFUSED
+    assert refused.state is successor.state
+    assert refused.authority is successor.authority
+    assert refused.execution is successor.execution
+    assert refused.venue is successor.venue
+    assert refused.protection is successor.protection
+    assert refused.created_effect_id is None
+    assert refused.fresh_claim is None
+    assert refused._registration_receipt is None
+
+
+def test_wo0151_r12_r1_rejects_route_pollution_during_record_replacement() -> None:
+    """A retired route stays fail-closed even if a replacement pollutes it."""
+
+    authority, scope, relation, _, successor, retired_generation, retired_stream = (
+        _r11_completed_successor_fixture()
+    )
+    original = acquisition._registry_with_replaced_record
+    retired_key = acquisition._market_stream_route_key(retired_stream)
+
+    def _pollute_retired_route(registry: object, record: object) -> object:
+        replaced = original(registry, record)
+        assert record.binding.generation_id == retired_generation
+        polluted_routes = replaced._market_stream_routes.replace_existing(
+            retired_key,
+            None,
+            b"\x98" * 32,
+        )
+        polluted = object.__new__(acquisition.GenerationRegistry)
+        object.__setattr__(polluted, "_records", replaced._records)
+        object.__setattr__(polluted, "_market_stream_routes", polluted_routes)
+        object.__setattr__(
+            polluted,
+            "_seal",
+            acquisition._registry_seal(replaced._records, polluted_routes),
+        )
+        assert acquisition._registry_is_authentic(polluted)
+        return polluted
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(
+            acquisition,
+            "_registry_with_replaced_record",
+            _pollute_retired_route,
+        )
+        _, polluted = _apply_retired_fill(
+            scope=scope,
+            relation=relation,
+            current=successor,
+            label="wo0151-r12-r1-polluted-retired-fill",
+            prior_cumulative_quantity=0,
+        )
+        with pytest.raises(ValueError, match="market stream route"):
+            acquisition._registry_market_stream_route(
+                polluted.state.registry,
+                retired_stream,
+            )
+
+    _, restored = _apply_retired_fill(
+        scope=scope,
+        relation=relation,
+        current=successor,
+        label="wo0151-r12-r1-restored-retired-fill",
+        prior_cumulative_quantity=0,
+    )
+    retained_route = acquisition._registry_market_stream_route(
+        restored.state.registry,
+        retired_stream,
+    )
+    assert retained_route is not None
+    retired_record = restored.state.registry.record(retired_generation)
+    assert retired_record is not None
+    assert retained_route.binding == retired_record.binding
 
 
 def _apply_retired_fill(
@@ -3438,7 +3973,7 @@ def _apply_retired_fill(
 def test_wo0151_r11_late_retired_fact_recovers_without_serving_retired_a() -> None:
     """A late direct A fact updates A while B remains the only live generation."""
 
-    authority, scope, relation, _, successor, retired_generation = (
+    authority, scope, relation, _, successor, retired_generation, _ = (
         _r11_completed_successor_fixture()
     )
     late_fill = BrokerFillFact(
@@ -3522,7 +4057,7 @@ def test_wo0151_r11_late_retired_fact_recovers_without_serving_retired_a() -> No
 def test_wo0151_r11_retired_correct_reexpands_tombstone_once() -> None:
     """A late correction of retired A updates only A and replays inertly."""
 
-    authority, scope, relation, bust, successor, retired_generation = (
+    authority, scope, relation, bust, successor, retired_generation, _ = (
         _r11_completed_successor_fixture()
     )
     correction_key = ExecutionFactKey(
@@ -3606,7 +4141,7 @@ def test_wo0151_r11_retired_correct_reexpands_tombstone_once() -> None:
 def test_wo0151_r11_retired_tail_bust_updates_once_and_replays_inertly() -> None:
     """A late retired root and its tail bust each advance A exactly once."""
 
-    _, scope, relation, _, successor, retired_generation = (
+    _, scope, relation, _, successor, retired_generation, _ = (
         _r11_completed_successor_fixture()
     )
     late_fill, rooted = _apply_retired_fill(
@@ -3683,7 +4218,7 @@ def test_wo0151_r11_retired_tail_bust_updates_once_and_replays_inertly() -> None
 def test_wo0151_r11_retired_non_tail_bust_is_reconciliation_only() -> None:
     """A retired non-tail bust is recorded once and cannot restore BUY service."""
 
-    authority, scope, relation, _, successor, retired_generation = (
+    authority, scope, relation, _, successor, retired_generation, _ = (
         _r11_completed_successor_fixture()
     )
     first_fill, first = _apply_retired_fill(
@@ -3800,7 +4335,7 @@ def test_wo0151_r11_retired_non_tail_bust_is_reconciliation_only() -> None:
 def test_wo0151_r11_r1_retired_fact_preempts_successor_in_one_receipt() -> None:
     """A late A fact and B stand-down are one ordered authority mutation."""
 
-    authority, scope, relation, _, successor, retired_generation = (
+    authority, scope, relation, _, successor, retired_generation, _ = (
         _r11_completed_successor_fixture()
     )
     create_refresh = authority.refresh_acquisition_context(
@@ -4549,6 +5084,7 @@ def test_wo0151_owner_minted_boundaries_reject_direct_construction() -> None:
         acquisition.GenerationBindingView,
         acquisition.GenerationRecordView,
         acquisition.GenerationRouteView,
+        acquisition._MarketStreamGenerationRoute,
         acquisition.GenerationRegistry,
         acquisition.AcquisitionLineageIndex,
         acquisition.DualMandateBinding,

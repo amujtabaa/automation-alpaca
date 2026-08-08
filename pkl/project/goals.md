@@ -442,3 +442,11 @@ Roadmapping against an unverified codebase state repeats the failure mode Fable 
   working delta remains unaccepted until RED-first controls and focused implementation acceptance.
   WO-0152 remains ACTIVE but paused through that acceptance and the unchanged detector rerun.
   Paired E2/E3 93% closeout and every operational exclusion remain unchanged.
+- 2026-08-07: WO-0151 R12-R1 implementation independently `ACCEPT`ed at P0=0/P1=0/P2=0 for
+  candidate manifest `abe0df5d723df536263e99a72d1b612ffcf39032de71753aaee9a6304e8166f0`;
+  result `5631400bf4734c3781dc407b32182a497778a9cac8341f27ed170be433bfaa80` confirms the
+  private presence-aware map primitive and sole GenerationRegistry stream-route owner. The
+  correction adds no public reader, scan, authority duplicate, runtime, or persistence surface.
+  WO-0151 remains effective `REVIEW` pending paired E2/E3 exact-head 93% closure. WO-0152 remains
+  ACTIVE but paused until its unchanged frozen detector is rerun and reconciled; no external CI,
+  M2, merge, deletion, cleanup, or operating authority is claimed.

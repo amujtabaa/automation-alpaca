@@ -335,3 +335,11 @@ Seam discipline is what makes the safety invariants structurally enforceable rat
   consumer plus focused owning tests. This does not widen the architecture: no public map reader,
   iterator, controller history, authority duplicate, scan, runtime, or persistence surface. E3
   remains paused until focused R12-R1 implementation acceptance and frozen-detector confirmation.
+- 2026-08-07: Focused R12-R1 implementation acceptance (`ACCEPT`, P0=0/P1=0/P2=0; candidate
+  `abe0df5d723df536263e99a72d1b612ffcf39032de71753aaee9a6304e8166f0`, result
+  `5631400bf4734c3781dc407b32182a497778a9cac8341f27ed170be433bfaa80`) confirms the root
+  repair stays at its owning boundary: one private, sealed, direct map relation in
+  GenerationRegistry plus a private presence-aware fixed-key primitive. It adds no public reader,
+  iterator, controller-history collection, authority duplicate, scan, runtime, persistence, or
+  ADR change. WO-0151 remains effective REVIEW and E3 remains paused through the unchanged frozen
+  detector rerun and paired E2/E3 exact-head 93% closure.

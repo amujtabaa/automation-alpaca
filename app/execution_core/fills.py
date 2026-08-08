@@ -430,18 +430,26 @@ class _PersistentKeyMap(Generic[_ValueT]):
             self._root.commitment,
         )
 
-    def get(self, key: bytes) -> _ValueT | None:
+    def _lookup(self, key: bytes) -> tuple[bool, _ValueT | None]:
+        """Return exact-key presence separately from its retained value."""
+
         if not isinstance(key, bytes) or not key:
             raise ValueError("persistent-map key must be nonempty bytes")
         node = self._root
         for label in key:
             _, child = _child_at(node.children, label)
             if child is None:
-                return None
+                return False, None
             node = child
         if not node.has_value:
-            return None
-        return cast(_ValueT, node.value)
+            return False, None
+        return True, cast(_ValueT, node.value)
+
+    def get(self, key: bytes) -> _ValueT | None:
+        """Return the retained value while preserving legacy ``None`` semantics."""
+
+        _, value = self._lookup(key)
+        return value
 
     def _set(
         self,
@@ -451,10 +459,10 @@ class _PersistentKeyMap(Generic[_ValueT]):
         *,
         require_existing: bool,
     ) -> _PersistentKeyMap[_ValueT]:
-        existing = self.get(key)
-        if require_existing and existing is None:
+        present, _ = self._lookup(key)
+        if require_existing and not present:
             raise KeyError(key)
-        if not require_existing and existing is not None:
+        if not require_existing and present:
             raise ValueError("persistent-map key already exists")
 
         node = self._root

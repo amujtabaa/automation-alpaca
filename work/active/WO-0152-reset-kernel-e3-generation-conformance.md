@@ -12,7 +12,7 @@ created: 2026-08-05
 branch: codex/arch-reset-2026-07-r1
 base_sha: a2b84abc1914517cf591f27fb88f0b20b2a47ef7
 predecessor: "Accepted frozen WO-0151 E2 implementation plus exact-head run #741 functional/static success, with the sole coverage-only failure carried to paired E2/E3 closeout"
-implementation_authority: "PAUSED — the accepted R2-R5 test-only E3 scope is stopped at FR-08 after its first public duplicate-stream control exposed an E2 P1; R12-R1 documentation activation SHA 0beee5843304cafd3cb16d5644e14cb256fd17f7 is reconciled, but resume only after its implementation acceptance and the frozen public detector rerun unchanged"
+implementation_authority: "PAUSED — the accepted R2-R5 test-only E3 scope is stopped at FR-08 after its first public duplicate-stream control exposed an E2 P1; R12-R1 implementation acceptance 5631400bf4734c3781dc407b32182a497778a9cac8341f27ed170be433bfaa80 is reconciled, but resume only after the frozen public detector reruns unchanged and its result is reconciled"
 activation_required: "SATISFIED — R2-R3 contract 881334b4af6acb566adc57c30a4199f0340129d244cc3d58536c8e7c109a9936, manifest ee5554bf4e6b380fa7c687324adba7f93168e56168fb84cedf519115e4b7c3f6, and independent ACCEPT result 8752e20fa0aba82885d1d49ae8eabca9901218f5659073adcb4324fa9b189a59 at P0=0/P1=0/P2=0"
 re_gate_required: "SATISFIED — R2-R5 contract 79c734b7c0a929d43aeca83ef00e797b7afc8d97754eb30f1c812b1dd5b3221e, manifest 3fbcffbec46dd43248a1a8b569df39880c96e9d539d5a84a07cf58fde19be946, and independent ACCEPT result f3c86daa71a36108bb2757f853d922e992c7c77eed4d7d7626b5e9091e3d5245 at P0=0/P1=0/P2=0"
 r2_r5_acceptance_commit: ef5e53a5d49e189942545f52b7784ad7648fbf28
@@ -417,11 +417,28 @@ The active E3 test-only scope remains paused. Focused R12 implementation review
 found that the private persistent-map lookup could not distinguish an absent
 candidate stream route from a physically present malformed `None` entry. This
 returns to WO-0151 as a bounded R12-R1 container/provenance remediation; it
-does not authorize any E3 modification, rerun, workaround, or altered detector
-expectation. E3 resumes only after exact R12-R1 semantic and activation gates,
-focused implementation acceptance at P0=0/P1=0, and an unchanged frozen public
-detector rerun. The paired 93% exact-head closeout and every operating exclusion
-remain unchanged.
+did not at that point authorize any E3 modification, rerun, workaround, or
+altered detector expectation. E3 resumes only after exact R12-R1 semantic and
+activation gates, focused implementation acceptance at P0=0/P1=0, and an
+unchanged frozen public detector rerun. The paired 93% exact-head closeout and
+every operating exclusion remain unchanged.
+
+### R12-R1 implementation accepted -- E3 remains paused
+
+The bounded E2 repair now independently `ACCEPT`ed at P0=0/P1=0/P2=0 for
+implementation candidate manifest
+`abe0df5d723df536263e99a72d1b612ffcf39032de71753aaee9a6304e8166f0`;
+the exact reviewer result is
+`5631400bf4734c3781dc407b32182a497778a9cac8341f27ed170be433bfaa80`.
+It confirms the private direct stream-route owner rejects physical
+present-malformed values instead of treating them as absent, without a public
+reader, history scan, or duplicate authority.
+
+This acceptance does not itself resume E3. The exact frozen public detector
+and its frozen evidence must remain byte-identical, be rerun once under this
+active test-only work order, and have its outcome reconciled before any further
+E3 source change. The paired E2/E3 exact-head 93% gate and all standing safety
+exclusions remain controlling.
 
 ## Expected completion disposition
 
