@@ -541,3 +541,7 @@
   unchanged; format-normalization evidence is
   `ac688bae5d510bb14190d8f2cd13ccb4f2fdb6871d238d3d7bd6ed968276f65a`. No production, runtime,
   external CI, paired coverage, or operational authority is claimed.
+- 2026-08-07: The exact detector-confirmation and test-only format-normalization checkpoint is
+  committed at `2da9f3eab8f5f3febda964857714d0d178e4fb29`. This is an evidence/current-posture
+  reconciliation only: WO-0151 remains REVIEW, WO-0152 remains active test-only E3 work, and
+  paired exact-head 93% coverage plus all operating exclusions remain controlling.

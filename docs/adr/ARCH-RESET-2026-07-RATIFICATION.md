@@ -725,3 +725,8 @@ This is a format-only test baseline normalization within the already active
 WO-0152 scope. It does not alter frozen evidence, provide production or
 operating authority, establish external CI or paired coverage, close WO-0151,
 complete M1, or affect any retained exclusion.
+
+The exact local evidence checkpoint is
+`2da9f3eab8f5f3febda964857714d0d178e4fb29`. It records only the existing
+FR-08 confirmation, its separately normalized test baseline, and their current
+posture; it is not an M1 closeout, external-CI, or operating-authority claim.

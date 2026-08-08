@@ -22,6 +22,7 @@ activation_push: "SUCCESS — normal git push reported a2b84ab..a3ceee2 to origi
 e3_stop_evidence: "work/review/REV-0059/evidence.md (SHA-256 d018c2bddeec79fd624d1fbcb80dde91e49b5535f5db737120d88deb750c6ee7)"
 e3_detector_confirmation: "work/review/REV-0059/WO-0152-FR-08-R12-R1-DETECTOR-CONFIRMATION.md (SHA-256 757a6e564abce77193a3d03ab6bcf5ce519e6399062ec987109f384595ac078f; unchanged three-control rerun exit 0)"
 e3_baseline_format_normalization: "work/review/REV-0059/WO-0152-E3-BASELINE-FORMAT-NORMALIZATION.md (SHA-256 ac688bae5d510bb14190d8f2cd13ccb4f2fdb6871d238d3d7bd6ed968276f65a; same three controls rerun exit 0)"
+e3_baseline_commit: "2da9f3eab8f5f3febda964857714d0d178e4fb29 — detector confirmation and post-confirmation test-only format normalization"
 ---
 
 # WO-0152 - Reset kernel E3: acquisition-generation generated and stateful conformance
