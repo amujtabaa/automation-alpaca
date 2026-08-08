@@ -1,5 +1,10 @@
 # Spine v2 Rearchitecture Roadmap
 
+> **Historical roadmap.** Spine v2 and its migration remain frozen evidence. The accepted current
+> reset roadmap is
+> [`work/queue/ARCH-RESET-2026-07/06-roadmap.md`](../work/queue/ARCH-RESET-2026-07/06-roadmap.md).
+> This file grants no reset implementation authority.
+
 ## Principle
 
 Migrate by safety-critical seams. Do not rewrite the whole system in one pass.

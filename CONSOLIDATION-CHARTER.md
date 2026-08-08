@@ -1,5 +1,15 @@
 # Consolidation Campaign — Deconflict the Fragmented R2 (SellIntent↔Envelope) Work Into One Canonical, Verified Trunk
 
+> **Current-posture amendment — 2026-08-05.** This is retained historical campaign guidance, not
+> an operative launch instruction. Under WO-0153 cleanup authority,
+> `freeze/20260715-master-preconsolidation` and `freeze/20260715-pr8-head` are retired branch
+> names because their commits remain ancestors of retained `master`; `freeze/20260715-r2-claude`
+> is retired because its commit remains reachable through retained
+> `archive/claude-sellintent-envelope-linking-h2z7i7`; and
+> `freeze/20260715-r2-sol` remains retained as the unique independent comparison. Retiring a name
+> does not alter the historical commit identities cited below. Do not fetch, recreate, or depend on
+> a retired ref; use the current branch-retirement manifest for durable provenance mappings.
+
 > **Run this in a fresh session on `amujtabaa/automation-alpaca`.** It is a **two-part charter**:
 > **PART A — Investigate & decide** (read-only on all shared branches; produces a decision package + a spec-derived conformance oracle, both committed to the consolidation branch). **PART B — Execute the consolidation** on that same branch — activates **ONLY after the human ratifies Part A's §I decisions**, and ends in a review-gated PR toward `master`. The hard stop between the parts is not ceremony: the merge touches human-gated trading surfaces.
 >

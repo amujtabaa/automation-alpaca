@@ -4,9 +4,9 @@ title: Testing Model and Determinism Rules
 status: active
 authority: high
 owner: Ameen
-last_verified: 2026-07-21
+last_verified: 2026-07-31
 tags: [testing, determinism, ci]
-source_refs: [docs/SPINE_EXECUTION_ARCHITECTURE_v2.md]
+source_refs: [docs/adr/ADR-020-current-state-execution-kernel.md, docs/adr/ADR-022-reset-beta-scope-cutover-governance.md, docs/SPINE_EXECUTION_ARCHITECTURE_v2.md]
 supersedes: []
 superseded_by: null
 ---
@@ -15,12 +15,19 @@ superseded_by: null
 
 ## Summary
 
-Deterministic, dual-path testing posture inherited from the migration and kept permanently: engine logic must be replayable, and any state-touching change proves itself on both stores.
+Determinism remains permanent. The frozen legacy generation retains its existing dual-store and
+replay regression gates while it is evidence. New reset work uses one pure reference model plus a
+thin SQLite repository harness; it must not create a second hand-coded in-memory trading engine.
 
 ## Rules / facts
 
 - Engine logic: injected clock only — no bare `datetime.now()` / `time.time()`. No unseeded randomness in engine/reconciliation tests. Deterministic IDs and queues.
-- Dual-store parity: any change touching state, order, fill, position, reconciliation, kill switch, or the API boundary is tested on both in-memory and SQLite paths.
+- Legacy dual-store parity: any separately authorized fix to the frozen legacy state/order/fill/
+  position/reconciliation/kill-switch/API boundary retains its existing in-memory and SQLite gates.
+  This is regression evidence, not the reset target persistence design.
+- Reset model/repository split: pure transition properties run against the reference model;
+  persistence conformance uses a thin SQLite repository harness. Business decisions must not be
+  independently reimplemented in a memory store.
 - The 61-case R2 conformance oracle is an explicit CI step because its historical filename is
   intentionally outside default pytest discovery; removal of that step is pinned by
   `tests/test_ci_lock_liveness_pins.py`.
@@ -39,7 +46,8 @@ Deterministic, dual-path testing posture inherited from the migration and kept p
   snapshot. Tests cover reject/no-op paths separately when bootstrap must not occur.
 - Safety-surface changes (overfill, timeout ambiguity, reconciliation, kill switch, manual flatten, position projection) expand tests in the same change — never deferred.
 - Property tests cover spine invariants where behavior spans many interleavings; persist or print failing seeds/traces.
-- Replay / parity verifier runs where implemented; event-log replay is regression evidence.
+- Replay/parity verifiers continue as legacy regression and forensic evidence. Under ADR-020,
+  full-history replay is not live operational truth and cannot replace committed current state.
 - Execution-envelope replay is a permanent dual-store read-model gate. The pure projector folds
   the complete explicit `envelope_*` vocabulary plus envelope-attributed canonical `FILL` facts,
   fails closed on identity/transition/debit-chain drift, and reconstructs mandate bounds, status,
@@ -69,6 +77,9 @@ Deterministic, dual-path testing posture inherited from the migration and kept p
   without changing the limits automatically.
 - Never weaken a test to make code pass; never merge failing or newly-skipped tests. Phase-named tests remain active regression evidence unless replaced and reviewed.
 - CI gate (as wired today): `ruff check`, `mypy app/`, `pytest` + coverage, import-linter (`lint-imports`) contracts, `pip-audit` where configured. Formatting authority: `ruff format`.
+- M0 runtime-contract inspection: `.github/workflows/ci.yml` contains Python 3.11 and 3.12 matrix
+  legs, and `pyproject.toml` sets mypy's `python_version = "3.11"`. This is static configuration
+  evidence only; M0 did not execute either interpreter or any gate.
 - `mypy` static typecheck (ADR-007, wired 2026-07-08; **burn-down complete 2026-07-09, WO-0012**): the grandfather list is EMPTY — the whole `app/` package is typechecked with no `ignore_errors` override (started 16 modules / ~187 baseline errors; every error fixed by triage, never silenced). `warn_unused_ignores = true` since 2026-07-11 (the ADR-007 follow-up flip; a stale `# type: ignore` now fails the gate). A line-level mypy-baseline (ADR-007's other documented future upgrade) is **moot** — with zero grandfathered errors there is nothing to baseline; revisit only if a future mypy/dep bump introduces a large new error class. Dependency closure pinned in `constraints.txt` (CI installs `-c constraints.txt`), so the gate can't drift out from under a green PR.
 
 ## Rationale
@@ -77,7 +88,8 @@ Determinism is what makes broker-edge-case behavior (timeouts, overfills, interl
 
 ## Applies to
 
-- All tests; CI configuration; every state-touching work order.
+- All tests and CI configuration. Legacy work retains its existing gates; each reset work order must
+  name the pure-model properties and narrow SQLite repository checks it owns.
 
 ## Related pages
 
@@ -102,3 +114,5 @@ Determinism is what makes broker-edge-case behavior (timeouts, overfills, interl
 - 2026-07-21: WO-0118 froze the explicit beta target/stress cardinalities and unchanged scaling
   limits, added a failure-capable shared budget contract to both R2 gates, and recorded fresh
   three-run target/stress headroom. Phase 2 was measurement-skipped because scaling was near-linear.
+- 2026-07-31: M0 separated frozen legacy dual-store/replay evidence from the accepted reset
+  pure-model plus SQLite-repository testing target. Existing results were not rerun or relabeled.

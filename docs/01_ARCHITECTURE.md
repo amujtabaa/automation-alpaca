@@ -1,8 +1,14 @@
-# Architecture — Alpaca Clean-Sheet CAPI Option 2.5
+# Architecture overview — accepted reset target and frozen Option 2.5 evidence
 
-This is the canonical source for system design, boundaries, the API contract,
-and the non-negotiable rules. Other files reference these rules rather than
-restating them, to prevent drift.
+The canonical reset target is ADR-020 through ADR-022, accepted through
+[`ARCH-RESET-2026-07-RATIFICATION.md`](adr/ARCH-RESET-2026-07-RATIFICATION.md), with the exact
+planning record in [`work/queue/ARCH-RESET-2026-07/`](../work/queue/ARCH-RESET-2026-07/). The
+always-on safety core remains in `CLAUDE.md` and `docs/INVARIANTS.md`.
+
+The Option 2.5/Spine v2 description below is retained as as-built, read-only evidence. M0 changes no
+production behavior. Reset implementation requires a separately activated work order.
+
+## Frozen legacy Option 2.5 architecture
 
 ## Core Decision (Option 2.5)
 

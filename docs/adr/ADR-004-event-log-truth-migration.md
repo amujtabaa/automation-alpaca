@@ -2,7 +2,12 @@
 
 ## Status
 
-Accepted.
+Accepted for the frozen Spine v2 implementation and retained evidence. **Partially superseded for
+the architecture-reset target by [ADR-020](ADR-020-current-state-execution-kernel.md).** The reset
+preserves narrow immutable execution-fact and terminal-closure evidence, deterministic testing,
+schema versions, and forensic replay. It supersedes universal event-log operational truth,
+dual-store business parity, and full-history projection on the live path. See the exact clause
+disposition in [the reset ratification index](ARCH-RESET-2026-07-RATIFICATION.md).
 
 ## Context
 

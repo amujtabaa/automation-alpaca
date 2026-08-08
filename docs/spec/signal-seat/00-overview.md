@@ -25,6 +25,15 @@ were refreshed during WO-0127.
 | `04-auth-and-api.md` | Producer/operator credential model, endpoint definitions (OpenAPI fragment), feature flag + mount rules |
 | `05-conversion.md` | Approval → order-intent conversion per direction, the risk-reducing classification, TradingState/kill-switch interaction table, signal→order correlation |
 | `06-invariants.md` | Preservation notes: CLAUDE.md invariants 1–11 and spine §5 INV-1..9, each mapped to the concrete mechanism in this spec |
+| `07-malformed-quarantine-conformance.md` | Retained branch-distilled malformed intake, quarantine totality, representability, parity, and idempotence requirements for a future reactivation only |
+
+## Reset-beta posture
+
+This historical Signal Seat specification remains a retained planning source, but ADR-022 controls
+the current reset-beta posture: Signal Seat is disabled and unmounted. The branch-staged corpus is
+not a live RED dependency. Future reactivation must begin with a new ADR/work order and use the
+durable requirements in `07-malformed-quarantine-conformance.md`, rather than fetching the retired
+`codex/signal-tests-staging` branch.
 
 ## Roles and vocabulary
 

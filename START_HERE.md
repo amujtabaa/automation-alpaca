@@ -1,4 +1,20 @@
-# START HERE — W3 Execution Envelope planning drop
+# START HERE — Architecture reset
+
+The current target authority is the accepted architecture-reset ADR set:
+
+- [`docs/adr/ARCH-RESET-2026-07-RATIFICATION.md`](docs/adr/ARCH-RESET-2026-07-RATIFICATION.md)
+- [`docs/adr/ADR-020-current-state-execution-kernel.md`](docs/adr/ADR-020-current-state-execution-kernel.md)
+- [`docs/adr/ADR-021-position-protection-liquidity-execution.md`](docs/adr/ADR-021-position-protection-liquidity-execution.md)
+- [`docs/adr/ADR-022-reset-beta-scope-cutover-governance.md`](docs/adr/ADR-022-reset-beta-scope-cutover-governance.md)
+- [`work/queue/ARCH-RESET-2026-07/README.md`](work/queue/ARCH-RESET-2026-07/README.md)
+
+The current Spine v2 implementation and the W3/R6 campaign material are frozen evidence. Nothing
+in this index activates `RESET-WO-01`, implementation, schema/database work, broker access, or
+trading activity.
+
+## Frozen historical W3 instructions
+
+The text below is retained only as provenance and is not current authorization.
 
 **Human:** place this folder's contents at the repo root of `automation-alpaca` (checked out on
 the current dev tip), open a fresh Claude Code session (Fable 5, effort per your plan: high

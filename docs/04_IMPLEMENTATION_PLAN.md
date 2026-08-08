@@ -1,5 +1,16 @@
 # Implementation Plan — Alpaca Clean-Sheet CAPI Option 2.5
 
+> **Historical plan — not current authorization.** The accepted reset sequence is
+> [`work/queue/ARCH-RESET-2026-07/06-roadmap.md`](../work/queue/ARCH-RESET-2026-07/06-roadmap.md).
+> The immutable staged `RESET-WO-01` was canonicalized and separately activated as pure-kernel
+> `WO-0145` after accepted M0 review, explicit human authority, and dual-version CI. `WO-0145`
+> through `WO-0147` are closed after independent review and exact-head Python 3.11/3.12 gates.
+> Pure position-protection/hybrid-trailing `WO-0148` is effectively `CLOSED` after immutable
+> closeout `2462fb557172dd28a7475a763eca0b440c0298e3` passed unchanged push run #693 on both
+> versions. ADR-020 R2 and ADR-021 R2 now control the serial acquisition-generation foundation.
+> `WO-0149` is formally SUPERSEDED and retained as evidence; WO-0150 through WO-0152 are
+> DRAFT-only successor candidates. M2 remains inactive.
+
 The build sequence, with persistence promoted into the foundation rather than
 deferred. Each phase ends with passing tests and preserved safety invariants
 (see `05_REVIEW_CHECKLIST.md`).

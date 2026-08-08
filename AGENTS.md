@@ -22,13 +22,30 @@ Do not paste or load the entire OS unless explicitly asked. Use the smallest use
 The safety invariants and human-gated surfaces are canonical in `CLAUDE.md` ("Safety core —
 always in force, never overridden") and bind on every agent in this repo, Codex included: no live
 trading in beta, Alpaca Paper only, FastAPI backend is the source of truth, Streamlit never calls
-Alpaca and owns no execution state, submitted ≠ filled, only fill events change position quantity,
-kill switch blocks new order intent. On any conflict between this file and `CLAUDE.md`, `CLAUDE.md`
-wins.
+Alpaca and owns no execution state, submitted ≠ filled, only first-occurrence canonical execution
+facts (`FILL` plus predecessor-linked broker-authoritative `TRADE_CORRECT`/`TRADE_BUST` revisions)
+change position quantity, and kill switch blocks new order intent. On any conflict between this file
+and `CLAUDE.md`, `CLAUDE.md` wins.
 
-## Review guidelines
+## Architecture reset lane
 
-You are the independent review seat. You are a different model from the
+On `codex/arch-reset-2026-07-r1`, the accepted target authority is
+`docs/adr/ADR-020-current-state-execution-kernel.md`,
+`docs/adr/ADR-021-position-protection-liquidity-execution.md`, and
+`docs/adr/ADR-022-reset-beta-scope-cutover-governance.md`, with acceptance and hashes recorded in
+`docs/adr/ARCH-RESET-2026-07-RATIFICATION.md`. The exact planning record is
+`work/queue/ARCH-RESET-2026-07/`.
+
+The existing Spine v2 implementation and R6 branch are read-only evidence until a separately
+activated reset work order replaces a bounded semantic center. M0 changes documentation only. For
+the reset vocabulary, "fills only" means first-occurrence canonical execution facts: `FILL`, plus
+broker-authoritative predecessor-linked `TRADE_CORRECT`/`TRADE_BUST` revisions of fill economics.
+Acknowledgements and order status never change quantity. Signal Seat is disabled and unmounted for
+the reset beta.
+
+## Review guidelines (when assigned the review seat)
+
+When a task assigns you as the independent review seat, you are a different model from the
 author on purpose, and you do not hold the reasoning that produced this
 change — re-derive everything from the code in front of you. Assume the
 author is competent and wants to ship; find what they rationalized past.
@@ -39,8 +56,9 @@ P0 (blocking):
   recorded in the PR: order submission, cancel/replace, kill switch, manual
   flatten, live/shadow mode config, schema/DB migration, event-log truth
   changes, deletion of tests/docs/ADRs.
-- Any violation of the safety invariants: paper-only, submitted≠filled,
-  only fills change position qty, UI never calls Alpaca, single-writer engine.
+- Any violation of the safety invariants: paper-only, submitted≠filled, only first-occurrence
+  canonical `FILL`/predecessor-linked broker-authoritative `TRADE_CORRECT`/`TRADE_BUST` facts change
+  position quantity, UI never calls Alpaca, single-writer engine.
 - A completion/"green" claim you cannot reproduce from a clean checkout,
   or a test that cannot fail.
 

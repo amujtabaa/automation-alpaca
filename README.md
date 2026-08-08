@@ -1,5 +1,19 @@
 # Alpaca Clean-Sheet CAPI Option 2.5
 
+> **Architecture reset M0 (2026-07-31):** the checked-in application described below is frozen
+> read-only evidence. Accepted reset target authority is
+> [`ADR-020`](docs/adr/ADR-020-current-state-execution-kernel.md),
+> [`ADR-021`](docs/adr/ADR-021-position-protection-liquidity-execution.md), and
+> [`ADR-022`](docs/adr/ADR-022-reset-beta-scope-cutover-governance.md), with acceptance recorded in
+> the [ratification index](docs/adr/ARCH-RESET-2026-07-RATIFICATION.md). M0 changes no runtime
+> behavior. The first three pure reset slices, `WO-0145` through `WO-0147`, are closed after
+> independent review and exact-head dual-version CI. Pure position-protection slice `WO-0148` is
+> effectively `CLOSED`: its immutable closeout `2462fb557172dd28a7475a763eca0b440c0298e3` passed
+> unchanged GitHub Actions push run #693 on Python 3.11 and 3.12. Pure `WO-0149` is now authorized
+> only for its bounded, unwired acquisition/cross-side implementation and verification; it does not
+> authorize runtime wiring, persistence cutover, broker activity, M2, or master landing. None of
+> these slices runs the frozen application.
+
 A browser-operated, **paper-first** automated trading cockpit: a FastAPI backend
 (the durable engine that owns and persists all truth) + a thin Streamlit cockpit
 (a disposable UI client) + local SQLite persistence.
@@ -116,7 +130,8 @@ docs/                    canonical planning + architecture docs
 
 ## Prerequisites
 
-- Python 3.12+ (developed on 3.14).
+- Python 3.11 and 3.12 are supported; Python 3.12 is the development default. Production code may
+  not require 3.12-only syntax.
 - Install dependencies:
 
   ```bash
@@ -126,7 +141,14 @@ docs/                    canonical planning + architecture docs
   pip install -r requirements.txt
   ```
 
-## Run the backend
+## Frozen legacy backend instructions — not authorized for reset use
+
+> **Do not run these commands under M0.** They operate the frozen Spine v2 evidence generation and
+> may initialize its SQLite database. M0 does not authorize starting that generation, setting
+> `SIGNAL_SEAT_ENABLED=true`, using credentials, or contacting Alpaca Paper. Signal Seat is disabled
+> and unmounted in the reset target under
+> [ADR-022](docs/adr/ADR-022-reset-beta-scope-cutover-governance.md). Runtime activity requires a
+> separately activated work order.
 
 ```bash
 uvicorn app.main:app --reload

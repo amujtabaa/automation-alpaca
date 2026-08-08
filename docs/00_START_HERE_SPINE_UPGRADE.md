@@ -1,5 +1,11 @@
 # 00 Start Here — Spine v2 Upgrade
 
+> **Frozen legacy entry point (architecture reset M0, 2026-07-31).** This file records the Spine v2
+> upgrade posture and is no longer the current read order or target authority. Begin reset work at
+> [`ARCH-RESET-2026-07-RATIFICATION.md`](adr/ARCH-RESET-2026-07-RATIFICATION.md) and the canonical
+> [`ARCH-RESET-2026-07` packet](../work/queue/ARCH-RESET-2026-07/README.md). The body below is
+> retained as read-only provenance; it grants no implementation authority.
+
 ## Purpose
 
 This document is the entry point for the Alpaca Spine v2 upgrade. It explains the current posture, canonical read order, and phase discipline for Claude Code or any coding agent working in this repository.

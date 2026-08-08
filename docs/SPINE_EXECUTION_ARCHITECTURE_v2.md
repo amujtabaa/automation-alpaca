@@ -1,5 +1,11 @@
 # Spine Execution Architecture — Implementation Spec (v2)
 
+> **Frozen legacy evidence (architecture reset M0, 2026-07-31).** Preserved safety clauses remain
+> binding through the exact migration matrix in
+> [`work/queue/ARCH-RESET-2026-07/12-proposed-adr-set.md`](../work/queue/ARCH-RESET-2026-07/12-proposed-adr-set.md),
+> but this document is no longer reset target authority. ADR-020 through ADR-022 govern the target.
+> No production behavior changed at M0.
+
 **Project:** Alpaca Clean-Sheet CAPI Option 2.5
 **Status:** Draft for independent adversarial review, then implementation. Supersedes v1.
 **Scope:** The safety-critical execution spine only. Liquidity intelligence, TCA, and

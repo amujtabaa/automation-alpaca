@@ -1,5 +1,11 @@
 # Signal Seat R4 + malformed-lineage continuity state
 
+> **Reset-cleanup supersession — 2026-08-05.** This is retained historical state, not an active
+> implementation instruction. ADR-022 disables and unmounts Signal Seat for reset beta. The former
+> staging corpus is retired under WO-0153 after its durable malformed/quarantine requirements were
+> extracted to `docs/spec/signal-seat/07-malformed-quarantine-conformance.md`. Do not fetch or use
+> the retired staging branch; a future reactivation requires a new ADR and work order.
+
 Branch: `codex/signal-r4-store`
 
 Setup baseline: `origin/master@9d60b74`. The requested local branch already existed at

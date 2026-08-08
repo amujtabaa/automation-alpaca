@@ -1,0 +1,4920 @@
+diff --git a/app/execution_core/__init__.py b/app/execution_core/__init__.py
+index b54e328..d804d1f 100644
+--- a/app/execution_core/__init__.py
++++ b/app/execution_core/__init__.py
+@@ -18,6 +18,7 @@ from .fills import (
+ )
+ from .identity import (
+     AccountId,
++    AcquisitionMandateId,
+     ActorId,
+     ApplicationGenerationId,
+     BrokerId,
+@@ -25,6 +26,7 @@ from .identity import (
+     ClientOrderId,
+     ClosureId,
+     EffectId,
++    DualMandateBinding,
+     EnvironmentId,
+     EvidenceReference,
+     ExecutionFactKey,
+@@ -42,6 +44,21 @@ from .identity import (
+     VenueLegKey,
+     VenueObservationId,
+ )
++from .acquisition import (
++    AcquisitionAuthorization,
++    AcquisitionCurrentness,
++    AcquisitionDisposition,
++    AcquisitionEffectTerms,
++    AcquisitionMandate,
++    AcquisitionOrderType,
++    AcquisitionState,
++    AcquisitionTransition,
++    ProtectionExitProjection,
++    apply_acquisition_integration,
++    authorize_acquisition_effect,
++    initialize_acquisition,
++    reduce_acquisition_market,
++)
+ from .position import (
+     BasisAuthority,
+     BasisCandidate,
+@@ -97,6 +114,7 @@ from .values import (
+ )
+ from app.execution_core.venue import (
+     AcceptanceSetState,
++    AcquisitionVenueProjection,
+     BrokerEffect,
+     BrokerEffectState,
+     CatchUpExecutionRegistry,
+@@ -109,6 +127,7 @@ from app.execution_core.venue import (
+     RecoverClaimedEffect,
+     VenueAttempt,
+     VenueAttemptState,
++    VenueBuyPreemptionProjection,
+     VenueClosureKind,
+     VenueExecutionCheckpoint,
+     VenueIdentityOwner,
+@@ -119,6 +138,9 @@ from app.execution_core.venue import (
+     VenueScope,
+     VenueTerminalClosure,
+     apply_venue_recovery_input,
++    build_acquisition_cancel_request,
++    project_acquisition_venue,
++    project_next_buy_preemption,
+ )
+ from .authority import (
+     AdvanceManualFlatten,
+@@ -127,10 +149,13 @@ from .authority import (
+     AuthorityQueryKind,
+     AuthorityReason,
+     BeginManualFlatten,
++    BeginProtectionPreemption,
+     BrokerEffectRequest,
+     ClaimBrokerQuery,
+     ClaimEffect,
++    CreateAcquisitionEffect,
+     CreateBrokerEffect,
++    CreateProtectionExitEffect,
+     EmergencyGrantId,
+     EngageKill,
+     EnginePhase,
+@@ -139,6 +164,7 @@ from .authority import (
+     ManualFlattenId,
+     QueryClaimId,
+     RequestBudget,
++    RegisterAcquisitionCurrentness,
+     SessionId,
+     SupervisorFence,
+     TradingMode,
+@@ -149,6 +175,16 @@ from .authority import (
+ __all__ = [
+     "AccountId",
+     "AcceptanceSetState",
++    "AcquisitionAuthorization",
++    "AcquisitionCurrentness",
++    "AcquisitionDisposition",
++    "AcquisitionEffectTerms",
++    "AcquisitionMandate",
++    "AcquisitionMandateId",
++    "AcquisitionOrderType",
++    "AcquisitionState",
++    "AcquisitionTransition",
++    "AcquisitionVenueProjection",
+     "AdvanceManualFlatten",
+     "ActorId",
+     "ApplicationGenerationId",
+@@ -160,6 +196,7 @@ __all__ = [
+     "BasisCandidate",
+     "BasisCandidateStatus",
+     "BeginManualFlatten",
++    "BeginProtectionPreemption",
+     "BrokerFillFact",
+     "BrokerEffect",
+     "BrokerEffectState",
+@@ -174,7 +211,10 @@ __all__ = [
+     "ClientOrderId",
+     "ClosureId",
+     "CreateBrokerEffect",
++    "CreateAcquisitionEffect",
++    "CreateProtectionExitEffect",
+     "DiscoverVenueLeg",
++    "DualMandateBinding",
+     "EffectId",
+     "EffectKind",
+     "EmergencyGrantId",
+@@ -221,6 +261,7 @@ __all__ = [
+     "PriceUnits",
+     "ProtectionAlert",
+     "ProtectionDisposition",
++    "ProtectionExitProjection",
+     "ProtectionMandate",
+     "ProtectionPolicy",
+     "ProtectionTransition",
+@@ -232,6 +273,7 @@ __all__ = [
+     "RecordBrokerFillEvidence",
+     "RecordBrokerRevisionEvidence",
+     "RecordTransportOutcome",
++    "RegisterAcquisitionCurrentness",
+     "RecoverClaimedEffect",
+     "ReportedPrice",
+     "ReleaseVenueLeg",
+@@ -253,6 +295,7 @@ __all__ = [
+     "TradingMode",
+     "VenueAttempt",
+     "VenueAttemptState",
++    "VenueBuyPreemptionProjection",
+     "VenueClosureKind",
+     "VenueExecutionCheckpoint",
+     "VenueIdentityOwner",
+@@ -266,14 +309,21 @@ __all__ = [
+     "VenueScope",
+     "VenueTerminalClosure",
+     "apply_broker_execution_fact",
++    "apply_acquisition_integration",
+     "apply_execution_authority_input",
+     "apply_venue_recovery_input",
++    "authorize_acquisition_effect",
++    "build_acquisition_cancel_request",
+     "bind_venue_execution_snapshot",
+     "derive_ordered_basis_candidate",
+     "initial_execution_authority_state",
+     "initialize_position_protection",
++    "initialize_acquisition",
+     "invalidate_position_protection_market",
+     "project_protection_venue",
++    "project_acquisition_venue",
++    "project_next_buy_preemption",
+     "reduce_position_protection",
++    "reduce_acquisition_market",
+     "reduce_position_protection_market",
+ ]
+diff --git a/app/execution_core/authority.py b/app/execution_core/authority.py
+index 4b2aafe..28b31a4 100644
+--- a/app/execution_core/authority.py
++++ b/app/execution_core/authority.py
+@@ -7,10 +7,16 @@ or runtime wiring; later milestones must hydrate its environmental fields.
+ 
+ from __future__ import annotations
+ 
+-from dataclasses import dataclass, field, fields
++from dataclasses import dataclass, field, fields, replace
+ from enum import Enum
+ from typing import TypeVar, cast
+ 
++from .acquisition import (
++    AcquisitionAuthorization,
++    AcquisitionCurrentness,
++    ProtectionExitProjection,
++    authorize_acquisition_effect,
++)
+ from .fills import ExecutionSide, PositionScope, _PersistentKeyMap, _commit_parts
+ from .identity import (
+     AccountId,
+@@ -18,6 +24,7 @@ from .identity import (
+     AuthorityInputId,
+     ClaimOccurrenceId,
+     ClientOrderId,
++    DualMandateBinding,
+     EffectId,
+     EmergencyGrantId,
+     EvidenceReference,
+@@ -50,6 +57,8 @@ from .venue import (
+     _authority_stand_down_requested_effect,
+     _authority_symbol_flatten_ready,
+     _venue_authority_view,
++    build_acquisition_cancel_request,
++    project_next_buy_preemption,
+ )
+ 
+ 
+@@ -99,6 +108,9 @@ class AuthorityReason(str, Enum):
+     EMERGENCY_GRANT_REQUIRED = "EMERGENCY_GRANT_REQUIRED"
+     EMERGENCY_GRANT_MISMATCH = "EMERGENCY_GRANT_MISMATCH"
+     EMERGENCY_GRANT_REDUCE_ONLY = "EMERGENCY_GRANT_REDUCE_ONLY"
++    ACQUISITION_AUTHORIZATION_REQUIRED = "ACQUISITION_AUTHORIZATION_REQUIRED"
++    ACQUISITION_CURRENTNESS_INVALID = "ACQUISITION_CURRENTNESS_INVALID"
++    ACQUISITION_CURRENTNESS_STALE = "ACQUISITION_CURRENTNESS_STALE"
+     EFFECT_UNKNOWN = "EFFECT_UNKNOWN"
+     MANUAL_FLATTEN_INVALID = "MANUAL_FLATTEN_INVALID"
+ 
+@@ -146,6 +158,7 @@ class BrokerEffectRequest:
+     quantity: Quantity
+     economic_scope: bytes
+     target_leg_key: VenueLegKey | None
++    dual_mandate_binding: DualMandateBinding | None = None
+ 
+     def __post_init__(self) -> None:
+         for name, expected in (
+@@ -160,6 +173,18 @@ class BrokerEffectRequest:
+             _require(name, getattr(self, name), expected)
+         _require_optional("client_order_id", self.client_order_id, ClientOrderId)
+         _require_optional("target_leg_key", self.target_leg_key, VenueLegKey)
++        _require_optional(
++            "dual_mandate_binding",
++            self.dual_mandate_binding,
++            DualMandateBinding,
++        )
++        if (
++            self.dual_mandate_binding is not None
++            and self.dual_mandate_binding.protection_mandate_id != self.mandate_id
++        ):
++            raise ValueError(
++                "dual_mandate_binding protection identity must match mandate_id"
++            )
+         if self.quantity.value <= 0:
+             raise ValueError("quantity must be positive")
+         if type(self.economic_scope) is not bytes:
+@@ -209,6 +234,85 @@ class CreateBrokerEffect:
+         raise TypeError("CreateBrokerEffect is exact and cannot be subclassed")
+ 
+ 
++@dataclass(frozen=True, slots=True)
++class RegisterAcquisitionCurrentness:
++    """Register one reducer-minted composite currentness head for a scope."""
++
++    input_id: AuthorityInputId
++    currentness: AcquisitionCurrentness
++
++    def __post_init__(self) -> None:
++        _require("input_id", self.input_id, AuthorityInputId)
++        _require("currentness", self.currentness, AcquisitionCurrentness)
++
++    def __init_subclass__(cls, **kwargs: object) -> None:
++        del cls, kwargs
++        raise TypeError(
++            "RegisterAcquisitionCurrentness is exact and cannot be subclassed"
++        )
++
++
++@dataclass(frozen=True, slots=True)
++class CreateAcquisitionEffect:
++    """Create one sealed, current, exposure-increasing acquisition BUY effect."""
++
++    input_id: AuthorityInputId
++    session_id: SessionId
++    authorization: AcquisitionAuthorization
++
++    def __post_init__(self) -> None:
++        _require("input_id", self.input_id, AuthorityInputId)
++        _require("session_id", self.session_id, SessionId)
++        _require("authorization", self.authorization, AcquisitionAuthorization)
++
++    def __init_subclass__(cls, **kwargs: object) -> None:
++        del cls, kwargs
++        raise TypeError("CreateAcquisitionEffect is exact and cannot be subclassed")
++
++
++@dataclass(frozen=True, slots=True)
++class BeginProtectionPreemption:
++    """Latch one reducer-minted exit and advance at most one BUY cancel step."""
++
++    input_id: AuthorityInputId
++    exit_projection: ProtectionExitProjection
++
++    def __post_init__(self) -> None:
++        _require("input_id", self.input_id, AuthorityInputId)
++        _require("exit_projection", self.exit_projection, ProtectionExitProjection)
++
++    def __init_subclass__(cls, **kwargs: object) -> None:
++        del cls, kwargs
++        raise TypeError("BeginProtectionPreemption is exact and cannot be subclassed")
++
++
++@dataclass(frozen=True, slots=True)
++class CreateProtectionExitEffect:
++    """Create one sealed protection SELL only after exact BUY preemption completes."""
++
++    input_id: AuthorityInputId
++    session_id: SessionId
++    exit_projection: ProtectionExitProjection
++    effect_id: EffectId
++    request_occurrence_id: RequestOccurrenceId
++    client_order_id: ClientOrderId
++
++    def __post_init__(self) -> None:
++        for name, expected in (
++            ("input_id", AuthorityInputId),
++            ("session_id", SessionId),
++            ("exit_projection", ProtectionExitProjection),
++            ("effect_id", EffectId),
++            ("request_occurrence_id", RequestOccurrenceId),
++            ("client_order_id", ClientOrderId),
++        ):
++            _require(name, getattr(self, name), expected)
++
++    def __init_subclass__(cls, **kwargs: object) -> None:
++        del cls, kwargs
++        raise TypeError("CreateProtectionExitEffect is exact and cannot be subclassed")
++
++
+ @dataclass(frozen=True, slots=True)
+ class ClaimEffect:
+     input_id: AuthorityInputId
+@@ -305,6 +409,10 @@ class AdvanceManualFlatten:
+ 
+ _AuthorityCommand = (
+     CreateBrokerEffect
++    | RegisterAcquisitionCurrentness
++    | CreateAcquisitionEffect
++    | BeginProtectionPreemption
++    | CreateProtectionExitEffect
+     | ClaimEffect
+     | ClaimBrokerQuery
+     | EngageKill
+@@ -336,12 +444,85 @@ class _EmergencyGrant:
+         _require_text("reason", self.reason)
+ 
+ 
++class _EffectRoute(str, Enum):
++    GENERIC = "GENERIC"
++    ACQUISITION_SUBMIT = "ACQUISITION_SUBMIT"
++    PROTECTION_PREEMPTION_CANCEL = "PROTECTION_PREEMPTION_CANCEL"
++    PROTECTION_EXIT_SUBMIT = "PROTECTION_EXIT_SUBMIT"
++
++
+ @dataclass(frozen=True, slots=True)
+ class _EffectAuthorization:
+     request: BrokerEffectRequest
+     session_id: SessionId
+     manual_flatten_id: ManualFlattenId | None
+     emergency_grant_id: EmergencyGrantId | None
++    route: _EffectRoute = _EffectRoute.GENERIC
++    acquisition_authorization: AcquisitionAuthorization | None = None
++    acquisition_creation_head: bytes | None = None
++    protection_exit_head: bytes | None = None
++
++
++@dataclass(frozen=True, slots=True)
++class _M1EScopeRecord:
++    """One constant-work currentness record for an exact acquisition scope."""
++
++    currentness: AcquisitionCurrentness
++    issued_buy_effect_id: EffectId | None = None
++    acquisition_creation_head: bytes | None = None
++    preemption_latched: bool = False
++    preemption_binding: DualMandateBinding | None = None
++    protection_exit_effect_id: EffectId | None = None
++    protection_exit_creation_head: bytes | None = None
++
++    def __post_init__(self) -> None:
++        _require("currentness", self.currentness, AcquisitionCurrentness)
++        if not self.currentness.is_authentic:
++            raise ValueError("M1E currentness record must be authentic")
++        _require_optional(
++            "issued_buy_effect_id",
++            self.issued_buy_effect_id,
++            EffectId,
++        )
++        if self.acquisition_creation_head is not None:
++            if self.issued_buy_effect_id is None:
++                raise ValueError("unissued M1E scope cannot retain a creation head")
++            if (
++                type(self.acquisition_creation_head) is not bytes
++                or len(self.acquisition_creation_head) != 32
++            ):
++                raise ValueError("M1E acquisition creation head must be exact")
++        if type(self.preemption_latched) is not bool:
++            raise TypeError("M1E preemption latch must be bool")
++        _require_optional(
++            "preemption_binding",
++            self.preemption_binding,
++            DualMandateBinding,
++        )
++        _require_optional(
++            "protection_exit_effect_id",
++            self.protection_exit_effect_id,
++            EffectId,
++        )
++        if self.preemption_latched:
++            if self.preemption_binding != self.currentness.binding:
++                raise ValueError("latched M1E preemption must retain current binding")
++        elif (
++            self.preemption_binding is not None
++            or self.protection_exit_effect_id is not None
++            or self.protection_exit_creation_head is not None
++        ):
++            raise ValueError("unlatched M1E scope cannot retain protection exit state")
++        if self.protection_exit_creation_head is not None:
++            if self.protection_exit_effect_id is None:
++                raise ValueError(
++                    "uncreated protection exit cannot retain a creation head"
++                )
++            if (
++                type(self.protection_exit_creation_head) is not bytes
++                or len(self.protection_exit_creation_head) != 32
++            ):
++                raise ValueError("M1E protection exit creation head must be exact")
+ 
+ 
+ class _FlattenPhase(str, Enum):
+@@ -404,6 +585,19 @@ def _grant_key(value: EmergencyGrantId) -> bytes:
+     return _index_key(b"grant", value.value)
+ 
+ 
++def _m1e_scope_key(value: PositionScope) -> bytes:
++    """Commit exactly one broker/environment/account/symbol scope without repr()."""
++
++    _require("position_scope", value, PositionScope)
++    return _commit_parts(
++        b"execution-core/authority-m1e-scope/v1",
++        value.broker.value.encode("utf-8"),
++        value.environment.value.encode("utf-8"),
++        value.account.value.encode("utf-8"),
++        value.symbol_id.value.encode("utf-8"),
++    )
++
++
+ @dataclass(frozen=True, slots=True, init=False)
+ class ExecutionAuthorityState:
+     phase: EnginePhase
+@@ -419,6 +613,7 @@ class ExecutionAuthorityState:
+     _claim_by_occurrence: _PersistentKeyMap[ClaimEffect] = field(repr=False)
+     _query_by_id: _PersistentKeyMap[ClaimBrokerQuery] = field(repr=False)
+     _manual_by_id: _PersistentKeyMap[_ManualFlatten] = field(repr=False)
++    _m1e_by_scope: _PersistentKeyMap[_M1EScopeRecord] = field(repr=False)
+     _consumed_grant_ids: _PersistentKeyMap[bool] = field(repr=False)
+     _emergency_grant: _EmergencyGrant | None = field(repr=False)
+ 
+@@ -442,6 +637,7 @@ _AUTHORITY_STATE_INDEX_FIELDS = (
+     "_claim_by_occurrence",
+     "_query_by_id",
+     "_manual_by_id",
++    "_m1e_by_scope",
+     "_consumed_grant_ids",
+ )
+ 
+@@ -537,6 +733,7 @@ def initial_execution_authority_state(scope: VenueScope) -> ExecutionAuthoritySt
+         _claim_by_occurrence=_PersistentKeyMap.empty(),
+         _query_by_id=_PersistentKeyMap.empty(),
+         _manual_by_id=_PersistentKeyMap.empty(),
++        _m1e_by_scope=_PersistentKeyMap.empty(),
+         _consumed_grant_ids=_PersistentKeyMap.empty(),
+         _emergency_grant=None,
+     )
+@@ -594,10 +791,12 @@ def _venue_input_id(input_id: AuthorityInputId, suffix: str) -> VenueInputId:
+     return VenueInputId(f"authority:{input_id.value}:{suffix}")
+ 
+ 
+-def _venue_request(item: CreateBrokerEffect) -> RequestedEffect:
+-    request = item.request
++def _venue_request_from_request(
++    input_id: AuthorityInputId,
++    request: BrokerEffectRequest,
++) -> RequestedEffect:
+     return RequestedEffect(
+-        input_id=_venue_input_id(item.input_id, "request"),
++        input_id=_venue_input_id(input_id, "request"),
+         effect_id=request.effect_id,
+         request_occurrence_id=request.request_occurrence_id,
+         mandate_id=request.mandate_id,
+@@ -608,9 +807,14 @@ def _venue_request(item: CreateBrokerEffect) -> RequestedEffect:
+         quantity=request.quantity,
+         economic_scope=request.economic_scope,
+         target_leg_key=request.target_leg_key,
++        dual_mandate_binding=request.dual_mandate_binding,
+     )
+ 
+ 
++def _venue_request(item: CreateBrokerEffect) -> RequestedEffect:
++    return _venue_request_from_request(item.input_id, item.request)
++
++
+ def _scope_from_request(
+     state: ExecutionAuthorityState, request: BrokerEffectRequest
+ ) -> VenueEffectScope:
+@@ -630,6 +834,7 @@ def _scope_from_request(
+         quantity=request.quantity,
+         economic_scope=request.economic_scope,
+         target_leg_key=request.target_leg_key,
++        dual_mandate_binding=request.dual_mandate_binding,
+     )
+ 
+ 
+@@ -644,6 +849,97 @@ def _replay_or_conflict(
+     return _result(state, AuthorityDisposition.CONFLICT)
+ 
+ 
++def _register_acquisition_currentness(
++    state: ExecutionAuthorityState,
++    execution: ExecutionSnapshot,
++    item: RegisterAcquisitionCurrentness,
++) -> ExecutionAuthorityTransition:
++    """Retain one authentic, predecessor-linked M1E head per exact scope."""
++
++    currentness = item.currentness
++    if not currentness.is_authentic:
++        return _result(
++            state,
++            AuthorityDisposition.REFUSED,
++            AuthorityReason.ACQUISITION_CURRENTNESS_INVALID,
++        )
++    scope = currentness.position_scope
++    if (
++        scope.broker != state.venue.scope.broker
++        or scope.environment != state.venue.scope.environment
++        or scope.account != state.venue.scope.account
++        or execution.position.scope != scope
++        or currentness.execution_commitment != execution.commitment
++    ):
++        return _result(
++            state,
++            AuthorityDisposition.REFUSED,
++            AuthorityReason.EXECUTION_BINDING_MISMATCH,
++        )
++    if currentness.venue_commitment != state.venue.protection_commitment:
++        return _result(
++            state,
++            AuthorityDisposition.REFUSED,
++            AuthorityReason.VENUE_UNCERTAIN,
++        )
++    if currentness.session_id != state.session_id:
++        return _result(
++            state,
++            AuthorityDisposition.REFUSED,
++            AuthorityReason.SESSION_MISMATCH,
++        )
++    key = _m1e_scope_key(scope)
++    retained = state._m1e_by_scope.get(key)
++    if retained is None:
++        current = currentness.predecessor_head is None
++    else:
++        current = currentness.predecessor_head == retained.currentness.head
++        required_source_effect_id = (
++            retained.issued_buy_effect_id
++            if retained.acquisition_creation_head is not None
++            else (
++                retained.protection_exit_effect_id
++                if retained.protection_exit_creation_head is not None
++                else None
++            )
++        )
++        if required_source_effect_id is not None:
++            current = current and (
++                currentness.source_effect_id == required_source_effect_id
++            )
++    if not current:
++        return _result(
++            state,
++            AuthorityDisposition.REFUSED,
++            AuthorityReason.ACQUISITION_CURRENTNESS_STALE,
++        )
++    next_record = _M1EScopeRecord(
++        currentness=currentness,
++        issued_buy_effect_id=(
++            None if retained is None else retained.issued_buy_effect_id
++        ),
++        acquisition_creation_head=(
++            None if retained is None else retained.acquisition_creation_head
++        ),
++        preemption_latched=(False if retained is None else retained.preemption_latched),
++        preemption_binding=(None if retained is None else retained.preemption_binding),
++        protection_exit_effect_id=(
++            None if retained is None else retained.protection_exit_effect_id
++        ),
++        protection_exit_creation_head=(
++            None if retained is None else retained.protection_exit_creation_head
++        ),
++    )
++    next_records = (
++        _inserted(state._m1e_by_scope, key, next_record)
++        if retained is None
++        else _replaced(state._m1e_by_scope, key, next_record)
++    )
++    next_state = _state_with(state, _m1e_by_scope=next_records)
++    next_state = _record_input(next_state, item)
++    return _result(next_state, AuthorityDisposition.APPLIED)
++
++
+ def _mutation_fence_reason(
+     state: ExecutionAuthorityState,
+ ) -> AuthorityReason | None:
+@@ -733,6 +1029,20 @@ def _create_gate_reason(
+         return fence
+     if item.session_id != state.session_id:
+         return AuthorityReason.SESSION_MISMATCH
++    registered_m1e = state._m1e_by_scope.get(
++        _m1e_scope_key(_position_scope(state, request.symbol_id))
++    )
++    if registered_m1e is not None and (
++        request.kind is EffectKind.CANCEL
++        or (
++            request.kind is EffectKind.SUBMIT
++            and request.side is ExecutionSide.SELL
++            and item.manual_flatten_id is None
++        )
++    ):
++        return AuthorityReason.ACQUISITION_AUTHORIZATION_REQUIRED
++    if request.kind is EffectKind.SUBMIT and request.side is ExecutionSide.BUY:
++        return AuthorityReason.ACQUISITION_AUTHORIZATION_REQUIRED
+     if request.kind is EffectKind.CANCEL:
+         return None
+     emergency = (
+@@ -761,6 +1071,497 @@ def _create_gate_reason(
+     return None
+ 
+ 
++def _sealed_acquisition_request(
++    authorization: AcquisitionAuthorization,
++) -> BrokerEffectRequest:
++    """Derive the only M1E BUY request from sealed typed terms."""
++
++    terms = authorization.terms
++    currentness = authorization.currentness
++    binding = authorization.binding
++    return BrokerEffectRequest(
++        effect_id=terms.effect_id,
++        request_occurrence_id=terms.request_occurrence_id,
++        mandate_id=binding.protection_mandate_id,
++        kind=EffectKind.SUBMIT,
++        client_order_id=terms.client_order_id,
++        symbol_id=currentness.position_scope.symbol_id,
++        side=ExecutionSide.BUY,
++        quantity=terms.quantity,
++        economic_scope=_commit_parts(
++            b"execution-core/m1e-acquisition-effect-scope/v1",
++            authorization.binding.acquisition_commitment,
++            authorization.binding.protection_commitment,
++            terms.commitment,
++        ),
++        target_leg_key=None,
++        dual_mandate_binding=binding,
++    )
++
++
++def _sealed_acquisition_admission_reason(
++    state: ExecutionAuthorityState,
++    execution: ExecutionSnapshot,
++    item: CreateAcquisitionEffect,
++) -> AuthorityReason | None:
++    """Revalidate a reducer-minted BUY capability before it reaches venue state."""
++
++    authorization = item.authorization
++    if not authorization.is_authentic:
++        return AuthorityReason.ACQUISITION_CURRENTNESS_INVALID
++    currentness = authorization.currentness
++    scope = currentness.position_scope
++    retained = state._m1e_by_scope.get(_m1e_scope_key(scope))
++    if (
++        retained is None
++        or retained.currentness.head != currentness.head
++        or retained.currentness.binding != authorization.binding
++        or retained.issued_buy_effect_id is not None
++        or retained.preemption_latched
++    ):
++        return AuthorityReason.ACQUISITION_CURRENTNESS_STALE
++    if (
++        scope.broker != state.venue.scope.broker
++        or scope.environment != state.venue.scope.environment
++        or scope.account != state.venue.scope.account
++        or execution.position.scope != scope
++        or currentness.execution_commitment != execution.commitment
++        or currentness.venue_commitment != state.venue.protection_commitment
++    ):
++        return AuthorityReason.EXECUTION_BINDING_MISMATCH
++    if item.session_id != currentness.session_id or item.session_id != state.session_id:
++        return AuthorityReason.SESSION_MISMATCH
++    try:
++        reauthorized = authorize_acquisition_effect(currentness, authorization.terms)
++    except (TypeError, ValueError):
++        return AuthorityReason.ACQUISITION_CURRENTNESS_INVALID
++    if reauthorized != authorization:
++        return AuthorityReason.ACQUISITION_CURRENTNESS_INVALID
++    fence = _mutation_fence_reason(state)
++    if fence is not None:
++        return fence
++    if state.mode is not TradingMode.ACTIVE:
++        return AuthorityReason.MODE_BLOCKED
++    if state.kill_engaged:
++        return AuthorityReason.KILL_ENGAGED
++    return _normal_budget_reason(state)
++
++
++def _preemption_record_for_projection(
++    state: ExecutionAuthorityState,
++    execution: ExecutionSnapshot,
++    projection: ProtectionExitProjection,
++) -> tuple[_M1EScopeRecord | None, AuthorityReason | None]:
++    """Resolve one registered composite head without treating copied values as authority."""
++
++    if not projection.is_authentic:
++        return None, AuthorityReason.ACQUISITION_CURRENTNESS_INVALID
++    currentness = projection.currentness
++    scope = currentness.position_scope
++    record = state._m1e_by_scope.get(_m1e_scope_key(scope))
++    if (
++        record is None
++        or record.currentness.head != currentness.head
++        or record.currentness.binding != projection.binding
++    ):
++        return None, AuthorityReason.ACQUISITION_CURRENTNESS_STALE
++    if (
++        scope.broker != state.venue.scope.broker
++        or scope.environment != state.venue.scope.environment
++        or scope.account != state.venue.scope.account
++        or execution.position.scope != scope
++        or currentness.execution_commitment != execution.commitment
++    ):
++        return None, AuthorityReason.EXECUTION_BINDING_MISMATCH
++    if currentness.venue_commitment != state.venue.protection_commitment:
++        return None, AuthorityReason.VENUE_UNCERTAIN
++    if currentness.session_id != state.session_id:
++        return None, AuthorityReason.SESSION_MISMATCH
++    return record, None
++
++
++def _broker_request_from_venue_request(request: RequestedEffect) -> BrokerEffectRequest:
++    """Copy one sealed venue-owned request into the authority claim registry."""
++
++    _require("request", request, RequestedEffect)
++    return BrokerEffectRequest(
++        effect_id=request.effect_id,
++        request_occurrence_id=request.request_occurrence_id,
++        mandate_id=request.mandate_id,
++        kind=request.kind,
++        client_order_id=request.client_order_id,
++        symbol_id=request.symbol_id,
++        side=request.side,
++        quantity=request.quantity,
++        economic_scope=request.economic_scope,
++        target_leg_key=request.target_leg_key,
++        dual_mandate_binding=request.dual_mandate_binding,
++    )
++
++
++def _begin_protection_preemption(
++    state: ExecutionAuthorityState,
++    execution: ExecutionSnapshot,
++    item: BeginProtectionPreemption,
++) -> ExecutionAuthorityTransition:
++    """Latch one exit and request at most one exact current-leg BUY cancellation."""
++
++    projection = item.exit_projection
++    record, reason = _preemption_record_for_projection(state, execution, projection)
++    if reason is not None:
++        return _result(state, AuthorityDisposition.REFUSED, reason)
++    assert record is not None
++    if record.protection_exit_effect_id is not None:
++        return _result(
++            state,
++            AuthorityDisposition.REFUSED,
++            AuthorityReason.ACQUISITION_CURRENTNESS_STALE,
++        )
++    fence = _mutation_fence_reason(state)
++    if fence is not None:
++        return _result(state, AuthorityDisposition.REFUSED, fence)
++
++    venue = state.venue
++    venue_transitions: list[VenueRecoveryTransition] = []
++    created: list[EffectId] = []
++    effect_authority = state._effect_authority_by_id
++    parent_effect_id = record.issued_buy_effect_id
++    if parent_effect_id is not None:
++        stood_down = _authority_stand_down_requested_effect(
++            venue,
++            execution,
++            parent_effect_id,
++            f"m1e-preemption:{item.input_id.value}",
++        )
++        if stood_down is not None:
++            venue, applied = stood_down
++            venue_transitions.extend(applied)
++        try:
++            next_leg = project_next_buy_preemption(
++                venue,
++                execution,
++                parent_effect_id,
++                projection.binding,
++            )
++        except (TypeError, ValueError):
++            return _result(
++                state,
++                AuthorityDisposition.REFUSED,
++                AuthorityReason.VENUE_UNCERTAIN,
++            )
++        if next_leg.can_cancel:
++            cancel_request = build_acquisition_cancel_request(
++                next_leg,
++                _venue_input_id(item.input_id, "preemption-cancel"),
++                EffectId(f"authority:{item.input_id.value}:preemption-cancel"),
++                RequestOccurrenceId(
++                    f"authority:{item.input_id.value}:preemption-cancel"
++                ),
++            )
++            if cancel_request is None:
++                return _result(
++                    state,
++                    AuthorityDisposition.REFUSED,
++                    AuthorityReason.VENUE_UNCERTAIN,
++                )
++            if _authority_effect_identity_conflicts(
++                venue,
++                cancel_request.effect_id,
++                cancel_request.request_occurrence_id,
++                cancel_request.client_order_id,
++            ):
++                return _result(state, AuthorityDisposition.CONFLICT)
++            requested = _authority_request_effect(venue, execution, cancel_request)
++            if requested.disposition is VenueRecoveryDisposition.CONFLICT:
++                return _result(state, AuthorityDisposition.CONFLICT)
++            if requested.disposition is not VenueRecoveryDisposition.APPLIED:
++                return _result(
++                    state,
++                    AuthorityDisposition.REFUSED,
++                    AuthorityReason.VENUE_UNCERTAIN,
++                )
++            venue = requested.book
++            venue_transitions.append(requested)
++            cancel = _broker_request_from_venue_request(cancel_request)
++            effect_authority = _inserted(
++                effect_authority,
++                _effect_key(cancel.effect_id),
++                _EffectAuthorization(
++                    request=cancel,
++                    session_id=projection.currentness.session_id,
++                    manual_flatten_id=None,
++                    emergency_grant_id=None,
++                    route=_EffectRoute.PROTECTION_PREEMPTION_CANCEL,
++                    protection_exit_head=projection.currentness.head,
++                ),
++            )
++            created.append(cancel.effect_id)
++
++    scope_key = _m1e_scope_key(projection.position_scope)
++    next_record = _M1EScopeRecord(
++        currentness=record.currentness,
++        issued_buy_effect_id=record.issued_buy_effect_id,
++        acquisition_creation_head=record.acquisition_creation_head,
++        preemption_latched=True,
++        preemption_binding=projection.binding,
++        protection_exit_effect_id=None,
++        protection_exit_creation_head=None,
++    )
++    next_state = _state_with(
++        state,
++        venue=venue,
++        _effect_authority_by_id=effect_authority,
++        _m1e_by_scope=_replaced(state._m1e_by_scope, scope_key, next_record),
++    )
++    next_state = _record_input(next_state, item)
++    return _result(
++        next_state,
++        AuthorityDisposition.APPLIED,
++        created=tuple(created),
++        venue_transitions=tuple(venue_transitions),
++    )
++
++
++def _protection_exit_request(
++    item: CreateProtectionExitEffect,
++) -> BrokerEffectRequest:
++    """Derive one broker-neutral SELL from an opaque, non-waiting exit capability."""
++
++    projection = item.exit_projection
++    residual = projection.residual
++    if residual is None:
++        raise ValueError("waiting protection exit cannot create a SELL effect")
++    return BrokerEffectRequest(
++        effect_id=item.effect_id,
++        request_occurrence_id=item.request_occurrence_id,
++        mandate_id=projection.binding.protection_mandate_id,
++        kind=EffectKind.SUBMIT,
++        client_order_id=item.client_order_id,
++        symbol_id=projection.position_scope.symbol_id,
++        side=ExecutionSide.SELL,
++        quantity=residual,
++        economic_scope=_commit_parts(
++            b"execution-core/m1e-protection-exit-effect-scope/v1",
++            projection.commitment,
++            projection.currentness.head,
++        ),
++        target_leg_key=None,
++        dual_mandate_binding=projection.binding,
++    )
++
++
++def _sealed_protection_exit_admission_reason(
++    state: ExecutionAuthorityState,
++    execution: ExecutionSnapshot,
++    item: CreateProtectionExitEffect,
++) -> AuthorityReason | None:
++    """Require a current latched exit, exact closed BUY parents, and a real SELL goal."""
++
++    projection = item.exit_projection
++    record, reason = _preemption_record_for_projection(state, execution, projection)
++    if reason is not None:
++        return reason
++    assert record is not None
++    if (
++        not record.preemption_latched
++        or record.preemption_binding != projection.binding
++        or record.protection_exit_effect_id is not None
++    ):
++        return AuthorityReason.ACQUISITION_CURRENTNESS_STALE
++    if projection.residual is None:
++        return AuthorityReason.VENUE_UNCERTAIN
++    if item.session_id != projection.currentness.session_id:
++        return AuthorityReason.SESSION_MISMATCH
++    fence = _mutation_fence_reason(state)
++    if fence is not None:
++        return fence
++    parent_effect_id = record.issued_buy_effect_id
++    if parent_effect_id is not None:
++        try:
++            preemption = project_next_buy_preemption(
++                state.venue,
++                execution,
++                parent_effect_id,
++                projection.binding,
++            )
++        except (TypeError, ValueError):
++            return AuthorityReason.VENUE_UNCERTAIN
++        if not preemption.is_complete:
++            return AuthorityReason.VENUE_UNCERTAIN
++    if not _authority_symbol_flatten_ready(
++        state.venue,
++        execution,
++        projection.position_scope,
++    ):
++        return AuthorityReason.VENUE_UNCERTAIN
++    if state.mode not in {TradingMode.ACTIVE, TradingMode.REDUCING}:
++        return AuthorityReason.MODE_BLOCKED
++    if state.kill_engaged:
++        return AuthorityReason.KILL_ENGAGED
++    if projection.residual.value > execution.position.authorized_residual_sell.value:
++        return AuthorityReason.RESIDUAL_EXCEEDED
++    return _normal_budget_reason(state)
++
++
++def _create_protection_exit_effect(
++    state: ExecutionAuthorityState,
++    execution: ExecutionSnapshot,
++    item: CreateProtectionExitEffect,
++) -> ExecutionAuthorityTransition:
++    """Create one sealed SELL after the preemption cursor has exactly completed."""
++
++    reason = _sealed_protection_exit_admission_reason(state, execution, item)
++    if reason is not None:
++        return _result(state, AuthorityDisposition.REFUSED, reason)
++    request = _protection_exit_request(item)
++    if _authority_effect_identity_conflicts(
++        state.venue,
++        request.effect_id,
++        request.request_occurrence_id,
++        request.client_order_id,
++    ):
++        return _result(state, AuthorityDisposition.CONFLICT)
++    view_reason = _venue_reason(
++        state,
++        execution,
++        request.symbol_id,
++        None,
++        require_clear=True,
++    )
++    if view_reason is not None:
++        return _result(state, AuthorityDisposition.REFUSED, view_reason)
++    venue_transition = _authority_request_effect(
++        state.venue,
++        execution,
++        _venue_request_from_request(item.input_id, request),
++    )
++    if venue_transition.disposition is VenueRecoveryDisposition.CONFLICT:
++        return _result(state, AuthorityDisposition.CONFLICT)
++    if venue_transition.disposition is not VenueRecoveryDisposition.APPLIED:
++        return _result(
++            state,
++            AuthorityDisposition.REFUSED,
++            AuthorityReason.VENUE_UNCERTAIN,
++        )
++    projection = item.exit_projection
++    scope_key = _m1e_scope_key(projection.position_scope)
++    record = state._m1e_by_scope.get(scope_key)
++    assert record is not None
++    next_record = _M1EScopeRecord(
++        currentness=record.currentness,
++        issued_buy_effect_id=record.issued_buy_effect_id,
++        acquisition_creation_head=record.acquisition_creation_head,
++        preemption_latched=True,
++        preemption_binding=record.preemption_binding,
++        protection_exit_effect_id=request.effect_id,
++        protection_exit_creation_head=projection.currentness.head,
++    )
++    next_state = _state_with(
++        state,
++        venue=venue_transition.book,
++        _effect_authority_by_id=_inserted(
++            state._effect_authority_by_id,
++            _effect_key(request.effect_id),
++            _EffectAuthorization(
++                request=request,
++                session_id=item.session_id,
++                manual_flatten_id=None,
++                emergency_grant_id=None,
++                route=_EffectRoute.PROTECTION_EXIT_SUBMIT,
++                protection_exit_head=projection.currentness.head,
++            ),
++        ),
++        _m1e_by_scope=_replaced(state._m1e_by_scope, scope_key, next_record),
++    )
++    next_state = _record_input(next_state, item)
++    return _result(
++        next_state,
++        AuthorityDisposition.APPLIED,
++        created=(request.effect_id,),
++        venue_transitions=(venue_transition,),
++    )
++
++
++def _create_acquisition_effect(
++    state: ExecutionAuthorityState,
++    execution: ExecutionSnapshot,
++    item: CreateAcquisitionEffect,
++) -> ExecutionAuthorityTransition:
++    """Create one bound BUY after all sealed and inherited gates pass."""
++
++    reason = _sealed_acquisition_admission_reason(state, execution, item)
++    if reason is not None:
++        return _result(state, AuthorityDisposition.REFUSED, reason)
++    request = _sealed_acquisition_request(item.authorization)
++    if _authority_effect_identity_conflicts(
++        state.venue,
++        request.effect_id,
++        request.request_occurrence_id,
++        request.client_order_id,
++    ):
++        return _result(state, AuthorityDisposition.CONFLICT)
++    view_reason = _venue_reason(
++        state,
++        execution,
++        request.symbol_id,
++        None,
++        require_clear=True,
++    )
++    if view_reason is not None:
++        return _result(state, AuthorityDisposition.REFUSED, view_reason)
++    venue_transition = _authority_request_effect(
++        state.venue,
++        execution,
++        _venue_request_from_request(item.input_id, request),
++    )
++    if venue_transition.disposition is VenueRecoveryDisposition.CONFLICT:
++        return _result(state, AuthorityDisposition.CONFLICT)
++    if venue_transition.disposition is not VenueRecoveryDisposition.APPLIED:
++        return _result(
++            state,
++            AuthorityDisposition.REFUSED,
++            AuthorityReason.VENUE_UNCERTAIN,
++        )
++    currentness = item.authorization.currentness
++    scope_key = _m1e_scope_key(currentness.position_scope)
++    retained = state._m1e_by_scope.get(scope_key)
++    assert retained is not None
++    next_record = _M1EScopeRecord(
++        currentness=retained.currentness,
++        issued_buy_effect_id=request.effect_id,
++        acquisition_creation_head=currentness.head,
++        preemption_latched=retained.preemption_latched,
++        preemption_binding=retained.preemption_binding,
++        protection_exit_effect_id=retained.protection_exit_effect_id,
++        protection_exit_creation_head=retained.protection_exit_creation_head,
++    )
++    next_state = _state_with(
++        state,
++        venue=venue_transition.book,
++        _effect_authority_by_id=_inserted(
++            state._effect_authority_by_id,
++            _effect_key(request.effect_id),
++            _EffectAuthorization(
++                request=request,
++                session_id=item.session_id,
++                manual_flatten_id=None,
++                emergency_grant_id=None,
++                route=_EffectRoute.ACQUISITION_SUBMIT,
++                acquisition_authorization=item.authorization,
++                acquisition_creation_head=currentness.head,
++            ),
++        ),
++        _m1e_by_scope=_replaced(state._m1e_by_scope, scope_key, next_record),
++    )
++    next_state = _record_input(next_state, item)
++    return _result(
++        next_state,
++        AuthorityDisposition.APPLIED,
++        created=(request.effect_id,),
++        venue_transitions=(venue_transition,),
++    )
++
++
+ def _create_effect(
+     state: ExecutionAuthorityState,
+     execution: ExecutionSnapshot,
+@@ -876,6 +1677,34 @@ def _claim_gate_reason(
+         return fence
+     if authorization.session_id != state.session_id:
+         return AuthorityReason.SESSION_MISMATCH
++    if authorization.route is _EffectRoute.ACQUISITION_SUBMIT:
++        return _sealed_acquisition_claim_reason(state, execution, authorization)
++    if authorization.route is _EffectRoute.PROTECTION_PREEMPTION_CANCEL:
++        return _sealed_preemption_cancel_claim_reason(state, authorization)
++    if authorization.route is _EffectRoute.PROTECTION_EXIT_SUBMIT:
++        return _sealed_protection_exit_claim_reason(state, execution, authorization)
++    registered_m1e = state._m1e_by_scope.get(
++        _m1e_scope_key(_position_scope(state, request.symbol_id))
++    )
++    if (
++        authorization.route is _EffectRoute.GENERIC
++        and registered_m1e is not None
++        and (
++            request.kind is EffectKind.CANCEL
++            or (
++                request.kind is EffectKind.SUBMIT
++                and request.side is ExecutionSide.SELL
++                and authorization.manual_flatten_id is None
++            )
++        )
++    ):
++        return AuthorityReason.ACQUISITION_AUTHORIZATION_REQUIRED
++    if (
++        request.kind is EffectKind.SUBMIT
++        and request.side is ExecutionSide.BUY
++        and authorization.route is _EffectRoute.GENERIC
++    ):
++        return AuthorityReason.ACQUISITION_AUTHORIZATION_REQUIRED
+     if request.kind is EffectKind.CANCEL:
+         return _reserved_budget_reason(state)
+     emergency = authorization.emergency_grant_id is not None
+@@ -907,6 +1736,121 @@ def _claim_gate_reason(
+     return _reserved_budget_reason(state) if emergency else _normal_budget_reason(state)
+ 
+ 
++def _sealed_acquisition_claim_reason(
++    state: ExecutionAuthorityState,
++    execution: ExecutionSnapshot,
++    authorization: _EffectAuthorization,
++) -> AuthorityReason | None:
++    """Require the post-create composite successor before dispatching a BUY."""
++
++    sealed = authorization.acquisition_authorization
++    creation_head = authorization.acquisition_creation_head
++    if (
++        type(sealed) is not AcquisitionAuthorization
++        or type(creation_head) is not bytes
++        or len(creation_head) != 32
++        or not sealed.is_authentic
++    ):
++        return AuthorityReason.ACQUISITION_CURRENTNESS_INVALID
++    currentness = sealed.currentness
++    scope = currentness.position_scope
++    retained = state._m1e_by_scope.get(_m1e_scope_key(scope))
++    if (
++        retained is None
++        or retained.issued_buy_effect_id != authorization.request.effect_id
++        or retained.acquisition_creation_head != creation_head
++        or retained.currentness.binding != sealed.binding
++        or retained.currentness.head == creation_head
++        or retained.currentness.predecessor_head != creation_head
++        or retained.currentness.source_effect_id != authorization.request.effect_id
++    ):
++        return AuthorityReason.ACQUISITION_CURRENTNESS_STALE
++    registered = retained.currentness
++    if (
++        not registered.is_authentic
++        or registered.position_scope != scope
++        or registered.execution_commitment != execution.commitment
++        or registered.venue_commitment != state.venue.protection_commitment
++        or execution.position.scope != scope
++    ):
++        return AuthorityReason.EXECUTION_BINDING_MISMATCH
++    if registered.session_id != authorization.session_id:
++        return AuthorityReason.SESSION_MISMATCH
++    try:
++        authorize_acquisition_effect(registered, sealed.terms)
++    except (TypeError, ValueError):
++        return AuthorityReason.ACQUISITION_CURRENTNESS_INVALID
++    if state.mode is not TradingMode.ACTIVE:
++        return AuthorityReason.MODE_BLOCKED
++    if state.kill_engaged:
++        return AuthorityReason.KILL_ENGAGED
++    return _normal_budget_reason(state)
++
++
++def _sealed_preemption_cancel_claim_reason(
++    state: ExecutionAuthorityState,
++    authorization: _EffectAuthorization,
++) -> AuthorityReason | None:
++    """Keep a derived BUY cancel usable only while its sealed preemption stays live."""
++
++    request = authorization.request
++    binding = request.dual_mandate_binding
++    record = state._m1e_by_scope.get(
++        _m1e_scope_key(_position_scope(state, request.symbol_id))
++    )
++    if (
++        binding is None
++        or record is None
++        or not record.preemption_latched
++        or record.preemption_binding != binding
++        or record.currentness.binding != binding
++    ):
++        return AuthorityReason.ACQUISITION_CURRENTNESS_STALE
++    return _reserved_budget_reason(state)
++
++
++def _sealed_protection_exit_claim_reason(
++    state: ExecutionAuthorityState,
++    execution: ExecutionSnapshot,
++    authorization: _EffectAuthorization,
++) -> AuthorityReason | None:
++    """Require the exact post-create composite successor before dispatching the SELL."""
++
++    request = authorization.request
++    creation_head = authorization.protection_exit_head
++    binding = request.dual_mandate_binding
++    if type(creation_head) is not bytes or len(creation_head) != 32 or binding is None:
++        return AuthorityReason.ACQUISITION_CURRENTNESS_INVALID
++    record = state._m1e_by_scope.get(
++        _m1e_scope_key(_position_scope(state, request.symbol_id))
++    )
++    if (
++        record is None
++        or not record.preemption_latched
++        or record.preemption_binding != binding
++        or record.protection_exit_effect_id != request.effect_id
++        or record.protection_exit_creation_head != creation_head
++        or record.currentness.binding != binding
++        or record.currentness.head == creation_head
++        or record.currentness.predecessor_head != creation_head
++        or record.currentness.source_effect_id != request.effect_id
++    ):
++        return AuthorityReason.ACQUISITION_CURRENTNESS_STALE
++    if (
++        record.currentness.execution_commitment != execution.commitment
++        or record.currentness.venue_commitment != state.venue.protection_commitment
++        or execution.position.scope != record.currentness.position_scope
++    ):
++        return AuthorityReason.EXECUTION_BINDING_MISMATCH
++    if state.mode not in {TradingMode.ACTIVE, TradingMode.REDUCING}:
++        return AuthorityReason.MODE_BLOCKED
++    if state.kill_engaged:
++        return AuthorityReason.KILL_ENGAGED
++    if request.quantity.value > execution.position.authorized_residual_sell.value:
++        return AuthorityReason.RESIDUAL_EXCEEDED
++    return _normal_budget_reason(state)
++
++
+ def _claim_effect(
+     state: ExecutionAuthorityState,
+     execution: ExecutionSnapshot,
+@@ -976,6 +1920,27 @@ def _claim_effect(
+             True,
+         )
+         grant = None
++    m1e_records = state._m1e_by_scope
++    if authorization.route is _EffectRoute.ACQUISITION_SUBMIT:
++        scope_key = _m1e_scope_key(_position_scope(state, request.symbol_id))
++        record = m1e_records.get(scope_key)
++        if record is None:
++            raise RuntimeError("sealed acquisition claim lost its M1E scope record")
++        m1e_records = _replaced(
++            m1e_records,
++            scope_key,
++            replace(record, acquisition_creation_head=None),
++        )
++    elif authorization.route is _EffectRoute.PROTECTION_EXIT_SUBMIT:
++        scope_key = _m1e_scope_key(_position_scope(state, request.symbol_id))
++        record = m1e_records.get(scope_key)
++        if record is None:
++            raise RuntimeError("sealed protection exit claim lost its M1E scope record")
++        m1e_records = _replaced(
++            m1e_records,
++            scope_key,
++            replace(record, protection_exit_creation_head=None),
++        )
+     next_state = _state_with(
+         state,
+         venue=venue_transition.book,
+@@ -991,6 +1956,7 @@ def _claim_effect(
+         _claim_by_occurrence=_inserted(
+             state._claim_by_occurrence, _claim_key(item.claim_occurrence_id), item
+         ),
++        _m1e_by_scope=m1e_records,
+     )
+     next_state = _record_input(next_state, item)
+     return _result(
+@@ -1285,6 +2251,10 @@ def _advance_manual_flatten(
+ 
+ _COMMAND_TYPES = (
+     CreateBrokerEffect,
++    RegisterAcquisitionCurrentness,
++    CreateAcquisitionEffect,
++    BeginProtectionPreemption,
++    CreateProtectionExitEffect,
+     ClaimEffect,
+     ClaimBrokerQuery,
+     EngageKill,
+@@ -1310,6 +2280,14 @@ def apply_execution_authority_input(
+         return replay
+     if type(item) is CreateBrokerEffect:
+         return _create_effect(state, execution, item)
++    if type(item) is RegisterAcquisitionCurrentness:
++        return _register_acquisition_currentness(state, execution, item)
++    if type(item) is CreateAcquisitionEffect:
++        return _create_acquisition_effect(state, execution, item)
++    if type(item) is BeginProtectionPreemption:
++        return _begin_protection_preemption(state, execution, item)
++    if type(item) is CreateProtectionExitEffect:
++        return _create_protection_exit_effect(state, execution, item)
+     if type(item) is ClaimEffect:
+         return _claim_effect(state, execution, item)
+     if type(item) is ClaimBrokerQuery:
+@@ -1328,10 +2306,13 @@ __all__ = [
+     "AuthorityQueryKind",
+     "AuthorityReason",
+     "BeginManualFlatten",
++    "BeginProtectionPreemption",
+     "BrokerEffectRequest",
+     "ClaimBrokerQuery",
+     "ClaimEffect",
++    "CreateAcquisitionEffect",
+     "CreateBrokerEffect",
++    "CreateProtectionExitEffect",
+     "EmergencyGrantId",
+     "EngageKill",
+     "EnginePhase",
+@@ -1339,6 +2320,7 @@ __all__ = [
+     "ExecutionAuthorityTransition",
+     "ManualFlattenId",
+     "QueryClaimId",
++    "RegisterAcquisitionCurrentness",
+     "RequestBudget",
+     "SessionId",
+     "SupervisorFence",
+diff --git a/app/execution_core/identity.py b/app/execution_core/identity.py
+index 8029793..a4dd78a 100644
+--- a/app/execution_core/identity.py
++++ b/app/execution_core/identity.py
+@@ -107,6 +107,41 @@ class MandateId(_ExactIdentity):
+     """Exact immutable mandate identity."""
+ 
+ 
++@dataclass(frozen=True, slots=True)
++class AcquisitionMandateId(_ExactIdentity):
++    """Exact immutable operator-approved acquisition-mandate identity."""
++
++    def __init_subclass__(cls, **kwargs: object) -> None:
++        del cls, kwargs
++        raise TypeError("AcquisitionMandateId is exact and cannot be subclassed")
++
++
++@dataclass(frozen=True, slots=True)
++class DualMandateBinding:
++    """Bounded complete identities for one acquisition/protection pair."""
++
++    acquisition_mandate_id: AcquisitionMandateId
++    acquisition_commitment: bytes
++    protection_mandate_id: MandateId
++    protection_commitment: bytes
++
++    def __post_init__(self) -> None:
++        if type(self.acquisition_mandate_id) is not AcquisitionMandateId:
++            raise TypeError("acquisition_mandate_id must be AcquisitionMandateId")
++        if type(self.protection_mandate_id) is not MandateId:
++            raise TypeError("protection_mandate_id must be MandateId")
++        for name in ("acquisition_commitment", "protection_commitment"):
++            value = getattr(self, name)
++            if type(value) is not bytes:
++                raise TypeError(f"{name} must be bytes")
++            if len(value) != 32:
++                raise ValueError(f"{name} must contain exactly 32 bytes")
++
++    def __init_subclass__(cls, **kwargs: object) -> None:
++        del cls, kwargs
++        raise TypeError("DualMandateBinding is exact and cannot be subclassed")
++
++
+ @dataclass(frozen=True, slots=True)
+ class MarketDataSourceId(_ExactIdentity):
+     """Exact immutable market-data source identity."""
+diff --git a/app/execution_core/protection.py b/app/execution_core/protection.py
+index b69e654..07185bf 100644
+--- a/app/execution_core/protection.py
++++ b/app/execution_core/protection.py
+@@ -210,6 +210,12 @@ class ProtectionMandate:
+     def __init_subclass__(cls, **kwargs: object) -> None:
+         raise TypeError("ProtectionMandate cannot be subclassed")
+ 
++    @property
++    def commitment(self) -> bytes:
++        """Return the complete immutable policy commitment for bound consumers."""
++
++        return _commit_mandate(self)
++
+ 
+ @_dataclass(frozen=True, slots=True)
+ class MarketOccurrence:
+diff --git a/app/execution_core/venue.py b/app/execution_core/venue.py
+index ee30c48..9ed98c2 100644
+--- a/app/execution_core/venue.py
++++ b/app/execution_core/venue.py
+@@ -37,6 +37,7 @@ from .identity import (
+     ClaimOccurrenceId,
+     ClientOrderId,
+     ClosureId,
++    DualMandateBinding,
+     EffectId,
+     EnvironmentId,
+     EvidenceReference,
+@@ -577,6 +578,7 @@ class VenueEffectScope:
+     quantity: Quantity
+     economic_scope: bytes
+     target_leg_key: VenueLegKey | None = None
++    dual_mandate_binding: DualMandateBinding | None = None
+ 
+     def __post_init__(self) -> None:
+         for name, value, expected in (
+@@ -598,6 +600,16 @@ class VenueEffectScope:
+             self.client_order_id,
+             self.target_leg_key,
+         )
++        if self.dual_mandate_binding is not None:
++            _require(
++                "dual_mandate_binding",
++                self.dual_mandate_binding,
++                DualMandateBinding,
++            )
++            if self.dual_mandate_binding.protection_mandate_id != self.mandate_id:
++                raise ValueError(
++                    "dual_mandate_binding protection identity must match mandate_id"
++                )
+ 
+     @property
+     def client_identity(self) -> ClientIdentityBinding | None:
+@@ -635,6 +647,7 @@ class RequestedEffect:
+     quantity: Quantity
+     economic_scope: bytes
+     target_leg_key: VenueLegKey | None = None
++    dual_mandate_binding: DualMandateBinding | None = None
+ 
+     def __post_init__(self) -> None:
+         _require("input_id", self.input_id, VenueInputId)
+@@ -658,6 +671,16 @@ class RequestedEffect:
+             self.client_order_id,
+             self.target_leg_key,
+         )
++        if self.dual_mandate_binding is not None:
++            _require(
++                "dual_mandate_binding",
++                self.dual_mandate_binding,
++                DualMandateBinding,
++            )
++            if self.dual_mandate_binding.protection_mandate_id != self.mandate_id:
++                raise ValueError(
++                    "dual_mandate_binding protection identity must match mandate_id"
++                )
+ 
+ 
+ @dataclass(frozen=True, slots=True)
+@@ -1641,6 +1664,10 @@ class _ProtectionTransitionProof:
+     command_commitment: bytes
+     disposition: VenueRecoveryDisposition
+     quantity_delta: int
++    acquisition_owned_quantity_delta: int
++    acquisition_owned_notional_delta: Fraction
++    dual_mandate_binding: DualMandateBinding | None = None
++    source_effect_id: EffectId | None = None
+ 
+     @property
+     def commitment(self) -> bytes:
+@@ -1674,6 +1701,149 @@ class VenueRecoveryTransition:
+         raise TypeError("VenueRecoveryTransition cannot be subclassed")
+ 
+ 
++class _AcquisitionProjectionSource(str, Enum):
++    """The one bounded source that authenticated an acquisition projection."""
++
++    GENESIS = "GENESIS"
++    NEUTRAL_TRANSITION = "NEUTRAL_TRANSITION"
++    BOUND_TRANSITION = "BOUND_TRANSITION"
++
++
++@dataclass(frozen=True, slots=True, init=False)
++class AcquisitionVenueProjection:
++    """Opaque bounded M1E view of one authenticated venue transition."""
++
++    _position_scope: PositionScope
++    _binding: DualMandateBinding
++    _source_kind: _AcquisitionProjectionSource
++    _source_effect_id: EffectId | None
++    _head: bytes
++    _execution_commitment: bytes
++    _venue_commitment: bytes
++    _proof_commitment: bytes
++    _owned_quantity_delta: int
++    _owned_notional_delta: Fraction
++    _seal: bytes
++
++    def __init__(self, *args: object, **kwargs: object) -> None:
++        del args, kwargs
++        raise TypeError(
++            "AcquisitionVenueProjection is opaque; use project_acquisition_venue"
++        )
++
++    def __init_subclass__(cls, **kwargs: object) -> None:
++        del cls, kwargs
++        raise TypeError("AcquisitionVenueProjection cannot be subclassed")
++
++    @property
++    def position_scope(self) -> PositionScope:
++        return self._position_scope
++
++    @property
++    def binding(self) -> DualMandateBinding:
++        return self._binding
++
++    @property
++    def source_effect_id(self) -> EffectId | None:
++        """Return the one source effect only when this projection has one."""
++
++        return self._source_effect_id
++
++    @property
++    def head(self) -> bytes:
++        return self._head
++
++    @property
++    def execution_commitment(self) -> bytes:
++        return self._execution_commitment
++
++    @property
++    def venue_commitment(self) -> bytes:
++        return self._venue_commitment
++
++    @property
++    def owned_quantity_delta(self) -> int:
++        return self._owned_quantity_delta
++
++    @property
++    def owned_notional_delta(self) -> Fraction:
++        return self._owned_notional_delta
++
++    @property
++    def is_authentic(self) -> bool:
++        return _acquisition_venue_projection_is_authentic(self)
++
++
++class _BuyPreemptionState(str, Enum):
++    """The one bounded preemption step available for an M1E BUY parent."""
++
++    NEXT = "NEXT"
++    WAITING = "WAITING"
++    COMPLETE = "COMPLETE"
++
++
++@dataclass(frozen=True, slots=True, init=False)
++class VenueBuyPreemptionProjection:
++    """Opaque current-leg view used only for sealed M1E BUY preemption."""
++
++    _parent_scope: VenueEffectScope
++    _binding: DualMandateBinding
++    _execution_commitment: bytes
++    _venue_commitment: bytes
++    _index_commitment: bytes
++    _state: _BuyPreemptionState
++    _head_active_leg_key: VenueLegKey | None
++    _seal: bytes
++
++    def __init__(self, *args: object, **kwargs: object) -> None:
++        del args, kwargs
++        raise TypeError(
++            "VenueBuyPreemptionProjection is opaque; use project_next_buy_preemption"
++        )
++
++    def __init_subclass__(cls, **kwargs: object) -> None:
++        del cls, kwargs
++        raise TypeError("VenueBuyPreemptionProjection cannot be subclassed")
++
++    @property
++    def parent_effect_id(self) -> EffectId:
++        return self._parent_scope.effect_id
++
++    @property
++    def position_scope(self) -> PositionScope:
++        return self._parent_scope.position_scope
++
++    @property
++    def binding(self) -> DualMandateBinding:
++        return self._binding
++
++    @property
++    def execution_commitment(self) -> bytes:
++        return self._execution_commitment
++
++    @property
++    def venue_commitment(self) -> bytes:
++        return self._venue_commitment
++
++    @property
++    def head_active_leg_key(self) -> VenueLegKey | None:
++        """Return one sealed current leg only when the next cancel is admissible."""
++
++        return self._head_active_leg_key
++
++    @property
++    def can_cancel(self) -> bool:
++        return self._state is _BuyPreemptionState.NEXT
++
++    @property
++    def is_complete(self) -> bool:
++        return self._state is _BuyPreemptionState.COMPLETE
++
++    @property
++    def is_authentic(self) -> bool:
++        return _venue_buy_preemption_projection_is_authentic(self)
++
++
+ @dataclass(frozen=True, slots=True)
+ class _CoverageProvenance:
+     """Persistent covered-root proof paired to one exact symbol root state."""
+@@ -1775,6 +1945,84 @@ class _EffectLegSummary:
+         )
+ 
+ 
++@dataclass(frozen=True, slots=True)
++class _BuyPreemptionLink:
++    """One direct active-FIFO link retained for an M1E BUY parent."""
++
++    active: bool
++    previous_active_leg_key: VenueLegKey | None
++    next_active_leg_key: VenueLegKey | None
++
++    def __post_init__(self) -> None:
++        if type(self.active) is not bool:
++            raise TypeError("buy preemption link active must be bool")
++        for name, value in (
++            ("previous_active_leg_key", self.previous_active_leg_key),
++            ("next_active_leg_key", self.next_active_leg_key),
++        ):
++            if value is not None and type(value) is not VenueLegKey:
++                raise TypeError(f"{name} must be VenueLegKey or None")
++        if not self.active and (
++            self.previous_active_leg_key is not None
++            or self.next_active_leg_key is not None
++        ):
++            raise ValueError("inactive buy preemption link cannot retain neighbors")
++
++    @property
++    def commitment(self) -> bytes:
++        return _commit_parts(
++            b"execution-core/venue-buy-preemption-link/v1",
++            b"1" if self.active else b"0",
++            _canonical_value_commitment(self.previous_active_leg_key),
++            _canonical_value_commitment(self.next_active_leg_key),
++        )
++
++
++@dataclass(frozen=True, slots=True)
++class _BuyPreemptionIndex:
++    """Committed direct active-leg FIFO for one M1E BUY parent."""
++
++    parent_effect_id: EffectId
++    active_leg_count: int
++    head_active_leg_key: VenueLegKey | None
++    tail_active_leg_key: VenueLegKey | None
++    links_by_leg: _PersistentKeyMap[_BuyPreemptionLink]
++
++    def __post_init__(self) -> None:
++        _require("parent_effect_id", self.parent_effect_id, EffectId)
++        if type(self.active_leg_count) is not int or self.active_leg_count < 0:
++            raise ValueError("buy preemption active leg count must be non-negative")
++        for name, value in (
++            ("head_active_leg_key", self.head_active_leg_key),
++            ("tail_active_leg_key", self.tail_active_leg_key),
++        ):
++            if value is not None and type(value) is not VenueLegKey:
++                raise TypeError(f"{name} must be VenueLegKey or None")
++        if self.active_leg_count == 0:
++            if (
++                self.head_active_leg_key is not None
++                or self.tail_active_leg_key is not None
++            ):
++                raise ValueError(
++                    "buy preemption empty header must have no head or tail"
++                )
++        elif self.head_active_leg_key is None or self.tail_active_leg_key is None:
++            raise ValueError("buy preemption active header requires head and tail")
++        if type(self.links_by_leg) is not type(_PersistentKeyMap.empty()):
++            raise TypeError("buy preemption links must be a persistent key map")
++
++    @property
++    def commitment(self) -> bytes:
++        return _commit_parts(
++            b"execution-core/venue-buy-preemption-index/v1",
++            _canonical_value_commitment(self.parent_effect_id),
++            _encode_text(str(self.active_leg_count)),
++            _canonical_value_commitment(self.head_active_leg_key),
++            _canonical_value_commitment(self.tail_active_leg_key),
++            self.links_by_leg.commitment,
++        )
++
++
+ @dataclass(frozen=True, slots=True)
+ class _CancelTargetReservation:
+     effect_id: EffectId | None
+@@ -1893,6 +2141,9 @@ class VenueRecoveryBook:
+     _leg_summary_by_effect: _PersistentKeyMap[_EffectLegSummary] = field(
+         default_factory=_PersistentKeyMap.empty
+     )
++    _buy_preemption_index_by_effect: _PersistentKeyMap[_BuyPreemptionIndex] = field(
++        default_factory=_PersistentKeyMap.empty
++    )
+     _cancel_target_reservation_by_leg: _PersistentKeyMap[_CancelTargetReservation] = (
+         field(default_factory=_PersistentKeyMap.empty)
+     )
+@@ -2020,6 +2271,12 @@ class VenueRecoveryBook:
+ 
+         return _protection_book_commitment(self)
+ 
++    @property
++    def protection_commitment(self) -> bytes:
++        """Expose the current bounded envelope for authority-led consumers."""
++
++        return self._protection_commitment
++
+     def _authority_epoch(self, position_scope: PositionScope) -> int:
+         retained = self._authority_epoch_by_scope.get(
+             _position_scope_index_key(position_scope)
+@@ -2224,6 +2481,7 @@ class VenueRecoveryBook:
+         self._validate_effect_edges(effects, claims, owners, heads)
+         self._validate_cancel_target_reservations()
+         self._validate_authority_indexes()
++        self._validate_buy_preemption_indexes()
+ 
+     def _validate_cancel_target_reservations(self) -> None:
+         expected = _rebuild_cancel_target_reservations(self)
+@@ -2249,6 +2507,13 @@ class VenueRecoveryBook:
+                 "venue authority indexes contradict canonical current state"
+             )
+ 
++    def _validate_buy_preemption_indexes(self) -> None:
++        expected = _rebuild_buy_preemption_indexes(self)
++        if self._buy_preemption_index_by_effect.commitment != expected.commitment:
++            raise ValueError(
++                "venue buy preemption index contradicts canonical current state"
++            )
++
+     def _require_recovery_entry_types(self) -> None:
+         """Keep the checkpoint concrete even though recovery types import venue."""
+ 
+@@ -4208,6 +4473,7 @@ class VenueRecoveryBook:
+             ("_owner_by_leg", _PersistentKeyMap.empty()),
+             ("_leg_current_by_leg", _PersistentKeyMap.empty()),
+             ("_leg_summary_by_effect", _PersistentKeyMap.empty()),
++            ("_buy_preemption_index_by_effect", _PersistentKeyMap.empty()),
+             ("_cancel_target_reservation_by_leg", _PersistentKeyMap.empty()),
+             ("_authority_contribution_by_effect", _PersistentKeyMap.empty()),
+             ("_authority_summary_by_scope", _PersistentKeyMap.empty()),
+@@ -5053,6 +5319,102 @@ def _protection_mandate_id(
+     return None
+ 
+ 
++def _transition_dual_mandate_binding(
++    book: VenueRecoveryBook,
++    item: object,
++) -> DualMandateBinding | None:
++    """Return only the exact bounded binding named by one venue input."""
++
++    if type(item) is RequestedEffect:
++        return item.dual_mandate_binding
++    effect_id = getattr(item, "effect_id", None)
++    effect = book._current_effect(effect_id) if type(effect_id) is EffectId else None
++    if effect is not None:
++        return effect.scope.dual_mandate_binding
++    leg_key = getattr(item, "leg_key", None)
++    owner = book.owner(leg_key) if type(leg_key) is VenueLegKey else None
++    if owner is not None:
++        owned_effect = book._current_effect(owner.effect_id)
++        if owned_effect is not None:
++            return owned_effect.scope.dual_mandate_binding
++    return None
++
++
++def _transition_effect_id(
++    book: VenueRecoveryBook,
++    item: object,
++) -> EffectId | None:
++    """Return the one current effect named by a bounded venue input, if any."""
++
++    if type(item) is RequestedEffect:
++        return item.effect_id
++    effect_id = getattr(item, "effect_id", None)
++    if type(effect_id) is EffectId:
++        return effect_id
++    leg_key = getattr(item, "leg_key", None)
++    owner = book.owner(leg_key) if type(leg_key) is VenueLegKey else None
++    return None if owner is None else owner.effect_id
++
++
++def _bound_acquisition_economic_deltas(
++    book: VenueRecoveryBook,
++    prior_execution: ExecutionSnapshot,
++    resulting_execution: ExecutionSnapshot,
++    item: object,
++    disposition: VenueRecoveryDisposition,
++    source_effect_id: EffectId | None,
++) -> tuple[int, Fraction]:
++    """Derive one bound BUY root replacement without a history scan."""
++
++    if disposition is not VenueRecoveryDisposition.APPLIED:
++        return 0, Fraction(0)
++    if type(source_effect_id) is not EffectId:
++        return 0, Fraction(0)
++    effect = book._current_effect(source_effect_id)
++    if (
++        effect is None
++        or effect.scope.kind is not EffectKind.SUBMIT
++        or effect.scope.side is not ExecutionSide.BUY
++        or type(effect.scope.dual_mandate_binding) is not DualMandateBinding
++    ):
++        return 0, Fraction(0)
++    from .recovery import RecordBrokerFillEvidence, RecordBrokerRevisionEvidence
++
++    if type(item) not in {
++        RecordBrokerFillEvidence,
++        RecordBrokerRevisionEvidence,
++    }:
++        return 0, Fraction(0)
++    fact = item.fact
++    after = resulting_execution.root_heads.get(fact.root_key)
++    if (
++        after is None
++        or after.authority is not ExecutionAuthority.BROKER_AUTHORITATIVE
++        or after.current_source_event_id != fact.key.source_event_id
++        or after.scope.side is not ExecutionSide.BUY
++        or after.scope.position_scope != effect.scope.position_scope
++    ):
++        raise ValueError("bound acquisition economics lack an exact current root")
++    before = prior_execution.root_heads.get(fact.root_key)
++    if before is not None and (
++        before.authority is not ExecutionAuthority.BROKER_AUTHORITATIVE
++        or before.scope != after.scope
++    ):
++        raise ValueError("bound acquisition root predecessor is not exact")
++    before_quantity = 0 if before is None else before.signed_quantity
++    before_notional = (
++        Fraction(0)
++        if before is None or before.price is None
++        else before.quantity.value * before.price.exact_value
++    )
++    after_notional = (
++        Fraction(0)
++        if after.price is None
++        else after.quantity.value * after.price.exact_value
++    )
++    return after.signed_quantity - before_quantity, after_notional - before_notional
++
++
+ def _protection_scope_values(
+     book: VenueRecoveryBook,
+     execution: ExecutionSnapshot,
+@@ -5178,6 +5540,9 @@ def _next_protection_cursor(
+     command_commitment: bytes,
+     disposition: VenueRecoveryDisposition,
+     quantity_delta: int,
++    acquisition_owned_quantity_delta: int,
++    acquisition_owned_notional_delta: Fraction,
++    dual_mandate_binding: DualMandateBinding | None = None,
+ ) -> _ProtectionCursor:
+     return _ProtectionCursor(
+         ordinal=predecessor.ordinal + 1,
+@@ -5205,6 +5570,9 @@ def _next_protection_cursor(
+             command_commitment,
+             _canonical_value_commitment(disposition),
+             _canonical_value_commitment(quantity_delta),
++            _canonical_value_commitment(acquisition_owned_quantity_delta),
++            _canonical_value_commitment(acquisition_owned_notional_delta),
++            _canonical_value_commitment(dual_mandate_binding),
+         ),
+         mandate_id=mandate_id,
+         execution_commitment=execution_commitment,
+@@ -5244,6 +5612,16 @@ def _protection_transition_proof_is_authentic(
+         return False
+     if proof.binding is not None and type(proof.binding) is not VenueExecutionBinding:
+         return False
++    if (
++        proof.dual_mandate_binding is not None
++        and type(proof.dual_mandate_binding) is not DualMandateBinding
++    ):
++        return False
++    if (
++        proof.source_effect_id is not None
++        and type(proof.source_effect_id) is not EffectId
++    ):
++        return False
+     for digest in (
+         proof.predecessor_book_commitment,
+         proof.book_commitment,
+@@ -5265,6 +5643,10 @@ def _protection_transition_proof_is_authentic(
+         return False
+     if type(proof.quantity_delta) is not int:
+         return False
++    if type(proof.acquisition_owned_quantity_delta) is not int:
++        return False
++    if type(proof.acquisition_owned_notional_delta) is not Fraction:
++        return False
+     if proof.predecessor_book_scope != proof.book_scope:
+         return False
+     if proof.predecessor_execution_checkpoint.position_scope != proof.position_scope:
+@@ -5334,10 +5716,475 @@ def _protection_transition_proof_is_authentic(
+         proof.command_commitment,
+         proof.disposition,
+         proof.quantity_delta,
++        proof.acquisition_owned_quantity_delta,
++        proof.acquisition_owned_notional_delta,
++        proof.dual_mandate_binding,
+     )
+     return cursor == expected
+ 
+ 
++def _acquisition_venue_projection_seal(
++    position_scope: PositionScope,
++    binding: DualMandateBinding,
++    source_kind: _AcquisitionProjectionSource,
++    source_effect_id: EffectId | None,
++    head: bytes,
++    execution_commitment: bytes,
++    venue_commitment: bytes,
++    proof_commitment: bytes,
++    owned_quantity_delta: int,
++    owned_notional_delta: Fraction,
++) -> bytes:
++    return _commit_parts(
++        b"execution-core/acquisition-venue-projection/v1",
++        _canonical_value_commitment(position_scope),
++        _canonical_value_commitment(binding),
++        _encode_text(source_kind.value),
++        _canonical_value_commitment(source_effect_id),
++        head,
++        execution_commitment,
++        venue_commitment,
++        proof_commitment,
++        _canonical_value_commitment(owned_quantity_delta),
++        _canonical_value_commitment(owned_notional_delta),
++    )
++
++
++def _acquisition_venue_projection_is_authentic(
++    projection: AcquisitionVenueProjection,
++) -> bool:
++    if type(projection) is not AcquisitionVenueProjection:
++        return False
++    if type(projection._position_scope) is not PositionScope:
++        return False
++    if type(projection._binding) is not DualMandateBinding:
++        return False
++    if type(projection._source_kind) is not _AcquisitionProjectionSource:
++        return False
++    if (
++        projection._source_effect_id is not None
++        and type(projection._source_effect_id) is not EffectId
++    ):
++        return False
++    if type(projection._owned_quantity_delta) is not int:
++        return False
++    if type(projection._owned_notional_delta) is not Fraction:
++        return False
++    for value in (
++        projection._head,
++        projection._execution_commitment,
++        projection._venue_commitment,
++        projection._proof_commitment,
++        projection._seal,
++    ):
++        if type(value) is not bytes or len(value) != 32:
++            return False
++    return projection._seal == _acquisition_venue_projection_seal(
++        projection._position_scope,
++        projection._binding,
++        projection._source_kind,
++        projection._source_effect_id,
++        projection._head,
++        projection._execution_commitment,
++        projection._venue_commitment,
++        projection._proof_commitment,
++        projection._owned_quantity_delta,
++        projection._owned_notional_delta,
++    )
++
++
++def _new_acquisition_venue_projection(
++    *,
++    position_scope: PositionScope,
++    binding: DualMandateBinding,
++    source_kind: _AcquisitionProjectionSource,
++    source_effect_id: EffectId | None,
++    head: bytes,
++    execution_commitment: bytes,
++    venue_commitment: bytes,
++    proof_commitment: bytes,
++    owned_quantity_delta: int,
++    owned_notional_delta: Fraction,
++) -> AcquisitionVenueProjection:
++    result = object.__new__(AcquisitionVenueProjection)
++    for name, value in (
++        ("_position_scope", position_scope),
++        ("_binding", binding),
++        ("_source_kind", source_kind),
++        ("_source_effect_id", source_effect_id),
++        ("_head", head),
++        ("_execution_commitment", execution_commitment),
++        ("_venue_commitment", venue_commitment),
++        ("_proof_commitment", proof_commitment),
++        ("_owned_quantity_delta", owned_quantity_delta),
++        ("_owned_notional_delta", owned_notional_delta),
++    ):
++        object.__setattr__(result, name, value)
++    object.__setattr__(
++        result,
++        "_seal",
++        _acquisition_venue_projection_seal(
++            position_scope,
++            binding,
++            source_kind,
++            source_effect_id,
++            head,
++            execution_commitment,
++            venue_commitment,
++            proof_commitment,
++            owned_quantity_delta,
++            owned_notional_delta,
++        ),
++    )
++    if not result.is_authentic:
++        raise ValueError("acquisition projection seal is not exact")
++    return result
++
++
++def _project_acquisition_genesis(
++    book: VenueRecoveryBook,
++    binding: DualMandateBinding,
++    execution: ExecutionSnapshot,
++) -> AcquisitionVenueProjection:
++    """Mint only the exact flat, empty-book composite namespace."""
++
++    _require("book", book, VenueRecoveryBook)
++    _require("execution", execution, ExecutionSnapshot)
++    _require("book.scope", book.scope, VenueScope)
++    position_scope = execution.position.scope
++    if type(position_scope) is not PositionScope:
++        raise ValueError("execution does not carry one exact position scope")
++    if (
++        book.scope.broker != position_scope.broker
++        or book.scope.environment != position_scope.environment
++        or book.scope.account != position_scope.account
++    ):
++        raise ValueError("empty book and flat execution scopes must match")
++    if execution != ExecutionSnapshot.flat(position_scope):
++        raise ValueError(
++            "acquisition genesis requires the exact flat execution snapshot"
++        )
++    if book != VenueRecoveryBook.empty(book.scope):
++        raise ValueError("acquisition genesis requires the exact empty venue book")
++    venue_commitment = _protection_book_commitment(book)
++    proof_commitment = _commit_parts(
++        b"execution-core/acquisition-venue-genesis-proof/v1",
++        _canonical_value_commitment(book.scope),
++        venue_commitment,
++        execution.commitment,
++        _canonical_value_commitment(binding),
++    )
++    head = _commit_parts(
++        b"execution-core/acquisition-venue-projection-head/v1",
++        _encode_text(_AcquisitionProjectionSource.GENESIS.value),
++        proof_commitment,
++    )
++    return _new_acquisition_venue_projection(
++        position_scope=position_scope,
++        binding=binding,
++        source_kind=_AcquisitionProjectionSource.GENESIS,
++        source_effect_id=None,
++        head=head,
++        execution_commitment=execution.commitment,
++        venue_commitment=venue_commitment,
++        proof_commitment=proof_commitment,
++        owned_quantity_delta=0,
++        owned_notional_delta=Fraction(0),
++    )
++
++
++def project_acquisition_venue(
++    source: VenueRecoveryTransition | VenueRecoveryBook,
++    binding: DualMandateBinding,
++    *,
++    execution: ExecutionSnapshot | None = None,
++) -> AcquisitionVenueProjection:
++    """Project an exact venue transition or the one safe empty-book genesis."""
++
++    _require("binding", binding, DualMandateBinding)
++    if type(source) is VenueRecoveryBook:
++        if type(execution) is not ExecutionSnapshot:
++            raise TypeError("empty-book genesis requires an exact execution snapshot")
++        return _project_acquisition_genesis(source, binding, execution)
++    if type(source) is not VenueRecoveryTransition:
++        raise TypeError(
++            "source must be an exact VenueRecoveryTransition or VenueRecoveryBook"
++        )
++    if execution is not None:
++        raise TypeError(
++            "transition projection does not accept a separate execution snapshot"
++        )
++    transition = source
++    proof = transition._protection_proof
++    if (
++        type(proof) is not _ProtectionTransitionProof
++        or proof.commitment != transition._protection_proof_commitment
++        or not proof.lineage_is_authentic
++    ):
++        raise ValueError("transition has no authentic bounded acquisition proof")
++    if proof.dual_mandate_binding not in {None, binding}:
++        raise ValueError("transition binding does not match acquisition authority")
++    source_kind = (
++        _AcquisitionProjectionSource.NEUTRAL_TRANSITION
++        if proof.dual_mandate_binding is None
++        else _AcquisitionProjectionSource.BOUND_TRANSITION
++    )
++    owned_quantity_delta = (
++        proof.acquisition_owned_quantity_delta
++        if source_kind is _AcquisitionProjectionSource.BOUND_TRANSITION
++        else 0
++    )
++    owned_notional_delta = (
++        proof.acquisition_owned_notional_delta
++        if source_kind is _AcquisitionProjectionSource.BOUND_TRANSITION
++        else Fraction(0)
++    )
++    head = _commit_parts(
++        b"execution-core/acquisition-venue-projection-head/v1",
++        _encode_text(source_kind.value),
++        proof.cursor.head,
++        proof.commitment,
++        proof.execution_commitment,
++        proof.book_commitment,
++        _canonical_value_commitment(binding),
++    )
++    return _new_acquisition_venue_projection(
++        position_scope=proof.position_scope,
++        binding=binding,
++        source_kind=source_kind,
++        source_effect_id=proof.source_effect_id,
++        head=head,
++        execution_commitment=proof.execution_commitment,
++        venue_commitment=proof.book_commitment,
++        proof_commitment=proof.commitment,
++        owned_quantity_delta=owned_quantity_delta,
++        owned_notional_delta=owned_notional_delta,
++    )
++
++
++def _venue_buy_preemption_projection_seal(
++    parent_scope: VenueEffectScope,
++    binding: DualMandateBinding,
++    execution_commitment: bytes,
++    venue_commitment: bytes,
++    index_commitment: bytes,
++    state: _BuyPreemptionState,
++    head_active_leg_key: VenueLegKey | None,
++) -> bytes:
++    return _commit_parts(
++        b"execution-core/venue-buy-preemption-projection/v1",
++        _canonical_value_commitment(parent_scope),
++        _canonical_value_commitment(binding),
++        execution_commitment,
++        venue_commitment,
++        index_commitment,
++        _encode_text(state.value),
++        _canonical_value_commitment(head_active_leg_key),
++    )
++
++
++def _venue_buy_preemption_projection_is_authentic(
++    projection: VenueBuyPreemptionProjection,
++) -> bool:
++    if type(projection) is not VenueBuyPreemptionProjection:
++        return False
++    if type(projection._parent_scope) is not VenueEffectScope:
++        return False
++    if type(projection._binding) is not DualMandateBinding:
++        return False
++    scope = projection._parent_scope
++    if (
++        scope.kind is not EffectKind.SUBMIT
++        or scope.side is not ExecutionSide.BUY
++        or scope.dual_mandate_binding != projection._binding
++        or scope.mandate_id != projection._binding.protection_mandate_id
++    ):
++        return False
++    if type(projection._state) is not _BuyPreemptionState:
++        return False
++    if (
++        projection._head_active_leg_key is not None
++        and type(projection._head_active_leg_key) is not VenueLegKey
++    ):
++        return False
++    if (
++        projection._state is _BuyPreemptionState.NEXT
++        and projection._head_active_leg_key is None
++    ) or (
++        projection._state is _BuyPreemptionState.COMPLETE
++        and projection._head_active_leg_key is not None
++    ):
++        return False
++    for value in (
++        projection._execution_commitment,
++        projection._venue_commitment,
++        projection._index_commitment,
++        projection._seal,
++    ):
++        if type(value) is not bytes or len(value) != 32:
++            return False
++    return projection._seal == _venue_buy_preemption_projection_seal(
++        scope,
++        projection._binding,
++        projection._execution_commitment,
++        projection._venue_commitment,
++        projection._index_commitment,
++        projection._state,
++        projection._head_active_leg_key,
++    )
++
++
++def _new_venue_buy_preemption_projection(
++    *,
++    parent_scope: VenueEffectScope,
++    binding: DualMandateBinding,
++    execution_commitment: bytes,
++    venue_commitment: bytes,
++    index_commitment: bytes,
++    state: _BuyPreemptionState,
++    head_active_leg_key: VenueLegKey | None,
++) -> VenueBuyPreemptionProjection:
++    result = object.__new__(VenueBuyPreemptionProjection)
++    for name, value in (
++        ("_parent_scope", parent_scope),
++        ("_binding", binding),
++        ("_execution_commitment", execution_commitment),
++        ("_venue_commitment", venue_commitment),
++        ("_index_commitment", index_commitment),
++        ("_state", state),
++        ("_head_active_leg_key", head_active_leg_key),
++    ):
++        object.__setattr__(result, name, value)
++    object.__setattr__(
++        result,
++        "_seal",
++        _venue_buy_preemption_projection_seal(
++            parent_scope,
++            binding,
++            execution_commitment,
++            venue_commitment,
++            index_commitment,
++            state,
++            head_active_leg_key,
++        ),
++    )
++    if not result.is_authentic:
++        raise ValueError("venue buy preemption projection is not exact")
++    return result
++
++
++def project_next_buy_preemption(
++    book: VenueRecoveryBook,
++    execution: ExecutionSnapshot,
++    effect_id: EffectId,
++    binding: DualMandateBinding,
++) -> VenueBuyPreemptionProjection:
++    """Project at most one exact M1E BUY leg without materializing a history."""
++
++    _require("book", book, VenueRecoveryBook)
++    _require("execution", execution, ExecutionSnapshot)
++    _require("effect_id", effect_id, EffectId)
++    _require("binding", binding, DualMandateBinding)
++    parent = book._current_effect(effect_id)
++    if parent is None or not _is_m1e_buy_parent(parent):
++        raise ValueError("preemption parent must be one sealed M1E BUY effect")
++    if (
++        parent.scope.dual_mandate_binding != binding
++        or parent.scope.mandate_id != binding.protection_mandate_id
++    ):
++        raise ValueError("preemption parent binding does not match")
++    index = book._buy_preemption_index_by_effect.get(_effect_index_key(effect_id))
++    if index is None or index.parent_effect_id != effect_id:
++        raise ValueError("preemption parent has no exact active-leg index")
++    view = _venue_authority_view(
++        book,
++        execution,
++        parent.scope.position_scope,
++        effect_id,
++    )
++    state = _BuyPreemptionState.WAITING
++    head = index.head_active_leg_key
++    if (
++        index.active_leg_count == 0
++        and head is None
++        and parent.acceptance_set_state is AcceptanceSetState.CLOSED
++        and not book._has_effect_reconciliation(effect_id)
++        and view.execution_binding_matches
++        and view.account_reconciliation_clear
++    ):
++        state = _BuyPreemptionState.COMPLETE
++    elif (
++        head is not None
++        and view.execution_binding_matches
++        and view.account_reconciliation_clear
++        and parent.state is BrokerEffectState.ACKNOWLEDGED
++        and parent.acceptance_set_state is AcceptanceSetState.OPEN
++        and not book._has_effect_reconciliation(effect_id)
++    ):
++        owner = book._owner_by_leg.get(_leg_index_key(head))
++        current = book._leg_current_by_leg.get(_leg_index_key(head))
++        if (
++            owner is not None
++            and owner.effect_id == effect_id
++            and current is not None
++            and current.attempt is not None
++            and current.attempt.status
++            in {VenueAttemptState.WORKING, VenueAttemptState.PARTIALLY_FILLED}
++            and current.attempt.pending_operation is None
++            and book._active_cancel_effect_for_target(head) is None
++        ):
++            state = _BuyPreemptionState.NEXT
++    return _new_venue_buy_preemption_projection(
++        parent_scope=parent.scope,
++        binding=binding,
++        execution_commitment=execution.commitment,
++        venue_commitment=_protection_book_commitment(book),
++        index_commitment=index.commitment,
++        state=state,
++        head_active_leg_key=head if state is _BuyPreemptionState.NEXT else None,
++    )
++
++
++def build_acquisition_cancel_request(
++    projection: VenueBuyPreemptionProjection,
++    input_id: VenueInputId,
++    effect_id: EffectId,
++    request_occurrence_id: RequestOccurrenceId,
++) -> RequestedEffect | None:
++    """Derive one target-bound BUY cancel exclusively from a sealed projection."""
++
++    _require("projection", projection, VenueBuyPreemptionProjection)
++    _require("input_id", input_id, VenueInputId)
++    _require("effect_id", effect_id, EffectId)
++    _require("request_occurrence_id", request_occurrence_id, RequestOccurrenceId)
++    if not projection.is_authentic or not projection.can_cancel:
++        return None
++    head = projection._head_active_leg_key
++    if head is None or effect_id == projection._parent_scope.effect_id:
++        return None
++    parent = projection._parent_scope
++    return RequestedEffect(
++        input_id=input_id,
++        effect_id=effect_id,
++        request_occurrence_id=request_occurrence_id,
++        mandate_id=projection._binding.protection_mandate_id,
++        kind=EffectKind.CANCEL,
++        client_order_id=None,
++        symbol_id=parent.symbol_id,
++        side=parent.side,
++        quantity=parent.quantity,
++        economic_scope=_commit_parts(
++            b"execution-core/acquisition-preemption-cancel/v1",
++            projection._seal,
++            _canonical_value_commitment(head),
++            _canonical_value_commitment(parent.effect_id),
++            _canonical_value_commitment(projection._binding),
++        ),
++        target_leg_key=head,
++        dual_mandate_binding=projection._binding,
++    )
++
++
+ def _extract_protection_transition(
+     transition: VenueRecoveryTransition,
+ ) -> tuple[
+@@ -5587,6 +6434,198 @@ def _set_effect_leg_summary(
+     return retained.replace_existing(key, summary, summary.commitment)
+ 
+ 
++def _set_buy_preemption_index(
++    retained: _PersistentKeyMap[_BuyPreemptionIndex],
++    index: _BuyPreemptionIndex,
++) -> _PersistentKeyMap[_BuyPreemptionIndex]:
++    key = _effect_index_key(index.parent_effect_id)
++    if retained.get(key) is None:
++        return retained.insert_new(key, index, index.commitment)
++    return retained.replace_existing(key, index, index.commitment)
++
++
++def _is_m1e_buy_parent(effect: BrokerEffect) -> bool:
++    """Return whether one current parent owns the sealed M1E BUY FIFO."""
++
++    return bool(
++        type(effect) is BrokerEffect
++        and effect.scope.kind is EffectKind.SUBMIT
++        and effect.scope.side is ExecutionSide.BUY
++        and effect.scope.dual_mandate_binding is not None
++    )
++
++
++def _initialize_buy_preemption_index(
++    retained: _PersistentKeyMap[_BuyPreemptionIndex],
++    effect: BrokerEffect,
++) -> _PersistentKeyMap[_BuyPreemptionIndex]:
++    """Install one empty FIFO only for a newly admitted sealed BUY parent."""
++
++    if not _is_m1e_buy_parent(effect):
++        return retained
++    key = _effect_index_key(effect.effect_id)
++    existing = retained.get(key)
++    if existing is not None:
++        if existing.parent_effect_id != effect.effect_id:
++            raise ValueError("buy preemption index parent identity differs")
++        return retained
++    index = _BuyPreemptionIndex(
++        parent_effect_id=effect.effect_id,
++        active_leg_count=0,
++        head_active_leg_key=None,
++        tail_active_leg_key=None,
++        links_by_leg=_PersistentKeyMap.empty(),
++    )
++    return retained.insert_new(key, index, index.commitment)
++
++
++def _append_buy_preemption_leg(
++    retained: _PersistentKeyMap[_BuyPreemptionIndex],
++    owner: VenueIdentityOwner,
++) -> _PersistentKeyMap[_BuyPreemptionIndex]:
++    """Append one newly discovered active leg through direct FIFO links only."""
++
++    index = retained.get(_effect_index_key(owner.effect_id))
++    if index is None:
++        return retained
++    if index.parent_effect_id != owner.effect_id:
++        raise ValueError("buy preemption index parent identity differs")
++    leg_key = _leg_index_key(owner.leg_key)
++    if index.links_by_leg.get(leg_key) is not None:
++        raise ValueError("buy preemption index already retains the discovered leg")
++    links = index.links_by_leg
++    previous = index.tail_active_leg_key
++    if previous is not None:
++        previous_key = _leg_index_key(previous)
++        previous_link = links.get(previous_key)
++        if (
++            previous_link is None
++            or not previous_link.active
++            or previous_link.next_active_leg_key is not None
++        ):
++            raise ValueError("buy preemption FIFO tail is not exact")
++        next_previous = replace(previous_link, next_active_leg_key=owner.leg_key)
++        links = links.replace_existing(
++            previous_key,
++            next_previous,
++            next_previous.commitment,
++        )
++    next_link = _BuyPreemptionLink(
++        active=True,
++        previous_active_leg_key=previous,
++        next_active_leg_key=None,
++    )
++    links = links.insert_new(leg_key, next_link, next_link.commitment)
++    next_index = replace(
++        index,
++        active_leg_count=index.active_leg_count + 1,
++        head_active_leg_key=(
++            owner.leg_key
++            if index.head_active_leg_key is None
++            else index.head_active_leg_key
++        ),
++        tail_active_leg_key=owner.leg_key,
++        links_by_leg=links,
++    )
++    return _set_buy_preemption_index(retained, next_index)
++
++
++def _deactivate_buy_preemption_leg(
++    retained: _PersistentKeyMap[_BuyPreemptionIndex],
++    owner: VenueIdentityOwner,
++) -> _PersistentKeyMap[_BuyPreemptionIndex]:
++    """Unlink one terminal leg with at most two direct neighbor updates."""
++
++    index = retained.get(_effect_index_key(owner.effect_id))
++    if index is None:
++        return retained
++    leg_key = _leg_index_key(owner.leg_key)
++    link = index.links_by_leg.get(leg_key)
++    if link is None:
++        raise ValueError("buy preemption index omits an active owned leg")
++    if not link.active:
++        return retained
++    links = index.links_by_leg
++    previous = link.previous_active_leg_key
++    next_leg = link.next_active_leg_key
++    if previous is not None:
++        previous_key = _leg_index_key(previous)
++        previous_link = links.get(previous_key)
++        if (
++            previous_link is None
++            or not previous_link.active
++            or previous_link.next_active_leg_key != owner.leg_key
++        ):
++            raise ValueError("buy preemption FIFO previous link is not exact")
++        next_previous = replace(previous_link, next_active_leg_key=next_leg)
++        links = links.replace_existing(
++            previous_key,
++            next_previous,
++            next_previous.commitment,
++        )
++    if next_leg is not None:
++        next_key = _leg_index_key(next_leg)
++        next_link = links.get(next_key)
++        if (
++            next_link is None
++            or not next_link.active
++            or next_link.previous_active_leg_key != owner.leg_key
++        ):
++            raise ValueError("buy preemption FIFO next link is not exact")
++        next_next = replace(next_link, previous_active_leg_key=previous)
++        links = links.replace_existing(next_key, next_next, next_next.commitment)
++    inactive = _BuyPreemptionLink(
++        active=False,
++        previous_active_leg_key=None,
++        next_active_leg_key=None,
++    )
++    links = links.replace_existing(leg_key, inactive, inactive.commitment)
++    next_count = index.active_leg_count - 1
++    if next_count < 0:
++        raise ValueError("buy preemption active leg count cannot become negative")
++    next_index = replace(
++        index,
++        active_leg_count=next_count,
++        head_active_leg_key=(
++            next_leg
++            if index.head_active_leg_key == owner.leg_key
++            else index.head_active_leg_key
++        ),
++        tail_active_leg_key=(
++            previous
++            if index.tail_active_leg_key == owner.leg_key
++            else index.tail_active_leg_key
++        ),
++        links_by_leg=links,
++    )
++    return _set_buy_preemption_index(retained, next_index)
++
++
++def _rebuild_buy_preemption_indexes(
++    book: VenueRecoveryBook,
++) -> _PersistentKeyMap[_BuyPreemptionIndex]:
++    """Slowly rederive the sealed M1E FIFO indexes for validation or hydration."""
++
++    if type(book) is not VenueRecoveryBook:
++        raise TypeError("buy preemption index rebuild requires VenueRecoveryBook")
++    indexes: _PersistentKeyMap[_BuyPreemptionIndex] = _PersistentKeyMap.empty()
++    for index in range(book._effect_order.length):
++        effect_id = book._effect_order.get(index)
++        effect = book._current_effect(effect_id)
++        if effect is None:
++            raise ValueError("buy preemption index effect order is incomplete")
++        indexes = _initialize_buy_preemption_index(indexes, effect)
++    for index in range(book._owner_order.length):
++        leg_key = book._owner_order.get(index)
++        owner = book._owner_by_leg.get(_leg_index_key(leg_key))
++        current = book._leg_current_by_leg.get(_leg_index_key(leg_key))
++        if owner is None or current is None:
++            raise ValueError("buy preemption index owner order is incomplete")
++        if current.attempt is not None:
++            indexes = _append_buy_preemption_leg(indexes, owner)
++    return indexes
++
++
+ def _attempt_authority_membership(
+     attempt: VenueAttempt,
+ ) -> tuple[tuple[VenueLegKey, ...], tuple[VenueLegKey, ...]]:
+@@ -6966,6 +8005,11 @@ def _audit_hydrate_book(
+     object.__setattr__(result, "_owner_by_leg", owner_by_leg)
+     object.__setattr__(result, "_leg_current_by_leg", leg_current_by_leg)
+     object.__setattr__(result, "_leg_summary_by_effect", leg_summary_by_effect)
++    object.__setattr__(
++        result,
++        "_buy_preemption_index_by_effect",
++        _PersistentKeyMap.empty(),
++    )
+     object.__setattr__(
+         result,
+         "_cancel_target_reservation_by_leg",
+@@ -7109,6 +8153,11 @@ def _audit_hydrate_book(
+         "_account_unclaimed_requested_effect_ids",
+         account_unclaimed_requested_effect_ids,
+     )
++    object.__setattr__(
++        result,
++        "_buy_preemption_index_by_effect",
++        _rebuild_buy_preemption_indexes(result),
++    )
+     result._validate_full()
+     if not result._execution_reconciliation_cursor_matches(execution):
+         raise ValueError(
+@@ -7653,6 +8702,7 @@ def _effect_scope(book: VenueRecoveryBook, item: RequestedEffect) -> VenueEffect
+         quantity=item.quantity,
+         economic_scope=item.economic_scope,
+         target_leg_key=item.target_leg_key,
++        dual_mandate_binding=item.dual_mandate_binding,
+     )
+ 
+ 
+@@ -7689,6 +8739,7 @@ def _target_is_exact_active(
+         and target.scope.symbol_id == scope.symbol_id
+         and target.scope.side is scope.side
+         and target.scope.quantity == scope.quantity
++        and target.scope.dual_mandate_binding == scope.dual_mandate_binding
+     )
+ 
+ 
+@@ -8754,6 +9805,12 @@ def _apply_venue_input(
+                 account_authority_epoch,
+                 effect_replace,
+             )
++        buy_preemption_index_by_effect = current._buy_preemption_index_by_effect
++        if isinstance(effect_append, BrokerEffect):
++            buy_preemption_index_by_effect = _initialize_buy_preemption_index(
++                buy_preemption_index_by_effect,
++                effect_append,
++            )
+         cancel_target_reservation_by_leg = current._cancel_target_reservation_by_leg
+         if isinstance(effect_append, BrokerEffect):
+             cancel_target_reservation_by_leg = _evolve_cancel_target_reservations(
+@@ -8811,6 +9868,14 @@ def _apply_venue_input(
+                 leg_summary_by_effect,
+                 owner_and_attempt_append,
+             )
++            owner, _ = cast(
++                tuple[VenueIdentityOwner, VenueAttempt],
++                owner_and_attempt_append,
++            )
++            buy_preemption_index_by_effect = _append_buy_preemption_leg(
++                buy_preemption_index_by_effect,
++                owner,
++            )
+         if attempt_replace is not None:
+             leg_current_by_leg, leg_summary_by_effect = _replace_attempt_value(
+                 leg_current_by_leg,
+@@ -8905,6 +9970,11 @@ def _apply_venue_input(
+                 closed_current,
+                 closed_current.commitment,
+             )
++            if current_leg.attempt is not None:
++                buy_preemption_index_by_effect = _deactivate_buy_preemption_leg(
++                    buy_preemption_index_by_effect,
++                    owner,
++                )
+ 
+         if type(binding_upserts) is not tuple or len(binding_upserts) > 2:
+             raise TypeError("binding upserts must be a bounded tuple")
+@@ -8995,6 +10065,11 @@ def _apply_venue_input(
+             "_leg_summary_by_effect",
+             leg_summary_by_effect,
+         )
++        object.__setattr__(
++            result,
++            "_buy_preemption_index_by_effect",
++            buy_preemption_index_by_effect,
++        )
+         object.__setattr__(result, "_binding_order", binding_order)
+         object.__setattr__(result, "_binding_by_scope", binding_by_scope)
+         object.__setattr__(
+@@ -9308,6 +10383,24 @@ def _apply_venue_input(
+         )
+         command_commitment = _protection_command_commitment(item)
+         command_mandate_id = _protection_mandate_id(book, item)
++        dual_mandate_binding = _transition_dual_mandate_binding(book, item)
++        source_effect_id = _transition_effect_id(book, item)
++        (
++            acquisition_owned_quantity_delta,
++            acquisition_owned_notional_delta,
++        ) = _bound_acquisition_economic_deltas(
++            book,
++            prior_execution,
++            resulting_execution,
++            item,
++            disposition,
++            source_effect_id,
++        )
++        if (
++            acquisition_owned_quantity_delta != 0
++            and acquisition_owned_quantity_delta != derived_delta
++        ):
++            raise ValueError("bound acquisition quantity disagrees with transition")
+         mandate_id = (
+             predecessor_cursor.mandate_id
+             if predecessor_cursor.mandate_id is not None
+@@ -9371,6 +10464,9 @@ def _apply_venue_input(
+                 command_commitment,
+                 disposition,
+                 derived_delta,
++                acquisition_owned_quantity_delta,
++                acquisition_owned_notional_delta,
++                dual_mandate_binding,
+             )
+             if advance_cursor
+             else predecessor_cursor
+@@ -9398,6 +10494,10 @@ def _apply_venue_input(
+             command_commitment=command_commitment,
+             disposition=disposition,
+             quantity_delta=derived_delta,
++            acquisition_owned_quantity_delta=acquisition_owned_quantity_delta,
++            acquisition_owned_notional_delta=acquisition_owned_notional_delta,
++            dual_mandate_binding=dual_mandate_binding,
++            source_effect_id=source_effect_id,
+         )
+         if advance_cursor:
+             resulting_book = _with_protection_cursor(
+@@ -10123,6 +11223,7 @@ def _authority_symbol_flatten_ready(
+ 
+ __all__ = [
+     "AcceptanceSetState",
++    "AcquisitionVenueProjection",
+     "BrokerEffectState",
+     "CatchUpExecutionRegistry",
+     "ClientIdentityBinding",
+@@ -10134,6 +11235,7 @@ __all__ = [
+     "RecordTransportOutcome",
+     "RecoverClaimedEffect",
+     "VenueAttemptState",
++    "VenueBuyPreemptionProjection",
+     "VenueClosureKind",
+     "VenueEffectScope",
+     "VenueExecutionCheckpoint",
+@@ -10144,4 +11246,7 @@ __all__ = [
+     "VenueIntegrity",
+     "VenueTerminalClosure",
+     "apply_venue_recovery_input",
++    "build_acquisition_cancel_request",
++    "project_acquisition_venue",
++    "project_next_buy_preemption",
+ ]
+diff --git a/tests/execution_core/test_authority.py b/tests/execution_core/test_authority.py
+index 2881533..84ef9f1 100644
+--- a/tests/execution_core/test_authority.py
++++ b/tests/execution_core/test_authority.py
+@@ -10,6 +10,7 @@ from __future__ import annotations
+ from copy import copy
+ from dataclasses import dataclass, fields, is_dataclass, replace
+ from decimal import Decimal
++from fractions import Fraction
+ import importlib
+ from types import ModuleType
+ 
+@@ -26,6 +27,7 @@ from app.execution_core.fills import (
+ )
+ from app.execution_core.identity import (
+     AccountId,
++    AcquisitionMandateId,
+     ActorId,
+     ApplicationGenerationId,
+     BrokerId,
+@@ -37,9 +39,12 @@ from app.execution_core.identity import (
+     EvidenceReference,
+     ExecutionFactKey,
+     MandateId,
++    MarketDataSourceId,
++    MarketStreamGenerationId,
+     OrderId,
+     RequestOccurrenceId,
+     RootFillId,
++    SessionId,
+     SourceEventId,
+     SymbolId,
+     VenueInputId,
+@@ -51,6 +56,14 @@ from app.execution_core.position import (
+     _bind_execution_reconciliation_cursor,
+     apply_broker_execution_fact,
+ )
++from app.execution_core.protection import (
++    EvidencePolicy,
++    ExecutionGuard,
++    MarketKind,
++    MarketOccurrence,
++    MarketSequenceMode,
++    ProtectionMandate,
++)
+ from app.execution_core.recovery import RecordBrokerFillEvidence
+ from app.execution_core.values import (
+     PriceScale,
+@@ -436,14 +449,412 @@ def _create_effect(
+     return _authority_apply_twice(module, state, execution, command)
+ 
+ 
++def _m1e_buy_command(module: ModuleType, *, label: str) -> tuple[object, object]:
++    """Build one sealed M1E entry command without mutating authority state."""
++
++    acquisition = importlib.import_module("app.execution_core.acquisition")
++    input_type, create_type = _required(
++        module,
++        "AuthorityInputId",
++        "CreateAcquisitionEffect",
++    )
++    initial = _m1e_genesis_transition(label=f"{label}-sealed")
++    authorization = acquisition.authorize_acquisition_effect(
++        initial.currentness,
++        acquisition.AcquisitionEffectTerms(
++            effect_id=EffectId(f"{label}-effect"),
++            request_occurrence_id=RequestOccurrenceId(f"{label}-occurrence"),
++            client_order_id=ClientOrderId(f"{label}-client"),
++            quantity=Quantity(1),
++            limit_price=PRICE,
++            order_type=acquisition.AcquisitionOrderType.LIMIT,
++            evaluation_time=50,
++        ),
++    )
++    return (
++        initial,
++        create_type(  # type: ignore[operator]
++            input_id=input_type(f"{label}-create-input"),
++            session_id=SessionId("session-1"),
++            authorization=authorization,
++        ),
++    )
++
++
+ def _create_buy(module: ModuleType, state: object, label: str = "buy") -> object:
+-    return _create_effect(
++    """Create one entry only through the sealed M1E route used by current authority."""
++
++    acquisition = importlib.import_module("app.execution_core.acquisition")
++    disposition_type, *_ = _required(module, "AuthorityDisposition")
++    if state.venue != VenueRecoveryBook.empty(VENUE_SCOPE):
++        pytest.fail("sealed test entry requires a fresh M1E genesis venue state")
++    initial, command = _m1e_buy_command(module, label=label)
++    registered = _register_m1e_currentness(
++        module,
++        state,
++        EXECUTION,
++        label=f"{label}-sealed-genesis",
++        currentness=initial.currentness,
++    )
++    created = _authority_apply_twice(
++        module,
++        registered,
++        EXECUTION,
++        command,
++    )
++    if created.disposition is not disposition_type.APPLIED:
++        return created
++    successor = acquisition.apply_acquisition_integration(
++        initial.state,
++        created.venue_transitions[0],
++    )
++    return replace(
++        created,
++        state=_register_m1e_currentness(
++            module,
++            created.state,
++            EXECUTION,
++            label=f"{label}-sealed-post-create",
++            currentness=successor.currentness,
++        ),
++    )
++
++
++def _m1e_genesis_transition(*, label: str = "m1e") -> object:
++    """Mint one test-only M1E genesis transition through public reducers."""
++
++    acquisition = importlib.import_module("app.execution_core.acquisition")
++    venue = importlib.import_module("app.execution_core.venue")
++    mandate = acquisition.AcquisitionMandate(
++        acquisition_mandate_id=AcquisitionMandateId(f"{label}-acquisition"),
++        position_scope=EXECUTION.position.scope,
++        session_id=SessionId("session-1"),
++        configuration_version="m1e-test-v1",
++        maximum_quantity=Quantity(5),
++        maximum_notional=Fraction(500),
++        maximum_entry_price=PRICE,
++        allowed_order_types=(acquisition.AcquisitionOrderType.LIMIT,),
++        expiry=90,
++        deadline=100,
++        fixed_child_cap=Quantity(2),
++        certified_participation_cap=Fraction(1, 4),
++        cancel_reprice_budget=3,
++        protection_mandate=ProtectionMandate(
++            mandate_id=MandateId(f"{label}-protection"),
++            position_scope=EXECUTION.position.scope,
++            session_id=SessionId("session-1"),
++            configuration_version="m1e-test-v1",
++            loss_fraction=Fraction(3, 40),
++            approved_gain=Fraction(3, 40),
++            percent_trail_fraction=Fraction(2, 25),
++            atr_multiple=Fraction(5, 2),
++            tick=PRICE.tick,
++            normal_guard=ExecutionGuard("normal", b"n" * 32),
++            emergency_guard=ExecutionGuard("emergency", b"e" * 32),
++            evidence_policy=EvidencePolicy(
++                source_id=MarketDataSourceId(f"{label}-source"),
++                stream_generation=MarketStreamGenerationId("11" * 32),
++                sequence_mode=MarketSequenceMode.SEQUENCED,
++                max_age=10,
++                corroboration_window=10,
++                max_step_fraction=Fraction(1, 2),
++            ),
++            maximum_quantity=Quantity(10),
++            maximum_goal_rate=2,
++            deadline=100,
++        ),
++    )
++    projection = venue.project_acquisition_venue(
++        VenueRecoveryBook.empty(VENUE_SCOPE),
++        mandate.binding,
++        execution=EXECUTION,
++    )
++    return acquisition.initialize_acquisition(mandate, projection)
++
++
++def _m1e_currentness(*, label: str = "m1e") -> object:
++    return _m1e_genesis_transition(label=label).currentness
++
++
++def _m1e_market_occurrence(
++    *,
++    label: str,
++    bid: int,
++    ask: int,
++    sequence: int,
++    source_time: int,
++) -> MarketOccurrence:
++    return MarketOccurrence(
++        source_id=MarketDataSourceId(f"{label}-source"),
++        stream_generation=MarketStreamGenerationId("11" * 32),
++        position_scope=EXECUTION.position.scope,
++        session_id=SessionId("session-1"),
++        market_epoch=0,
++        source_sequence=sequence,
++        source_time=source_time,
++        evaluation_time=source_time,
++        kind=MarketKind.BEST_BID,
++        best_bid=ReportedPrice(
++            units=PriceUnits(bid),
++            scale=PRICE_SCALE,
++            tick=PRICE.tick,
++        ),
++        best_ask=ReportedPrice(
++            units=PriceUnits(ask),
++            scale=PRICE_SCALE,
++            tick=PRICE.tick,
++        ),
++        trade_price=None,
++        atr_distance=None,
++        structure_trail=None,
++        halted=False,
++    )
++
++
++def _register_m1e_currentness(
++    module: ModuleType,
++    state: object,
++    execution: ExecutionSnapshot,
++    *,
++    label: str,
++    currentness: object,
++) -> object:
++    disposition_type, input_type, register_type = _required(
++        module,
++        "AuthorityDisposition",
++        "AuthorityInputId",
++        "RegisterAcquisitionCurrentness",
++    )
++    registered = _authority_apply_twice(
++        module,
++        state,
++        execution,
++        register_type(  # type: ignore[operator]
++            input_id=input_type(f"{label}-register-input"),
++            currentness=currentness,
++        ),
++    )
++    assert registered.disposition is disposition_type.APPLIED
++    return registered.state
++
++
++def _m1e_hard_bail_authority_fixture(
++    module: ModuleType,
++    *,
++    label: str,
++) -> tuple[object, ExecutionSnapshot, object]:
++    """Build a real claimed/fill/market chain ending in a waiting hard-bail projection."""
++
++    acquisition = importlib.import_module("app.execution_core.acquisition")
++    initial = _m1e_genesis_transition(label=label)
++    state = _forge_positive_predecessor(module, remaining=8, reserve=1)
++    state = _register_m1e_currentness(
++        module,
++        state,
++        EXECUTION,
++        label=f"{label}-genesis",
++        currentness=initial.currentness,
++    )
++    authorization = acquisition.authorize_acquisition_effect(
++        initial.currentness,
++        acquisition.AcquisitionEffectTerms(
++            effect_id=EffectId(f"{label}-buy-effect"),
++            request_occurrence_id=RequestOccurrenceId(f"{label}-buy-occurrence"),
++            client_order_id=ClientOrderId(f"{label}-buy-client"),
++            quantity=Quantity(2),
++            limit_price=PRICE,
++            order_type=acquisition.AcquisitionOrderType.LIMIT,
++            evaluation_time=50,
++        ),
++    )
++    disposition_type, input_type, create_type, claim_type = _required(
++        module,
++        "AuthorityDisposition",
++        "AuthorityInputId",
++        "CreateAcquisitionEffect",
++        "ClaimEffect",
++    )
++    created = _authority_apply_twice(
++        module,
++        state,
++        EXECUTION,
++        create_type(  # type: ignore[operator]
++            input_id=input_type(f"{label}-buy-create-input"),
++            session_id=SessionId("session-1"),
++            authorization=authorization,
++        ),
++    )
++    assert created.disposition is disposition_type.APPLIED
++    after_create = acquisition.apply_acquisition_integration(
++        initial.state,
++        created.venue_transitions[0],
++    )
++    state = _register_m1e_currentness(
++        module,
++        created.state,
++        EXECUTION,
++        label=f"{label}-after-create",
++        currentness=after_create.currentness,
++    )
++    claimed = _authority_apply_twice(
+         module,
+         state,
+         EXECUTION,
++        claim_type(  # type: ignore[operator]
++            input_id=input_type(f"{label}-buy-claim-input"),
++            effect_id=EffectId(f"{label}-buy-effect"),
++            claim_occurrence_id=ClaimOccurrenceId(f"{label}-buy-claim"),
++        ),
++    )
++    assert claimed.disposition is disposition_type.APPLIED
++    after_claim = acquisition.apply_acquisition_integration(
++        after_create.state,
++        claimed.venue_transitions[0],
++    )
++    state = _register_m1e_currentness(
++        module,
++        claimed.state,
++        EXECUTION,
++        label=f"{label}-after-claim",
++        currentness=after_claim.currentness,
++    )
++    leg_key = VenueLegKey(
++        broker=BROKER,
++        environment=ENVIRONMENT,
++        account=ACCOUNT,
++        order_id=OrderId(f"{label}-buy-order"),
++    )
++    current_acquisition = after_claim
++    for suffix, venue_item in (
++        (
++            "ack",
++            RecordTransportOutcome(
++                input_id=VenueInputId(f"{label}-buy-ack-input"),
++                effect_id=EffectId(f"{label}-buy-effect"),
++                state=BrokerEffectState.ACKNOWLEDGED,
++            ),
++        ),
++        (
++            "discover",
++            DiscoverVenueLeg(
++                input_id=VenueInputId(f"{label}-buy-discover-input"),
++                effect_id=EffectId(f"{label}-buy-effect"),
++                leg_key=leg_key,
++                observation_id=VenueObservationId(f"{label}-buy-discovery"),
++            ),
++        ),
++    ):
++        venue_transition = _public_venue_apply_twice(
++            state.venue,
++            EXECUTION,
++            venue_item,
++        )
++        assert venue_transition.disposition is VenueRecoveryDisposition.APPLIED
++        current_acquisition = acquisition.apply_acquisition_integration(
++            current_acquisition.state,
++            venue_transition,
++        )
++        state = _register_m1e_currentness(
++            module,
++            _forge_venue_predecessor(state, venue_transition.book),
++            venue_transition.execution,
++            label=f"{label}-after-{suffix}",
++            currentness=current_acquisition.currentness,
++        )
++    fill = _public_venue_apply_twice(
++        state.venue,
++        EXECUTION,
++        RecordBrokerFillEvidence(
++            input_id=VenueInputId(f"{label}-buy-fill-input"),
++            effect_id=EffectId(f"{label}-buy-effect"),
++            leg_key=leg_key,
++            prior_cumulative_quantity=Quantity(0),
++            resulting_cumulative_quantity=Quantity(2),
++            fact=BrokerFillFact(
++                key=ExecutionFactKey(
++                    broker=BROKER,
++                    environment=ENVIRONMENT,
++                    account=ACCOUNT,
++                    source_event_id=SourceEventId(f"{label}-buy-fill-source"),
++                ),
++                scope=ExecutionScope(
++                    broker=BROKER,
++                    environment=ENVIRONMENT,
++                    account=ACCOUNT,
++                    order_id=leg_key.order_id,
++                    symbol_id=SYMBOL,
++                    side=ExecutionSide.BUY,
++                ),
++                root_fill_id=RootFillId(f"{label}-buy-fill-root"),
++                quantity=Quantity(2),
++                price=PRICE,
++            ),
++            evidence_digest=b"\x77" * 32,
++        ),
++    )
++    assert fill.disposition is VenueRecoveryDisposition.APPLIED
++    current_acquisition = acquisition.apply_acquisition_integration(
++        current_acquisition.state,
++        fill,
++    )
++    state = _register_m1e_currentness(
++        module,
++        _forge_venue_predecessor(state, fill.book),
++        fill.execution,
++        label=f"{label}-after-fill",
++        currentness=current_acquisition.currentness,
++    )
++    for suffix, bid, ask, sequence in (
++        ("baseline", 100, 101, 1),
++        ("drawdown", 92, 93, 2),
++        ("hard-bail", 91, 92, 3),
++    ):
++        current_acquisition = acquisition.reduce_acquisition_market(
++            current_acquisition.state,
++            fill,
++            _m1e_market_occurrence(
++                label=label,
++                bid=bid,
++                ask=ask,
++                sequence=sequence,
++                source_time=sequence,
++            ),
++        )
++        state = _register_m1e_currentness(
++            module,
++            state,
++            fill.execution,
++            label=f"{label}-market-{suffix}",
++            currentness=current_acquisition.currentness,
++        )
++    assert current_acquisition.exit_projection is not None
++    assert current_acquisition.exit_projection.residual is None
++    return state, fill.execution, current_acquisition
++
++
++def _advance_m1e_authority_from_venue(
++    module: ModuleType,
++    state: object,
++    acquisition_transition: object,
++    venue_transition: object,
++    *,
++    label: str,
++) -> tuple[object, ExecutionSnapshot, object]:
++    """Integrate one real venue transition and register its exact composite successor."""
++
++    acquisition = importlib.import_module("app.execution_core.acquisition")
++    successor = acquisition.apply_acquisition_integration(
++        acquisition_transition.state,
++        venue_transition,
++    )
++    registered = _register_m1e_currentness(
++        module,
++        _forge_venue_predecessor(state, venue_transition.book),
++        venue_transition.execution,
+         label=label,
+-        side=ExecutionSide.BUY,
++        currentness=successor.currentness,
+     )
++    return registered, venue_transition.execution, successor
+ 
+ 
+ def _advanced_same_scope_execution(
+@@ -533,10 +944,11 @@ def _seed_raw_cancellable_venue(
+     leg_key: VenueLegKey = LEG,
+     side: ExecutionSide = ExecutionSide.BUY,
+     quantity: int = 1,
++    book: VenueRecoveryBook | None = None,
+ ) -> tuple[VenueRecoveryBook, EffectId]:
+     effect_id = EffectId(f"{label}-effect")
+     requested = _private_venue_apply(
+-        VenueRecoveryBook.empty(VENUE_SCOPE),
++        VenueRecoveryBook.empty(VENUE_SCOPE) if book is None else book,
+         execution,
+         RequestedEffect(
+             input_id=VenueInputId(f"{label}-request-input"),
+@@ -581,6 +993,47 @@ def _seed_raw_cancellable_venue(
+     return book, effect_id
+ 
+ 
++def _seed_unclaimed_raw_buy(
++    module: ModuleType,
++    *,
++    label: str,
++    execution: ExecutionSnapshot = EXECUTION,
++    mode: str = "ACTIVE",
++    remaining: int = 3,
++    reserve: int = 1,
++) -> object:
++    """Seed one inherited raw request only for non-M1E control-path fixtures."""
++
++    requested = _private_venue_apply(
++        VenueRecoveryBook.empty(VENUE_SCOPE),
++        execution,
++        RequestedEffect(
++            input_id=VenueInputId(f"{label}-request-input"),
++            effect_id=EffectId(f"{label}-effect"),
++            request_occurrence_id=RequestOccurrenceId(f"{label}-occurrence"),
++            mandate_id=MandateId(f"{label}-mandate"),
++            kind=EffectKind.SUBMIT,
++            client_order_id=ClientOrderId(f"{label}-client"),
++            symbol_id=execution.position.scope.symbol_id,
++            side=ExecutionSide.BUY,
++            quantity=Quantity(1),
++            economic_scope=f"{label}-scope".encode(),
++            target_leg_key=None,
++        ),
++    )
++    seeded = _forge_venue_predecessor(
++        _forge_positive_predecessor(module, remaining=10, reserve=1),
++        requested.book,
++    )
++    return _forge_positive_predecessor(
++        module,
++        predecessor=seeded,
++        mode=mode,
++        remaining=remaining,
++        reserve=reserve,
++    )
++
++
+ def _append_closed_local_history(
+     book: VenueRecoveryBook,
+     execution: ExecutionSnapshot,
+@@ -776,47 +1229,17 @@ def _seed_cancellable_buy(
+     reserve: int = 1,
+     label: str = "cancel-target",
+ ) -> object:
+-    claim_type, authority_input_type = _required(
+-        module,
+-        "ClaimEffect",
+-        "AuthorityInputId",
+-    )
+-    initial = _forge_positive_predecessor(module, remaining=10, reserve=1)
+-    created = _create_effect(
+-        module,
+-        initial,
+-        execution,
+-        label=label,
+-        side=ExecutionSide.BUY,
+-    )
+-    claimed = _authority_apply_twice(
+-        module,
+-        created.state,
+-        execution,
+-        claim_type(  # type: ignore[operator]
+-            input_id=authority_input_type(f"{label}-claim-input"),
+-            effect_id=EffectId(f"{label}-effect"),
+-            claim_occurrence_id=ClaimOccurrenceId(f"{label}-claim"),
+-        ),
++    """Seed only inherited, explicitly unbound M1C cancellation state.
++
++    This fixture deliberately bypasses generic authority entry creation because
++    its subject is target-bound cancellation, not M1E acquisition admission.
++    """
++
++    book, _ = _seed_raw_cancellable_venue(label=label, execution=execution)
++    seeded = _forge_venue_predecessor(
++        _forge_positive_predecessor(module, remaining=10, reserve=1),
++        book,
+     )
+-    book = claimed.state.venue
+-    for item in (
+-        RecordTransportOutcome(
+-            input_id=VenueInputId(f"{label}-ack-input"),
+-            effect_id=EffectId(f"{label}-effect"),
+-            state=BrokerEffectState.ACKNOWLEDGED,
+-        ),
+-        DiscoverVenueLeg(
+-            input_id=VenueInputId(f"{label}-discover-input"),
+-            effect_id=EffectId(f"{label}-effect"),
+-            leg_key=LEG,
+-            observation_id=VenueObservationId(f"{label}-discovery"),
+-        ),
+-    ):
+-        transition = _public_venue_apply_twice(book, execution, item)
+-        assert transition.disposition is VenueRecoveryDisposition.APPLIED
+-        book = transition.book
+-    seeded = _forge_venue_predecessor(claimed.state, book)
+     return _forge_positive_predecessor(
+         module,
+         predecessor=seeded,
+@@ -1605,35 +2028,39 @@ def test_request_budget_allows_reserved_capacity_to_be_partly_consumed() -> None
+ 
+ def test_create_and_final_claim_are_one_real_reducer_path() -> None:
+     module = _authority_module()
+-    disposition_type, claim_type, authority_input_type = _required(
++    acquisition = importlib.import_module("app.execution_core.acquisition")
++    disposition_type, reason_type, claim_type, authority_input_type = _required(
+         module,
+         "AuthorityDisposition",
++        "AuthorityReason",
+         "ClaimEffect",
+         "AuthorityInputId",
+     )
+-    initial = _forge_positive_predecessor(module, remaining=3, reserve=1)
+-
+-    command = _create_command(
++    base = _forge_positive_predecessor(module, remaining=3, reserve=1)
++    initial, command = _m1e_buy_command(module, label="buy")
++    registered = _register_m1e_currentness(
+         module,
+-        initial,
+-        label="buy",
+-        side=ExecutionSide.BUY,
++        base,
++        EXECUTION,
++        label="buy-real-path-genesis",
++        currentness=initial.currentness,
+     )
++
+     first_created = module.apply_execution_authority_input(
+-        initial,
++        registered,
+         EXECUTION,
+         command,
+     )
+     second_created = module.apply_execution_authority_input(
+-        initial,
++        registered,
+         EXECUTION,
+         command,
+     )
+     assert second_created == first_created
+     created = first_created
+     assert created.disposition is disposition_type.APPLIED
+-    assert initial.venue == VenueRecoveryBook.empty(VENUE_SCOPE)
+-    assert initial.budget.remaining == 3
++    assert base.venue == VenueRecoveryBook.empty(VENUE_SCOPE)
++    assert base.budget.remaining == 3
+     assert created.created_effect_ids == (EffectId("buy-effect"),)
+     assert created.fresh_claim is None
+     assert len(created.venue_transitions) == 1
+@@ -1653,7 +2080,7 @@ def test_create_and_final_claim_are_one_real_reducer_path() -> None:
+ 
+     changed = replace(
+         command,
+-        request=replace(command.request, quantity=Quantity(2)),
++        input_id=authority_input_type("buy-changed-create-input"),
+     )
+     conflict = _authority_apply_twice(
+         module,
+@@ -1661,126 +2088,686 @@ def test_create_and_final_claim_are_one_real_reducer_path() -> None:
+         EXECUTION,
+         changed,
+     )
+-    assert conflict.disposition is disposition_type.CONFLICT
+-    assert conflict.state == created.state
+-    assert conflict.created_effect_ids == ()
+-    assert conflict.fresh_claim is None
+-    assert conflict.venue_transitions == ()
+-
++    assert conflict.disposition is disposition_type.REFUSED
++    assert conflict.reason is reason_type.ACQUISITION_CURRENTNESS_STALE
++    assert conflict.state == created.state
++    assert conflict.created_effect_ids == ()
++    assert conflict.fresh_claim is None
++    assert conflict.venue_transitions == ()
++
++    successor = acquisition.apply_acquisition_integration(
++        initial.state,
++        created.venue_transitions[0],
++    )
++    refreshed = _register_m1e_currentness(
++        module,
++        created.state,
++        EXECUTION,
++        label="buy-real-path-post-create",
++        currentness=successor.currentness,
++    )
++
++    claim = claim_type(  # type: ignore[operator]
++        input_id=authority_input_type("buy-claim-input"),
++        effect_id=EffectId("buy-effect"),
++        claim_occurrence_id=ClaimOccurrenceId("buy-claim"),
++    )
++    first_claimed = module.apply_execution_authority_input(
++        refreshed,
++        EXECUTION,
++        claim,
++    )
++    second_claimed = module.apply_execution_authority_input(
++        refreshed,
++        EXECUTION,
++        claim,
++    )
++    assert second_claimed == first_claimed
++    claimed = first_claimed
++
++    assert claimed.disposition is disposition_type.APPLIED
++    assert claimed.fresh_claim is not None
++    assert claimed.fresh_claim.effect_id == EffectId("buy-effect")
++    assert len(claimed.venue_transitions) == 1
++    assert claimed.venue_transitions[0].book == claimed.state.venue
++    assert claimed.state.budget.remaining == 2
++
++    replay = _authority_apply_twice(
++        module,
++        claimed.state,
++        EXECUTION,
++        claim,
++    )
++    assert replay.disposition is disposition_type.EXACT_REPLAY
++    assert replay.fresh_claim is None
++    assert replay.state == claimed.state
++    assert replay.venue_transitions == ()
++    assert replay.state.budget.remaining == 2
++
++    changed_claim = replace(
++        claim,
++        claim_occurrence_id=ClaimOccurrenceId("buy-changed-claim"),
++    )
++    changed_claim_conflict = _authority_apply_twice(
++        module,
++        claimed.state,
++        EXECUTION,
++        changed_claim,
++    )
++    assert changed_claim_conflict.disposition is disposition_type.CONFLICT
++    assert changed_claim_conflict.state == claimed.state
++    assert changed_claim_conflict.state.budget.remaining == 2
++    assert changed_claim_conflict.fresh_claim is None
++
++    reused_occurrence = replace(
++        claim,
++        input_id=authority_input_type("buy-reused-claim-input"),
++    )
++    reused_claim_conflict = _authority_apply_twice(
++        module,
++        claimed.state,
++        EXECUTION,
++        reused_occurrence,
++    )
++    assert reused_claim_conflict.disposition is disposition_type.CONFLICT
++    assert reused_claim_conflict.state == claimed.state
++    assert reused_claim_conflict.state.budget.remaining == 2
++    assert reused_claim_conflict.fresh_claim is None
++
++    second_claim_for_effect = replace(
++        claim,
++        input_id=authority_input_type("buy-second-effect-claim-input"),
++        claim_occurrence_id=ClaimOccurrenceId("buy-second-effect-claim"),
++    )
++    effect_conflict = _authority_apply_twice(
++        module,
++        claimed.state,
++        EXECUTION,
++        second_claim_for_effect,
++    )
++    assert effect_conflict.disposition is disposition_type.CONFLICT
++    assert effect_conflict.state == claimed.state
++    assert effect_conflict.state.budget.remaining == 2
++    assert effect_conflict.fresh_claim is None
++
++    acknowledged = _public_venue_apply_twice(
++        claimed.state.venue,
++        EXECUTION,
++        RecordTransportOutcome(
++            input_id=VenueInputId("buy-claim-ack-input"),
++            effect_id=EffectId("buy-effect"),
++            state=BrokerEffectState.ACKNOWLEDGED,
++        ),
++    )
++    blocked_successor = _forge_positive_predecessor(
++        module,
++        predecessor=_forge_venue_predecessor(claimed.state, acknowledged.book),
++        fence="RECONCILIATION_ONLY",
++        kill_engaged=True,
++        remaining=0,
++        reserve=0,
++    )
++    late_duplicate = replace(
++        claim,
++        input_id=authority_input_type("buy-late-duplicate-claim-input"),
++        claim_occurrence_id=ClaimOccurrenceId("buy-late-duplicate-claim"),
++    )
++    late_conflict = _authority_apply_twice(
++        module,
++        blocked_successor,
++        EXECUTION,
++        late_duplicate,
++    )
++    assert late_conflict.disposition is disposition_type.CONFLICT
++    assert late_conflict.state == blocked_successor
++    assert late_conflict.fresh_claim is None
++
++
++def test_generic_exposure_increasing_buy_submit_is_refused() -> None:
++    """FR-03: caller-shaped generic BUY submission never creates entry work."""
++
++    module = _authority_module()
++    (disposition_type,) = _required(module, "AuthorityDisposition")
++    initial = _forge_positive_predecessor(module, remaining=3, reserve=1)
++
++    refused = _create_effect(
++        module,
++        initial,
++        EXECUTION,
++        label="generic-entry",
++        side=ExecutionSide.BUY,
++    )
++
++    assert refused.disposition is disposition_type.REFUSED
++    assert refused.state == initial
++    assert refused.created_effect_ids == ()
++    assert refused.fresh_claim is None
++    assert refused.venue_transitions == ()
++
++
++def test_register_acquisition_currentness_accepts_only_one_exact_genesis_head() -> None:
++    """FR-03 R1: sealed genesis registers once and cannot be replayed as new work."""
++
++    module = _authority_module()
++    disposition_type, reason_type, input_type, register_type = _required(
++        module,
++        "AuthorityDisposition",
++        "AuthorityReason",
++        "AuthorityInputId",
++        "RegisterAcquisitionCurrentness",
++    )
++    currentness = _m1e_currentness()
++    initial = _forge_positive_predecessor(module, remaining=4, reserve=1)
++
++    registered = _authority_apply_twice(
++        module,
++        initial,
++        EXECUTION,
++        register_type(  # type: ignore[operator]
++            input_id=input_type("m1e-register-genesis"),
++            currentness=currentness,
++        ),
++    )
++    assert registered.disposition is disposition_type.APPLIED
++
++    stale = _authority_apply_twice(
++        module,
++        registered.state,
++        EXECUTION,
++        register_type(  # type: ignore[operator]
++            input_id=input_type("m1e-register-repeated-genesis"),
++            currentness=currentness,
++        ),
++    )
++    assert stale.disposition is disposition_type.REFUSED
++    assert stale.reason is reason_type.ACQUISITION_CURRENTNESS_STALE
++
++
++def test_sealed_acquisition_create_is_the_only_positive_buy_route() -> None:
++    """FR-03: a registered opaque authorization creates the bound BUY work item."""
++
++    module = _authority_module()
++    disposition_type, input_type, register_type, create_type = _required(
++        module,
++        "AuthorityDisposition",
++        "AuthorityInputId",
++        "RegisterAcquisitionCurrentness",
++        "CreateAcquisitionEffect",
++    )
++    acquisition = importlib.import_module("app.execution_core.acquisition")
++    currentness = _m1e_currentness(label="sealed-create")
++    authorization = acquisition.authorize_acquisition_effect(
++        currentness,
++        acquisition.AcquisitionEffectTerms(
++            effect_id=EffectId("sealed-create-effect"),
++            request_occurrence_id=RequestOccurrenceId("sealed-create-occurrence"),
++            client_order_id=ClientOrderId("sealed-create-client"),
++            quantity=Quantity(2),
++            limit_price=PRICE,
++            order_type=acquisition.AcquisitionOrderType.LIMIT,
++            evaluation_time=50,
++        ),
++    )
++    initial = _forge_positive_predecessor(module, remaining=4, reserve=1)
++    registered = _authority_apply_twice(
++        module,
++        initial,
++        EXECUTION,
++        register_type(  # type: ignore[operator]
++            input_id=input_type("sealed-create-register"),
++            currentness=currentness,
++        ),
++    )
++    assert registered.disposition is disposition_type.APPLIED
++
++    created = _authority_apply_twice(
++        module,
++        registered.state,
++        EXECUTION,
++        create_type(  # type: ignore[operator]
++            input_id=input_type("sealed-create-input"),
++            session_id=SessionId("session-1"),
++            authorization=authorization,
++        ),
++    )
++    assert created.disposition is disposition_type.APPLIED
++    assert created.created_effect_ids == (EffectId("sealed-create-effect"),)
++    effect = created.state.venue.effect(EffectId("sealed-create-effect"))
++    assert effect is not None
++    assert effect.scope.dual_mandate_binding == authorization.binding
++
++
++def test_registered_m1e_scope_refuses_generic_cancel_and_sell_creation() -> None:
++    """FR-03/05: only sealed M1E routes may cancel a bound BUY or create its exit."""
++
++    module = _authority_module()
++    disposition_type, reason_type, input_type, register_type = _required(
++        module,
++        "AuthorityDisposition",
++        "AuthorityReason",
++        "AuthorityInputId",
++        "RegisterAcquisitionCurrentness",
++    )
++    initial = _forge_positive_predecessor(module, remaining=4, reserve=1)
++    registered = _authority_apply_twice(
++        module,
++        initial,
++        EXECUTION,
++        register_type(  # type: ignore[operator]
++            input_id=input_type("m1e-generic-route-register"),
++            currentness=_m1e_currentness(label="m1e-generic-route"),
++        ),
++    )
++    assert registered.disposition is disposition_type.APPLIED
++
++    generic_cancel = _create_effect(
++        module,
++        registered.state,
++        EXECUTION,
++        label="m1e-generic-route-cancel",
++        side=ExecutionSide.BUY,
++        kind=EffectKind.CANCEL,
++        target_leg_key=LEG,
++    )
++    assert generic_cancel.disposition is disposition_type.REFUSED
++    assert generic_cancel.reason is reason_type.ACQUISITION_AUTHORIZATION_REQUIRED
++
++    generic_sell = _create_effect(
++        module,
++        registered.state,
++        EXECUTION,
++        label="m1e-generic-route-sell",
++        side=ExecutionSide.SELL,
++    )
++    assert generic_sell.disposition is disposition_type.REFUSED
++    assert generic_sell.reason is reason_type.ACQUISITION_AUTHORIZATION_REQUIRED
++
++
++def test_preemption_commands_require_the_opaque_exit_capability_exactly() -> None:
++    """FR-05: a copied boolean, goal, or placeholder cannot construct authority input."""
++
++    module = _authority_module()
++    input_type, session_type, begin_type, create_exit_type = _required(
++        module,
++        "AuthorityInputId",
++        "SessionId",
++        "BeginProtectionPreemption",
++        "CreateProtectionExitEffect",
++    )
++    with pytest.raises(TypeError):
++        begin_type(input_type("opaque-exit-begin"), True)  # type: ignore[operator]
++    with pytest.raises(TypeError):
++        create_exit_type(  # type: ignore[operator]
++            input_id=input_type("opaque-exit-create"),
++            session_id=session_type("session-1"),
++            exit_projection=object(),
++            effect_id=EffectId("opaque-exit-effect"),
++            request_occurrence_id=RequestOccurrenceId("opaque-exit-occurrence"),
++            client_order_id=ClientOrderId("opaque-exit-client"),
++        )
++    with pytest.raises(TypeError):
++        type("DerivedBeginProtectionPreemption", (begin_type,), {})  # type: ignore[arg-type]
++    with pytest.raises(TypeError):
++        type("DerivedCreateProtectionExitEffect", (create_exit_type,), {})  # type: ignore[arg-type]
++
++
++def test_hard_bail_preemption_latches_and_emits_only_one_current_buy_cancel() -> None:
++    """FR-05: an opaque waiting exit can latch and cancel one leg, never create a SELL."""
++
++    module = _authority_module()
++    (
++        disposition_type,
++        reason_type,
++        input_type,
++        begin_type,
++        create_exit_type,
++    ) = _required(
++        module,
++        "AuthorityDisposition",
++        "AuthorityReason",
++        "AuthorityInputId",
++        "BeginProtectionPreemption",
++        "CreateProtectionExitEffect",
++    )
++    state, execution, hard_bail = _m1e_hard_bail_authority_fixture(
++        module,
++        label="m1e-preempt",
++    )
++    exit_projection = hard_bail.exit_projection
++    assert exit_projection is not None
++    begin = _authority_apply_twice(
++        module,
++        state,
++        execution,
++        begin_type(  # type: ignore[operator]
++            input_id=input_type("m1e-preempt-begin-input"),
++            exit_projection=exit_projection,
++        ),
++    )
++    assert begin.disposition is disposition_type.APPLIED
++    assert begin.created_effect_ids == (
++        EffectId("authority:m1e-preempt-begin-input:preemption-cancel"),
++    )
++    cancel = begin.state.venue.effect(begin.created_effect_ids[0])
++    assert cancel is not None
++    assert cancel.scope.kind is EffectKind.CANCEL
++    assert cancel.scope.side is ExecutionSide.BUY
++    assert cancel.scope.target_leg_key == VenueLegKey(
++        broker=BROKER,
++        environment=ENVIRONMENT,
++        account=ACCOUNT,
++        order_id=OrderId("m1e-preempt-buy-order"),
++    )
++
++    sell = _authority_apply_twice(
++        module,
++        begin.state,
++        execution,
++        create_exit_type(  # type: ignore[operator]
++            input_id=input_type("m1e-preempt-early-sell-input"),
++            session_id=SessionId("session-1"),
++            exit_projection=exit_projection,
++            effect_id=EffectId("m1e-preempt-early-sell-effect"),
++            request_occurrence_id=RequestOccurrenceId(
++                "m1e-preempt-early-sell-occurrence"
++            ),
++            client_order_id=ClientOrderId("m1e-preempt-early-sell-client"),
++        ),
++    )
++    assert sell.disposition is disposition_type.REFUSED
++    assert sell.reason is reason_type.VENUE_UNCERTAIN
++
++
++def test_protection_sell_releases_only_after_the_buy_parent_is_exactly_closed() -> None:
++    """FR-05: acknowledgement/terminality alone do not release the protection SELL."""
++
++    module = _authority_module()
++    disposition_type, input_type, begin_type, claim_type, create_exit_type = _required(
++        module,
++        "AuthorityDisposition",
++        "AuthorityInputId",
++        "BeginProtectionPreemption",
++        "ClaimEffect",
++        "CreateProtectionExitEffect",
++    )
++    label = "m1e-release"
++    state, execution, current = _m1e_hard_bail_authority_fixture(
++        module,
++        label=label,
++    )
++    first_exit = current.exit_projection
++    assert first_exit is not None
++    begun = _authority_apply_twice(
++        module,
++        state,
++        execution,
++        begin_type(  # type: ignore[operator]
++            input_id=input_type(f"{label}-begin-input"),
++            exit_projection=first_exit,
++        ),
++    )
++    assert begun.disposition is disposition_type.APPLIED
++    cancel_effect_id = begun.created_effect_ids[0]
++    state, execution, current = _advance_m1e_authority_from_venue(
++        module,
++        begun.state,
++        current,
++        begun.venue_transitions[-1],
++        label=f"{label}-after-cancel-create",
++    )
++    cancel_claimed = _authority_apply_twice(
++        module,
++        state,
++        execution,
++        claim_type(  # type: ignore[operator]
++            input_id=input_type(f"{label}-cancel-claim-input"),
++            effect_id=cancel_effect_id,
++            claim_occurrence_id=ClaimOccurrenceId(f"{label}-cancel-claim"),
++        ),
++    )
++    assert cancel_claimed.disposition is disposition_type.APPLIED
++    state, execution, current = _advance_m1e_authority_from_venue(
++        module,
++        cancel_claimed.state,
++        current,
++        cancel_claimed.venue_transitions[0],
++        label=f"{label}-after-cancel-claim",
++    )
++    cancel_acknowledged = _public_venue_apply_twice(
++        state.venue,
++        execution,
++        RecordTransportOutcome(
++            input_id=VenueInputId(f"{label}-cancel-ack-input"),
++            effect_id=cancel_effect_id,
++            state=BrokerEffectState.ACKNOWLEDGED,
++        ),
++    )
++    assert cancel_acknowledged.disposition is VenueRecoveryDisposition.APPLIED
++    state, execution, current = _advance_m1e_authority_from_venue(
++        module,
++        state,
++        current,
++        cancel_acknowledged,
++        label=f"{label}-after-cancel-ack",
++    )
++    cancel = state.venue.effect(cancel_effect_id)
++    assert cancel is not None
++    cancel_closed = _private_venue_apply(
++        state.venue,
++        execution,
++        CloseAcceptanceSet(
++            input_id=VenueInputId(f"{label}-cancel-close-input"),
++            effect_id=cancel_effect_id,
++            proof=AcceptanceProof(
++                kind=AcceptanceProofKind.CONTRACT_COMPLETE_RESPONSE,
++                effect_scope=cancel.scope,
++                claim_occurrence_id=ClaimOccurrenceId(f"{label}-cancel-claim"),
++                evidence_reference=EvidenceReference(f"{label}-cancel-close-evidence"),
++                evidence_digest=b"\x79" * 32,
++            ),
++        ),
++    )
++    assert cancel_closed.disposition is VenueRecoveryDisposition.APPLIED
++    state, execution, current = _advance_m1e_authority_from_venue(
++        module,
++        state,
++        current,
++        cancel_closed,
++        label=f"{label}-after-cancel-close",
++    )
++    parent_leg = VenueLegKey(
++        broker=BROKER,
++        environment=ENVIRONMENT,
++        account=ACCOUNT,
++        order_id=OrderId(f"{label}-buy-order"),
++    )
++    terminal = _public_venue_apply_twice(
++        state.venue,
++        execution,
++        ObserveVenueStatus(
++            input_id=VenueInputId(f"{label}-parent-terminal-input"),
++            leg_key=parent_leg,
++            status=VenueAttemptState.CANCELED,
++            observation_id=VenueObservationId(f"{label}-parent-terminal-observation"),
++            cumulative_quantity=Quantity(2),
++            closure_id=ClosureId(f"{label}-parent-closure"),
++            evidence_reference=EvidenceReference(f"{label}-parent-evidence"),
++        ),
++    )
++    assert terminal.disposition is VenueRecoveryDisposition.APPLIED
++    state, execution, current = _advance_m1e_authority_from_venue(
++        module,
++        state,
++        current,
++        terminal,
++        label=f"{label}-after-parent-terminal",
++    )
++    still_waiting = current.exit_projection
++    assert still_waiting is not None
++    blocked = _authority_apply_twice(
++        module,
++        state,
++        execution,
++        create_exit_type(  # type: ignore[operator]
++            input_id=input_type(f"{label}-terminal-sell-input"),
++            session_id=SessionId("session-1"),
++            exit_projection=still_waiting,
++            effect_id=EffectId(f"{label}-terminal-sell-effect"),
++            request_occurrence_id=RequestOccurrenceId(
++                f"{label}-terminal-sell-occurrence"
++            ),
++            client_order_id=ClientOrderId(f"{label}-terminal-sell-client"),
++        ),
++    )
++    assert blocked.disposition is disposition_type.REFUSED
++
++    parent = state.venue.effect(EffectId(f"{label}-buy-effect"))
++    assert parent is not None
++    closed = _private_venue_apply(
++        state.venue,
++        execution,
++        CloseAcceptanceSet(
++            input_id=VenueInputId(f"{label}-parent-close-input"),
++            effect_id=EffectId(f"{label}-buy-effect"),
++            proof=AcceptanceProof(
++                kind=AcceptanceProofKind.CONTRACT_COMPLETE_RESPONSE,
++                effect_scope=parent.scope,
++                claim_occurrence_id=ClaimOccurrenceId(f"{label}-buy-claim"),
++                evidence_reference=EvidenceReference(f"{label}-parent-close-evidence"),
++                evidence_digest=b"\x78" * 32,
++            ),
++        ),
++    )
++    assert closed.disposition is VenueRecoveryDisposition.APPLIED
++    state, execution, current = _advance_m1e_authority_from_venue(
++        module,
++        state,
++        current,
++        closed,
++        label=f"{label}-after-parent-close",
++    )
++    ready_exit = current.exit_projection
++    assert ready_exit is not None
++    assert ready_exit.residual == Quantity(2)
++    created = _authority_apply_twice(
++        module,
++        state,
++        execution,
++        create_exit_type(  # type: ignore[operator]
++            input_id=input_type(f"{label}-ready-sell-input"),
++            session_id=SessionId("session-1"),
++            exit_projection=ready_exit,
++            effect_id=EffectId(f"{label}-ready-sell-effect"),
++            request_occurrence_id=RequestOccurrenceId(f"{label}-ready-sell-occurrence"),
++            client_order_id=ClientOrderId(f"{label}-ready-sell-client"),
++        ),
++    )
++    assert created.disposition is disposition_type.APPLIED
++    assert created.created_effect_ids == (EffectId(f"{label}-ready-sell-effect"),)
+     claim = claim_type(  # type: ignore[operator]
+-        input_id=authority_input_type("buy-claim-input"),
+-        effect_id=EffectId("buy-effect"),
+-        claim_occurrence_id=ClaimOccurrenceId("buy-claim"),
++        input_id=input_type(f"{label}-ready-sell-claim-input"),
++        effect_id=created.created_effect_ids[0],
++        claim_occurrence_id=ClaimOccurrenceId(f"{label}-ready-sell-claim"),
+     )
+-    first_claimed = module.apply_execution_authority_input(
++    stale_claim = _authority_apply_twice(
++        module,
+         created.state,
+-        EXECUTION,
++        execution,
+         claim,
+     )
+-    second_claimed = module.apply_execution_authority_input(
++    assert stale_claim.disposition is disposition_type.REFUSED
++
++    state, execution, current = _advance_m1e_authority_from_venue(
++        module,
+         created.state,
+-        EXECUTION,
+-        claim,
++        current,
++        created.venue_transitions[0],
++        label=f"{label}-after-sell-create",
+     )
+-    assert second_claimed == first_claimed
+-    claimed = first_claimed
+-
++    claimed = _authority_apply_twice(module, state, execution, claim)
+     assert claimed.disposition is disposition_type.APPLIED
+-    assert claimed.fresh_claim is not None
+-    assert claimed.fresh_claim.effect_id == EffectId("buy-effect")
+-    assert len(claimed.venue_transitions) == 1
+-    assert claimed.venue_transitions[0].book == claimed.state.venue
+-    assert claimed.state.budget.remaining == 2
+ 
+-    replay = _authority_apply_twice(
+-        module,
+-        claimed.state,
+-        EXECUTION,
+-        claim,
+-    )
+-    assert replay.disposition is disposition_type.EXACT_REPLAY
+-    assert replay.fresh_claim is None
+-    assert replay.state == claimed.state
+-    assert replay.venue_transitions == ()
+-    assert replay.state.budget.remaining == 2
+ 
+-    changed_claim = replace(
+-        claim,
+-        claim_occurrence_id=ClaimOccurrenceId("buy-changed-claim"),
+-    )
+-    changed_claim_conflict = _authority_apply_twice(
+-        module,
+-        claimed.state,
+-        EXECUTION,
+-        changed_claim,
+-    )
+-    assert changed_claim_conflict.disposition is disposition_type.CONFLICT
+-    assert changed_claim_conflict.state == claimed.state
+-    assert changed_claim_conflict.state.budget.remaining == 2
+-    assert changed_claim_conflict.fresh_claim is None
++def test_sealed_buy_claim_requires_the_registered_post_create_successor() -> None:
++    """FR-03: a create head cannot claim until its venue successor is integrated."""
+ 
+-    reused_occurrence = replace(
+-        claim,
+-        input_id=authority_input_type("buy-reused-claim-input"),
+-    )
+-    reused_claim_conflict = _authority_apply_twice(
++    module = _authority_module()
++    (
++        disposition_type,
++        reason_type,
++        input_type,
++        register_type,
++        create_type,
++        claim_type,
++    ) = _required(
+         module,
+-        claimed.state,
+-        EXECUTION,
+-        reused_occurrence,
++        "AuthorityDisposition",
++        "AuthorityReason",
++        "AuthorityInputId",
++        "RegisterAcquisitionCurrentness",
++        "CreateAcquisitionEffect",
++        "ClaimEffect",
+     )
+-    assert reused_claim_conflict.disposition is disposition_type.CONFLICT
+-    assert reused_claim_conflict.state == claimed.state
+-    assert reused_claim_conflict.state.budget.remaining == 2
+-    assert reused_claim_conflict.fresh_claim is None
+-
+-    second_claim_for_effect = replace(
+-        claim,
+-        input_id=authority_input_type("buy-second-effect-claim-input"),
+-        claim_occurrence_id=ClaimOccurrenceId("buy-second-effect-claim"),
++    acquisition = importlib.import_module("app.execution_core.acquisition")
++    initial_transition = _m1e_genesis_transition(label="sealed-claim")
++    currentness = initial_transition.currentness
++    authorization = acquisition.authorize_acquisition_effect(
++        currentness,
++        acquisition.AcquisitionEffectTerms(
++            effect_id=EffectId("sealed-claim-effect"),
++            request_occurrence_id=RequestOccurrenceId("sealed-claim-occurrence"),
++            client_order_id=ClientOrderId("sealed-claim-client"),
++            quantity=Quantity(2),
++            limit_price=PRICE,
++            order_type=acquisition.AcquisitionOrderType.LIMIT,
++            evaluation_time=50,
++        ),
+     )
+-    effect_conflict = _authority_apply_twice(
++    state = _forge_positive_predecessor(module, remaining=4, reserve=1)
++    registered = _authority_apply_twice(
+         module,
+-        claimed.state,
++        state,
+         EXECUTION,
+-        second_claim_for_effect,
++        register_type(input_type("sealed-claim-register"), currentness),  # type: ignore[operator]
+     )
+-    assert effect_conflict.disposition is disposition_type.CONFLICT
+-    assert effect_conflict.state == claimed.state
+-    assert effect_conflict.state.budget.remaining == 2
+-    assert effect_conflict.fresh_claim is None
+-
+-    acknowledged = _public_venue_apply_twice(
+-        claimed.state.venue,
++    created = _authority_apply_twice(
++        module,
++        registered.state,
+         EXECUTION,
+-        RecordTransportOutcome(
+-            input_id=VenueInputId("buy-claim-ack-input"),
+-            effect_id=EffectId("buy-effect"),
+-            state=BrokerEffectState.ACKNOWLEDGED,
++        create_type(  # type: ignore[operator]
++            input_id=input_type("sealed-claim-create"),
++            session_id=SessionId("session-1"),
++            authorization=authorization,
+         ),
+     )
+-    blocked_successor = _forge_positive_predecessor(
+-        module,
+-        predecessor=_forge_venue_predecessor(claimed.state, acknowledged.book),
+-        fence="RECONCILIATION_ONLY",
+-        kill_engaged=True,
+-        remaining=0,
+-        reserve=0,
++    assert created.disposition is disposition_type.APPLIED
++    claim = claim_type(  # type: ignore[operator]
++        input_id=input_type("sealed-claim-dispatch"),
++        effect_id=EffectId("sealed-claim-effect"),
++        claim_occurrence_id=ClaimOccurrenceId("sealed-claim-occurrence-id"),
+     )
+-    late_duplicate = replace(
+-        claim,
+-        input_id=authority_input_type("buy-late-duplicate-claim-input"),
+-        claim_occurrence_id=ClaimOccurrenceId("buy-late-duplicate-claim"),
++
++    stale = _authority_apply_twice(module, created.state, EXECUTION, claim)
++    assert stale.disposition is disposition_type.REFUSED
++    assert stale.reason is reason_type.ACQUISITION_CURRENTNESS_STALE
++
++    integrated = acquisition.apply_acquisition_integration(
++        initial_transition.state,
++        created.venue_transitions[0],
+     )
+-    late_conflict = _authority_apply_twice(
++    refreshed = _authority_apply_twice(
+         module,
+-        blocked_successor,
++        created.state,
+         EXECUTION,
+-        late_duplicate,
++        register_type(  # type: ignore[operator]
++            input_id=input_type("sealed-claim-register-successor"),
++            currentness=integrated.currentness,
++        ),
+     )
+-    assert late_conflict.disposition is disposition_type.CONFLICT
+-    assert late_conflict.state == blocked_successor
+-    assert late_conflict.fresh_claim is None
++    assert refreshed.disposition is disposition_type.APPLIED
++
++    claimed = _authority_apply_twice(module, refreshed.state, EXECUTION, claim)
++    assert claimed.disposition is disposition_type.APPLIED
+ 
+ 
+ @pytest.mark.parametrize("reused_identity", ["request_occurrence", "client_order"])
+@@ -1839,14 +2826,11 @@ def test_permanent_effect_identity_conflicts_precede_mutable_gate_drift(
+     assert conflict.fresh_claim is None
+ 
+ 
+-def test_first_authority_effect_for_a_later_account_symbol_is_admitted() -> None:
++def test_first_inherited_cancellation_for_a_later_account_symbol_is_admitted() -> None:
+     module = _authority_module()
+-    disposition_type, authority_input_type, request_type, create_type = _required(
++    (disposition_type,) = _required(
+         module,
+         "AuthorityDisposition",
+-        "AuthorityInputId",
+-        "BrokerEffectRequest",
+-        "CreateBrokerEffect",
+     )
+     initial = _forge_positive_predecessor(module, remaining=5, reserve=1)
+     aapl = _create_buy(module, initial, label="first-account-symbol")
+@@ -1859,35 +2843,39 @@ def test_first_authority_effect_for_a_later_account_symbol_is_admitted() -> None
+             symbol_id=OTHER_SYMBOL,
+         )
+     )
+-    request = request_type(
+-        effect_id=EffectId("later-symbol-effect"),
+-        request_occurrence_id=RequestOccurrenceId("later-symbol-occurrence"),
+-        mandate_id=MandateId("later-symbol-mandate"),
+-        kind=EffectKind.SUBMIT,
+-        client_order_id=ClientOrderId("later-symbol-client"),
++    msft_leg = VenueLegKey(
++        broker=BROKER,
++        environment=ENVIRONMENT,
++        account=ACCOUNT,
++        order_id=OrderId("later-symbol-target-leg"),
++    )
++    book, _ = _seed_raw_cancellable_venue(
++        label="later-symbol-target",
++        execution=msft_execution,
+         symbol_id=OTHER_SYMBOL,
+-        side=ExecutionSide.BUY,
+-        quantity=Quantity(1),
+-        economic_scope=b"later-symbol|MSFT|BUY|1",
+-        target_leg_key=None,
++        leg_key=msft_leg,
++        book=aapl.state.venue,
+     )
+-    command = create_type(
+-        input_id=authority_input_type("later-symbol-create-input"),
+-        session_id=aapl.state.session_id,
+-        request=request,
+-        manual_flatten_id=None,
+-        emergency_grant_id=None,
++    state = _forge_venue_predecessor(aapl.state, book)
++    command = _create_command(
++        module,
++        state,
++        label="later-symbol-cancel",
++        side=ExecutionSide.BUY,
++        kind=EffectKind.CANCEL,
++        target_leg_key=msft_leg,
+     )
++    command = replace(command, request=replace(command.request, symbol_id=OTHER_SYMBOL))
+ 
+     admitted = _authority_apply_twice(
+         module,
+-        aapl.state,
++        state,
+         msft_execution,
+         command,
+     )
+     assert admitted.disposition is disposition_type.APPLIED
+-    assert admitted.created_effect_ids == (EffectId("later-symbol-effect"),)
+-    assert admitted.state.budget == aapl.state.budget
++    assert admitted.created_effect_ids == (EffectId("later-symbol-cancel-effect"),)
++    assert admitted.state.budget == state.budget
+ 
+ 
+ def test_later_account_symbol_still_requires_exact_account_registry() -> None:
+@@ -1895,16 +2883,10 @@ def test_later_account_symbol_still_requires_exact_account_registry() -> None:
+     (
+         disposition_type,
+         reason_type,
+-        authority_input_type,
+-        request_type,
+-        create_type,
+     ) = _required(
+         module,
+         "AuthorityDisposition",
+         "AuthorityReason",
+-        "AuthorityInputId",
+-        "BrokerEffectRequest",
+-        "CreateBrokerEffect",
+     )
+     initial = _forge_positive_predecessor(module, remaining=5, reserve=1)
+     aapl = _create_buy(module, initial, label="registry-source-symbol")
+@@ -1913,30 +2895,35 @@ def test_later_account_symbol_still_requires_exact_account_registry() -> None:
+         label="later-symbol-registry-ahead",
+         symbol_id=OTHER_SYMBOL,
+     )
+-    request = request_type(
+-        effect_id=EffectId("later-symbol-registry-effect"),
+-        request_occurrence_id=RequestOccurrenceId("later-symbol-registry-occurrence"),
+-        mandate_id=MandateId("later-symbol-registry-mandate"),
+-        kind=EffectKind.SUBMIT,
+-        client_order_id=ClientOrderId("later-symbol-registry-client"),
++    msft_execution = ExecutionSnapshot.flat(msft_ahead.position.scope)
++    msft_leg = VenueLegKey(
++        broker=BROKER,
++        environment=ENVIRONMENT,
++        account=ACCOUNT,
++        order_id=OrderId("later-symbol-registry-target-leg"),
++    )
++    book, _ = _seed_raw_cancellable_venue(
++        label="later-symbol-registry-target",
++        execution=msft_execution,
+         symbol_id=OTHER_SYMBOL,
+-        side=ExecutionSide.BUY,
+-        quantity=Quantity(1),
+-        economic_scope=b"later-symbol-registry|MSFT|BUY|1",
+-        target_leg_key=None,
++        leg_key=msft_leg,
++        book=aapl.state.venue,
+     )
+-    command = create_type(
+-        input_id=authority_input_type("later-symbol-registry-create-input"),
+-        session_id=aapl.state.session_id,
+-        request=request,
+-        manual_flatten_id=None,
+-        emergency_grant_id=None,
++    state = _forge_venue_predecessor(aapl.state, book)
++    command = _create_command(
++        module,
++        state,
++        label="later-symbol-registry-cancel",
++        side=ExecutionSide.BUY,
++        kind=EffectKind.CANCEL,
++        target_leg_key=msft_leg,
+     )
++    command = replace(command, request=replace(command.request, symbol_id=OTHER_SYMBOL))
+ 
+-    refused = _authority_apply_twice(module, aapl.state, msft_ahead, command)
++    refused = _authority_apply_twice(module, state, msft_ahead, command)
+     assert refused.disposition is disposition_type.REFUSED
+     assert refused.reason is reason_type.EXECUTION_BINDING_MISMATCH
+-    assert refused.state == aapl.state
++    assert refused.state == state
+ 
+ 
+ def test_normal_claim_succeeds_exactly_above_reserve_and_refuses_at_reserve() -> None:
+@@ -2093,42 +3080,24 @@ def test_final_claim_rechecks_exact_execution_binding_without_debit() -> None:
+     assert refused.fresh_claim is None
+ 
+ 
+-def test_final_claim_rechecks_late_sibling_acceptance_uncertainty() -> None:
++def test_inherited_cancellation_remains_available_after_unrelated_late_sibling_uncertainty() -> (
++    None
++):
+     module = _authority_module()
+-    disposition_type, reason_type, claim_type, authority_input_type = _required(
++    disposition_type, claim_type, authority_input_type = _required(
+         module,
+         "AuthorityDisposition",
+-        "AuthorityReason",
+         "ClaimEffect",
+         "AuthorityInputId",
+     )
+-    initial = _forge_positive_predecessor(module, remaining=6, reserve=1)
+-    prior = _create_buy(module, initial, label="prior")
+-    prior_claim = claim_type(  # type: ignore[operator]
+-        input_id=authority_input_type("prior-claim-input"),
+-        effect_id=EffectId("prior-effect"),
+-        claim_occurrence_id=ClaimOccurrenceId("prior-claim"),
+-    )
+-    claimed = _authority_apply_twice(
++    claimed_state = _seed_cancellable_buy(
+         module,
+-        prior.state,
+-        EXECUTION,
+-        prior_claim,
++        remaining=6,
++        reserve=1,
++        label="prior",
+     )
+-    assert claimed.disposition is disposition_type.APPLIED
+ 
+     venue_steps = (
+-        RecordTransportOutcome(
+-            input_id=VenueInputId("prior-ack-input"),
+-            effect_id=EffectId("prior-effect"),
+-            state=BrokerEffectState.ACKNOWLEDGED,
+-        ),
+-        DiscoverVenueLeg(
+-            input_id=VenueInputId("prior-discover-input"),
+-            effect_id=EffectId("prior-effect"),
+-            leg_key=LEG,
+-            observation_id=VenueObservationId("prior-discovery"),
+-        ),
+         ObserveVenueStatus(
+             input_id=VenueInputId("prior-terminal-input"),
+             leg_key=LEG,
+@@ -2139,7 +3108,7 @@ def test_final_claim_rechecks_late_sibling_acceptance_uncertainty() -> None:
+             evidence_reference=EvidenceReference("prior-terminal-evidence"),
+         ),
+     )
+-    book = claimed.state.venue
++    book = claimed_state.venue
+     execution = EXECUTION
+     for item in venue_steps:
+         transition = _public_venue_apply_twice(book, execution, item)
+@@ -2165,8 +3134,27 @@ def test_final_claim_rechecks_late_sibling_acceptance_uncertainty() -> None:
+     )
+     assert closed.disposition is VenueRecoveryDisposition.APPLIED
+ 
+-    closed_state = _forge_venue_predecessor(claimed.state, closed.book)
+-    target = _create_buy(module, closed_state, label="target")
++    target_leg = VenueLegKey(
++        broker=BROKER,
++        environment=ENVIRONMENT,
++        account=ACCOUNT,
++        order_id=OrderId("authority-late-target-leg"),
++    )
++    target_book, _ = _seed_raw_cancellable_venue(
++        label="target-parent",
++        execution=closed.execution,
++        leg_key=target_leg,
++        book=closed.book,
++    )
++    target = _create_effect(
++        module,
++        _forge_venue_predecessor(claimed_state, target_book),
++        closed.execution,
++        label="target",
++        side=ExecutionSide.BUY,
++        kind=EffectKind.CANCEL,
++        target_leg_key=target_leg,
++    )
+     assert target.disposition is disposition_type.APPLIED
+ 
+     late = _public_venue_apply_twice(
+@@ -2192,20 +3180,20 @@ def test_final_claim_rechecks_late_sibling_acceptance_uncertainty() -> None:
+         claim_occurrence_id=ClaimOccurrenceId("target-with-sibling-claim"),
+     )
+ 
+-    refused = _authority_apply_twice(
++    claimed = _authority_apply_twice(
+         module,
+         uncertain,
+         late.execution,
+         claim,
+     )
+-    assert refused.disposition is disposition_type.REFUSED
+-    assert refused.reason is reason_type.VENUE_UNCERTAIN
+-    assert refused.state == uncertain
+-    assert refused.state.budget.remaining == target.state.budget.remaining
+-    assert refused.fresh_claim is None
++    assert claimed.disposition is disposition_type.APPLIED
++    assert claimed.state.budget.remaining == target.state.budget.remaining - 1
++    assert claimed.fresh_claim is not None
+ 
+ 
+-def test_target_exemption_never_hides_a_safely_local_sibling() -> None:
++def test_m1e_final_claim_rejects_unregistered_book_advance_before_target_exemption() -> (
++    None
++):
+     module = _authority_module()
+     disposition_type, reason_type, claim_type, authority_input_type = _required(
+         module,
+@@ -2250,13 +3238,15 @@ def test_target_exemption_never_hides_a_safely_local_sibling() -> None:
+         claim,
+     )
+     assert refused.disposition is disposition_type.REFUSED
+-    assert refused.reason is reason_type.VENUE_UNCERTAIN
++    assert refused.reason is reason_type.EXECUTION_BINDING_MISMATCH
+     assert refused.state == with_sibling
+     assert refused.state.budget.remaining == 4
+     assert refused.fresh_claim is None
+ 
+ 
+-def test_different_symbol_reconciliation_epoch_blocks_final_claim_lazily() -> None:
++def test_m1e_final_claim_rejects_different_symbol_reconciliation_as_stale_currentness() -> (
++    None
++):
+     module = _authority_module()
+     disposition_type, reason_type, claim_type, authority_input_type = _required(
+         module,
+@@ -2347,7 +3337,7 @@ def test_different_symbol_reconciliation_epoch_blocks_final_claim_lazily() -> No
+         claim,
+     )
+     assert refused.disposition is disposition_type.REFUSED
+-    assert refused.reason is reason_type.ACCOUNT_RECONCILIATION_REQUIRED
++    assert refused.reason is reason_type.EXECUTION_BINDING_MISMATCH
+     assert refused.state == restricted
+     assert refused.state.budget.remaining == 4
+     assert refused.fresh_claim is None
+@@ -2473,10 +3463,18 @@ def test_real_reducer_refuses_buy_when_mode_kill_or_reserve_blocks(
+         reserve=reserve,
+     )
+ 
+-    refused = _create_buy(module, state, label=f"blocked-{label}")
++    initial, command = _m1e_buy_command(module, label=f"blocked-{label}")
++    registered = _register_m1e_currentness(
++        module,
++        state,
++        EXECUTION,
++        label=f"blocked-{label}-genesis",
++        currentness=initial.currentness,
++    )
++    refused = _authority_apply_twice(module, registered, EXECUTION, command)
+     assert refused.disposition is disposition_type.REFUSED
+     assert refused.reason is getattr(reason_type, expected_reason)
+-    assert refused.state == state
++    assert refused.state == registered
+     assert refused.created_effect_ids == ()
+     assert refused.fresh_claim is None
+ 
+@@ -3838,9 +4836,17 @@ def test_reconciliation_only_fence_refuses_mutation_creation_and_final_claim() -
+         remaining=3,
+         reserve=1,
+     )
+-    refused_create = _create_buy(module, mutation_state, label="reconcile-fence")
++    initial, command = _m1e_buy_command(module, label="reconcile-fence")
++    registered = _register_m1e_currentness(
++        module,
++        mutation_state,
++        EXECUTION,
++        label="reconcile-fence-genesis",
++        currentness=initial.currentness,
++    )
++    refused_create = _authority_apply_twice(module, registered, EXECUTION, command)
+     assert refused_create.disposition is disposition_type.REFUSED
+-    assert refused_create.state == mutation_state
++    assert refused_create.state == registered
+ 
+     cancel_base = _seed_cancellable_buy(
+         module,
+@@ -4074,6 +5080,9 @@ def test_authority_safety_enums_are_explicitly_total() -> None:
+                 "EMERGENCY_GRANT_REDUCE_ONLY",
+                 "EFFECT_UNKNOWN",
+                 "MANUAL_FLATTEN_INVALID",
++                "ACQUISITION_AUTHORIZATION_REQUIRED",
++                "ACQUISITION_CURRENTNESS_INVALID",
++                "ACQUISITION_CURRENTNESS_STALE",
+             },
+         ),
+         (flatten_phase_type, {"WAITING", "READY", "SELL_CREATED"}),
+@@ -4179,7 +5188,7 @@ def test_create_and_query_refuse_scope_or_session_mismatch() -> None:
+         "AuthorityQueryKind",
+         "ClaimBrokerQuery",
+     )
+-    state = _forge_positive_predecessor(module, remaining=4, reserve=1)
++    state = _seed_cancellable_buy(module, remaining=4, reserve=1)
+ 
+     other_symbol_request = replace(
+         _effect_request(
+@@ -4187,6 +5196,8 @@ def test_create_and_query_refuse_scope_or_session_mismatch() -> None:
+             "scope-mismatch-create",
+             side=ExecutionSide.BUY,
+             quantity=1,
++            kind=EffectKind.CANCEL,
++            target_leg_key=LEG,
+         ),
+         symbol_id=OTHER_SYMBOL,
+     )
+@@ -5364,21 +6375,36 @@ def test_kill_keeps_venue_when_invoking_execution_registry_is_not_current() -> N
+         "AuthorityInputId",
+         "EngageKill",
+     )
+-    created = _create_effect(
+-        module,
+-        _forge_positive_predecessor(module, remaining=5, reserve=1),
++    requested = _private_venue_apply(
++        VenueRecoveryBook.empty(VENUE_SCOPE),
+         EXECUTION,
+-        label="kill-caller-registry-ahead",
+-        side=ExecutionSide.BUY,
++        RequestedEffect(
++            input_id=VenueInputId("kill-caller-registry-ahead-request-input"),
++            effect_id=EffectId("kill-caller-registry-ahead-effect"),
++            request_occurrence_id=RequestOccurrenceId(
++                "kill-caller-registry-ahead-occurrence"
++            ),
++            mandate_id=MandateId("kill-caller-registry-ahead-mandate"),
++            kind=EffectKind.SUBMIT,
++            client_order_id=ClientOrderId("kill-caller-registry-ahead-client"),
++            symbol_id=SYMBOL,
++            side=ExecutionSide.BUY,
++            quantity=Quantity(1),
++            economic_scope=b"kill-caller-registry-ahead-scope",
++            target_leg_key=None,
++        ),
++    )
++    created_state = _forge_venue_predecessor(
++        _forge_positive_predecessor(module, remaining=5, reserve=1),
++        requested.book,
+     )
+-    assert created.disposition is disposition_type.APPLIED
+     advanced_execution = _advanced_same_scope_execution(
+         quantity=1,
+         label="kill-caller-registry-ahead",
+     )
+     killed = _authority_apply_twice(
+         module,
+-        created.state,
++        created_state,
+         advanced_execution,
+         kill_type(  # type: ignore[operator]
+             input_id=authority_input_type("kill-caller-registry-ahead-input"),
+@@ -5389,7 +6415,7 @@ def test_kill_keeps_venue_when_invoking_execution_registry_is_not_current() -> N
+     )
+     assert killed.disposition is disposition_type.APPLIED
+     assert killed.state.kill_engaged is True
+-    assert killed.state.venue == created.state.venue
++    assert killed.state.venue == created_state.venue
+     assert killed.venue_transitions == ()
+ 
+ 
+@@ -5611,8 +6637,21 @@ def test_hot_authority_paths_never_materialize_audit_history(monkeypatch) -> Non
+         "ManualFlattenId",
+         "BeginManualFlatten",
+     )
+-    normal_base = _forge_positive_predecessor(module, remaining=5, reserve=1)
+-    normal_created = _create_buy(module, normal_base, label="no-scan-normal")
++    normal_base = _seed_cancellable_buy(
++        module,
++        remaining=5,
++        reserve=1,
++        label="no-scan-normal-target",
++    )
++    normal_created = _create_effect(
++        module,
++        normal_base,
++        EXECUTION,
++        label="no-scan-normal",
++        side=ExecutionSide.BUY,
++        kind=EffectKind.CANCEL,
++        target_leg_key=LEG,
++    )
+     normal_claim = claim_type(  # type: ignore[operator]
+         input_id=authority_input_type("no-scan-normal-claim-input"),
+         effect_id=EffectId("no-scan-normal-effect"),
+@@ -5656,17 +6695,17 @@ def test_hot_authority_paths_never_materialize_audit_history(monkeypatch) -> Non
+         kind=query_kind_type.RECONCILE,
+     )
+ 
+-    flatten_base = _forge_positive_predecessor(
++    flatten_local = _seed_unclaimed_raw_buy(
+         module,
+         mode="REDUCING",
+         remaining=3,
+         reserve=1,
++        label="no-scan-flatten",
+     )
+-    flatten_local = _create_buy(module, flatten_base, label="no-scan-flatten")
+     begin_flatten = begin_flatten_type(  # type: ignore[operator]
+         input_id=authority_input_type("no-scan-flatten-input"),
+         flatten_id=flatten_id_type("no-scan-flatten"),
+-        session_id=flatten_local.state.session_id,
++        session_id=flatten_local.session_id,
+         symbol_id=SYMBOL,
+         actor=ActorId("no-scan-operator"),
+         reason="prove bounded hot paths",
+@@ -5699,9 +6738,9 @@ def test_hot_authority_paths_never_materialize_audit_history(monkeypatch) -> Non
+         ),
+     )
+     flatten_state = _forge_venue_predecessor(
+-        flatten_local.state,
++        flatten_local,
+         _append_closed_local_history(
+-            flatten_local.state.venue,
++            flatten_local.venue,
+             EXECUTION,
+             label="no-scan-flatten-history",
+         ),
+diff --git a/tests/execution_core/test_authority_stateful.py b/tests/execution_core/test_authority_stateful.py
+index 9d9ea9f..54381f2 100644
+--- a/tests/execution_core/test_authority_stateful.py
++++ b/tests/execution_core/test_authority_stateful.py
+@@ -726,13 +726,24 @@ class ClaimAuthorityMachine(RuleBasedStateMachine):
+             "apply_execution_authority_input",
+         )
+         initial = _forge_authority(self.module, remaining=4, reserve=1)
++        book, execution, _ = _seed_raw_effect(
++            initial.venue,
++            EXECUTION,
++            "claim-machine-parent",
++            claim=True,
++            leg_key=LEG,
++            side=ExecutionSide.BUY,
++            quantity=1,
++        )
+         created = _create_effect(
+             self.module,
+-            initial,
+-            EXECUTION,
++            _forge_venue(initial, book),
++            execution,
+             "claim-machine",
+             side=ExecutionSide.BUY,
+             quantity=1,
++            kind=EffectKind.CANCEL,
++            target_leg_key=LEG,
+         )
+         assert created.disposition is self.disposition_type.APPLIED
+         self.state = created.state
+@@ -844,26 +855,17 @@ class ClaimAuthorityMachine(RuleBasedStateMachine):
+         axis=st.sampled_from(
+             (
+                 "phase",
+-                "mode",
+                 "fence",
+-                "kill",
+-                "reserve",
+                 "session",
+             )
+         )
+     )
+-    def every_final_gate_can_refuse(self, axis: str) -> None:
++    def every_applicable_cancel_claim_gate_can_refuse(self, axis: str) -> None:
+         changes: dict[str, object] = {"remaining": 4, "reserve": 1}
+         if axis == "phase":
+             changes["phase"] = "RECONCILING"
+-        elif axis == "mode":
+-            changes["mode"] = "REDUCING"
+         elif axis == "fence":
+             changes["fence"] = "RECONCILIATION_ONLY"
+-        elif axis == "kill":
+-            changes["kill_engaged"] = True
+-        elif axis == "reserve":
+-            changes.update(remaining=1, reserve=1)
+         else:
+             changes["session"] = "foreign-session"
+         forged = _forge_authority(
+@@ -1472,41 +1474,17 @@ class ManualFlattenMachine(RuleBasedStateMachine):
+         assert self.execution.position.raw_quantity >= 5
+ 
+     def _seed_buy(self, label: str, *, claim: bool, discover: bool) -> None:
+-        created = _create_effect(
+-            self.module,
+-            self.state,
++        book, execution, self.buy_effect_id = _seed_raw_effect(
++            self.state.venue,
+             self.execution,
+             label,
++            claim=claim,
++            leg_key=LEG if discover else None,
+             side=ExecutionSide.BUY,
+             quantity=2,
+         )
+-        assert created.disposition is self.disposition_type.APPLIED
+-        self.state = created.state
+-        self.buy_effect_id = EffectId(f"{label}-effect")
+-        if not claim:
+-            return
+-        claimed = self._authority_commit(
+-            self._claim(label, self.buy_effect_id),
+-            expected=self.disposition_type.APPLIED,
+-        )
+-        assert claimed.fresh_claim is not None
+-        if not discover:
+-            return
+-        self._external_commit(
+-            RecordTransportOutcome(
+-                input_id=VenueInputId(f"{label}-ack-input"),
+-                effect_id=self.buy_effect_id,
+-                state=BrokerEffectState.ACKNOWLEDGED,
+-            )
+-        )
+-        self._external_commit(
+-            DiscoverVenueLeg(
+-                input_id=VenueInputId(f"{label}-discover-input"),
+-                effect_id=self.buy_effect_id,
+-                leg_key=LEG,
+-                observation_id=VenueObservationId(f"{label}-discovery"),
+-            )
+-        )
++        self.state = _forge_venue(self.state, book)
++        self.execution = execution
+ 
+     @precondition(lambda self: self.stage == "empty")
+     @rule()
+@@ -1992,15 +1970,16 @@ def test_engage_kill_latches_when_atomic_stand_down_cannot_be_reconciled() -> No
+         "EngageKill",
+     )
+     predecessor = _forge_authority(module, remaining=5, reserve=2)
+-    created = _create_effect(
+-        module,
+-        predecessor,
++    book, _, _ = _seed_raw_effect(
++        predecessor.venue,
+         EXECUTION,
+         "kill-stale-binding",
++        claim=False,
++        leg_key=None,
+         side=ExecutionSide.BUY,
+         quantity=1,
+     )
+-    assert created.disposition is disposition_type.APPLIED
++    created_state = _forge_venue(predecessor, book)
+     stale_execution = _apply_fact(
+         EXECUTION,
+         _broker_fill("kill-stale-binding", leg_key=LEG, quantity=1),
+@@ -2014,14 +1993,14 @@ def test_engage_kill_latches_when_atomic_stand_down_cannot_be_reconciled() -> No
+ 
+     applied = _authority_apply_twice(
+         module,
+-        created.state,
++        created_state,
+         stale_execution,
+         command,
+     )
+     assert applied.disposition is disposition_type.APPLIED
+     assert applied.state.kill_engaged is True
+-    assert applied.state.venue == created.state.venue
+-    assert applied.state.budget == created.state.budget
++    assert applied.state.venue == created_state.venue
++    assert applied.state.budget == created_state.budget
+     assert applied.created_effect_ids == ()
+     assert applied.fresh_claim is None
+ 
+diff --git a/tests/execution_core/test_import_boundary.py b/tests/execution_core/test_import_boundary.py
+index 0da878a..1524a14 100644
+--- a/tests/execution_core/test_import_boundary.py
++++ b/tests/execution_core/test_import_boundary.py
+@@ -247,6 +247,16 @@ _PROTECTION_FORBIDDEN_BINDING_ATTRIBUTES = {
+ _PUBLIC_SURFACE = {
+     "AccountId",
+     "AcceptanceSetState",
++    "AcquisitionAuthorization",
++    "AcquisitionCurrentness",
++    "AcquisitionDisposition",
++    "AcquisitionEffectTerms",
++    "AcquisitionMandate",
++    "AcquisitionMandateId",
++    "AcquisitionOrderType",
++    "AcquisitionState",
++    "AcquisitionTransition",
++    "AcquisitionVenueProjection",
+     "ActorId",
+     "AdvanceManualFlatten",
+     "ApplicationGenerationId",
+@@ -258,6 +268,7 @@ _PUBLIC_SURFACE = {
+     "BasisCandidate",
+     "BasisCandidateStatus",
+     "BeginManualFlatten",
++    "BeginProtectionPreemption",
+     "BrokerEffect",
+     "BrokerEffectRequest",
+     "BrokerEffectState",
+@@ -272,7 +283,10 @@ _PUBLIC_SURFACE = {
+     "ClientOrderId",
+     "ClosureId",
+     "CreateBrokerEffect",
++    "CreateAcquisitionEffect",
++    "CreateProtectionExitEffect",
+     "DiscoverVenueLeg",
++    "DualMandateBinding",
+     "EffectId",
+     "EffectKind",
+     "EmergencyGrantId",
+@@ -319,6 +333,7 @@ _PUBLIC_SURFACE = {
+     "PriceUnits",
+     "ProtectionAlert",
+     "ProtectionDisposition",
++    "ProtectionExitProjection",
+     "ProtectionMandate",
+     "ProtectionPolicy",
+     "ProtectionTransition",
+@@ -330,6 +345,7 @@ _PUBLIC_SURFACE = {
+     "RecordBrokerFillEvidence",
+     "RecordBrokerRevisionEvidence",
+     "RecordTransportOutcome",
++    "RegisterAcquisitionCurrentness",
+     "RecoverClaimedEffect",
+     "ReleaseVenueLeg",
+     "ReportedPrice",
+@@ -351,6 +367,7 @@ _PUBLIC_SURFACE = {
+     "TransitionDisposition",
+     "VenueAttempt",
+     "VenueAttemptState",
++    "VenueBuyPreemptionProjection",
+     "VenueClosureKind",
+     "VenueExecutionCheckpoint",
+     "VenueIdentityOwner",
+@@ -364,15 +381,22 @@ _PUBLIC_SURFACE = {
+     "VenueScope",
+     "VenueTerminalClosure",
+     "apply_broker_execution_fact",
++    "apply_acquisition_integration",
+     "apply_execution_authority_input",
+     "apply_venue_recovery_input",
++    "authorize_acquisition_effect",
++    "build_acquisition_cancel_request",
+     "bind_venue_execution_snapshot",
+     "derive_ordered_basis_candidate",
+     "initial_execution_authority_state",
+     "initialize_position_protection",
++    "initialize_acquisition",
+     "invalidate_position_protection_market",
+     "project_protection_venue",
++    "project_acquisition_venue",
++    "project_next_buy_preemption",
+     "reduce_position_protection",
++    "reduce_acquisition_market",
+     "reduce_position_protection_market",
+ }
+ 
+@@ -472,6 +496,7 @@ def _python_files() -> list[Path]:
+     files = sorted(_PACKAGE_ROOT.glob("*.py"))
+     assert {path.name for path in files} == {
+         "__init__.py",
++        "acquisition.py",
+         "authority.py",
+         "fills.py",
+         "identity.py",

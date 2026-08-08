@@ -39,6 +39,9 @@ ENV/
 # Coverage artifacts (measured in CI; not committed)
 .coverage
 .coverage.*
+/.coverage_*
+/.pytest_*.xml
+/.wo*.coverage.json
 htmlcov/
 coverage.xml
 

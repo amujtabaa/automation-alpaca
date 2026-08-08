@@ -1,5 +1,11 @@
 # Data and Persistence — Alpaca Clean-Sheet CAPI Option 2.5
 
+> **Frozen legacy evidence.** This file describes the existing Option 2.5/Spine v2 stores. The
+> accepted reset persistence target is ADR-020 plus
+> [`work/queue/ARCH-RESET-2026-07/04-persistence-and-cutover.md`](../work/queue/ARCH-RESET-2026-07/04-persistence-and-cutover.md):
+> SQLite is the sole reset-beta production store, with one pure reference model and only a thin
+> repository harness in tests. No reset schema or DDL has been executed or activated by M0.
+
 This file defines how the backend stores truth, the candidate, order, and
 fill lifecycles, and the rules that decide when data is "outdated." It exists
 to satisfy the requirement: **data persists unless outdated or deleted, and past

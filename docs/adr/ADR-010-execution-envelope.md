@@ -7,6 +7,14 @@
 
 ## Status
 
+**Architecture-reset disposition (2026-07-31): partially superseded.** Immutable bounded human
+authority, execution-fact-only quantity, single-flight, ambiguity quarantine, kill freeze,
+cross-side exposure/preemption, disposition, rate/quantity/session/data rails, and manual-flatten
+semantics remain binding. [ADR-021](ADR-021-position-protection-liquidity-execution.md) supersedes
+the all-purpose envelope type, `floor_price` as a minimum SELL limit/fill price, and live
+full-history folding. Hard bail is an escalation trigger; execution-price/slippage authority is
+separate. See the [reset ratification index](ARCH-RESET-2026-07-RATIFICATION.md).
+
 **Accepted** (2026-07-15, Ameen — T5 directive "Complete the T5 merge", this session; drafted
 2026-07-11 by the planning seat from the LASE integration design session, decisions D-1..D-4 taken
 by Ameen 2026-07-11). The CLAUDE.md independent-review requirement for the human-gated-surface

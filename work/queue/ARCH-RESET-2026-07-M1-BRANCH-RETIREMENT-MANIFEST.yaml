@@ -1,0 +1,358 @@
+schema_version: 2
+manifest_id: ARCH-RESET-2026-07-M1-BRANCH-RETIREMENT
+status: PARTIAL_CLEANUP_DEFERRED_TARGETS_REMAIN
+work_order: WO-0153
+scope: "Post-WO-0149-supersession cleanup and bounded retirement only; no M1-complete, master-landing, or successor-activation claim."
+
+authority:
+  user_cleanup_authority: "2026-08-05 exact cleanup prompt"
+  remote_state_amendment: "2026-08-05 exact ls-remote amendment"
+  superseded_for_named_targets_only:
+    - "Old DELETE-AFTER-M1-MERGE timing"
+    - "Old KEEP-EVIDENCE branch-ref retention where value is reachable or durably remapped"
+    - "Old tag/bundle preservation alternative for codex/signal-tests-staging"
+    - "Old KEEP_UNCHANGED treatment of the two WO-0145 root coverage files"
+  prohibitions_retained:
+    - "WO-0150 through WO-0152 activation or implementation; any M2 work"
+    - "Application/test execution; SQL/DDL; database initialization; runtime wiring"
+    - "Credentials, Alpaca, broker, or application-network activity"
+    - "Master merge, pull request, rebase, force-push, reset --hard, broad git clean, or unlisted deletion"
+
+audit_snapshot:
+  audited_at_utc: "2026-08-06T00:58:32.8583975Z"
+  local_reset_head: "192056d4e050517ad9b92bfb5f17bf2780e23a47"
+  live_reset_head: "192056d4e050517ad9b92bfb5f17bf2780e23a47"
+  local_live_reset_relationship: "EQUAL; merge-base is the same SHA; not diverged"
+  master_head: "6d5937492788aa0ab1cf8348321fa01ee57df920"
+  live_remote_source: "Exact non-mutating git ls-remote --heads origin queries; local refs/remotes/origin are cache only."
+  remote_pruning: "NOT RUN and not required by the amended authority."
+  registered_worktrees: 10
+  auxiliary_worktrees:
+    tracked_and_ordinary_untracked_clean: true
+    ignored_content: "Only cache/coverage/pytest-temp/bytecode categories; codex/wo-0124 has authorised unreadable .pytest-tmp* cache directories."
+  main_delta_reconciliation:
+    status: RECONCILED
+    application_test_delta: "Eight tracked and two untracked WO-0149 paths; captured then removed from active paths."
+    documentation_delta: "Accepted ADR-020/021 R2 ratification, WO-0149 supersession, successor drafts, PKL/ledger/current-posture records, and review evidence."
+    generated_delta: "Root coverage/JUnit and REV-0050 generated-review artifacts; capture and removal rules recorded in REV-0056 WO-0153 inventory."
+
+retained_wo0149_partial_delta:
+  status: CAPTURED_AND_REMOVED_FROM_ACTIVE_PATHS
+  directory: "work/review/REV-0056/wo-0149-superseded-partial-delta"
+  base_sha: "192056d4e050517ad9b92bfb5f17bf2780e23a47"
+  capture_completed_utc: "2026-08-06T00:48:33.2526000Z"
+  tracked_patch:
+    path: "tracked-wo-0149-source-test.patch"
+    bytes: 183081
+    sha256: "820149dc249d7f1b91d1af46427614f1329540a7aac69be4d74b58407c6a84f0"
+    paths:
+      - app/execution_core/__init__.py
+      - app/execution_core/authority.py
+      - app/execution_core/identity.py
+      - app/execution_core/protection.py
+      - app/execution_core/venue.py
+      - tests/execution_core/test_authority.py
+      - tests/execution_core/test_authority_stateful.py
+      - tests/execution_core/test_import_boundary.py
+    verification: "git apply --check --reverse succeeded before restoration; git apply --numstat named exactly these eight paths."
+  untracked_raw_copies:
+    - path: "untracked/app/execution_core/acquisition.py"
+      bytes: 40001
+      sha256: "d7c8fac467313245dfbfefd49099ba14c81427cb7b748729450fc93522c94b33"
+    - path: "untracked/tests/execution_core/test_acquisition.py"
+      bytes: 37307
+      sha256: "b45e60091ba753b2ecd51c8da29f01fc2c8fb6cea097b6ef0bed2203540e0fa6"
+  active_path_result: "git diff HEAD -- app tests is empty; no untracked app/tests path remains."
+  authority_note: "Superseded historical evidence only; no implementation authority is retained."
+
+cross_reference_corrections:
+  current_signal_reactivation_source: "docs/spec/signal-seat/07-malformed-quarantine-conformance.md"
+  signal_staging_ref: "Operative/current Signal kickoff and draft guidance is explicitly superseded; historical records retain original branch citations and are mapped here."
+  freeze_ref_correction: "Retired names do not alter cited commit identities. master-preconsolidation and pr8-head are ancestors of retained master; r2-claude is reachable through retained archive/claude-sellintent-envelope-linking-h2z7i7; r2-sol is retained as the unique independent comparison."
+  claude_clean_room: "Canonical REV-0050/CLAUDE-COMPARATOR-DISPOSITION.md re-derived every material finding; the source branch is not an acceptance authority."
+  wo0126_citations: "Old cited objects are mapped below to exact integrated replacements and retained closed-work/review evidence."
+
+distillations:
+  signal_tests_staging:
+    source_tip: "24d3746a35e30f736a6c5e3541720f0d47b0d751"
+    observed_tip: "24d3746a35e30f736a6c5e3541720f0d47b0d751"
+    unique_test_sources:
+      - path: tests/test_signal_malformed_input_matrix.py
+        sha256: "af614174b0b9350574f3ef220818be8f8334cee72663d44fffd34f73a6a37bea"
+        bytes: 8064
+      - path: tests/test_signal_quarantine_totality.py
+        sha256: "3ac9634600f63f06e97a862d06a6ccc9221e4d55d2736cd1e85ec091d465d747"
+        bytes: 9774
+    durable_destination: "docs/spec/signal-seat/07-malformed-quarantine-conformance.md"
+    coverage: "Authenticated-malformed versus unauthenticated/unparseable boundary, total quarantine, dual-store parity, UTF-8/Unicode, overflow/representability, collision/retry/idempotence/raw_fields matrix, disabled/unmounted reset-beta status, and future ADR/WO gate."
+    ref_state: READY
+  wo0126:
+    source_tip: "8c252692c94ee323780964dd157d2690d65a698d"
+    observed_tip: "8c252692c94ee323780964dd157d2690d65a698d"
+    replacement_range: "42071ba..04e55f3"
+    exact_patch_mappings:
+      - "fafe41962a32c6bd06793af52b27743537f17fa2 -> c99ebda93ad499579eca321a1dc8d92f176a8519"
+      - "27e82bc600ca33234368088241d6d62ad8dabe59 -> 108874feda06fe96648d4fe7ed6be2e37c595edf"
+      - "86fa0e33ea3a0d724bd867bfeca384cd662bedb7 -> 3c5a1eceebfc2eb8a89242b97d2c785b84901e6a"
+      - "4bd0efa34a9c483c6fb6b0de33276ff07b2b330c -> ffd818b6c8d86efed01a2b2924e59c23e535cb23"
+      - "8c252692c94ee323780964dd157d2690d65a698d -> 04e55f39030a8682b1b48ae62c89216b13fa6f68"
+    administrative_mapping: "6a501a activation is superseded by the closed retained WO-0126 record and ledger row; no executable value is unique to the branch."
+    authoritative_records:
+      - work/completed/keep/WO-0126-replace-budget-single-source.md
+      - work/ledger.jsonl
+      - work/review/REV-0037/result.md
+    ref_state: READY
+  claude_wo0148_clean_room:
+    source_tip: "b56ce60043e0609bd73989f8429b573539cedd93"
+    observed_tip: "b56ce60043e0609bd73989f8429b573539cedd93"
+    source_path: "work/review/REV-0050/claude-clean-room-result.md"
+    blob: "63eb7ef215321d3d3cbad1768d7b5b84acae36d1"
+    bytes: 39031
+    sha256: "6ef5b40dfcb105e2002811ec0c3f595ed276c394a24dccfca0682cd8cf3c337b"
+    adjudication: "REV-0050/CLAUDE-COMPARATOR-DISPOSITION.md accepted and repaired X1, X2, C1, C2, C4-a through C4-d; the remaining suggestions were explicitly advisory. No material finding remains branch-only."
+    ref_state: READY
+
+retirement_targets:
+  remote:
+    - branch: archive/consolidate-r2-canonical-codex
+      expected_tip: accfc2072b7d0997a4b497f5710c9fabd5d86d3e
+      proof: "Ancestor of retained master."
+      state: READY
+    - branch: archive/collab-sol-0001
+      expected_tip: 38180e1d594a961372b5854bfac9f097ac6910b1
+      proof: "Its sole unique patch is equivalent in master; AUDIT-0002 provenance maps the original SOL import to 9c151eb."
+      state: READY
+    - branch: freeze/20260715-master-preconsolidation
+      expected_tip: 80250e09be65115b8fc483b2444b297e2b86b2c9
+      proof: "Ancestor of retained master; historical identity retained by SHA."
+      state: READY
+    - branch: freeze/20260715-pr8-head
+      expected_tip: 22617f4ccf28970d553d5cc65cbffdf42ea4b7cd
+      proof: "Ancestor of retained master; historical identity retained by SHA."
+      state: READY
+    - branch: freeze/20260715-r2-claude
+      expected_tip: ba1cea7547e98d03c4216546d5a9069171726698
+      proof: "Reachable through retained archive/claude-sellintent-envelope-linking-h2z7i7."
+      state: READY
+    - branch: claude/signal-r4-kickoff-planning-354qc0
+      expected_tip: 95c997f6a1e15375f1022f2d775b8c93ba32a2eb
+      proof: "Ancestor of retained master; historical reports retain citations."
+      state: READY
+    - branch: claude/wo-0148-clean-room-p06lq6
+      expected_tip: b56ce60043e0609bd73989f8429b573539cedd93
+      proof: "Branch-only report is fully mapped and adjudicated above."
+      state: READY
+    - branch: codex/signal-r5a-foundation
+      expected_tip: b2a5667172a63c201ba7f3062a3a01a6a28018fb
+      proof: "Ancestor of retained master."
+      state: READY
+    - branch: codex/signal-r5b1-producer-ingest
+      expected_tip: bbc7e96356b582d410105f5d86291b952acd6158
+      proof: "Ancestor of retained master."
+      state: READY
+    - branch: codex/signal-r5b2-operator-auth
+      expected_tip: d28cabd0d661b9a71bcd50c7a473c7a1fabd67a7
+      proof: "Ancestor of retained master."
+      state: READY
+    - branch: codex/signal-tests-staging
+      expected_tip: 24d3746a35e30f736a6c5e3541720f0d47b0d751
+      proof: "Two unique tests distilled; the other twelve were already integrated or historical. No replacement ref, tag, or bundle is required."
+      state: READY
+  local_worktree_branches:
+    - branch: codex/lane2-bootstrap
+      expected_tip: ea3f75cec2e93a51ca100a8e83a5e658a2630300
+      worktree: .claude/worktrees/codex-lane2-bootstrap
+      proof: "Range-diff from 87aa950 maps the bootstrap, recorder, and foundational work to 966b1a7..7387199, 635127b..e4d805b, and 094f0df..6aa678f; remaining differences are replaced activation/closeout records."
+      state: READY
+    - branch: codex/lane2-core
+      expected_tip: dcefeafd76924b1ae175d797f99786155c917efe
+      worktree: .claude/worktrees/codex-lane2-core
+      proof: "All six commits are exact patch equivalents in master."
+      state: READY
+    - branch: codex/lane2-docs
+      expected_tip: 088d9b5a026a1a5d977d834e00c4e73ba5acc9aa
+      worktree: .claude/worktrees/codex-lane2-docs
+      proof: "Range-diff from 87aa950 maps the material ADR/spec/safety-document changes to c90a7ae..8a76a29 and b03c0e9..36538e8; remaining differences are replaced lifecycle records."
+      state: READY
+    - branch: codex/wo-0114
+      expected_tip: 0a97f51aee11721448dccbf4576c8308bf88f14e
+      worktree: .claude/worktrees/codex-wo-0114
+      proof: "Material production/test changes map to f3be6e3, b6d4fb0, and 759eff0; its activation record is superseded by closed WO-0114 provenance."
+      state: READY
+    - branch: codex/wo-0114-coverage-fix
+      expected_tip: b4f88c3fe1eb1114965d3281136cf84763111b76
+      worktree: .claude/worktrees/codex-wo-0114-coverage-fix
+      proof: "Both commits are exact patch equivalents in master."
+      state: READY
+    - branch: codex/wo-0118
+      expected_tip: 93ed305b563593473ae36ea5730013abb94d1b7b
+      worktree: .claude/worktrees/codex-wo-0118
+      proof: "All three commits are exact patch equivalents in master."
+      state: READY
+    - branch: codex/wo-0124
+      expected_tip: 3d8015f2bf10fa26ea767d70cab586c9e1b324ca
+      worktree: .claude/worktrees/codex-wo-0124
+      proof: "Ancestor of retained master."
+      state: READY
+    - branch: codex/wo-0126
+      expected_tip: 8c252692c94ee323780964dd157d2690d65a698d
+      worktree: .claude/worktrees/codex-wo-0126
+      proof: "Exact patch/provenance mappings recorded in distillations."
+      state: READY
+  local_only:
+    - branch: codex/beta-prep-sweep
+      expected_tip: e5b2dd997ec9ca86112eff8f91f289c06e6d493b
+      proof: "Ancestor of retained master."
+      state: READY
+    - branch: codex/signal-r4-store
+      expected_tip: b9ebc9ba750633fded4bcc03e7583022e748ee86
+      proof: "Ancestor of retained master; historical Signal R4 evidence remains readable by commit SHA."
+      state: READY
+
+retained_refs:
+  - "master @ 6d5937492788aa0ab1cf8348321fa01ee57df920 — canonical merge target"
+  - "codex/arch-reset-2026-07-r1 — current reset planning/implementation branch; retained until separately authorised verified master landing"
+  - "codex/signal-r6a-rails-store @ 39a6ed8b9a7562f61afc9ec5c0f9fad2c3918c80 — retained R6 corpus"
+  - "archive/claude-wo-0001-install-checks-2x5ys8 @ fc819517be64b10ecf831a9a6abd4fe6f9100e2f — cited Signal provenance"
+  - "archive/claude-sellintent-envelope-linking-h2z7i7 @ a6ab844a23dfc68d36a7fd8ae6e2b73f7a454f66 — retained R2 Claude lineage and r2-claude reachability"
+  - "freeze/20260715-r2-sol @ 353ef1cc23b901b10cd394ea63e0683de7eeb6e7 — unique independent R2 comparison"
+  - "claude/wargame-roadmap-kickoff-2v2tan @ fb6e93e556e94c3c5904b9218d530865c0f3a84b — ratification-cited evidence"
+
+generated_artifacts:
+  root_cache_directories:
+    predelete_count: 82
+    predelete_bytes: 7221811991
+    allowed_exact_categories: [".pytest_tmp*", ".pytest-tmp*", ".pytest-cache*", ".pytest-run*", ".pytest-agent*", ".pytest-subagent*", ".pytest-audit*", ".pytest-chaos*", ".pytest-r2*", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".grimp_cache", ".import_linter_cache", ".hypothesis", "__pycache__"]
+  root_generated_files:
+    predelete_count: 42
+    predelete_bytes: 83334228
+    hash_manifest: "work/review/REV-0056/WO-0153-PREDELETION-ARTIFACT-INVENTORY.md"
+  rev0050_raw_evidence:
+    predelete_non_markdown_files: 14075
+    predelete_non_markdown_bytes: 2924572432
+    retained_markdown_summaries: 13
+    hash_and_material_mapping: "work/review/REV-0056/WO-0153-PREDELETION-ARTIFACT-INVENTORY.md"
+    environment_controlled_generated_fixtures:
+      count: 10
+      bytes: 1420
+      sha256_each: "e4be50d7f1b25af9a664f21f8019d86935acfb75557aa4d04505b79d0d6b6d24"
+      state: "DEFERRED — ENVIRONMENT CONTROL; exact verified pytest-full/pytest-temp parents rejected direct removal with AccessDenied; no ACL or ownership bypass attempted."
+  stale_goal_baseline:
+    files:
+      - "GOAL-ACTIVE-STALE-BASELINE.json sha256=cfc412b37c249f99a3f4e02053e3ecd98f00b6401bc90018d8df7ccca423b39e"
+      - "GOAL-ACTIVE-STALE-BASELINE.md sha256=1e390c795c5eb3402f3a659e783ec6bcc3a49ea48df52d33bacc8d3433ce4252"
+    replacement: "Retained GOAL-REFRESH-DRAFT.md, GOAL-REFRESH-EVAL.md, and ADR-023-PREFLIGHT.md"
+    state: READY
+
+execution_order:
+  - "Commit and push this pre-deletion documentation/evidence baseline; require live reset head equals pushed local SHA."
+  - "Recheck processes and exact target paths; delete only root cache/files and captured raw evidence."
+  - "For remote-backed targets: exact live ls-remote tip check, delete one exact remote ref, then exact live absence check; retain local fallback on failure."
+  - "For local worktrees: recheck safe-directory status, ignored categories, tip, and handles; normal git worktree remove first, force only under the narrow authorised cache-only condition; then run git worktree prune (never remote pruning)."
+  - "Delete approved local branch only after its corresponding remote/worktree condition succeeds; use -D only for a recorded non-ancestor READY branch."
+  - "Update actual results, reclaimed bytes, stale remote-tracking-cache evidence, and final static verification; commit and push final manifest."
+
+execution_record:
+  predelete_commit: "4c655be69ddb19e844c2c8d1ae077844acab8968"
+  predelete_push: "Exact live reset ref matched before and after push; no fetch/prune used."
+  final_commit: null
+  final_push: null
+  remote_deletions:
+    - "archive/consolidate-r2-canonical-codex @ accfc2072b7d0997a4b497f5710c9fabd5d86d3e: DELETED, exact live tip then exact live absence"
+    - "archive/collab-sol-0001 @ 38180e1d594a961372b5854bfac9f097ac6910b1: DELETED, exact live tip then exact live absence"
+    - "freeze/20260715-master-preconsolidation @ 80250e09be65115b8fc483b2444b297e2b86b2c9: DELETED, exact live tip then exact live absence"
+    - "freeze/20260715-pr8-head @ 22617f4ccf28970d553d5cc65cbffdf42ea4b7cd: DELETED, exact live tip then exact live absence"
+    - "freeze/20260715-r2-claude @ ba1cea7547e98d03c4216546d5a9069171726698: DELETED, exact live tip then exact live absence"
+    - "claude/signal-r4-kickoff-planning-354qc0 @ 95c997f6a1e15375f1022f2d775b8c93ba32a2eb: DELETED, exact live tip then exact live absence"
+    - "claude/wo-0148-clean-room-p06lq6 @ b56ce60043e0609bd73989f8429b573539cedd93: DELETED, exact live tip then exact live absence"
+    - "codex/signal-r5a-foundation @ b2a5667172a63c201ba7f3062a3a01a6a28018fb: DELETED, exact live tip then exact live absence"
+    - "codex/signal-r5b1-producer-ingest @ bbc7e96356b582d410105f5d86291b952acd6158: DELETED, exact live tip then exact live absence"
+    - "codex/signal-r5b2-operator-auth @ d28cabd0d661b9a71bcd50c7a473c7a1fabd67a7: DELETED, exact live tip then exact live absence"
+    - "codex/signal-tests-staging @ 24d3746a35e30f736a6c5e3541720f0d47b0d751: DELETED, exact live tip then exact live absence"
+  local_branch_deletions:
+    - "normal: codex/beta-prep-sweep, codex/signal-r4-store, codex/signal-r5a-foundation, codex/signal-r5b1-producer-ingest, codex/signal-r5b2-operator-auth"
+    - "authorized -D after committed integration/supersession proof: codex/lane2-core, codex/wo-0114-coverage-fix, codex/wo-0118, codex/wo-0126"
+  worktree_removals:
+    - "DELETED: codex/lane2-core, codex/wo-0114-coverage-fix, codex/wo-0118, codex/wo-0126"
+    - "DEFERRED - ENVIRONMENT CONTROL: codex/lane2-bootstrap, codex/lane2-docs, codex/signal-tests-staging, codex/wo-0114, codex/wo-0124; normal Git removal deregistered them but exact ignored-cache deletion returned AccessDenied."
+  deferred_targets:
+    - "Five exact unregistered worktree remnants and their local fallback branches: see REV-0056/WO-0153-EXECUTION-OUTCOME.md."
+    - "55 exact allowed root cache directories rejected direct removal with UnauthorizedAccessException."
+    - "10 exact generated REV-0050 fixture files (1,420 bytes total) rejected direct removal with AccessDenied."
+  stale_remote_tracking_cache: []
+  reclaimed_root_generated_bytes: 3012070178
+  reclaimed_worktree_bytes: "Not measured; no per-worktree pre-removal byte baseline was recorded, so no estimate is claimed."
+  outcome_report: "work/review/REV-0056/WO-0153-EXECUTION-OUTCOME.md"
+
+successor_cleanup:
+  work_order: WO-0154
+  activated_at_utc: "2026-08-06"
+  status: BLOCKED_UNREGISTERED_FULL_WORKTREE_REMNANTS
+  authority: "2026-08-06 exact residual-cleanup authorization"
+  predecessor_outcome: "WO-0153 remains immutable and PARTIAL_CLEANUP_DEFERRED_TARGETS_REMAIN."
+  frozen_scope:
+    fixture_roots: 10
+    root_cache_directories: 55
+    worktree_remnants: 5
+    local_fallback_branches: 5
+  preflight: "work/review/REV-0056/WO-0154-HOSTILE-PREFLIGHT.md"
+  dry_run: "work/review/REV-0056/WO-0154-DRY-RUN.md"
+  constraint: "No M1-complete, master-landing, or successor implementation-activation claim."
+  execution_checkpoint: "work/review/REV-0056/WO-0154-EXECUTION-OUTCOME.md"
+  completed_filesystem_targets:
+    fixture_roots_absent: 10
+    root_cache_directories_absent: 55
+    manually_retired_unregistered_full_roots: 5
+  retained_blocked_targets:
+    worktree_remnants:
+      count: 5
+      standard_git_repair_regate: "PARTIAL_CLEANUP_MANUAL_RETIREMENT_REQUIRED; frozen metadata authentication failed for every named full remnant."
+      exact_paths:
+        - ".claude/worktrees/codex-lane2-bootstrap: DEFERRED — METADATA UNAUTHENTICATED; .git marker absent, registration absent, corresponding .git/worktrees admin entry absent."
+        - ".claude/worktrees/codex-lane2-docs: DEFERRED — METADATA UNAUTHENTICATED; .git marker absent, registration absent, corresponding .git/worktrees admin entry absent."
+        - ".claude/worktrees/codex-signal-tests-staging: DEFERRED — METADATA UNAUTHENTICATED; .git marker absent, registration absent, corresponding .git/worktrees admin entry absent."
+        - ".claude/worktrees/codex-wo-0114: DEFERRED — METADATA UNAUTHENTICATED; .git marker absent, registration absent, corresponding .git/worktrees admin entry absent."
+        - ".claude/worktrees/codex-wo-0124: DEFERRED — METADATA UNAUTHENTICATED; .git marker absent, registration absent, corresponding .git/worktrees admin entry absent."
+    local_fallback_branches:
+      count: 5
+      state: "RETAINED; matching path retirement did not succeed, so deletion was not eligible."
+  standard_git_repair_regate:
+    checkpoint_sha: "3da1dc381827d4ab7812925d085dce3388c791a7"
+    local_and_live_reset_ref: "EQUAL at 3da1dc381827d4ab7812925d085dce3388c791a7 via exact git ls-remote --heads origin refs/heads/codex/arch-reset-2026-07-r1."
+    git_state: "Main worktree clean; git worktree list --porcelain contained only the reset worktree; app/tests diff empty."
+    repair_commands: "NOT RUN: every frozen target was D — UNSAFE_OR_UNREPRESENTABLE, not B — REPAIRABLE."
+    handle_evidence: "LIMITED: openfiles local-object list disabled and process query access denied; no no-handle claim is made."
+    preserved_limits: "Fixture ACL evidence limitation and four UNKNOWN root-cache byte totals are unchanged."
+  manual_retirement_activation:
+    status: "PARTIAL_CLEANUP_ACCESS_REPAIR_FAILED"
+    authority: "Explicit user authorization for only the five frozen full-tree remnants and subsequent matching local branch deletions."
+    destructive_operation: "Remove-Item -LiteralPath <one frozen canonical root> -Recurse -Force -ErrorAction Stop, only after per-target gates."
+    access_repair: "Only the named immediate cache child; nonrecursive takeown /F and non-inheriting icacls grant to current user after capture."
+    branch_operation: "git branch -d only after matching root absence and registration absence; git branch -D not authorized."
+    prohibitions_retained: "No remote action, .git/worktrees operation, re-registration, fixture/root-cache retry, broad/recursive ACL ownership, process termination, application/test/database/runtime work, or M2."
+    activation_sha: "36c7fa5c71062b4260730eaeb129ef56d5780830; exact live ref verified before mutation."
+    results:
+      - "codex-lane2-bootstrap: .pytest_cache unreadable; nonrecursive takeown /F returned Access is denied; root and branch retained."
+      - "codex-lane2-docs: .pytest_cache unreadable; nonrecursive takeown /F returned Access is denied; root and branch retained."
+      - "codex-signal-tests-staging: .pytest_cache unreadable; nonrecursive takeown /F returned Access is denied; root and branch retained."
+      - "codex-wo-0114: .pytest_cache unreadable; nonrecursive takeown /F returned Access is denied; root and branch retained."
+      - "codex-wo-0124: .pytest-tmp-review-138e389-core unreadable; nonrecursive takeown /F returned Access is denied; root and branch retained."
+  elevated_manual_retirement_update:
+    status: "TWO_ROOTS_RETIRED_THREE_STAGE_SERIAL_BATCH_AUTHORIZED"
+    user_session_evidence: "The user ran exact-root procedures in elevated local PowerShell after fresh per-root preflight and complete descendant inventory."
+    retired_roots:
+      - ".claude/worktrees/codex-lane2-bootstrap: DELETED after 989-item inventory; fallback branch codex/lane2-bootstrap retained at ea3f75cec2e93a51ca100a8e83a5e658a2630300 because normal git branch -d refused unmerged history."
+      - ".claude/worktrees/codex-lane2-docs: DELETED after 983-item inventory; fallback branch codex/lane2-docs retained at 088d9b5a026a1a5d977d834e00c4e73ba5acc9aa."
+    remaining_serial_batch:
+      targets:
+        - ".claude/worktrees/codex-signal-tests-staging"
+        - ".claude/worktrees/codex-wo-0114"
+        - ".claude/worktrees/codex-wo-0124"
+      execution: "One saved script with three explicit literal sequential stages; no loop or derived deletion root; full per-stage preflight and separate exact DELETE confirmation; stop before a later stage on any failure."
+      branch_action: "None. All five fallback branches are retained; no force delete or alternative branch-retirement mechanism is authorized."
+      prerequisite: "A documentation-only amendment commit must be pushed and its exact live reset ref must equal local HEAD before the batch begins."
+      results:
+        - ".claude/worktrees/codex-signal-tests-staging: DELETED after 805-item inventory; fallback branch codex/signal-tests-staging retained at 24d3746a35e30f736a6c5e3541720f0d47b0d751."
+        - ".claude/worktrees/codex-wo-0114: DELETED after 974-item inventory; fallback branch codex/wo-0114 retained at 0a97f51aee11721448dccbf4576c8308bf88f14e."
+        - ".claude/worktrees/codex-wo-0124: DELETED after 27250-item inventory; fallback branch codex/wo-0124 retained at 3d8015f2bf10fa26ea767d70cab586c9e1b324ca."
+      terminal_state: "ROOT_RETIREMENT_COMPLETE_BRANCH_DISPOSITION_DEFERRED; all five frozen roots absent, all five fallback branches retained at frozen tips."
