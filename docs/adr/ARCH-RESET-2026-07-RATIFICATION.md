@@ -453,3 +453,74 @@ live `ls-remote` query could not acquire Windows credentials; this record relies
 on the successful push result, does not claim an independent live-ref query, and
 uses no credential workaround. No E3 test source exists at this reconciliation
 point.
+
+## WO-0152 R2-R4 fixed mandate-schedule re-gate - authorized 2026-08-07
+
+After R2-R3 activation, the first permitted public E3 controls were created as
+an uncommitted local baseline. A focused constructibility pass found that the
+accepted one-lexical-mint/no-loop fixture rule cannot construct distinct A/B/C
+sealed bindings, and its A/B/C-only configuration cannot support the required
+32-generation serial proof without prohibited market-stream reuse.
+
+Ameen authorizes R2-R4 to replace only that approved-mandate fixture rule with
+one zero-argument, test-only, pre-genesis immutable 32-entry schedule. A, B,
+and C remain first; every entry must use distinct acquisition/protection
+identities and a distinct approved MarketStreamGenerationId while sharing the
+fixed scope, session, complete terms, and equal EmergencyRecoveryCompatibility.
+One statically bounded loop over the fixed literal schedule may exercise one
+lexical private dual-mandate mint call once per entry. Static and behavioral
+controls must prove cardinality, fixed inputs, uniqueness, no caller input,
+no aliases/wrappers/dynamic targets/post-genesis invocation, and no other
+private access.
+
+R2-R4 preserves all R2-R3 environment, terminal, boundedness, provenance,
+and safety restrictions. It permits no production/API/runtime, database or
+SQL/DDL, broker/network/credential, CI-workflow, M2, merge, deletion, cleanup,
+force-push, or rebase authority. A fresh immutable R2-R4 manifest and
+independent P0=0/P1=0 ACCEPT are required before further E3 test expansion.
+The partial local test baseline is retained but is not R2-R4 acceptance
+evidence. The paired E2/E3 unchanged 93% exact-head closeout remains mandatory.
+
+## WO-0152 R2-R5 duplicate-stream-probe re-gate - authorized in-flight correction 2026-08-07
+
+The independent exact R2-R4 preflight result
+`48079e3b54beedddbb56382de2b05f49e6f887e2173c17d24e6131de0bce1889`
+returned `ACCEPT-WITH-CHANGES`, P0=0/P1=1/P2=0. It confirmed the positive
+32-mandate schedule is bounded, but found that its all-unique-stream rule and
+sole schedule-loop mint cannot construct the distinct sealed A-stream-reuse
+probe required for a failure-capable public nonadjacent-reuse control.
+
+Under Ameen's standing authorization to resolve in-flight root-level issues
+within the existing WO-0152 safety boundary, R2-R5 may replace only that
+probe-construction clause. It retains the 32 unique schedule and its one
+bounded loop mint, and adds one zero-argument, test-only, pre-genesis
+`_nonadjacent_duplicate_stream_probe_mandate_fixture`. The fixture may use exactly one fixed literal
+private dual-mandate mint to return one otherwise complete public mandate with
+fresh acquisition/protection/binding identities and the same literal stream as
+A. It is usable only by the named A -> B -> A-stream control and grants no
+caller-shaped configuration, production/API/runtime, controller, effect,
+claim, broker, persistence, or actor authority.
+
+R2-R5 requires a fresh immutable manifest and independent `ACCEPT` at
+P0=0/P1=0 before further E3 test expansion. All R2-R3/R2-R4 retained evidence,
+the partial baseline, exclusions, and paired E2/E3 unchanged 93% exact-head
+closeout remain in force.
+
+## WO-0152 R2-R5 independent acceptance - 2026-08-07
+
+The exact R2-R5 documentation-only candidate independently `ACCEPT`ed at
+P0=0/P1=0/P2=0. Its contract SHA-256 is
+`79c734b7c0a929d43aeca83ef00e797b7afc8d97754eb30f1c812b1dd5b3221e`, its
+manifest SHA-256 is
+`3fbcffbec46dd43248a1a8b569df39880c96e9d539d5a84a07cf58fde19be946`, and
+its independent result SHA-256 is
+`f3c86daa71a36108bb2757f853d922e992c7c77eed4d7d7626b5e9091e3d5245`.
+
+R2-R5 therefore permits only the active work order's existing test-only E3
+scope after this acceptance publication is committed and its exact SHA
+reconciled. It does not authorize production/API/runtime, database/SQL/DDL,
+broker/network/credential, CI-workflow, M2, merge, deletion, cleanup,
+force-push, or rebase work. The public duplicate-stream control remains a
+required E2-disagreement detector: if it admits the valid probe, preserve the
+trace and return bounded E2 remediation rather than changing E3 or production
+under this acceptance.

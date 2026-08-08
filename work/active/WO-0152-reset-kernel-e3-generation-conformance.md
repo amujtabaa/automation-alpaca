@@ -12,8 +12,10 @@ created: 2026-08-05
 branch: codex/arch-reset-2026-07-r1
 base_sha: a2b84abc1914517cf591f27fb88f0b20b2a47ef7
 predecessor: "Accepted frozen WO-0151 E2 implementation plus exact-head run #741 functional/static success, with the sole coverage-only failure carried to paired E2/E3 closeout"
-implementation_authority: "GRANTED — test-only E3 implementation after exact R2-R3 independent ACCEPT"
+implementation_authority: "GRANTED AFTER ACCEPTANCE-PUBLICATION COMMIT — test-only E3 implementation under exact R2-R5 only"
 activation_required: "SATISFIED — R2-R3 contract 881334b4af6acb566adc57c30a4199f0340129d244cc3d58536c8e7c109a9936, manifest ee5554bf4e6b380fa7c687324adba7f93168e56168fb84cedf519115e4b7c3f6, and independent ACCEPT result 8752e20fa0aba82885d1d49ae8eabca9901218f5659073adcb4324fa9b189a59 at P0=0/P1=0/P2=0"
+re_gate_required: "SATISFIED — R2-R5 contract 79c734b7c0a929d43aeca83ef00e797b7afc8d97754eb30f1c812b1dd5b3221e, manifest 3fbcffbec46dd43248a1a8b569df39880c96e9d539d5a84a07cf58fde19be946, and independent ACCEPT result f3c86daa71a36108bb2757f853d922e992c7c77eed4d7d7626b5e9091e3d5245 at P0=0/P1=0/P2=0"
+r2_r5_acceptance_commit: PENDING_WO0152_R2_R5_ACCEPTANCE_SHA_RECONCILIATION
 activated: 2026-08-07
 activation_commit: a3ceee237d8635f280bd6f200f492bef919170f9
 activation_push: "SUCCESS — normal git push reported a2b84ab..a3ceee2 to origin/codex/arch-reset-2026-07-r1; subsequent git ls-remote could not acquire Windows credentials, so no independent live-ref query is claimed"
@@ -79,6 +81,43 @@ This activation preserves WO-0151 in effective `REVIEW` and preserves run
 91.34%. The unchanged 93% threshold remains a paired E2/E3 exact-head Python
 3.11/3.12 closeout gate. E3 cannot declare M1 complete, M2-ready, or
 master-ready.
+
+### R2-R5 active re-gate - current posture
+
+The first permitted E3 controls now exist only as an uncommitted local baseline
+at `tests/execution_core/test_acquisition_stateful.py`. They established the
+R2-R3 raw-genesis and same-account sibling-history boundaries and are retained
+unchanged, but are not R2-R5 acceptance evidence. A focused constructibility
+pass found that the approved-mandate exception cannot both produce distinct
+A/B/C bindings and satisfy the required 32-generation no-market-stream-reuse
+trace under its one-site/no-loop wording. Under the user's 2026-08-07
+authorization, R2-R4 re-gated only the remaining E3 work around one fixed
+32-entry pre-genesis schedule and one statically bounded private mint loop.
+Its exact independent static result
+`48079e3b54beedddbb56382de2b05f49e6f887e2173c17d24e6131de0bce1889`
+returned `ACCEPT-WITH-CHANGES`, P0=0/P1=1/P2=0: the positive schedule cannot
+also mint the distinct sealed duplicate-stream probe needed to isolate the
+nonadjacent-reuse rule.
+
+Under the same standing in-flight root-correction authorization, R2-R5
+retains the 32-mandate schedule and every R2-R3/R2-R4 safeguard. It adds only
+one fixed zero-argument, pre-genesis negative-probe fixture with a separately
+bounded literal private mint call. The probe has fresh mandate/binding
+identities and deliberately repeats A's stream, so its named public A -> B ->
+A-stream route can distinguish stream reuse from ordinary duplicate-binding
+refusal. It creates no production, public API, runtime, controller, effect,
+claim, broker, or actor capability.
+
+The exact R2-R5 contract, manifest, and independent result now establish
+`ACCEPT` at P0=0/P1=0/P2=0: contract
+`79c734b7c0a929d43aeca83ef00e797b7afc8d97754eb30f1c812b1dd5b3221e`,
+manifest `3fbcffbec46dd43248a1a8b569df39880c96e9d539d5a84a07cf58fde19be946`,
+and result `f3c86daa71a36108bb2757f853d922e992c7c77eed4d7d7626b5e9091e3d5245`.
+WO-0152 remains `ACTIVE`; its exact test-only R2-R5 scope may resume only
+after this acceptance publication is committed and its exact SHA is reconciled
+in the durable records. R2-R3 acceptance and activation remain historical
+prerequisites; R2-R4 remains retained unaccepted evidence; none of their other
+fixture, boundedness, provenance, scope, or safety rules change.
 
 ## Authority pins
 
@@ -166,7 +205,7 @@ The activation-time RED artifact may define test-only trace builders, a specific
 schema-neutral trace codecs owned entirely by tests, instrumented boundedness fakes, and test-owned
 oracle/trace mutants. It must consume frozen E1/E2 public interfaces and projections. No private
 accessor, private-state snapshot, caller-shaped acquisition authority, production test seam,
-database fixture, or schema is allowed except for the three exact setup helpers
+database fixture, or schema is allowed except for the four exact setup helpers
 and one boundedness helper below.
 
 1. `_serving_environment_predecessor_fixture` may derive a fixed serving environment from public
@@ -175,9 +214,15 @@ and one boundedness helper below.
    `RequestBudget`. The R2 candidate may extend only that existing helper with one fixed,
    same-account, OTHER-symbol public generic-BUY/claim/venue/canonical-fact chain and, after its
    exact guards, one copied-authority literal venue installation from its final public transition.
-2. `_approved_acquisition_mandates_fixture` may call only
-   `app.execution_core.acquisition._mint_dual_mandate_binding` at one statically whitelisted
-   call site to return complete immutable fixed A/B/C approved-mandate inputs before genesis.
+2. `_approved_acquisition_mandates_fixture` is governed by the R2-R5 composite:
+   it may use one statically bounded pre-genesis loop and one lexical
+   `app.execution_core.acquisition._mint_dual_mandate_binding` call to return
+   only the fixed immutable 32-entry mandate schedule, with A/B/C first and
+   no caller-shaped configuration or other private access. R2-R5 additionally
+   permits only `_nonadjacent_duplicate_stream_probe_mandate_fixture`, a zero-argument pre-genesis
+   test-only fixture with one fixed literal private mint call that returns one
+   distinct `AcquisitionMandate` carrying A's stream solely for the named
+   public nonadjacent-reuse control.
 3. `_certified_terminal_parent_fixture` may, only after the public claim/discovery/
    terminal-observation lifecycle, construct one exact sealed parent closure and apply it through
    the existing internal venue transition under an isolated temporary certification hook. It must
@@ -285,15 +330,18 @@ No production source, app/store, app/broker, app/events, app/api, ui, .github, A
 architecture-decision change, migrations, SQL/DDL, database, persistence, runtime, broker/network,
 credential, M2, merge, deletion, or cleanup work is in scope. The named append-only
 docs/adr/ARCH-RESET-2026-07-RATIFICATION.md provenance index update is expressly allowed; no
-accepted ADR body may change. Except for the three exact named setup helpers and one test-only
-boundedness helper as amended by the R2/R2-R1/R2-R2/R2-R3 composite, no test may manufacture authority through private state, history scans,
+accepted ADR body may change. Except for the four exact named setup helpers and one test-only
+boundedness helper as amended by the R2/R2-R1/R2-R2/R2-R3/R2-R4/R2-R5 composite, no test may manufacture authority through private state, history scans,
 caller-shaped fixtures, or private production calls.
 
 ## Future gate, evidence, and stop conditions
 
-Activation requires the accepted E2 implementation, exact #741 functional/static evidence with its
+Activation required the accepted E2 implementation, exact #741 functional/static evidence with its
 coverage-only failure retained, the R2-R3 E3 RED/test plan with named failure controls, and an exact
-independent R2-R3 `ACCEPT` with P0=0/P1=0 under the authorized coverage-gate ordering amendment. E3
+independent R2-R3 `ACCEPT` with P0=0/P1=0; that documentation-only activation is retained. R2-R4
+independently returned `ACCEPT-WITH-CHANGES` with one nonconstructible duplicate-stream-probe P1;
+its documents and result are retained. Further E3 implementation now requires exact independent
+R2-R5 `ACCEPT` with P0=0/P1=0 under the authorized bounded-probe re-gate. E3
 closeout requires the named mutation/boundedness/stateful evidence, static/scope checks, a focused
 independent review, and paired E2/E3 unchanged exact-head Python 3.11/3.12 CI at the unchanged 93%
 coverage threshold. E3 alone cannot declare M1 complete. The frozen RED contract must define one
@@ -309,11 +357,11 @@ declare complete M1, master landing, or M2 readiness.
 
 [PKL_UPDATED, RESULT_SUMMARY_KEPT]
 
-## Machine-readable E3 R2-R3 scope
+## Machine-readable E3 R2-R5 scope
 
-These lists control the current R2-R3 documentation/preflight and the future
-test-only E3 activation. The reviewer-owned result files remain writable only
-by their independent seat.
+These lists control the current R2-R5 documentation/preflight and the resumed
+test-only E3 work after its independent acceptance. The reviewer-owned result
+files remain writable only by their independent seat.
 
 allowed_paths:
   - tests/execution_core/test_acquisition_stateful.py
@@ -364,6 +412,16 @@ allowed_paths:
   - work/review/REV-0059/WO-0152-RED-CANDIDATE-R2-R3-MANIFEST.md
   - work/review/REV-0059/request-r2-r3.md
   - work/review/REV-0059/result-r2-r3.md
+  - work/review/REV-0059/WO-0152-RED-R2-R4-MANDATE-SCHEDULE-REMEDIATION-DISPOSITION.md
+  - work/review/REV-0059/WO-0152-RED-CONTRACT-R2-R4.md
+  - work/review/REV-0059/WO-0152-RED-CANDIDATE-R2-R4-MANIFEST.md
+  - work/review/REV-0059/request-r2-r4.md
+  - work/review/REV-0059/result-r2-r4.md
+  - work/review/REV-0059/WO-0152-RED-R2-R5-DUPLICATE-STREAM-PROBE-REMEDIATION-DISPOSITION.md
+  - work/review/REV-0059/WO-0152-RED-CONTRACT-R2-R5.md
+  - work/review/REV-0059/WO-0152-RED-CANDIDATE-R2-R5-MANIFEST.md
+  - work/review/REV-0059/request-r2-r5.md
+  - work/review/REV-0059/result-r2-r5.md
   - work/review/REV-0059/activation-disposition.md
   - work/review/REV-0059/implementation-manifest.md
   - work/review/REV-0059/evidence.md

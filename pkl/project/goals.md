@@ -43,7 +43,12 @@ boundaries; the initial R2 candidate and R2-R2 candidate are retained unaccepted
 R2-R1 is retained `ACCEPT-WITH-CHANGES` evidence with P1=1. The accepted WO-0152 R2-R3 composite
 retains the same bounded environment-predecessor extension plus one public boundedness-tripwire
 static exception with its inherited fixture table made coherent. Documentation-only activation
-precedes the first E3 test source.
+preceded the first E3 test source. The first permitted public controls are retained as an
+uncommitted baseline; R2-R4 then independently retained one P1 because its
+positive 32-mandate schedule could not create a distinct sealed duplicate-stream
+probe. R2-R5 now independently `ACCEPT`ed at P0=0/P1=0; its documentation-only
+acceptance publication and exact SHA reconciliation precede further E3 test
+implementation, with no production/API/runtime boundary change.
  M2 and every
  runtime/persistence/cutover slice remain inactive. WO-0153
 has completed its bounded cleanup scope with environment-controlled deferred artifacts only; it
@@ -71,7 +76,12 @@ R2--R11-plus-R11-R1 composite, whose R11 base and R11 R1 correction are
 WO-0152 is ACTIVE only for its frozen test-only E3 scope: its R1 remediation 01 result retained one sibling-history
 bridge P1; the first R2 candidate and R2-R2 candidate are retained unaccepted, and R2-R1 retained
 one current-predicate P1. R2-R3 corrects only direct static-table contradictions under the same
-bounded environment-fixture extension and independently `ACCEPT`ed at P0=0/P1=0/P2=0. M2 and every runtime/persistence/cutover slice remain inactive.
+bounded environment-fixture extension and independently `ACCEPT`ed at P0=0/P1=0/P2=0. R2-R4's
+fixed positive 32-entry pre-genesis schedule is retained `ACCEPT-WITH-CHANGES`, P1=1, because it
+cannot also mint the distinct sealed duplicate-stream input required for a failure-capable
+nonadjacent-reuse control. R2-R5 replaces only that missing probe construction and independently
+`ACCEPT`ed at P0=0/P1=0; its documentation-only acceptance publication and exact SHA reconciliation
+precede remaining E3 test work. M2 and every runtime/persistence/cutover slice remain inactive.
 
 Historical E1 amendment (2026-08-05): the original REV-0057 successor is retained historical evidence.
 WO-0150's narrower R1/E2 boundary contract is independently accepted at P0=0/P1=0. E1 is limited
@@ -343,3 +353,28 @@ Roadmapping against an unverified codebase state repeats the failure mode Fable 
   `VenueRecoveryBook.effect` stays in the sixteen-member trap because it materializes retained
   contradiction history. R2-R3 corrects only the lexical exception table and replacement shapes;
   WO-0152 stays DRAFT until exact independent R2-R3 `ACCEPT` at P0=0/P1=0.
+- 2026-08-07: R2-R3 subsequently independently ACCEPTed and WO-0152 received its
+  documentation-only activation. The first permitted public E3 controls are retained as an
+  uncommitted local baseline. A constructibility pass then found the frozen one-lexical-mint/no-loop
+  A/B/C fixture cannot produce distinct sealed bindings or an ADR-compliant 32-generation serial
+  schedule. Under explicit R2-R4 authorization, the active work order pauses only further E3 test
+  expansion for the fixed-32-mandate pre-genesis schedule and bounded mint-loop re-gate. R2-R3
+  remains accepted historical evidence; all safety exclusions and the paired E2/E3 unchanged 93%
+  closeout remain unchanged.
+- 2026-08-07: Independent R2-R4 result
+  `48079e3b54beedddbb56382de2b05f49e6f887e2173c17d24e6131de0bce1889` returned
+  `ACCEPT-WITH-CHANGES`, P0=0/P1=1/P2=0. The fixed positive 32-entry schedule and its one bounded
+  loop mint remain retained, but cannot create the distinct sealed duplicate-stream A-probe needed
+  to make the public nonadjacent-reuse control failure-capable. Under standing in-flight
+  root-correction authority, R2-R5 adds only one fixed zero-argument pre-genesis test-only probe
+  fixture and separately bounded literal mint. E3 expansion remains paused pending exact R2-R5
+  independent ACCEPT at P0=0/P1=0; all exclusions and the paired E2/E3 unchanged 93% closeout
+  remain unchanged.
+- 2026-08-07: The exact R2-R5 duplicate-stream-probe packet independently `ACCEPT`ed at
+  P0=0/P1=0/P2=0: contract
+  `79c734b7c0a929d43aeca83ef00e797b7afc8d97754eb30f1c812b1dd5b3221e`, manifest
+  `3fbcffbec46dd43248a1a8b569df39880c96e9d539d5a84a07cf58fde19be946`, and result
+  `f3c86daa71a36108bb2757f853d922e992c7c77eed4d7d7626b5e9091e3d5245`. Only after the
+  docs-only acceptance publication and its exact SHA reconciliation may E3 test work resume. The
+  public duplicate-stream route remains an E2-disagreement detector, not an E3 production-change
+  authority; all exclusions and the paired E2/E3 unchanged 93% closeout remain unchanged.

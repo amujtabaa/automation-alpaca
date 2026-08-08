@@ -47,7 +47,13 @@ failed only the unchanged 93% coverage threshold at 91.34%; WO-0151 remains effe
  resolution: the initial R2 candidate and R2-R2 candidate are retained unaccepted, while R2-R1 is
 retained `ACCEPT-WITH-CHANGES` evidence with P1=1. R2-R3 accepted the same extension of the
 existing environment fixture plus a bounded public-materialization tripwire with coherent inherited
-fixture exceptions. Documentation-only activation precedes the first E3 test source.
+fixture exceptions. Documentation-only activation preceded the first E3 test source. The active
+R2-R4 re-gated only the nonconstructible fixed A/B/C one-mint fixture with a
+statically bounded fixed 32-entry pre-genesis schedule, but independently
+retained one P1 because that positive schedule cannot itself mint the distinct
+sealed duplicate-stream probe. R2-R5 replaces only that probe construction
+and independently `ACCEPT`ed at P0=0/P1=0; its documentation-only acceptance
+publication and exact SHA reconciliation precede remaining E3 test work.
  All three named setup fixtures and the boundedness tripwire remain test-only and grant no
  production authority. All M2/runtime/persistence work remains inactive.
 
@@ -71,8 +77,10 @@ WO-0151's locally verified implementation closeout is the sole product of the
 R2--R11-plus-R11-R1 composite. Its exact-head run #741 is functional/static success but
  coverage-only negative evidence; the unchanged 93% gate is deferred to paired E2/E3 closeout.
  WO-0152 is ACTIVE only for its named test-only scope after R2-R3 independently accepted the bounded
- sibling-history extension, public boundedness tripwire, and inherited fixture limits; M2 and all runtime/persistence work remain inactive until their
- applicable gates.
+ sibling-history extension, public boundedness tripwire, and inherited fixture limits. Its remaining
+ E3 work may resume after the R2-R5 documentation-only acceptance publication and SHA
+ reconciliation; M2 and all
+ runtime/persistence work remain inactive until their applicable gates.
 
 ## Rules / facts
 
@@ -249,3 +257,25 @@ Seam discipline is what makes the safety invariants structurally enforceable rat
   contains no source/test implementation. Normal push reported success; the later live `ls-remote`
   query could not acquire Windows credentials, so no independent live-ref claim is made. E3 test
   work remains barred until this SHA reconciliation itself is committed.
+- 2026-08-07: After the R2-R3 activation, the first public E3 controls established only a retained
+  local baseline. The one-lexical-mint/no-loop fixed A/B/C fixture is nonconstructible for distinct
+  sealed A/B/C bindings and for the ADR-required 32-generation no-market-stream-reuse proof.
+  R2-R4 replaces only that test-only configuration rule with one fixed literal 32-entry
+  pre-genesis schedule and one statically bounded mint loop. It preserves every R2-R3 environment,
+  terminal, boundedness, provenance, and safety rule; remaining E3 implementation awaits a fresh
+  exact independent ACCEPT at P0=0/P1=0.
+- 2026-08-07: Independent R2-R4 result
+  `48079e3b54beedddbb56382de2b05f49e6f887e2173c17d24e6131de0bce1889` returned
+  `ACCEPT-WITH-CHANGES`, P0=0/P1=1/P2=0. Its positive 32-mandate schedule remains bounded and
+  retained, but cannot build the distinct sealed A-stream-reuse probe needed to isolate the
+  no-reuse rule. R2-R5 adds only one fixed zero-argument pre-genesis test fixture and one
+  separately bounded literal mint for that probe. The 32-entry schedule, all R2-R3 safeguards,
+  M2/runtime exclusions, and paired E2/E3 unchanged 93% closeout remain controlling; further E3
+  implementation awaits exact independent R2-R5 ACCEPT at P0=0/P1=0.
+- 2026-08-07: The exact R2-R5 packet independently `ACCEPT`ed at P0=0/P1=0/P2=0: contract
+  `79c734b7c0a929d43aeca83ef00e797b7afc8d97754eb30f1c812b1dd5b3221e`, manifest
+  `3fbcffbec46dd43248a1a8b569df39880c96e9d539d5a84a07cf58fde19be946`, and result
+  `f3c86daa71a36108bb2757f853d922e992c7c77eed4d7d7626b5e9091e3d5245`. The docs-only
+  acceptance publication and exact SHA reconciliation precede further E3 test work. The accepted
+  probe provides a public detector for an E2 stream-ownership disagreement; it creates no E3
+  production authority. M2/runtime exclusions and paired E2/E3 93% closeout remain controlling.

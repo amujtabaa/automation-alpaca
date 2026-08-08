@@ -428,3 +428,29 @@
   could not acquire Windows credentials, so no independent live-ref assertion is made and no
   workaround was attempted. The SHA reconciliation must commit before E3 test work begins; paired
   E2/E3 93% exact-head CI remains mandatory.
+- 2026-08-07: After R2-R3 activation, the first permitted E3 public controls were preserved as an
+  uncommitted local baseline. A constructibility pass found the inherited one-lexical-mint/no-loop
+  A/B/C fixture cannot create distinct sealed bindings or a valid 32-generation no-market-stream-
+  reuse trace. Ameen authorized R2-R4 to replace only that fixture rule with one fixed immutable
+  32-entry pre-genesis schedule and one statically bounded mint loop. R2-R3 remains accepted
+  historical evidence; further E3 implementation pauses pending a fresh exact R2-R4 P0=0/P1=0
+  independent ACCEPT. No production/API, database/SQL/DDL, runtime, broker/network, credential,
+  CI workflow, M2, merge, deletion, cleanup, force-push, or rebase authority changes.
+- 2026-08-07: Independent R2-R4 preflight result
+  `48079e3b54beedddbb56382de2b05f49e6f887e2173c17d24e6131de0bce1889` returned
+  `ACCEPT-WITH-CHANGES`, P0=0/P1=1/P2=0. The fixed 32-entry positive schedule and its single loop
+  mint are retained; its all-unique streams cannot also create the fresh sealed duplicate-stream
+  input required for the named public A -> B -> A-stream control. Under the standing in-flight
+  root-correction authority, R2-R5 replaces only that probe-construction rule with one fixed
+  zero-argument pre-genesis negative-probe fixture and one separately bounded literal mint call.
+  Further E3 implementation pauses pending fresh exact R2-R5 P0=0/P1=0 independent ACCEPT; no
+  production/API, database/SQL/DDL, runtime, broker/network, credential, CI workflow, M2, merge,
+  deletion, cleanup, force-push, or rebase authority changes.
+- 2026-08-07: The exact R2-R5 duplicate-stream-probe documentation candidate independently
+  `ACCEPT`ed at P0=0/P1=0/P2=0: contract
+  `79c734b7c0a929d43aeca83ef00e797b7afc8d97754eb30f1c812b1dd5b3221e`, manifest
+  `3fbcffbec46dd43248a1a8b569df39880c96e9d539d5a84a07cf58fde19be946`, and result
+  `f3c86daa71a36108bb2757f853d922e992c7c77eed4d7d7626b5e9091e3d5245`. The acceptance
+  publication must commit and reconcile its exact SHA before E3 test expansion. The public
+  duplicate-stream control detects an E2 disagreement if current behavior admits it; it does not
+  authorize production change, and all existing exclusions and paired E2/E3 93% closeout remain.
