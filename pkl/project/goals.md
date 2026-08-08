@@ -472,3 +472,39 @@ Roadmapping against an unverified codebase state repeats the failure mode Fable 
   classification identifies a P0 successor/venue protection-cursor integrity gap. WO-0151 remains
   `REVIEW` pending a bounded root-cause re-gate; E3 may not alter the frozen detector or continue
   its proof batch. The paired exact-head 93% gate and all operational exclusions remain unchanged.
+- 2026-08-07: WO-0151 R13 is `DRAFT PRE-FLIGHT ONLY` for the independently classified E2 P0:
+  completed A-to-B successor admission must atomically replace the venue-owned A protection cursor
+  with a distinct B cursor before B is published. The proposed correction is private,
+  zero-economic, and authority-composed; it adds no public API, no state transfer, no scan, and no
+  ADR decision. R13 implementation remains ungranted until exact independent acceptance and
+  ratification. WO-0152 remains ACTIVE/PAUSED and the paired 93% exact-head gate remains required.
+- 2026-08-07: R13 now independently `ACCEPT`s at P0=0/P1=0/P2=0 and has exact user ratification:
+  contract `240fc0e1fba4b509cb9a8d5449777b889d43648751abd8cdce54672f89d63c90`, manifest
+  `923b23945627e87372e0f9d6e28255247cb3cbaaa4637b9a2cdb272425a5ec95`, and result
+  `a762764b1e48a663f2873b4dc017c4ee59fb0b67ced94195c12fc6875f46852d`. This is semantic
+  acceptance only. A separately reviewed records-only activation delta, documentation-only
+  publication, and exact-SHA reconciliation remain mandatory before R13 source/test work. WO-0152
+  remains ACTIVE/PAUSED; its frozen detector stays unchanged and the paired 93% exact-head gate
+  and all operating exclusions remain controlling.
+- 2026-08-07: The required cached diff gate then found one trailing Markdown hard-break in each
+  uncommitted original R13 manifest. The original semantic `ACCEPT`, ratification, and activation
+  review remain retained provenance but cannot authorize a clean publication. R13-R1 must create a
+  clean-stageable manifest, receive fresh independent `ACCEPT` and exact ratification, then repeat
+  the records-only activation sequence. The contract/root correction, frozen E3 detector, E3 pause,
+  paired 93% gate, and every operating exclusion remain unchanged.
+- 2026-08-08: The unchanged R13 contract and clean R13-R1 semantic packet now have exact user
+  ratification after independent `ACCEPT` at P0=0/P1=0/P2=0: contract
+  `240fc0e1fba4b509cb9a8d5449777b889d43648751abd8cdce54672f89d63c90`, clean manifest
+  `c05cddbc4d6d7d7cede2b893d6a3b287791eb25adc3015f7181fda5629fc9222`, and result
+  `71b7ff74f62bdc64f7f25cff5f8b047a30d82ebad961c0e2cdeb48f16638d1a5`. R13 source/test
+  authority remains ungranted pending a new clean records-only activation `ACCEPT`, documentation
+  publication, and exact publication-SHA reconciliation. The original format-blocked manifests
+  remain byte-stable and excluded; WO-0152 remains ACTIVE/PAUSED, its frozen detector remains
+  unchanged, and the paired 93% exact-head gate and all operating exclusions remain controlling.
+- 2026-08-08: The first R13-R1 records-only activation review returned
+  `ACCEPT-WITH-CHANGES`, P0=0/P1=1/P2=0, solely because its disposition allowed conditional edits
+  to regression suites outside the ratified five-path boundary. Activation R1 makes those suites
+  execution-only and limits edits exactly to `venue.py`, `authority.py`, `acquisition.py`,
+  `test_acquisition.py`, and `test_import_boundary.py`. Publication and implementation remain
+  inactive pending focused R1 acceptance and exact-SHA reconciliation; E3 stays paused/frozen and
+  the paired 93% exact-head gate remains unchanged.

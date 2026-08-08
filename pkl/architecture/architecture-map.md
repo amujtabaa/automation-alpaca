@@ -364,3 +364,36 @@ Seam discipline is what makes the safety invariants structurally enforceable rat
   authority-to-venue successor boundary; no public API, controller history scan, authority-side
   duplicate, runtime, persistence, or ADR change is implied. E3 is paused pending a fresh bounded
   E2 re-gate and unchanged detector confirmation.
+- 2026-08-07: R13 is a draft-only exact owner correction for that cursor mismatch: one private
+  venue proof and direct cursor transition bind completed-flat A, distinct B, unchanged execution,
+  and the exact authority successor-registration commitment. Authority must publish the rolled book
+  and B currentness atomically; ordinary venue transitions retain their no-mandate-change rule.
+  This preserves the public strict projector, direct bounded map access, one LIVE generation, and
+  no-transfer architecture. No R13 production authority exists before independent acceptance and
+  ratification.
+- 2026-08-07: R13's frozen semantic packet independently `ACCEPT`s at P0=0/P1=0/P2=0 and has
+  exact user ratification (contract `240fc0e1fba4b509cb9a8d5449777b889d43648751abd8cdce54672f89d63c90`,
+  manifest `923b23945627e87372e0f9d6e28255247cb3cbaaa4637b9a2cdb272425a5ec95`, result
+  `a762764b1e48a663f2873b4dc017c4ee59fb0b67ced94195c12fc6875f46852d`). The repair remains
+  private and no-transfer; a records-only activation delta, publication, and exact-SHA
+  reconciliation still gate all R13 source/test work. E3 stays paused with its frozen detector
+  unchanged; the paired 93% exact-head closeout and every operating exclusion remain intact.
+- 2026-08-07: The publication gate found one trailing Markdown hard-break in each uncommitted
+  original R13 manifest. Those exact artifacts, their independent results, and the original user
+  ratification are retained rather than rewritten. R13-R1 must provide a clean-stageable manifest,
+  fresh independent acceptance, and fresh exact ratification before a new records-only activation
+  sequence. No architecture, ownership, API, detector, or operating-boundary change is implied.
+- 2026-08-08: The clean R13-R1 semantic manifest
+  `c05cddbc4d6d7d7cede2b893d6a3b287791eb25adc3015f7181fda5629fc9222` and independent result
+  `71b7ff74f62bdc64f7f25cff5f8b047a30d82ebad961c0e2cdeb48f16638d1a5` now have exact user
+  ratification for unchanged R13 contract
+  `240fc0e1fba4b509cb9a8d5449777b889d43648751abd8cdce54672f89d63c90`. The architecture remains
+  the same private, zero-economic, no-transfer successor-cursor rollover. A new clean records-only
+  activation acceptance, publication, and exact-SHA reconciliation still gate source/test work.
+  The original format-blocked manifests stay immutable and excluded; E3 and its detector remain
+  paused and frozen through the bounded E2 acceptance and paired 93% closeout.
+- 2026-08-08: The first clean R13-R1 activation review found no architecture defect but retained
+  one P1 scope escape in prospective test-path wording. Activation R1 restores the exact boundary:
+  only the three owning production modules and two owning test modules may change; the authority,
+  venue, and protection regression suites are execution-only. Any new edit path requires a new
+  exact freeze and review. The private zero-economic no-transfer architecture is unchanged.

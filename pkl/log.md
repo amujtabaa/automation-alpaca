@@ -555,3 +555,32 @@
 - 2026-08-07: Exact local commit `c3d8b0a16fd1dd525ff1c404b4044f4733844166` records only the
   B-first-fill FR-08 documentation/evidence freeze. The failing detector remains unstaged at its
   recorded source SHA; this reconciliation neither implements E2 remediation nor resumes E3.
+- 2026-08-07: WO-0151 R13 was opened for documentation-only RED preflight of atomic
+  serial-successor protection-cursor rollover. The independently classified E2 P0 requires a
+  private, zero-economic venue cursor proof bound to the exact successor registration and composed
+  before B currentness publication. No source/test implementation, ADR change, E3 resumption, or
+  operational authority is granted by this draft.
+- 2026-08-07: The frozen WO-0151 R13 semantic packet independently returned `ACCEPT`,
+  P0=0/P1=0/P2=0 (contract `240fc0e1fba4b509cb9a8d5449777b889d43648751abd8cdce54672f89d63c90`,
+  manifest `923b23945627e87372e0f9d6e28255247cb3cbaaa4637b9a2cdb272425a5ec95`, result
+  `a762764b1e48a663f2873b4dc017c4ee59fb0b67ced94195c12fc6875f46852d`) and received exact
+  user ratification. Its implementation remains inactive pending a separately reviewed records-only
+  activation delta, documentation publication, and exact-SHA reconciliation. WO-0152 remains
+  ACTIVE/PAUSED with its frozen detector unchanged; no operating authority or paired-coverage claim
+  is added.
+- 2026-08-07: The required cached diff gate found one trailing Markdown hard-break in each
+  uncommitted original R13 manifest. The exact R13 semantic/activation packets, independent
+  results, and original ratification remain retained provenance and are not rewritten. A clean
+  R13-R1 manifest, fresh independent acceptance, and fresh exact ratification now precede a new
+  records-only activation sequence. No source/test/E3/operating authority is added.
+- 2026-08-08: The user ratified unchanged WO-0151 R13 contract
+  `240fc0e1fba4b509cb9a8d5449777b889d43648751abd8cdce54672f89d63c90`, clean R13-R1 semantic
+  manifest `c05cddbc4d6d7d7cede2b893d6a3b287791eb25adc3015f7181fda5629fc9222`, and independent
+  `ACCEPT` result `71b7ff74f62bdc64f7f25cff5f8b047a30d82ebad961c0e2cdeb48f16638d1a5` at
+  P0=0/P1=0/P2=0. A fresh clean records-only activation review, publication, and exact-SHA
+  reconciliation remain mandatory before R13 source/test work. The two original format-blocked
+  manifests remain byte-stable and excluded; WO-0152 stays ACTIVE/PAUSED with its detector frozen.
+- 2026-08-08: Independent review of the first clean R13-R1 activation candidate returned
+  `ACCEPT-WITH-CHANGES`, P0=0/P1=1/P2=0. The sole P1 was prospective permission to edit extra
+  regression suites beyond the exact five-path R13 boundary. Activation R1 removes that wording,
+  makes those suites execution-only, and requires a focused exact-delta recheck before publication.

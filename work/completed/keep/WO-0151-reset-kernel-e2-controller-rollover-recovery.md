@@ -41,6 +41,11 @@ r12_r1_implementation_manifest: "work/review/REV-0058/WO-0151-R12-R1-IMPLEMENTAT
 r12_r1_implementation_result: "work/review/REV-0058/result-r12-r1-implementation.md (SHA-256 5631400bf4734c3781dc407b32182a497778a9cac8341f27ed170be433bfaa80; ACCEPT, P0=0/P1=0/P2=0)"
 r12_r1_implementation_commit: "a3c15aa79d5b3ac17b8cc7d850eea8da8d2fb972"
 r12_r1_implementation_authority: "CONSUMED - the five named source/test paths and directly necessary evidence/current records completed under accepted R12-R1 scope; every existing exclusion remains in force"
+r13_status: "R13-R1 SEMANTIC ACCEPTED AND RATIFIED - first activation candidate retained ACCEPT-WITH-CHANGES P1; focused exact-five-path activation R1 recheck is pending"
+r13_implementation_authority: "NOT GRANTED - no source/test work may begin until the clean R13-R1 activation packet independently ACCEPTs, publishes, and reconciles its exact publication SHA"
+r13_preflight: "SATISFIED - unchanged contract 240fc0e1fba4b509cb9a8d5449777b889d43648751abd8cdce54672f89d63c90, clean manifest c05cddbc4d6d7d7cede2b893d6a3b287791eb25adc3015f7181fda5629fc9222, and independent ACCEPT result 71b7ff74f62bdc64f7f25cff5f8b047a30d82ebad961c0e2cdeb48f16638d1a5 at P0=0/P1=0/P2=0"
+r13_ratification: "2026-08-08 - exact R13-R1 semantic packet ratified; original format-blocked R13 manifests remain immutable historical evidence"
+r13_activation_commit: "NONE - PENDING CLEAN R13-R1 RECORDS-ONLY ACTIVATION ACCEPTANCE, PUBLICATION, AND EXACT-SHA RECONCILIATION"
 ---
 
 # WO-0151 - Reset kernel E2: aggregate controller, successor admission, and mixed recovery
@@ -646,3 +651,85 @@ classification and a fresh re-gate of the owning E2 semantic center. This does
 not authorize production work yet, pre-approve a design, reopen the paired
 coverage gate, or alter any retained E3 evidence, operating exclusion, or
 exact-head closeout condition.
+
+## R13 atomic serial-successor protection-cursor re-gate -- 2026-08-07
+
+The frozen WO-0152 B-first-fill detector is now independently classified as an
+E2 P0. R13 is a documentation-only re-gate candidate for the smallest owning
+correction: a private, zero-economic, predecessor-linked venue cursor rollover
+from completed A to distinct B, composed atomically by the existing authority
+successor-registration owner before B is published. It neither transfers A's
+positive protection state nor weakens the ordinary mandate-identity projector.
+
+R13 may draft and independently preflight only the exact `REV-0060` packet and
+the directly necessary current records. Any production/test implementation
+requires a frozen R13 contract and manifest, an independent `ACCEPT` with
+P0=0/P1=0, explicit ratification, and a separate activation reconciliation.
+The frozen E3 detector remains unchanged downstream confirmation evidence;
+WO-0152 stays ACTIVE/PAUSED, and the paired exact-head 93% closure remains
+mandatory.
+
+## R13 semantic acceptance and human ratification -- 2026-08-07
+
+The exact R13 contract `240fc0e1fba4b509cb9a8d5449777b889d43648751abd8cdce54672f89d63c90`,
+semantic manifest `923b23945627e87372e0f9d6e28255247cb3cbaaa4637b9a2cdb272425a5ec95`,
+and independent result `a762764b1e48a663f2873b4dc017c4ee59fb0b67ced94195c12fc6875f46852d`
+now have the required independent `ACCEPT` and explicit user ratification.
+They remain immutable semantic authority only. A separate records-only
+activation-delta packet must independently accept, publish in one
+documentation-only commit, and reconcile that exact commit SHA before R13 may
+change its named production or test paths. WO-0152 remains ACTIVE/PAUSED; the
+frozen detector remains unstaged and unchanged until R13 implementation is
+independently accepted.
+
+## R13 packet-format re-freeze -- 2026-08-07
+
+Before publication, the required cached `git diff --check` gate found one
+trailing Markdown hard-break in the original R13 semantic manifest and one in
+its records-only activation manifest. The initial R13 contract, semantic
+manifest/result, human ratification, activation disposition/request/result,
+and all source/evidence remain retained unchanged; none may be normalized in
+place because their exact hashes are historical provenance.
+
+R13-R1 is therefore limited to a clean-stageable semantic manifest and fresh
+independent preflight. The R13 contract and root correction are unchanged.
+R13-R1 needs a fresh exact user ratification, followed by a fresh R13-R1
+records-only activation delta, before any named R13 production or test path
+becomes active. WO-0152 remains ACTIVE/PAUSED and the frozen detector remains
+unchanged.
+
+## R13-R1 clean semantic acceptance and ratification -- 2026-08-08
+
+The unchanged R13 contract
+`240fc0e1fba4b509cb9a8d5449777b889d43648751abd8cdce54672f89d63c90`, clean
+R13-R1 semantic manifest
+`c05cddbc4d6d7d7cede2b893d6a3b287791eb25adc3015f7181fda5629fc9222`, and
+independent result
+`71b7ff74f62bdc64f7f25cff5f8b047a30d82ebad961c0e2cdeb48f16638d1a5`
+now have exact user ratification after independent `ACCEPT` at
+P0=0/P1=0/P2=0.
+
+This is semantic authority only. R13 source/test implementation remains
+inactive until a new clean records-only R13-R1 activation packet independently
+accepts, publishes in a documentation-only commit, and reconciles that exact
+publication SHA. The two original R13 manifests remain byte-stable,
+format-blocked historical evidence and must not be normalized, staged, or
+rewritten. WO-0152 remains ACTIVE/PAUSED and its frozen B-first-fill detector
+remains unchanged.
+
+## R13-R1 activation scope remediation -- 2026-08-08
+
+The first clean records-only activation review returned
+`ACCEPT-WITH-CHANGES`, P0=0/P1=1/P2=0, because its disposition conditionally
+allowed edits to additional regression suites beyond the exact ratified
+five-path implementation boundary. The candidate and result remain retained
+evidence; they do not authorize publication or implementation.
+
+Activation R1 removes that prospective scope escape. Only `venue.py`,
+`authority.py`, `acquisition.py`, `test_acquisition.py`, and
+`test_import_boundary.py` may be edited for R13. The authority, venue, and
+protection regression suites are execution-only evidence. Any discovered need
+to edit another path requires a replacement exact scope and fresh review.
+Source/test authority remains ungranted pending focused independent R1
+acceptance, documentation publication, and exact publication-SHA
+reconciliation.
