@@ -688,3 +688,8 @@ and coverage-only negative evidence, and paired E2/E3 exact-head Python
 3.11/3.12 success at the unchanged 93% threshold remains mandatory. WO-0152
 remains ACTIVE but paused until its unchanged frozen detector is rerun and
 reconciled.
+
+The accepted bounded implementation is fixed at exact local commit
+`a3c15aa79d5b3ac17b8cc7d850eea8da8d2fb972`. This provenance reconciliation
+does not claim a push, external CI, detector run, paired coverage success, or
+any new authority.

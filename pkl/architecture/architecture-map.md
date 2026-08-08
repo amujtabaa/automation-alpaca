@@ -343,3 +343,6 @@ Seam discipline is what makes the safety invariants structurally enforceable rat
   iterator, controller-history collection, authority duplicate, scan, runtime, persistence, or
   ADR change. WO-0151 remains effective REVIEW and E3 remains paused through the unchanged frozen
   detector rerun and paired E2/E3 exact-head 93% closure.
+- 2026-08-07: The exact local commit for that accepted bounded repair is
+  `a3c15aa79d5b3ac17b8cc7d850eea8da8d2fb972`. It retains the same private ownership boundary and
+  does not establish external CI, runtime integration, or E3 confirmation.

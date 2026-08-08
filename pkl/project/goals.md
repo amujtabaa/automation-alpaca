@@ -450,3 +450,7 @@ Roadmapping against an unverified codebase state repeats the failure mode Fable 
   WO-0151 remains effective `REVIEW` pending paired E2/E3 exact-head 93% closure. WO-0152 remains
   ACTIVE but paused until its unchanged frozen detector is rerun and reconciled; no external CI,
   M2, merge, deletion, cleanup, or operating authority is claimed.
+- 2026-08-07: The independently accepted R12-R1 remediation is fixed at local commit
+  `a3c15aa79d5b3ac17b8cc7d850eea8da8d2fb972`. This SHA records only the bounded E2 map/registry
+  repair and evidence reconciliation. It does not change WO-0151's effective `REVIEW`, unpause
+  WO-0152, claim a detector rerun or external CI, or satisfy the paired E2/E3 93% closeout.

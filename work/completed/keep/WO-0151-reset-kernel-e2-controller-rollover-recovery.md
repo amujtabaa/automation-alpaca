@@ -34,11 +34,12 @@ r12_preflight: "SATISFIED - contract 36c7995deb480400a6573e005d47cc8c4878c8638eb
 r12_activation_commit: "a124b3cda866e2a5aaf99d4527e7b231dd4f675d"
 r12_r1_scope: "COMPLETE - only app/execution_core/fills.py, app/execution_core/acquisition.py, tests/execution_core/test_fill_position.py, tests/execution_core/test_acquisition.py, tests/execution_core/test_protection.py for bounded-map provenance, and directly necessary current records were used"
 r12_r1_preflight: "SATISFIED - contract 9cab228aa392292bc44a8758c60317201cf78388d6ec61848edcb3d1f0497a25 and independent ACCEPT result 5dfec4ce0425642148561801d69a035f0fb4ddc540fb7baf93d23747dddb581b at P0=0/P1=0/P2=0"
-r12_r1_status: "IMPLEMENTATION ACCEPTED - exact candidate and independent result recorded below; R12-R1 authority is consumed while WO-0151 remains effective REVIEW pending paired E2/E3 exact-head 93% closure"
+r12_r1_status: "IMPLEMENTATION ACCEPTED AND PUBLISHED - exact code/evidence commit reconciled below; R12-R1 authority is consumed while WO-0151 remains effective REVIEW pending paired E2/E3 exact-head 93% closure"
 r12_r1_activation_required: "SATISFIED - R2 activation manifest/result ACCEPT and exact documentation publication SHA 0beee5843304cafd3cb16d5644e14cb256fd17f7"
 r12_r1_activation_commit: "0beee5843304cafd3cb16d5644e14cb256fd17f7"
 r12_r1_implementation_manifest: "work/review/REV-0058/WO-0151-R12-R1-IMPLEMENTATION-CANDIDATE-MANIFEST.md (SHA-256 abe0df5d723df536263e99a72d1b612ffcf39032de71753aaee9a6304e8166f0)"
 r12_r1_implementation_result: "work/review/REV-0058/result-r12-r1-implementation.md (SHA-256 5631400bf4734c3781dc407b32182a497778a9cac8341f27ed170be433bfaa80; ACCEPT, P0=0/P1=0/P2=0)"
+r12_r1_implementation_commit: "a3c15aa79d5b3ac17b8cc7d850eea8da8d2fb972"
 r12_r1_implementation_authority: "CONSUMED - the five named source/test paths and directly necessary evidence/current records completed under accepted R12-R1 scope; every existing exclusion remains in force"
 ---
 
@@ -617,3 +618,8 @@ unchanged 93% threshold is still required. WO-0152 stays ACTIVE and paused
 until its unchanged frozen detector is rerun and reconciled. No E3 detector,
 external CI, runtime, persistence, database/SQL/DDL, broker/network, credential,
 M2, merge, deletion, cleanup, force-push, or rebase work is claimed here.
+
+The exact local code/evidence commit is
+`a3c15aa79d5b3ac17b8cc7d850eea8da8d2fb972`. This follow-on reconciliation
+records that immutable implementation SHA only; it does not claim a push,
+external CI, detector rerun, or paired coverage closeout.

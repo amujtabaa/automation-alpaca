@@ -524,3 +524,7 @@
   external CI, or E3 detector ran as part of this acceptance. WO-0151 remains REVIEW pending the
   unchanged paired E2/E3 93% exact-head gate, and WO-0152 remains ACTIVE but paused until its
   frozen detector reruns unchanged and is reconciled.
+- 2026-08-07: The accepted R12-R1 implementation and evidence were committed locally at
+  `a3c15aa79d5b3ac17b8cc7d850eea8da8d2fb972`. This exact-SHA reconciliation records no push,
+  external CI, E3 detector execution, or paired-coverage success. WO-0151 remains REVIEW and
+  WO-0152 remains ACTIVE but paused pending the unchanged detector confirmation.
