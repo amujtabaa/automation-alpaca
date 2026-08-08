@@ -533,3 +533,66 @@ that immutable publication SHA before resumed E3 work. It grants only the
 already active, test-only R2-R5 scope; every production/API/runtime, database/
 SQL/DDL, broker/network/credential, CI-workflow, M2, merge, deletion, cleanup,
 force-push, and rebase exclusion remains unchanged.
+
+## WO-0152 FR-08 return and WO-0151 R12 root remediation - 2026-08-07
+
+The first accepted WO-0152 R2-R5 public duplicate-stream control produced a
+real implementation disagreement with the accepted ADRs. The exact frozen
+evidence is `work/review/REV-0059/evidence.md`, SHA-256
+`d018c2bddeec79fd624d1fbcb80dde91e49b5535f5db737120d88deb750c6ee7`; its
+test snapshot was SHA-256
+`1a7e685f954dc8de4424ad926285d993e0e9958eae2ce1a2f60af5b03689eb22`.
+The control establishes a valid A -> B -> fresh binding carrying retired A's
+MarketStreamGenerationId. It expected `REFUSED` but the kernel returned
+`APPLIED` because successor admission checks only the immediately prior stream.
+
+This confirms a bounded WO-0151 E2 P1 against existing ADR-020 R2 and ADR-021
+R2 semantics; it does not amend either ADR or authorize broader architecture.
+WO-0152 remains active but is paused at its mandated FR-08 boundary. WO-0151
+is effectively reopened only for R12 RED preflight and, after a fresh exact
+independent P0=0/P1=0 `ACCEPT`, a limited pure remediation: one private,
+sealed, non-enumerable direct MarketStreamGenerationId-to-generation provenance
+index owned by `GenerationRegistry`. The index must be seeded at genesis,
+checked before successor registration, atomically extended on valid successors,
+and retained across record replacement. Controller history, authority duplicate
+state, scans, public APIs, runtime/persistence, and all previously excluded
+operational surfaces remain out of scope. The paired E2/E3 93% exact-head
+Python 3.11/3.12 closeout is unchanged.
+
+## WO-0151 R12 independent RED acceptance - 2026-08-07
+
+The exact R12 controller-lifetime stream-provenance packet independently
+`ACCEPT`ed with P0=0/P1=0/P2=0. Its contract SHA-256 is
+`36c7995deb480400a6573e005d47cc8c4878c8638eb8212a4227fa394a47c13e`, its
+manifest SHA-256 is
+`a36ff8dcae2bcfeb41bd312960439885cf0b46fcda8a4b0309d075cbb84ca8d0`, and
+its result SHA-256 is
+`0bd78212be49059fcc87ae02e23d08867c99944bf21ca1bf92af596612a99ac5`.
+
+This acceptance confirms the existing ADRs already authorize the root repair:
+one private immutable sealed direct MarketStreamGenerationId-to-generation
+route map within `GenerationRegistry`, direct candidate lookup before successor
+authority registration, atomic successor insertion, retention across record
+replacement, and fail-closed authentication. It introduces no new ADR,
+public API, controller collection, authority duplicate, scan, runtime,
+persistence, broker, database/SQL/DDL, CI-workflow, M2, merge, deletion,
+cleanup, force-push, or rebase authority. A documentation-only activation and
+exact-SHA reconciliation still precede implementation. WO-0152 remains paused
+until focused R12 implementation acceptance; paired E2/E3 exact-head 93%
+Python 3.11/3.12 closeout remains mandatory.
+
+## WO-0151 R12 activation-delta integrity correction - 2026-08-07
+
+The immutable R12 semantic manifest predates later current-posture and
+acceptance records. It is retained unchanged and does not silently cover them.
+Before publication, a separate exact activation-delta manifest and independent
+P0=0/P1=0 acceptance must therefore verify only the named work-order, PKL,
+ledger, ratification, and activation-disposition records. The correction also
+makes the top-level WO-0151 authority explicitly historical R11/R11-R1
+provenance; it grants no present R12 source/test authority.
+
+After that focused acceptance, exactly one documentation publication commit
+and one constrained exact-SHA reconciliation may occur. The reconciliation may
+only activate the frozen R12 `acquisition.py`/`test_acquisition.py` scope and
+record the first commit's SHA; it cannot alter R12 semantics, public/API scope,
+E3's FR-08 pause, the paired 93% closeout, or any existing safety exclusion.

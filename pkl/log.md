@@ -460,3 +460,28 @@
   R2-R5-controlled test work resumes. No production/API, database/SQL/DDL, runtime,
   broker/network, credential, CI-workflow, M2, merge, deletion, cleanup, force-push, or rebase
   authority changes.
+- 2026-08-07: The first accepted R2-R5 public duplicate-stream control froze a real E2 P1 at
+  `work/review/REV-0059/evidence.md` SHA-256
+  `d018c2bddeec79fd624d1fbcb80dde91e49b5535f5db737120d88deb750c6ee7`: two controls passed, but
+  an otherwise complete fresh successor after A -> B reusing A's MarketStreamGenerationId returned
+  APPLIED rather than REFUSED. WO-0152 is ACTIVE but paused under its FR-08 return-to-owner rule.
+  WO-0151 is effectively reopened for R12 documentation/preflight only. The bounded root repair is
+  one sealed non-enumerable direct stream-to-generation provenance index in GenerationRegistry;
+  it must be independently ACCEPTed before production/test remediation and before E3 resumes. No
+  new ADR, runtime, database/SQL/DDL, broker/network, credential, CI-workflow, M2, merge, deletion,
+  cleanup, force-push, or rebase authority is added.
+- 2026-08-07: WO-0151 R12 static preflight independently ACCEPTed at P0=0/P1=0/P2=0: contract
+  `36c7995deb480400a6573e005d47cc8c4878c8638eb8212a4227fa394a47c13e`, manifest
+  `a36ff8dcae2bcfeb41bd312960439885cf0b46fcda8a4b0309d075cbb84ca8d0`, result
+  `0bd78212be49059fcc87ae02e23d08867c99944bf21ca1bf92af596612a99ac5`. The accepted repair is
+  only a private sealed direct stream-to-generation provenance sub-index in GenerationRegistry and
+  focused E2 controls. A documentation-only activation and exact-SHA reconciliation must still
+  precede any source/test work. WO-0152 stays paused through independent R12 implementation
+  acceptance; no production/public API expansion, database/SQL/DDL, runtime, broker/network,
+  credential, CI-workflow, M2, merge, deletion, cleanup, force-push, or rebase authority is added.
+- 2026-08-07: Activation publication was stopped before commit because the immutable R12 semantic
+  manifest had listed the live status/provenance files before their post-acceptance edits. A narrow
+  activation-delta packet now freezes and independently reviews only those records, corrects the
+  top-level WO-0151 authority ambiguity, and permits only a later exact-SHA reconciliation. The
+  original R12 contract, manifest, result, E3 evidence, detector, E3 pause, and all exclusions
+  remain unchanged.

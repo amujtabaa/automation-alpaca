@@ -12,7 +12,7 @@ created: 2026-08-05
 branch: codex/arch-reset-2026-07-r1
 base_sha: f1a40d69f301ad7f594a61f202d3bd380607b98a
 predecessor: "Effectively CLOSED WO-0150: exact f1a40d69f301ad7f594a61f202d3bd380607b98a passed GitHub Actions run 31089203210 (#726) on Python 3.11 and 3.12"
-implementation_authority: "GRANTED — explicit remaining-M1 authorization after E1 external closure and ratified R11/R11-R1 RED composite"
+implementation_authority: "HISTORICAL R11/R11-R1 ONLY — no current R12 source/test authority; R12 is controlled exclusively by r12_implementation_authority and r12_activation_commit below"
 activation_required: "SATISFIED — ratified R11 contract 00f740561bceb036151ac984b45fd40ac6b4255e5b9c301d411ce7b90a7e526d plus R11 R1 correction d1931b28cad04f457d2e14233966d48789f758546950763e5a0417b07b80c2a9 independently ACCEPTed at P0=0/P1=0/P2=0 with affirmative route completeness; manifest e31c34027be77f61eb027d9e5dd601bb2e95a0fb87ba6f73eae37b6eec9110c8; result c3c04b6dd0b4c2c578b52ab49637be45bd31d3d79af6582c0949046993aa4d0b; initial R11 result is retained negative evidence only"
 activated: 2026-08-06
 activation_commit: 466e712b6f507ee165a7fc0c80e826fa8a35a710
@@ -27,6 +27,11 @@ implementation_manifest: "work/review/REV-0058/WO-0151-R11-R1-IMPLEMENTATION-REM
 implementation_result: "work/review/REV-0058/WO-0151-R11-R1-IMPLEMENTATION-REMEDIATION-01-RECHECK-RESULT.md (SHA-256 96d08654369894eeaeda0b1b22f8e869735d179daa336c5c3e69d7f19e0e68fd; ACCEPT, P0=0/P1=0/P2=0)"
 closeout_handoff: "work/review/REV-0058/WO-0151-R11-R1-IMPLEMENTATION-CLOSEOUT.md (SHA-256 971a18fab876d84e2e49a0cfe960e38828bc2f9853e187529e374f7ee58cdcdc)"
 external_exact_head: "REVIEW - exact run #741 on a2b84abc1914517cf591f27fb88f0b20b2a47ef7 passed functional/static Python 3.11/3.12 gates but failed only the unchanged 93% coverage ratchet at 91.34%; paired E2/E3 exact-head success is required before effective closure"
+r12_re_gate: "PENDING - bounded controller-lifetime MarketStreamGenerationId provenance remediation after WO-0152 R2-R5's public FR-08 trace admitted a fresh successor that reused retired A's stream"
+r12_status: "REVIEW - R12 semantic preflight is accepted, but the separately frozen activation-delta review and exact-SHA reconciliation remain required; retained CLOSED filing is historical"
+r12_implementation_authority: "NOT GRANTED - exact R12 activation-delta ACCEPT at P0=0/P1=0 and the explicitly allowed exact-SHA reconciliation are required before R12 acquisition.py or test_acquisition.py edits"
+r12_preflight: "SATISFIED - contract 36c7995deb480400a6573e005d47cc8c4878c8638eb8212a4227fa394a47c13e, manifest a36ff8dcae2bcfeb41bd312960439885cf0b46fcda8a4b0309d075cbb84ca8d0, and independent ACCEPT result 0bd78212be49059fcc87ae02e23d08867c99944bf21ca1bf92af596612a99ac5 at P0=0/P1=0/P2=0"
+r12_activation_commit: "PENDING_R12_ACTIVATION_DELTA_ACCEPTANCE_AND_SHA_RECONCILIATION"
 ---
 
 # WO-0151 - Reset kernel E2: aggregate controller, successor admission, and mixed recovery
@@ -446,3 +451,71 @@ WO-0152 is consequently active only for its named test-only E3 proof layer.
 This does not close WO-0151, alter the accepted E2 implementation, relax the
 paired unchanged-93% exact-head gate, or grant any production, runtime,
 database, broker/network, credential, M2, merge, deletion, or cleanup authority.
+
+## R12 nonadjacent market-stream provenance remediation -- re-gated 2026-08-07
+
+The earlier filed closeout and all R11/R11-R1 evidence above remain immutable
+historical evidence. A first public R2-R5 E3 control nevertheless exposed a
+specific E2 P1: an otherwise valid fresh successor with a distinct complete
+binding can reuse retired A's `MarketStreamGenerationId` after A -> B because
+the implementation compares only the immediate predecessor's stream. The
+frozen minimized trace is retained at
+`work/review/REV-0059/evidence.md`, SHA-256
+`d018c2bddeec79fd624d1fbcb80dde91e49b5535f5db737120d88deb750c6ee7`.
+
+The effective lifecycle is therefore **REOPENED FOR R12 RED PREFLIGHT ONLY**;
+it is not a retroactive rejection of the accepted R11/R11-R1 work and does not
+reopen unrelated E2 routes. R12 must correct the root cause in
+`GenerationRegistry`: a private immutable, sealed, non-enumerable direct
+market-stream-to-generation provenance index, seeded at genesis, checked
+before successor authority registration, atomically extended with a valid
+successor, and preserved on fact/economics record replacement. No controller
+retired-generation collection, authority-owned duplicate index, history scan,
+new public reader, API change, runtime/persistence work, or ADR change is
+permitted.
+
+Until a new exact R12 RED contract and manifest receive independent
+`ACCEPT` at P0=0/P1=0, no R12 production or test implementation may begin.
+The R12 scope is limited to `app/execution_core/acquisition.py`,
+`tests/execution_core/test_acquisition.py`, and directly necessary current
+work-order, PKL, ledger, provenance, and REV-0058 evidence records. R12 must
+prove an A -> B -> fresh-binding-with-A-stream refusal with exact
+nonmutation/no-registration behavior, an A -> B -> C distinct-stream success,
+retention across a generation-record replacement, malformed/missing current
+stream-provenance fail-closure, and named mutation controls. The paired
+E2/E3 93% exact-head closeout remains required; E3 stays active but paused at
+its FR-08 boundary. Existing runtime, database/SQL/DDL, broker/network,
+credential, M2, merge, deletion, cleanup, force-push, and rebase exclusions
+remain unchanged.
+
+For R12 only, the earlier `docs/adr` exclusion has one narrow append-only
+exception for `docs/adr/ARCH-RESET-2026-07-RATIFICATION.md` to record this
+provenance and later exact R12 result. No accepted ADR body or other ADR path
+may change. This exact current R12 section supersedes only conflicting older
+current-tense activation/closeout statements; all historical bodies remain
+retained unchanged.
+
+## R12 independent preflight accepted -- documentation activation pending 2026-08-07
+
+The exact R12 contract SHA-256
+`36c7995deb480400a6573e005d47cc8c4878c8638eb8212a4227fa394a47c13e`,
+manifest SHA-256
+`a36ff8dcae2bcfeb41bd312960439885cf0b46fcda8a4b0309d075cbb84ca8d0`, and
+fresh independent result SHA-256
+`0bd78212be49059fcc87ae02e23d08867c99944bf21ca1bf92af596612a99ac5`
+establish `ACCEPT`, P0=0/P1=0/P2=0. The review independently re-derived that
+one private sealed direct stream-to-generation route map is the smallest
+constructible correction; it preserves the empty registry identity, uses no
+scan or authority duplicate, distinguishes absent and malformed candidate
+routes, and treats an inauthentic current route as invalid state rather than
+fabricating a refusal.
+
+This acceptance satisfies R12 semantic RED preflight only. The listed current
+posture records changed after that immutable freeze, so a separate exact
+activation-delta manifest and independent acceptance must first verify their
+limited status/provenance corrections. Only then may its explicitly constrained
+exact-SHA reconciliation replace the R12 header placeholders and grant the
+frozen `acquisition.py`/`test_acquisition.py` scope. WO-0152 remains ACTIVE but
+paused until the implemented R12 candidate receives its own focused independent
+acceptance. The unchanged paired E2/E3 93% exact-head closeout, all operational
+exclusions, and the retained E3 negative evidence remain controlling.

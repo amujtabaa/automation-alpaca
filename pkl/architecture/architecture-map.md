@@ -284,3 +284,28 @@ Seam discipline is what makes the safety invariants structurally enforceable rat
   `ef5e53a5d49e189942545f52b7784ad7648fbf28` published the exact R2-R4/R2-R5
   packet. This append-only current-posture reconciliation permits only the active R2-R5 test
   module scope to resume; it changes no production architecture or M2 boundary.
+- 2026-08-07: R2-R5's first public A -> B -> fresh-binding-with-A-stream control exposed an E2
+  implementation nonconformance: `GenerationRegistry` keeps direct generation records but no
+  immutable controller-lifetime MarketStreamGenerationId ownership route, while successor admission
+  compares only against B. The exact failed trace is retained in
+  `work/review/REV-0059/evidence.md` SHA-256
+  `d018c2bddeec79fd624d1fbcb80dde91e49b5535f5db737120d88deb750c6ee7`. WO-0152 is ACTIVE but
+  implementation-paused at FR-08. WO-0151 R12 must install one sealed private direct stream-to-
+  generation provenance sub-index in GenerationRegistry and preserve it across record replacement;
+  no new ADR, controller history, authority duplicate, public reader, or runtime/persistence scope
+  is allowed. R12's fresh independent acceptance gates resumption of E3 and the paired 93% closeout
+  remains unchanged.
+- 2026-08-07: WO-0151 R12's exact stream-provenance RED contract independently ACCEPTed at
+  P0=0/P1=0/P2=0 (contract `36c7995deb480400a6573e005d47cc8c4878c8638eb8212a4227fa394a47c13e`,
+  manifest `a36ff8dcae2bcfeb41bd312960439885cf0b46fcda8a4b0309d075cbb84ca8d0`, result
+  `0bd78212be49059fcc87ae02e23d08867c99944bf21ca1bf92af596612a99ac5`). It confirms the root
+  repair belongs in GenerationRegistry: one private sealed direct stream-to-generation route map,
+  no public reader, controller history, authority duplicate, or scan. R12 source/test work remains
+  barred until a docs-only activation plus exact SHA reconciliation; E3 remains paused through its
+  later independent implementation acceptance and the paired 93% gate remains unchanged.
+- 2026-08-07: R12's original semantic freeze intentionally remains immutable. The post-freeze
+  status/provenance entries are instead governed by a separately reviewed activation-delta manifest
+  whose only possible follow-on is substitution of the first documentation activation SHA in exact
+  named fields. This avoids silently treating changed live posture as part of the prior semantic
+  review. The owner and architecture stay unchanged: one private GenerationRegistry route map,
+  no public reader, duplicate authority, controller history, or scan; E3 remains paused.

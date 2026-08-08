@@ -12,13 +12,14 @@ created: 2026-08-05
 branch: codex/arch-reset-2026-07-r1
 base_sha: a2b84abc1914517cf591f27fb88f0b20b2a47ef7
 predecessor: "Accepted frozen WO-0151 E2 implementation plus exact-head run #741 functional/static success, with the sole coverage-only failure carried to paired E2/E3 closeout"
-implementation_authority: "GRANTED AFTER ACCEPTANCE-PUBLICATION COMMIT — test-only E3 implementation under exact R2-R5 only"
+implementation_authority: "PAUSED — the accepted R2-R5 test-only E3 scope is stopped at FR-08 after its first public duplicate-stream control exposed an E2 P1; resume only after the exact WO-0151 R12 stream-provenance remediation independently ACCEPTs and lands"
 activation_required: "SATISFIED — R2-R3 contract 881334b4af6acb566adc57c30a4199f0340129d244cc3d58536c8e7c109a9936, manifest ee5554bf4e6b380fa7c687324adba7f93168e56168fb84cedf519115e4b7c3f6, and independent ACCEPT result 8752e20fa0aba82885d1d49ae8eabca9901218f5659073adcb4324fa9b189a59 at P0=0/P1=0/P2=0"
 re_gate_required: "SATISFIED — R2-R5 contract 79c734b7c0a929d43aeca83ef00e797b7afc8d97754eb30f1c812b1dd5b3221e, manifest 3fbcffbec46dd43248a1a8b569df39880c96e9d539d5a84a07cf58fde19be946, and independent ACCEPT result f3c86daa71a36108bb2757f853d922e992c7c77eed4d7d7626b5e9091e3d5245 at P0=0/P1=0/P2=0"
 r2_r5_acceptance_commit: ef5e53a5d49e189942545f52b7784ad7648fbf28
 activated: 2026-08-07
 activation_commit: a3ceee237d8635f280bd6f200f492bef919170f9
 activation_push: "SUCCESS — normal git push reported a2b84ab..a3ceee2 to origin/codex/arch-reset-2026-07-r1; subsequent git ls-remote could not acquire Windows credentials, so no independent live-ref query is claimed"
+e3_stop_evidence: "work/review/REV-0059/evidence.md (SHA-256 d018c2bddeec79fd624d1fbcb80dde91e49b5535f5db737120d88deb750c6ee7)"
 ---
 
 # WO-0152 - Reset kernel E3: acquisition-generation generated and stateful conformance
@@ -119,6 +120,46 @@ that exact SHA before further test work resumes. R2-R3 acceptance and activation
 remain historical prerequisites; R2-R4 remains retained unaccepted evidence;
 none of their other fixture, boundedness, provenance, scope, or safety rules
 change.
+
+### E3 FR-08 stop -- bounded WO-0151 R12 return
+
+The first R2-R5 public duplicate-stream control was run once against the
+frozen local test candidate and is recorded at
+`work/review/REV-0059/evidence.md`, SHA-256
+`d018c2bddeec79fd624d1fbcb80dde91e49b5535f5db737120d88deb750c6ee7`.
+Its exact test-file snapshot was SHA-256
+`1a7e685f954dc8de4424ad926285d993e0e9958eae2ce1a2f60af5b03689eb22`.
+Two pre-existing public controls passed; the new otherwise-valid A -> B ->
+fresh-binding-with-A-stream successor control failed because the kernel
+returned `APPLIED` where the contract required `REFUSED`.
+
+This is a real E2 semantic/provenance P1, not an E3 fixture, oracle, or
+coverage failure. `begin_acquisition_generation` currently compares a
+successor stream only with the immediately preceding mandate; no retained
+direct controller-lifetime stream-ownership index exists. Under FR-08, this
+work order remains `ACTIVE` but its implementation is **PAUSED**. The frozen
+trace and evidence are retained without alteration. E3 may not change
+production, weaken the control, hide the result, claim acceptance, or expand
+its proof batch. The bounded correction returns to WO-0151 R12: one sealed,
+non-enumerable direct market-stream-to-generation provenance index in
+`GenerationRegistry`, with fresh independent R12 acceptance before E3
+resumes. No new ADR is required because ADR-020 R2 and ADR-021 R2 already
+forbid market-stream reuse.
+
+### R12 preflight accepted -- E3 remains paused
+
+The bounded owner correction has now independently passed static preflight:
+R12 contract `36c7995deb480400a6573e005d47cc8c4878c8638eb8212a4227fa394a47c13e`,
+manifest `a36ff8dcae2bcfeb41bd312960439885cf0b46fcda8a4b0309d075cbb84ca8d0`, and
+result `0bd78212be49059fcc87ae02e23d08867c99944bf21ca1bf92af596612a99ac5`
+returned `ACCEPT`, P0=0/P1=0/P2=0. This is not a green implementation claim:
+the post-freeze current-posture records are now subject to a separately frozen
+R12 activation-delta review, followed only by its exact-SHA reconciliation.
+Those gates still precede `acquisition.py`/`test_acquisition.py` work. E3
+remains paused until the implemented R12 candidate independently accepts and
+the frozen public trace is rerun as confirmation. The R2-R5 detector, the
+unchanged 93% paired exact-head gate, and all safety exclusions remain
+unchanged.
 
 ## Authority pins
 
@@ -341,8 +382,11 @@ Activation required the accepted E2 implementation, exact #741 functional/static
 coverage-only failure retained, the R2-R3 E3 RED/test plan with named failure controls, and an exact
 independent R2-R3 `ACCEPT` with P0=0/P1=0; that documentation-only activation is retained. R2-R4
 independently returned `ACCEPT-WITH-CHANGES` with one nonconstructible duplicate-stream-probe P1;
-its documents and result are retained. Further E3 implementation now requires exact independent
-R2-R5 `ACCEPT` with P0=0/P1=0 under the authorized bounded-probe re-gate. E3
+its documents and result are retained. The R2-R5 preflight condition is
+satisfied, but further E3 implementation is paused by the frozen FR-08 return.
+It now requires the exact WO-0151 R12 implementation acceptance with P0=0/P1=0
+and reconciliation of that bounded E2 repair before its R2-R5 test work
+resumes. E3
 closeout requires the named mutation/boundedness/stateful evidence, static/scope checks, a focused
 independent review, and paired E2/E3 unchanged exact-head Python 3.11/3.12 CI at the unchanged 93%
 coverage threshold. E3 alone cannot declare M1 complete. The frozen RED contract must define one
@@ -360,8 +404,9 @@ declare complete M1, master landing, or M2 readiness.
 
 ## Machine-readable E3 R2-R5 scope
 
-These lists control the current R2-R5 documentation/preflight and the resumed
-test-only E3 work after its independent acceptance. The reviewer-owned result
+These lists control the retained R2-R5 documentation/preflight, its frozen
+FR-08 stop evidence, and the eventual resumed test-only E3 work after the
+bounded WO-0151 R12 repair. The reviewer-owned result
 files remain writable only by their independent seat.
 
 allowed_paths:
@@ -379,6 +424,15 @@ allowed_paths:
   - work/review/REV-0058/WO-0151-EXACT-HEAD-COVERAGE-ATTEMPT-02-DISPOSITION.md
   - work/review/REV-0058/WO-0151-EXACT-HEAD-RUN-741-OUTCOME.md
   - work/review/REV-0058/WO-0151-WO-0152-COVERAGE-GATE-ORDER-AMENDMENT.md
+  - work/review/REV-0058/WO-0151-R12-NONADJACENT-STREAM-REMEDIATION-DISPOSITION.md
+  - work/review/REV-0058/WO-0151-RED-CONTRACT-R12.md
+  - work/review/REV-0058/WO-0151-RED-CANDIDATE-R12-MANIFEST.md
+  - work/review/REV-0058/request-r12.md
+  - work/review/REV-0058/result-r12.md
+  - work/review/REV-0058/r12-activation-disposition.md
+  - work/review/REV-0058/WO-0151-R12-ACTIVATION-DELTA-MANIFEST.md
+  - work/review/REV-0058/request-r12-activation-delta.md
+  - work/review/REV-0058/result-r12-activation-delta.md
   - work/review/REV-0059/WO-0152-RED-CONTRACT.md
   - work/review/REV-0059/WO-0152-RED-CANDIDATE-MANIFEST.md
   - work/review/REV-0059/request.md

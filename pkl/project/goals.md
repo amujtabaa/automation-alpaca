@@ -386,3 +386,29 @@ Roadmapping against an unverified codebase state repeats the failure mode Fable 
   remains test-only; resumed work may add only R2-R5-controlled test evidence. If the named public
   duplicate-stream control admits its otherwise valid probe, the trace returns for bounded E2
   remediation rather than changing production under WO-0152.
+- 2026-08-07: The first accepted R2-R5 public duplicate-stream control did admit its otherwise
+  valid fresh A-stream probe after A -> B. The frozen evidence
+  `work/review/REV-0059/evidence.md` SHA-256
+  `d018c2bddeec79fd624d1fbcb80dde91e49b5535f5db737120d88deb750c6ee7` records two passing
+  baseline controls and the one expected-REFUSED/observed-APPLIED P1. WO-0152 remains ACTIVE but
+  paused under FR-08; WO-0151 is effectively reopened only for R12 RED preflight and bounded
+  controller-lifetime market-stream provenance remediation. The fix must be a sealed direct
+  GenerationRegistry index, not a controller collection, predecessor walk, history scan, or
+  authority duplicate. R12 independently accepted implementation is required before E3 resumes;
+  all existing exclusions and paired E2/E3 unchanged-93% exact-head closeout remain controlling.
+- 2026-08-07: WO-0151 R12 independently ACCEPTed the narrow root correction at P0=0/P1=0/P2=0:
+  contract `36c7995deb480400a6573e005d47cc8c4878c8638eb8212a4227fa394a47c13e`, manifest
+  `a36ff8dcae2bcfeb41bd312960439885cf0b46fcda8a4b0309d075cbb84ca8d0`, and result
+  `0bd78212be49059fcc87ae02e23d08867c99944bf21ca1bf92af596612a99ac5`. The accepted scope is one
+  private direct GenerationRegistry stream-provenance sub-index plus focused E2 controls; it adds
+  no public/authority/runtime surface. Documentation-only R12 activation and exact-SHA
+  reconciliation precede source/test work. WO-0152 remains ACTIVE but paused through independent
+  R12 implementation acceptance, then the frozen E3 detector may be rerun; paired E2/E3 93%
+  exact-head closeout and all exclusions remain unchanged.
+- 2026-08-07: The R12 semantic manifest had frozen the live posture records before the later
+  acceptance/status entries were drafted. Rather than publish an uncovered delta, WO-0151 now
+  requires a separate activation-delta manifest and independent P0=0/P1=0 acceptance for exactly
+  those records. Its only future reconciliation is the first documentation commit's exact SHA;
+  it cannot change the R12 contract, source/test scope, safety boundaries, E3 pause, or paired 93%
+  closeout. The WO-0151 top-level implementation authority is historical R11/R11-R1 provenance
+  only; R12 remains ungranted until this delta and SHA gate complete.
