@@ -12,7 +12,7 @@ created: 2026-08-05
 branch: codex/arch-reset-2026-07-r1
 base_sha: a2b84abc1914517cf591f27fb88f0b20b2a47ef7
 predecessor: "Accepted frozen WO-0151 E2 implementation plus exact-head run #741 functional/static success, with the sole coverage-only failure carried to paired E2/E3 closeout"
-implementation_authority: "PAUSED - clean R13-R1 activation publication 36e69167af234f0f3c048a049e97130219fc954d is reconciled and exact-five-path E2 implementation is active; no further E3 implementation is authorized until bounded E2 implementation acceptance and unchanged detector confirmation complete; all production/runtime/operational exclusions remain in force"
+implementation_authority: "ACTIVE TEST-ONLY E3 - R13 implementation independently ACCEPTed P0=0/P1=0/P2=0 and the unchanged B-first-fill detector passed; only tests/execution_core/test_acquisition_stateful.py plus directly necessary E3 evidence/current records may change; all production/runtime/operational exclusions remain in force"
 activation_required: "SATISFIED — R2-R3 contract 881334b4af6acb566adc57c30a4199f0340129d244cc3d58536c8e7c109a9936, manifest ee5554bf4e6b380fa7c687324adba7f93168e56168fb84cedf519115e4b7c3f6, and independent ACCEPT result 8752e20fa0aba82885d1d49ae8eabca9901218f5659073adcb4324fa9b189a59 at P0=0/P1=0/P2=0"
 re_gate_required: "SATISFIED — R2-R5 contract 79c734b7c0a929d43aeca83ef00e797b7afc8d97754eb30f1c812b1dd5b3221e, manifest 3fbcffbec46dd43248a1a8b569df39880c96e9d539d5a84a07cf58fde19be946, and independent ACCEPT result f3c86daa71a36108bb2757f853d922e992c7c77eed4d7d7626b5e9091e3d5245 at P0=0/P1=0/P2=0"
 r2_r5_acceptance_commit: ef5e53a5d49e189942545f52b7784ad7648fbf28
@@ -20,6 +20,7 @@ activated: 2026-08-07
 activation_commit: a3ceee237d8635f280bd6f200f492bef919170f9
 activation_push: "SUCCESS — normal git push reported a2b84ab..a3ceee2 to origin/codex/arch-reset-2026-07-r1; subsequent git ls-remote could not acquire Windows credentials, so no independent live-ref query is claimed"
 e3_stop_evidence: "work/review/REV-0059/evidence.md (SHA-256 d018c2bddeec79fd624d1fbcb80dde91e49b5535f5db737120d88deb750c6ee7)"
+e3_r13_detector_confirmation: "work/review/REV-0059/WO-0152-FR-08-R13-DETECTOR-CONFIRMATION.md (SHA-256 dd860117e38c045146869742ac8b6dc3797f404e39f9645bdd20d749258affc9; unchanged detector SHA-256 c89dc011c359d104d9a2ae851f0a649926e04ac596acf6da444eecbea1774186; one selected public trace passed, exit 0)"
 e3_detector_confirmation: "work/review/REV-0059/WO-0152-FR-08-R12-R1-DETECTOR-CONFIRMATION.md (SHA-256 757a6e564abce77193a3d03ab6bcf5ce519e6399062ec987109f384595ac078f; unchanged three-control rerun exit 0)"
 e3_baseline_format_normalization: "work/review/REV-0059/WO-0152-E3-BASELINE-FORMAT-NORMALIZATION.md (SHA-256 ac688bae5d510bb14190d8f2cd13ccb4f2fdb6871d238d3d7bd6ed968276f65a; same three controls rerun exit 0)"
 e3_baseline_commit: "2da9f3eab8f5f3febda964857714d0d178e4fb29 — detector confirmation and post-confirmation test-only format normalization"
@@ -624,6 +625,17 @@ allowed_paths:
   - work/review/REV-0060/WO-0151-R13-R1-ACTIVATION-DELTA-R1-MANIFEST.md
   - work/review/REV-0060/request-r13-r1-activation-r1.md
   - work/review/REV-0060/result-r13-r1-activation-r1.md
+  - work/review/REV-0060/WO-0151-R13-IMPLEMENTATION-EVIDENCE.md
+  - work/review/REV-0060/WO-0151-R13-IMPLEMENTATION-CANDIDATE-MANIFEST.md
+  - work/review/REV-0060/request-r13-implementation.md
+  - work/review/REV-0060/result-r13-implementation.md
+  - work/review/REV-0060/request-r13-implementation-r1.md
+  - work/review/REV-0060/result-r13-implementation-r1.md
+  - work/review/REV-0059/WO-0152-FR-08-R13-DETECTOR-CONFIRMATION.md
+  - work/review/REV-0059/WO-0152-E3-IMPLEMENTATION-EVIDENCE.md
+  - work/review/REV-0059/WO-0152-E3-IMPLEMENTATION-CANDIDATE-MANIFEST.md
+  - work/review/REV-0059/request-implementation.md
+  - work/review/REV-0059/result-implementation.md
   - work/review/REV-0059/handoff.md
 
 forbidden_paths:
@@ -636,3 +648,20 @@ forbidden_paths:
   - app/events/**
   - app/api/**
   - ui/**
+
+## R13 acceptance and E3 resumption -- 2026-08-08
+
+The exact R13 implementation manifest
+`b8fa0ab942ca32ec1a4aabb3c3f8d352ff33980437e72b456f26b5695ad11b8c`
+independently `ACCEPT`ed at P0=0/P1=0/P2=0 in result
+`2fead31818a1d826a3211a4dd2fa707656646d7a72cfb8a90f84c3b4f139b8fe`.
+The frozen public B-first-fill/late-retired-A detector then passed unchanged at
+source SHA-256
+`c89dc011c359d104d9a2ae851f0a649926e04ac596acf6da444eecbea1774186`.
+
+FR-08's R13 return is resolved. Test-only E3 implementation resumes under the
+accepted R2-R5 composite. The no-unpacking rule forbids starred, dynamic, or
+positive-schedule-derived construction; it does not forbid lexical
+destructuring of one owning fixed literal entry. WO-0151 stays effective
+`REVIEW`, and neither work order closes until the paired unchanged 93%
+exact-head Python 3.11/3.12 gate succeeds.

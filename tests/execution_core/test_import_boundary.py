@@ -7888,3 +7888,184 @@ def test_wo0150_r1_correlation_is_query_constructed_and_output_only() -> None:
         path,
         duplicate_top_level_trees,
     )
+
+
+def _r13_successor_cursor_boundary_violations(
+    production_trees: dict[Path, ast.Module],
+) -> list[str]:
+    """Keep R13's private cursor rollover at its two exact owner sites."""
+
+    bridge = "_authority_rollover_acquisition_protection_cursor"
+    predicate = "_authority_protection_cursor_matches_mandate"
+    venue_path = _PACKAGE_ROOT / "venue.py"
+    authority_path = _PACKAGE_ROOT / "authority.py"
+    acquisition_path = _PACKAGE_ROOT / "acquisition.py"
+    violations: list[str] = []
+    imports = Counter()
+    calls = Counter()
+    definitions = Counter()
+    forbidden_history = {
+        "effects",
+        "claims",
+        "owners",
+        "input_records",
+        "closure_history",
+        "reconciliations",
+        "execution_reconciliations",
+    }
+
+    for path, tree in production_trees.items():
+        parents = _ast_parent_map(tree)
+        exports: tuple[object, ...] = ()
+        for statement in tree.body:
+            if (
+                path == venue_path
+                and isinstance(statement, ast.Assign)
+                and any(
+                    isinstance(target, ast.Name) and target.id == "__all__"
+                    for target in statement.targets
+                )
+            ):
+                exports = tuple(ast.literal_eval(statement.value))
+        if path == venue_path and ({bridge, predicate} & set(exports)):
+            violations.append(f"{path}: R13 private seam exported")
+
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                for alias in node.names:
+                    if alias.name in {bridge, predicate}:
+                        imports[alias.name] += 1
+                        if not (
+                            path == authority_path
+                            and node.module == "venue"
+                            and alias.asname is None
+                        ):
+                            violations.append(
+                                f"{_display(path, node)} R13 private seam import"
+                            )
+            elif isinstance(node, ast.FunctionDef) and node.name in {
+                bridge,
+                predicate,
+            }:
+                definitions[node.name] += 1
+                if path != venue_path or parents.get(node) is not tree:
+                    violations.append(
+                        f"{_display(path, node)} R13 private seam definition"
+                    )
+                if node.name == bridge:
+                    if any(
+                        isinstance(member, (ast.For, ast.While, ast.comprehension))
+                        for member in ast.walk(node)
+                    ):
+                        violations.append(
+                            f"{_display(path, node)} R13 rollover traversal"
+                        )
+                    for member in ast.walk(node):
+                        if (
+                            isinstance(member, ast.Attribute)
+                            and member.attr in forbidden_history
+                        ):
+                            violations.append(
+                                f"{_display(path, member)} R13 history materialization"
+                            )
+            elif isinstance(node, ast.Call):
+                direct = node.func.id if isinstance(node.func, ast.Name) else None
+                if direct in {bridge, predicate}:
+                    calls[direct] += 1
+                    owner = _nearest_enclosing(node, parents, ast.FunctionDef)
+                    expected_owner = (
+                        "_register_acquisition_currentness"
+                        if direct == bridge
+                        else "project_acquisition_authority_context"
+                    )
+                    if not (
+                        path == authority_path
+                        and isinstance(owner, ast.FunctionDef)
+                        and owner.name == expected_owner
+                    ):
+                        violations.append(
+                            f"{_display(path, node)} R13 private seam caller"
+                        )
+                call_path = _static_attribute_path(node.func)
+                if call_path is not None and call_path[-1] in {
+                    "getattr",
+                    "import_module",
+                    "__import__",
+                }:
+                    if any(
+                        isinstance(argument, ast.Constant)
+                        and argument.value in {bridge, predicate}
+                        for argument in node.args
+                    ):
+                        violations.append(
+                            f"{_display(path, node)} R13 dynamic reach-through"
+                        )
+            elif isinstance(node, ast.Attribute) and node.attr in {bridge, predicate}:
+                violations.append(f"{_display(path, node)} R13 module reach-through")
+
+    for name in (bridge, predicate):
+        if definitions[name] != 1:
+            violations.append(f"R13 definition count differs:{name}")
+        if imports[name] != 1:
+            violations.append(f"R13 import count differs:{name}")
+        if calls[name] != 1:
+            violations.append(f"R13 call count differs:{name}")
+    if acquisition_path not in production_trees:
+        violations.append("R13 acquisition boundary was not inspected")
+    return violations
+
+
+def test_wo0151_r13_successor_cursor_bridge_is_private_bounded_and_failure_capable() -> (
+    None
+):
+    paths = {
+        _PACKAGE_ROOT / "venue.py",
+        _PACKAGE_ROOT / "authority.py",
+        _PACKAGE_ROOT / "acquisition.py",
+    }
+    production_trees = {
+        path: ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for path in paths
+    }
+    assert _r13_successor_cursor_boundary_violations(production_trees) == []
+
+    authority_path = _PACKAGE_ROOT / "authority.py"
+    acquisition_path = _PACKAGE_ROOT / "acquisition.py"
+    venue_path = _PACKAGE_ROOT / "venue.py"
+    rogue_acquisition = ast.parse(
+        acquisition_path.read_text(encoding="utf-8")
+        + "\nfrom .venue import _authority_rollover_acquisition_protection_cursor\n"
+        + "\ndef _rogue(book, execution, scope, old, new, registration):\n"
+        + "    return _authority_rollover_acquisition_protection_cursor(\n"
+        + "        book, execution, scope, old, new, registration\n"
+        + "    )\n",
+        filename=str(acquisition_path),
+    )
+    assert _r13_successor_cursor_boundary_violations(
+        {**production_trees, acquisition_path: rogue_acquisition}
+    )
+
+    duplicate_authority = ast.parse(
+        authority_path.read_text(encoding="utf-8")
+        + "\ndef _rogue_predicate(book, scope, mandate):\n"
+        + "    return _authority_protection_cursor_matches_mandate(\n"
+        + "        book, scope, mandate\n"
+        + "    )\n",
+        filename=str(authority_path),
+    )
+    assert _r13_successor_cursor_boundary_violations(
+        {**production_trees, authority_path: duplicate_authority}
+    )
+
+    exported_venue = ast.parse(
+        venue_path.read_text(encoding="utf-8").replace(
+            '    "VenueRecoveryTransition",\n',
+            '    "VenueRecoveryTransition",\n'
+            '    "_authority_rollover_acquisition_protection_cursor",\n',
+            1,
+        ),
+        filename=str(venue_path),
+    )
+    assert _r13_successor_cursor_boundary_violations(
+        {**production_trees, venue_path: exported_venue}
+    )

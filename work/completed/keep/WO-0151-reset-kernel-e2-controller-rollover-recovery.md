@@ -41,11 +41,16 @@ r12_r1_implementation_manifest: "work/review/REV-0058/WO-0151-R12-R1-IMPLEMENTAT
 r12_r1_implementation_result: "work/review/REV-0058/result-r12-r1-implementation.md (SHA-256 5631400bf4734c3781dc407b32182a497778a9cac8341f27ed170be433bfaa80; ACCEPT, P0=0/P1=0/P2=0)"
 r12_r1_implementation_commit: "a3c15aa79d5b3ac17b8cc7d850eea8da8d2fb972"
 r12_r1_implementation_authority: "CONSUMED - the five named source/test paths and directly necessary evidence/current records completed under accepted R12-R1 scope; every existing exclusion remains in force"
-r13_status: "ACTIVE FOR R13 IMPLEMENTATION - clean activation R1 ACCEPTed and documentation publication SHA reconciled; WO-0151 remains effective REVIEW pending implementation acceptance and paired E2/E3 closeout"
-r13_implementation_authority: "GRANTED ONLY FOR app/execution_core/venue.py, authority.py, acquisition.py, tests/execution_core/test_acquisition.py, tests/execution_core/test_import_boundary.py, and directly necessary R13 evidence/current records; all other test suites are execution-only"
+r13_status: "IMPLEMENTATION ACCEPTED - exact five-path R13 candidate independently ACCEPTed P0=0/P1=0/P2=0 and the unchanged WO-0152 detector passed; WO-0151 remains effective REVIEW pending paired E2/E3 exact-head 93% closeout"
+r13_implementation_authority: "CONSUMED - the exact five named source/test paths and directly necessary R13 evidence/current records completed under accepted R13-R1 scope; all other test suites remained execution-only"
 r13_preflight: "SATISFIED - unchanged contract 240fc0e1fba4b509cb9a8d5449777b889d43648751abd8cdce54672f89d63c90, clean manifest c05cddbc4d6d7d7cede2b893d6a3b287791eb25adc3015f7181fda5629fc9222, and independent ACCEPT result 71b7ff74f62bdc64f7f25cff5f8b047a30d82ebad961c0e2cdeb48f16638d1a5 at P0=0/P1=0/P2=0"
 r13_ratification: "2026-08-08 - exact R13-R1 semantic packet ratified; original format-blocked R13 manifests remain immutable historical evidence"
 r13_activation_commit: "36e69167af234f0f3c048a049e97130219fc954d - exact clean R13-R1 records-only publication reconciled"
+r13_implementation_manifest: "work/review/REV-0060/WO-0151-R13-IMPLEMENTATION-CANDIDATE-MANIFEST.md (SHA-256 b8fa0ab942ca32ec1a4aabb3c3f8d352ff33980437e72b456f26b5695ad11b8c)"
+r13_implementation_result: "work/review/REV-0060/result-r13-implementation.md (SHA-256 2fead31818a1d826a3211a4dd2fa707656646d7a72cfb8a90f84c3b4f139b8fe; ACCEPT, P0=0/P1=0/P2=0)"
+r13_implementation_clean_manifest: "work/review/REV-0060/WO-0151-R13-IMPLEMENTATION-CANDIDATE-MANIFEST.md (replacement SHA-256 d101bcbe3f5ba070f07c2de497ed2d61a5fb11580eeaa9a134eeeaf428a36df1; source/test bytes unchanged)"
+r13_implementation_clean_result: "work/review/REV-0060/result-r13-implementation-r1.md (SHA-256 8d931aba8a859f75e42a7b80cb2dd83df1e69783a8d23e9958af2fc57cade263; focused ACCEPT, P0=0/P1=0/P2=0)"
+r13_detector_confirmation: "work/review/REV-0059/WO-0152-FR-08-R13-DETECTOR-CONFIRMATION.md (SHA-256 dd860117e38c045146869742ac8b6dc3797f404e39f9645bdd20d749258affc9; unchanged detector SHA-256 c89dc011c359d104d9a2ae851f0a649926e04ac596acf6da444eecbea1774186; focused exit 0)"
 ---
 
 # WO-0151 - Reset kernel E2: aggregate controller, successor admission, and mixed recovery
@@ -747,3 +752,50 @@ directly necessary R13 evidence/current records. The authority, venue, and
 protection regression suites are execution-only. The frozen WO-0152 detector
 remains unchanged and E3 remains paused until focused R13 implementation
 acceptance and downstream detector confirmation.
+
+## R13 implementation candidate freeze -- 2026-08-08
+
+The exact five-path R13 implementation is locally green and awaiting one
+focused independent implementation acceptance. Fresh evidence records the
+intended RED failures, root implementation, failure-capable invalid-source and
+mutation controls, Ruff/Mypy/static gates, and a clean 1,382-test full pure
+execution-core run. The unchanged downstream detector now confirms both B's
+first fill and a late retired-A fill after B's first fill.
+
+The first full-suite attempt collected that frozen detector before the
+contract's intended post-acceptance ordering. This is retained as a disclosed
+process-ordering error and negative diagnostic run, not as candidate acceptance
+evidence. The detector remained byte-identical; a fresh complete rerun after
+the bounded E2 remediation is the controlling local success evidence.
+
+WO-0151 remains effectively `REVIEW`, WO-0152 remains `ACTIVE` but paused, and
+the paired unchanged 93% exact-head Python 3.11/3.12 gate remains unsatisfied.
+No source/test commit, push, closeout, or E3-resumption claim is made by this
+candidate freeze.
+
+## R13 implementation acceptance and detector confirmation -- 2026-08-08
+
+The exact five-path implementation manifest
+`b8fa0ab942ca32ec1a4aabb3c3f8d352ff33980437e72b456f26b5695ad11b8c`
+independently returned `ACCEPT`, P0=0/P1=0/P2=0, in result
+`2fead31818a1d826a3211a4dd2fa707656646d7a72cfb8a90f84c3b4f139b8fe`.
+The accepted implementation retains a private, zero-economic,
+predecessor-bound successor cursor rollover and adds no public API or history
+scan.
+
+After acceptance, the frozen WO-0152 detector was rerun byte-for-byte at
+SHA-256 `c89dc011c359d104d9a2ae851f0a649926e04ac596acf6da444eecbea1774186`.
+Its B-first-fill plus late retired-A public trace passed with exit 0. This
+consumes the bounded R13 implementation authority and resolves the local FR-08
+return. WO-0151 remains effective `REVIEW`; only paired E2/E3 unchanged 93%
+exact-head Python 3.11/3.12 success can close it.
+
+The cached publication gate caught one trailing Markdown hard-break in the
+implementation evidence and one in its manifest. The replacement manifest
+`d101bcbe3f5ba070f07c2de497ed2d61a5fb11580eeaa9a134eeeaf428a36df1`
+removes only those spaces, preserves all five source/test hashes, and treats
+mutable current records as downstream publication state rather than
+self-referential freeze inputs. Focused result
+`8d931aba8a859f75e42a7b80cb2dd83df1e69783a8d23e9958af2fc57cade263`
+returned `ACCEPT`, P0=0/P1=0/P2=0. Exact restaging and cached diff success gate
+publication.

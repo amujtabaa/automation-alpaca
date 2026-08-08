@@ -2370,6 +2370,8 @@ def _new_applied_successor_transition(
     refresh: _AcquisitionContextRefresh,
     authority: _ExecutionAuthorityState,
     receipt: _AcquisitionAuthorityReceipt,
+    venue_transitions: tuple[_VenueRecoveryTransition, ...],
+    rollover_required: bool,
 ) -> AcquisitionControllerTransition:
     """Assemble one atomic serial-generation retirement and registration."""
 
@@ -2379,9 +2381,10 @@ def _new_applied_successor_transition(
         or type(refresh) is not _AcquisitionContextRefresh
         or type(authority) is not _ExecutionAuthorityState
         or type(receipt) is not _AcquisitionAuthorityReceipt
+        or type(venue_transitions) is not tuple
+        or type(rollover_required) is not bool
         or refresh.authority is None
         or refresh.execution is None
-        or authority.venue is not refresh.authority.venue
         or receipt.operation is not _AcquisitionAuthorityOperation.REGISTER
         or predecessor_state.application_generation_id
         != state.application_generation_id
@@ -2397,9 +2400,26 @@ def _new_applied_successor_transition(
         or receipt.scope_execution_commitment != state.scope_execution_commitment
         or receipt.venue_commitment != state.venue_commitment
         or receipt.authority_commitment != state.authority_context_commitment
-        or receipt.ordered_venue_transition_commitments != ()
     ):
         raise ValueError("successor composite components do not exactly match")
+    if rollover_required:
+        if (
+            len(venue_transitions) != 1
+            or type(venue_transitions[0]) is not _VenueRecoveryTransition
+            or venue_transitions[0].disposition is not _VenueRecoveryDisposition.APPLIED
+            or venue_transitions[0].quantity_delta != 0
+            or venue_transitions[0].execution is not refresh.execution
+            or venue_transitions[0].book is not authority.venue
+            or receipt.ordered_venue_transition_commitments
+            != (venue_transitions[0]._protection_proof_commitment,)
+        ):
+            raise ValueError("completed successor rollover is not exact")
+    elif (
+        venue_transitions != ()
+        or authority.venue is not refresh.authority.venue
+        or receipt.ordered_venue_transition_commitments != ()
+    ):
+        raise ValueError("aborted successor must not roll venue authority")
     result = object.__new__(AcquisitionControllerTransition)
     for name, value in (
         ("state", state),
@@ -4225,13 +4245,35 @@ def begin_acquisition_generation(
         admission=admission,
     )
     receipt = registration.acquisition_receipt
+    rollover_transition = (
+        registration.venue_transitions[0]
+        if len(registration.venue_transitions) == 1
+        else None
+    )
+    rollover_is_exact = bool(
+        completed
+        and type(rollover_transition) is _VenueRecoveryTransition
+        and rollover_transition.disposition is _VenueRecoveryDisposition.APPLIED
+        and rollover_transition.quantity_delta == 0
+        and rollover_transition.execution is refresh.execution
+        and rollover_transition.book is registration.state.venue
+        and receipt is not None
+        and receipt.ordered_venue_transition_commitments
+        == (rollover_transition._protection_proof_commitment,)
+    )
+    aborted_is_exact = bool(
+        aborted
+        and registration.venue_transitions == ()
+        and receipt is not None
+        and receipt.ordered_venue_transition_commitments == ()
+    )
     if (
         registration.disposition is not _AuthorityDisposition.APPLIED
         or type(registration.state) is not _ExecutionAuthorityState
         or receipt is None
         or registration.acquisition_claim_receipt is not None
         or registration.created_effect_ids != ()
-        or registration.venue_transitions != ()
+        or not (rollover_is_exact or aborted_is_exact)
     ):
         return _new_refused_successor_transition(
             state=state,
@@ -4298,6 +4340,8 @@ def begin_acquisition_generation(
         refresh=refresh,
         authority=registration.state,
         receipt=receipt,
+        venue_transitions=registration.venue_transitions,
+        rollover_required=completed,
     )
 
 
@@ -4622,9 +4666,26 @@ def reduce_acquisition_controller(
     if fact_preemption is not None:
         try:
             for venue_transition in applied.venue_transitions:
-                protection_transition = _reduce_acquisition_mixed_recovery(
-                    effective_protection,
-                    venue_transition,
+                proof = venue_transition._protection_proof
+                same_mandate = bool(
+                    proof.predecessor_cursor.mandate_id
+                    == state._mandate.protection_mandate.mandate_id
+                    and proof.cursor.mandate_id
+                    == state._mandate.protection_mandate.mandate_id
+                )
+                protection_transition = (
+                    _reduce_position_protection(
+                        effective_protection,
+                        _project_protection_venue(
+                            venue_transition,
+                            state._mandate.protection_mandate,
+                        ),
+                    )
+                    if same_mandate
+                    else _reduce_acquisition_mixed_recovery(
+                        effective_protection,
+                        venue_transition,
+                    )
                 )
                 if (
                     protection_transition.disposition

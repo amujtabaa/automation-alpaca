@@ -849,3 +849,19 @@ This exact-SHA reconciliation activates only the five named R13 edit paths.
 All other source/test paths remain read-only; the three broader regression
 suites are execution-only evidence. E3 remains paused and its frozen detector
 remains unchanged until R13 implementation independently accepts.
+
+### R13 implementation acceptance and downstream confirmation -- 2026-08-08
+
+Exact implementation manifest SHA-256
+`b8fa0ab942ca32ec1a4aabb3c3f8d352ff33980437e72b456f26b5695ad11b8c`
+independently returned `ACCEPT`, P0=0/P1=0/P2=0, in result SHA-256
+`2fead31818a1d826a3211a4dd2fa707656646d7a72cfb8a90f84c3b4f139b8fe`.
+The frozen downstream WO-0152 detector then passed without source change at
+SHA-256 `c89dc011c359d104d9a2ae851f0a649926e04ac596acf6da444eecbea1774186`.
+
+This consumes the ratified R13 implementation authority and permits only the
+already accepted test-only WO-0152 E3 work to resume. It adds no architecture,
+public API, runtime, persistence, database, broker, network, credential, M2,
+master-landing, deletion, cleanup, force-push, or rebase authority. Paired
+unchanged 93% exact-head Python 3.11/3.12 success remains mandatory before M1
+closeout.

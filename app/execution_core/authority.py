@@ -54,8 +54,10 @@ from .venue import (
     _authority_claim_effect,
     _authority_execution_pair_for_scope,
     _authority_effect_identity_conflicts,
+    _authority_protection_cursor_matches_mandate,
     _authority_request_acquisition_effect,
     _authority_request_effect,
+    _authority_rollover_acquisition_protection_cursor,
     _authority_stand_down_account_requested_effects,
     _authority_stand_down_requested_effect,
     _authority_symbol_flatten_ready,
@@ -2931,8 +2933,24 @@ def project_acquisition_authority_context(
         and scope.environment == exact.venue.scope.environment
         and scope.account == exact.venue.scope.account
     )
+    slot_key = _acquisition_scope_key(
+        exact.venue.scope.generation,
+        scope,
+    )
+    currentness = exact._acquisition_currentness_by_scope.get(slot_key)
+    expected_mandate_id = (
+        currentness.protection_mandate_id
+        if _acquisition_currentness_entry_is_authentic(currentness)
+        else None
+    )
+    protection_cursor_matches = _authority_protection_cursor_matches_mandate(
+        exact.venue,
+        scope,
+        expected_mandate_id,
+    )
     serving = bool(
         scope_matches
+        and protection_cursor_matches
         and venue_context.matches_current(
             exact.venue,
             execution,
@@ -3227,6 +3245,7 @@ def project_acquisition_admission(
             application_generation_id,
             position_scope,
         )
+        and authority_context._serving
         and authority_context.matches_current(exact, execution, venue_context)
         and manual_flatten is None
         and (
@@ -6105,8 +6124,38 @@ def _register_acquisition_currentness(
         )
         next_descriptors = _replaced(next_descriptors, slot_key, inactive)
         next_active = _replaced(next_active, slot_key, inactive)
+    venue_transitions: tuple[VenueRecoveryTransition, ...] = ()
+    next_venue = state.venue
+    if successor_slot and terminal_successor:
+        retained_entry = cast(_AcquisitionCurrentnessEntry, retained)
+        rollover = _authority_rollover_acquisition_protection_cursor(
+            state.venue,
+            execution,
+            entry.position_scope,
+            retained_entry.protection_mandate_id,
+            entry.protection_mandate_id,
+            registration.commitment,
+        )
+        if (
+            type(rollover) is not VenueRecoveryTransition
+            or rollover.disposition is not VenueRecoveryDisposition.APPLIED
+            or rollover.quantity_delta != 0
+            or rollover.execution is not execution
+            or not rollover._protection_proof.lineage_is_authentic
+            or rollover._protection_proof.source_binding != registration.commitment
+            or rollover._protection_proof_commitment
+            != rollover._protection_proof.commitment
+        ):
+            return _result(
+                state,
+                AuthorityDisposition.REFUSED,
+                AuthorityReason.VENUE_UNCERTAIN,
+            )
+        venue_transitions = (rollover,)
+        next_venue = rollover.book
     next_state = _state_with(
         state,
+        venue=next_venue,
         _acquisition_currentness_by_scope=next_currentness,
         _acquisition_descriptor_by_scope=next_descriptors,
         _acquisition_active_by_scope=next_active,
@@ -6152,12 +6201,15 @@ def _register_acquisition_currentness(
             predecessor_authority_context.authority_commitment
         ),
         authority_commitment=current_authority_context.authority_commitment,
-        ordered_venue_transition_commitments=(),
+        ordered_venue_transition_commitments=tuple(
+            transition._protection_proof_commitment for transition in venue_transitions
+        ),
         permit_commitment=registration.commitment,
     )
     return _result(
         next_state,
         AuthorityDisposition.APPLIED,
+        venue_transitions=venue_transitions,
         acquisition_receipt=receipt,
     )
 
@@ -7444,12 +7496,26 @@ def _mint_acquisition_fact_preemption(
         and view.waiting_buy_parent_count == 1
         and view.unknown_buy_effect_count == 0
     )
-    if not (
+    waiting_resolution = bool(
+        view.execution_binding_matches
+        and view.account_reconciliation_clear
+        and view.blocking_buy_effect_count == 1
+        and view.stand_downable_buy_count == 0
+        and view.target_exemptible_count == 0
+        and view.known_cancellable_buy_leg_count == 0
+        and view.known_cancel_pending_buy_leg_count == 0
+        and view.waiting_buy_parent_count == 1
+        and view.unknown_buy_effect_count == 1
+    )
+    if (
         fact_projection.predecessor_scope_execution_commitment
-        == entry.scope_execution_commitment
-        and fact_projection.predecessor_venue_commitment == entry.venue_commitment
-        and (stand_downable or cancellable)
+        != entry.scope_execution_commitment
+        or fact_projection.predecessor_venue_commitment != entry.venue_commitment
     ):
+        raise ValueError("fact preemption is not safely local")
+    if waiting_resolution:
+        return None
+    if not (stand_downable or cancellable):
         raise ValueError("fact preemption is not safely local")
     permit = _new_acquisition_exit_permit(
         input_id=input_id,

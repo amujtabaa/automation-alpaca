@@ -514,3 +514,13 @@ Roadmapping against an unverified codebase state repeats the failure mode Fable 
   are execution-only. E3 remains ACTIVE/PAUSED and its detector remains frozen until R13
   implementation independently accepts. WO-0151 remains effective REVIEW and the paired 93%
   Python 3.11/3.12 closeout remains mandatory.
+- 2026-08-08: Exact R13 implementation manifest
+  `b8fa0ab942ca32ec1a4aabb3c3f8d352ff33980437e72b456f26b5695ad11b8c`
+  independently `ACCEPT`ed at P0=0/P1=0/P2=0 in result
+  `2fead31818a1d826a3211a4dd2fa707656646d7a72cfb8a90f84c3b4f139b8fe`.
+  The frozen WO-0152 B-first-fill/late-retired-A detector then passed unchanged
+  at SHA-256 `c89dc011c359d104d9a2ae851f0a649926e04ac596acf6da444eecbea1774186`.
+  WO-0152 resumes test-only E3 work; WO-0151 remains effective REVIEW and the
+  paired unchanged 93% exact-head Python 3.11/3.12 gate remains the M1 closeout
+  condition. No runtime, persistence, broker, network, database, or M2
+  authority is added.

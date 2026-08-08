@@ -588,3 +588,11 @@
   commit `36e69167af234f0f3c048a049e97130219fc954d` published the clean R13-R1 packet and the normal
   branch push succeeded. This exact-SHA reconciliation activates only the five frozen R13 edit
   paths. E3 and its detector remain paused/frozen pending bounded implementation acceptance.
+- 2026-08-08: Exact R13 implementation manifest
+  `b8fa0ab942ca32ec1a4aabb3c3f8d352ff33980437e72b456f26b5695ad11b8c` independently returned
+  `ACCEPT`, P0=0/P1=0/P2=0, in result
+  `2fead31818a1d826a3211a4dd2fa707656646d7a72cfb8a90f84c3b4f139b8fe`. The byte-identical
+  WO-0152 B-first-fill/late-retired-A detector then passed at source SHA-256
+  `c89dc011c359d104d9a2ae851f0a649926e04ac596acf6da444eecbea1774186`. The bounded FR-08 return
+  is resolved and test-only E3 resumes. WO-0151 remains REVIEW; paired unchanged 93% exact-head
+  Python 3.11/3.12 success and all operating exclusions remain controlling.

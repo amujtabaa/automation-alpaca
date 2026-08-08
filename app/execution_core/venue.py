@@ -2751,6 +2751,18 @@ def _validate_registry_transition_chain(
         raise ValueError("registry transition chain head does not close exactly")
 
 
+class _ProtectionTransitionSourceKind(str, Enum):
+    """Private owner-selected source of one protection cursor transition."""
+
+    ORDINARY = "ORDINARY"
+    SERIAL_SUCCESSOR_ROLLOVER = "SERIAL_SUCCESSOR_ROLLOVER"
+
+
+_ORDINARY_PROTECTION_TRANSITION_SOURCE_BINDING = _commit_parts(
+    b"execution-core/protection-transition-source/ordinary/v1"
+)
+
+
 @dataclass(frozen=True, slots=True)
 class _ProtectionCursor:
     """Per-position predecessor-linked protection projection cursor."""
@@ -2817,6 +2829,10 @@ class _ProtectionTransitionProof:
     command_commitment: bytes
     disposition: VenueRecoveryDisposition
     quantity_delta: int
+    source_kind: _ProtectionTransitionSourceKind = (
+        _ProtectionTransitionSourceKind.ORDINARY
+    )
+    source_binding: bytes = _ORDINARY_PROTECTION_TRANSITION_SOURCE_BINDING
 
     @property
     def commitment(self) -> bytes:
@@ -8136,6 +8152,178 @@ def _with_protection_cursor(
     return result
 
 
+def _authority_protection_cursor_matches_mandate(
+    book: VenueRecoveryBook,
+    position_scope: PositionScope,
+    expected_mandate_id: MandateId | None,
+) -> bool:
+    """Check one direct scope cursor without exposing or scanning its index."""
+
+    if (
+        type(book) is not VenueRecoveryBook
+        or type(position_scope) is not PositionScope
+        or (
+            expected_mandate_id is not None
+            and type(expected_mandate_id) is not MandateId
+        )
+    ):
+        return False
+    cursor = book._protection_cursor_by_scope.get(
+        _position_scope_index_key(position_scope)
+    )
+    if cursor is None:
+        return True
+    if type(cursor) is not _ProtectionCursor:
+        return False
+    return bool(
+        expected_mandate_id is None
+        or cursor.mandate_id is None
+        or cursor.mandate_id == expected_mandate_id
+    )
+
+
+def _authority_rollover_acquisition_protection_cursor(
+    book: VenueRecoveryBook,
+    execution: ExecutionSnapshot,
+    position_scope: PositionScope,
+    predecessor_mandate_id: MandateId,
+    successor_mandate_id: MandateId,
+    registration_commitment: bytes,
+) -> VenueRecoveryTransition | None:
+    """Mint one zero-economic completed-successor cursor transition."""
+
+    if (
+        type(book) is not VenueRecoveryBook
+        or type(execution) is not ExecutionSnapshot
+        or type(position_scope) is not PositionScope
+        or type(predecessor_mandate_id) is not MandateId
+        or type(successor_mandate_id) is not MandateId
+        or predecessor_mandate_id == successor_mandate_id
+        or type(registration_commitment) is not bytes
+        or len(registration_commitment) != 32
+        or execution.position.scope != position_scope
+        or execution.position.raw_quantity != 0
+        or execution.integrity is not PositionIntegrity.CONSISTENT
+        or execution.account_reconciliation_required
+        or not book._execution_pair_matches_fast(execution)
+    ):
+        return None
+    (
+        summary,
+        binding,
+        predecessor_cursor,
+        binding_matches,
+        reconciliation_clear,
+    ) = _protection_scope_values(book, execution, position_scope)
+    view = _venue_authority_view(book, execution, position_scope, None)
+    execution_checkpoint = VenueExecutionCheckpoint.from_execution(execution)
+    if not (
+        predecessor_cursor.mandate_id == predecessor_mandate_id
+        and predecessor_cursor.execution_commitment == execution.commitment
+        and predecessor_cursor.execution_checkpoint == execution_checkpoint
+        and binding is not None
+        and binding.position_scope == position_scope
+        and binding_matches
+        and reconciliation_clear
+        and view.execution_binding_matches
+        and view.account_reconciliation_clear
+        and view.blocking_effect_count == 0
+        and view.blocking_buy_effect_count == 0
+        and view.known_cancellable_buy_leg_count == 0
+        and view.known_cancel_pending_buy_leg_count == 0
+        and view.waiting_buy_parent_count == 0
+        and view.unknown_buy_effect_count == 0
+    ):
+        return None
+    book_commitment = _protection_book_commitment(book)
+    command_commitment = _serial_successor_rollover_command_commitment(
+        position_scope,
+        predecessor_mandate_id,
+        successor_mandate_id,
+        registration_commitment,
+    )
+    cursor = _next_protection_cursor(
+        predecessor_cursor,
+        position_scope,
+        successor_mandate_id,
+        book.scope,
+        book.scope,
+        book_commitment,
+        book_commitment,
+        execution.commitment,
+        execution.commitment,
+        execution_checkpoint,
+        execution_checkpoint,
+        summary,
+        summary,
+        binding,
+        binding,
+        binding_matches,
+        binding_matches,
+        reconciliation_clear,
+        reconciliation_clear,
+        command_commitment,
+        VenueRecoveryDisposition.APPLIED,
+        0,
+        _ProtectionTransitionSourceKind.SERIAL_SUCCESSOR_ROLLOVER,
+        registration_commitment,
+    )
+    proof = _ProtectionTransitionProof(
+        position_scope=position_scope,
+        predecessor_cursor=predecessor_cursor,
+        cursor=cursor,
+        predecessor_book_scope=book.scope,
+        book_scope=book.scope,
+        predecessor_book_commitment=book_commitment,
+        book_commitment=book_commitment,
+        predecessor_execution_commitment=execution.commitment,
+        execution_commitment=execution.commitment,
+        predecessor_execution_checkpoint=execution_checkpoint,
+        execution_checkpoint=execution_checkpoint,
+        predecessor_summary=summary,
+        summary=summary,
+        predecessor_binding=binding,
+        binding=binding,
+        predecessor_execution_binding_matches=binding_matches,
+        execution_binding_matches=binding_matches,
+        predecessor_account_reconciliation_clear=reconciliation_clear,
+        account_reconciliation_clear=reconciliation_clear,
+        command_commitment=command_commitment,
+        disposition=VenueRecoveryDisposition.APPLIED,
+        quantity_delta=0,
+        source_kind=_ProtectionTransitionSourceKind.SERIAL_SUCCESSOR_ROLLOVER,
+        source_binding=registration_commitment,
+    )
+    try:
+        resulting_book = _with_protection_cursor(
+            book,
+            position_scope,
+            cursor,
+            proof,
+        )
+    except (TypeError, ValueError):
+        return None
+    resulting_cursor = resulting_book._protection_cursor_by_scope.get(
+        _position_scope_index_key(position_scope)
+    )
+    if not (
+        resulting_book._execution_pair_matches_fast(execution)
+        and type(resulting_cursor) is _ProtectionCursor
+        and resulting_cursor.mandate_id == successor_mandate_id
+    ):
+        return None
+    result = object.__new__(VenueRecoveryTransition)
+    object.__setattr__(result, "book", resulting_book)
+    object.__setattr__(result, "execution", execution)
+    object.__setattr__(result, "disposition", VenueRecoveryDisposition.APPLIED)
+    object.__setattr__(result, "quantity_delta", 0)
+    object.__setattr__(result, "_protection_proof", proof)
+    object.__setattr__(result, "_protection_proof_commitment", proof.commitment)
+    object.__setattr__(result, "_acquisition_fact_proof", None)
+    object.__setattr__(result, "_acquisition_fact_proof_commitment", None)
+    return result
+
+
 def _with_execution_snapshot_index(
     book: VenueRecoveryBook,
     snapshots: _PersistentKeyMap[ExecutionSnapshot],
@@ -8503,6 +8691,31 @@ def _protection_command_commitment(item: object) -> bytes:
     )
 
 
+def _serial_successor_rollover_command_commitment(
+    position_scope: PositionScope,
+    predecessor_mandate_id: MandateId,
+    successor_mandate_id: MandateId,
+    registration_commitment: bytes,
+) -> bytes:
+    """Bind one venue-local cursor rollover to its authority registration."""
+
+    if (
+        type(position_scope) is not PositionScope
+        or type(predecessor_mandate_id) is not MandateId
+        or type(successor_mandate_id) is not MandateId
+        or predecessor_mandate_id == successor_mandate_id
+    ):
+        raise TypeError("serial successor rollover requires distinct exact mandates")
+    _require_digest("successor registration commitment", registration_commitment)
+    return _commit_parts(
+        b"execution-core/protection-cursor/serial-successor-rollover/v1",
+        _position_scope_index_key(position_scope),
+        _canonical_value_commitment(predecessor_mandate_id),
+        _canonical_value_commitment(successor_mandate_id),
+        registration_commitment,
+    )
+
+
 def _next_protection_cursor(
     predecessor: _ProtectionCursor,
     position_scope: PositionScope,
@@ -8526,6 +8739,10 @@ def _next_protection_cursor(
     command_commitment: bytes,
     disposition: VenueRecoveryDisposition,
     quantity_delta: int,
+    source_kind: _ProtectionTransitionSourceKind = (
+        _ProtectionTransitionSourceKind.ORDINARY
+    ),
+    source_binding: bytes = _ORDINARY_PROTECTION_TRANSITION_SOURCE_BINDING,
 ) -> _ProtectionCursor:
     return _ProtectionCursor(
         ordinal=predecessor.ordinal + 1,
@@ -8553,6 +8770,8 @@ def _next_protection_cursor(
             command_commitment,
             _canonical_value_commitment(disposition),
             _canonical_value_commitment(quantity_delta),
+            _canonical_value_commitment(source_kind),
+            _canonical_value_commitment(source_binding),
         ),
         mandate_id=mandate_id,
         execution_commitment=execution_commitment,
@@ -8613,6 +8832,10 @@ def _protection_transition_proof_is_authentic(
         return False
     if type(proof.quantity_delta) is not int:
         return False
+    if type(proof.source_kind) is not _ProtectionTransitionSourceKind:
+        return False
+    if type(proof.source_binding) is not bytes or len(proof.source_binding) != 32:
+        return False
     if proof.predecessor_book_scope != proof.book_scope:
         return False
     if proof.predecessor_execution_checkpoint.position_scope != proof.position_scope:
@@ -8646,11 +8869,44 @@ def _protection_transition_proof_is_authentic(
         or predecessor.execution_checkpoint != proof.predecessor_execution_checkpoint
     ):
         return False
-    if (
+    mandate_changed = bool(
         predecessor.mandate_id is not None
         and cursor.mandate_id != predecessor.mandate_id
-    ):
-        return False
+    )
+    if proof.source_kind is _ProtectionTransitionSourceKind.ORDINARY:
+        if (
+            proof.source_binding != _ORDINARY_PROTECTION_TRANSITION_SOURCE_BINDING
+            or mandate_changed
+        ):
+            return False
+    else:
+        if not (
+            mandate_changed
+            and predecessor.mandate_id is not None
+            and cursor.mandate_id is not None
+            and proof.predecessor_book_scope == proof.book_scope
+            and proof.predecessor_book_commitment == proof.book_commitment
+            and proof.predecessor_execution_commitment == proof.execution_commitment
+            and proof.predecessor_execution_checkpoint == proof.execution_checkpoint
+            and proof.predecessor_summary == proof.summary
+            and proof.predecessor_binding == proof.binding
+            and proof.predecessor_execution_binding_matches
+            == proof.execution_binding_matches
+            and proof.predecessor_account_reconciliation_clear
+            == proof.account_reconciliation_clear
+            and proof.execution_binding_matches
+            and proof.account_reconciliation_clear
+            and proof.disposition is VenueRecoveryDisposition.APPLIED
+            and proof.quantity_delta == 0
+            and proof.command_commitment
+            == _serial_successor_rollover_command_commitment(
+                proof.position_scope,
+                predecessor.mandate_id,
+                cursor.mandate_id,
+                proof.source_binding,
+            )
+        ):
+            return False
     advances = cursor != predecessor
     if not advances:
         return proof.disposition is not VenueRecoveryDisposition.APPLIED
@@ -8682,6 +8938,8 @@ def _protection_transition_proof_is_authentic(
         proof.command_commitment,
         proof.disposition,
         proof.quantity_delta,
+        proof.source_kind,
+        proof.source_binding,
     )
     return cursor == expected
 

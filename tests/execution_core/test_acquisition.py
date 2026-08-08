@@ -1438,6 +1438,8 @@ def test_wo0151_r11_serial_aborted_successors_advance_a_to_b_to_c() -> None:
     a_id = initialized.state._controller.live_generation_id
     assert a_id is not None
     b = advance(initialized, "r11-successor-b")
+    assert b._registration_receipt is not None
+    assert b._registration_receipt.ordered_venue_transition_commitments == ()
     assert b.disposition is acquisition.AcquisitionControllerDisposition.APPLIED
     assert b.protection is None
     assert b.state.lineage is initialized.state.lineage
@@ -1457,6 +1459,8 @@ def test_wo0151_r11_serial_aborted_successors_advance_a_to_b_to_c() -> None:
     )
 
     c = advance(b, "r11-successor-c")
+    assert c._registration_receipt is not None
+    assert c._registration_receipt.ordered_venue_transition_commitments == ()
     assert c.disposition is acquisition.AcquisitionControllerDisposition.APPLIED
     assert c.protection is None
     assert c.state.lineage is b.state.lineage
@@ -3620,7 +3624,7 @@ def test_wo0151_r11_non_tail_correct_enters_reconciliation_without_buy_service()
     assert refused.fresh_claim is None
 
 
-def _r11_completed_successor_fixture():
+def _r11_completed_successor_fixture(*, include_predecessor: bool = False):
     """Build one closed generation A and initialized successor generation B."""
 
     authority, scope, claimed, filled = _r8_current_generation_fill_transition(
@@ -3749,7 +3753,7 @@ def _r11_completed_successor_fixture():
         successor.state.registry.record(prior_generation).serving_class
         is acquisition.GenerationServingClass.RETIRED_UNSERVING
     )
-    return (
+    result = (
         authority,
         scope,
         relation,
@@ -3758,6 +3762,7 @@ def _r11_completed_successor_fixture():
         prior_generation,
         retired_stream_generation,
     )
+    return (*result, terminal_authority) if include_predecessor else result
 
 
 def test_wo0151_r11_completed_generation_retires_into_fresh_successor() -> None:
@@ -3783,6 +3788,365 @@ def test_wo0151_r11_completed_generation_retires_into_fresh_successor() -> None:
     )
     assert created.disposition is acquisition.AcquisitionControllerDisposition.APPLIED
     assert created.created_effect_id is not None
+
+
+def test_wo0151_r13_completed_successor_rolls_cursor_and_arms_first_b_fill() -> None:
+    """Completed A rolls one bound cursor before B's first canonical fill."""
+
+    registrations: list[object] = []
+    original_registration = acquisition._apply_acquisition_successor_registration
+
+    def _capture_registration(*args: object, **kwargs: object) -> object:
+        registration = original_registration(*args, **kwargs)
+        registrations.append(registration)
+        return registration
+
+    with patch.object(
+        acquisition,
+        "_apply_acquisition_successor_registration",
+        side_effect=_capture_registration,
+    ):
+        (
+            authority,
+            scope,
+            _,
+            _,
+            successor,
+            _,
+            _,
+            predecessor_authority,
+        ) = _r11_completed_successor_fixture(include_predecessor=True)
+    assert len(registrations) == 1
+    registration = registrations[0]
+    assert len(registration.venue_transitions) == 1
+    rollover = registration.venue_transitions[0]
+    receipt = successor._registration_receipt
+    assert receipt is not None
+    assert rollover.disposition is venue.VenueRecoveryDisposition.APPLIED
+    assert rollover.quantity_delta == 0
+    assert rollover.book is successor.venue
+    assert rollover.execution is successor.execution
+    assert successor.authority.venue is successor.venue
+    assert receipt.ordered_venue_transition_commitments == (
+        rollover._protection_proof_commitment,
+    )
+    assert venue._authority_protection_cursor_matches_mandate(
+        successor.venue,
+        scope,
+        successor.state._mandate.protection_mandate.mandate_id,
+    )
+
+    old_context = predecessor_authority.venue.project_acquisition_context(
+        successor.execution,
+        scope,
+    )
+    rebound = copy(successor.authority)
+    object.__setattr__(rebound, "venue", predecessor_authority.venue)
+    rebound_context = authority.project_acquisition_authority_context(
+        rebound,
+        successor.execution,
+        old_context,
+    )
+    assert not rebound_context._serving
+    rebound_admission = authority.project_acquisition_admission(
+        rebound,
+        successor.execution,
+        scope,
+    )
+    assert not rebound_admission.permits_successor(
+        authority_fixtures.GENERATION,
+        successor.execution,
+        scope,
+    )
+
+    create_refresh = authority.refresh_acquisition_context(
+        successor.authority,
+        successor.execution,
+        scope,
+    )
+    created = acquisition.create_acquisition_effect(
+        successor.state,
+        create_refresh,
+        None,
+        acquisition.AcquisitionEffectTerms(
+            quantity=authority_fixtures.Quantity(1),
+            limit_price=authority_fixtures.PRICE,
+            order_type=acquisition.AcquisitionOrderType.LIMIT,
+            evaluation_time=2,
+        ),
+        authority.AuthorityInputId("wo0151-r13-successor-create"),
+    )
+    assert created.disposition is acquisition.AcquisitionControllerDisposition.APPLIED
+    assert created.created_effect_id is not None
+
+    claim_refresh = authority.refresh_acquisition_context(
+        created.authority,
+        created.execution,
+        scope,
+    )
+    claimed = acquisition.claim_acquisition_effect(
+        created.state,
+        claim_refresh,
+        None,
+        created.created_effect_id,
+        authority.ClaimOccurrenceId("wo0151-r13-successor-claim"),
+        authority.AuthorityInputId("wo0151-r13-successor-claim"),
+    )
+    assert claimed.disposition is acquisition.AcquisitionControllerDisposition.APPLIED
+
+    leg = VenueLegKey(
+        broker=scope.broker,
+        environment=scope.environment,
+        account=scope.account,
+        order_id=OrderId("wo0151-r13-successor-leg"),
+    )
+    acknowledged = recovery_fixtures.apply_venue_recovery_input(
+        claimed.venue,
+        claimed.execution,
+        RecordTransportOutcome(
+            input_id=VenueInputId("wo0151-r13-successor-ack"),
+            effect_id=created.created_effect_id,
+            state=BrokerEffectState.ACKNOWLEDGED,
+        ),
+    )
+    discovered = recovery_fixtures.apply_venue_recovery_input(
+        acknowledged.book,
+        acknowledged.execution,
+        DiscoverVenueLeg(
+            input_id=VenueInputId("wo0151-r13-successor-discover"),
+            effect_id=created.created_effect_id,
+            leg_key=leg,
+            observation_id=VenueObservationId("wo0151-r13-successor-discover"),
+        ),
+    )
+    reviewed = recovery_fixtures.apply_venue_recovery_input(
+        discovered.book,
+        discovered.execution,
+        ObserveVenueStatus(
+            input_id=VenueInputId("wo0151-r13-successor-review"),
+            leg_key=leg,
+            status=VenueAttemptState.NEEDS_REVIEW,
+            observation_id=VenueObservationId("wo0151-r13-successor-review"),
+            cumulative_quantity=authority_fixtures.Quantity(0),
+        ),
+    )
+    fill = BrokerFillFact(
+        key=ExecutionFactKey(
+            broker=scope.broker,
+            environment=scope.environment,
+            account=scope.account,
+            source_event_id=SourceEventId("wo0151-r13-successor-fill"),
+        ),
+        scope=ExecutionScope(
+            broker=scope.broker,
+            environment=scope.environment,
+            account=scope.account,
+            order_id=leg.order_id,
+            symbol_id=scope.symbol_id,
+            side=ExecutionSide.BUY,
+        ),
+        root_fill_id=RootFillId("wo0151-r13-successor-root"),
+        quantity=authority_fixtures.Quantity(1),
+        price=authority_fixtures.PRICE,
+    )
+    filled = recovery_fixtures.apply_venue_recovery_input(
+        reviewed.book,
+        reviewed.execution,
+        RecordBrokerFillEvidence(
+            input_id=VenueInputId("wo0151-r13-successor-fill"),
+            effect_id=created.created_effect_id,
+            leg_key=leg,
+            prior_cumulative_quantity=authority_fixtures.Quantity(0),
+            resulting_cumulative_quantity=authority_fixtures.Quantity(1),
+            fact=fill,
+            evidence_digest=b"\xd1" * 32,
+        ),
+    )
+    rooted = acquisition.reduce_acquisition_controller(
+        claimed.state,
+        filled,
+        None,
+        claimed.authority,
+    )
+    protection = protection_fixtures._protection_module()
+    assert rooted.disposition is acquisition.AcquisitionControllerDisposition.APPLIED
+    assert rooted.protection is not None
+    assert rooted.protection.mandate == successor.state._mandate.protection_mandate
+    assert rooted.protection.policy is protection.ProtectionPolicy.FLOOR_ONLY
+    assert rooted.protection.raw_quantity == 1
+
+
+def test_wo0151_r13_rollover_sources_and_ordinary_proofs_fail_closed() -> None:
+    """Only one exact completed-flat source can mint the private rollover proof."""
+
+    (
+        authority,
+        scope,
+        _,
+        _,
+        successor,
+        _,
+        _,
+        predecessor_authority,
+    ) = _r11_completed_successor_fixture(include_predecessor=True)
+    rollover = successor.authority.venue._protection_transition_ledger.get(
+        successor.authority.venue._protection_transition_ledger.length - 1
+    )
+    assert type(rollover) is venue._ProtectionTransitionProof
+    old_mandate = rollover.predecessor_cursor.mandate_id
+    new_mandate = rollover.cursor.mandate_id
+    source_binding = rollover.source_binding
+    assert old_mandate is not None
+    assert new_mandate is not None
+    assert source_binding is not None
+
+    exact = venue._authority_rollover_acquisition_protection_cursor(
+        predecessor_authority.venue,
+        successor.execution,
+        scope,
+        old_mandate,
+        new_mandate,
+        source_binding,
+    )
+    assert exact is not None
+    assert exact.quantity_delta == 0
+    assert predecessor_authority.venue is not exact.book
+
+    other_scope = PositionScope(
+        broker=scope.broker,
+        environment=scope.environment,
+        account=scope.account,
+        symbol_id=authority_fixtures.OTHER_SYMBOL,
+    )
+    nonflat_execution = authority_fixtures.EXECUTION
+    unclear_execution = copy(successor.execution)
+    object.__setattr__(
+        unclear_execution,
+        "integrity",
+        type(successor.execution.integrity).EXECUTION_RECONCILIATION_REQUIRED,
+    )
+    invalid_sources = (
+        (other_scope, old_mandate, new_mandate, source_binding, successor.execution),
+        (scope, old_mandate, old_mandate, source_binding, successor.execution),
+        (scope, new_mandate, old_mandate, source_binding, successor.execution),
+        (scope, old_mandate, new_mandate, b"short", successor.execution),
+        (scope, old_mandate, new_mandate, source_binding, nonflat_execution),
+        (scope, old_mandate, new_mandate, source_binding, unclear_execution),
+    )
+    for (
+        candidate_scope,
+        candidate_old,
+        candidate_new,
+        candidate_binding,
+        candidate_execution,
+    ) in invalid_sources:
+        assert (
+            venue._authority_rollover_acquisition_protection_cursor(
+                predecessor_authority.venue,
+                candidate_execution,
+                candidate_scope,
+                candidate_old,
+                candidate_new,
+                candidate_binding,
+            )
+            is None
+        )
+
+    _, live_scope, claimed = _r8_claimed_first_effect()
+    live_successor = _successor_mandate(claimed.state._mandate, "r13-live-owner")
+    assert (
+        venue._authority_rollover_acquisition_protection_cursor(
+            claimed.authority.venue,
+            claimed.execution,
+            live_scope,
+            claimed.state._mandate.protection_mandate.mandate_id,
+            live_successor.protection_mandate.mandate_id,
+            b"\xd2" * 32,
+        )
+        is None
+    )
+
+    ordinary_rebound = replace(
+        rollover,
+        source_kind=venue._ProtectionTransitionSourceKind.ORDINARY,
+        source_binding=venue._ORDINARY_PROTECTION_TRANSITION_SOURCE_BINDING,
+    )
+    binding_rebound = replace(rollover, source_binding=b"\xd3" * 32)
+    assert not ordinary_rebound.lineage_is_authentic
+    assert not binding_rebound.lineage_is_authentic
+
+
+def test_wo0151_r13_binding_receipt_and_serving_mutations_are_failure_capable() -> None:
+    """Registration, exact-one receipt, and serving fences each kill their mutant."""
+
+    authority_module = authority_fixtures._authority_module()
+    original_bridge = authority_module._authority_rollover_acquisition_protection_cursor
+
+    def _wrong_registration_binding(*args: object) -> object:
+        return original_bridge(*args[:-1], b"\xd4" * 32)
+
+    with patch.object(
+        authority_module,
+        "_authority_rollover_acquisition_protection_cursor",
+        side_effect=_wrong_registration_binding,
+    ):
+        with pytest.raises(AssertionError):
+            _r11_completed_successor_fixture()
+
+    original_registration = acquisition._apply_acquisition_successor_registration
+
+    def _duplicate_rollover(*args: object, **kwargs: object) -> object:
+        result = copy(original_registration(*args, **kwargs))
+        if result.venue_transitions:
+            object.__setattr__(
+                result,
+                "venue_transitions",
+                result.venue_transitions + result.venue_transitions,
+            )
+        return result
+
+    with patch.object(
+        acquisition,
+        "_apply_acquisition_successor_registration",
+        side_effect=_duplicate_rollover,
+    ):
+        with pytest.raises(AssertionError):
+            _r11_completed_successor_fixture()
+
+    (
+        _,
+        scope,
+        _,
+        _,
+        successor,
+        _,
+        _,
+        predecessor_authority,
+    ) = _r11_completed_successor_fixture(include_predecessor=True)
+    rebound = copy(successor.authority)
+    object.__setattr__(rebound, "venue", predecessor_authority.venue)
+    old_context = predecessor_authority.venue.project_acquisition_context(
+        successor.execution,
+        scope,
+    )
+    assert not authority_module.project_acquisition_authority_context(
+        rebound,
+        successor.execution,
+        old_context,
+    )._serving
+    with patch.object(
+        authority_module,
+        "_authority_protection_cursor_matches_mandate",
+        return_value=True,
+    ):
+        assert authority_module.project_acquisition_authority_context(
+            rebound,
+            successor.execution,
+            old_context,
+        )._serving
+
+    restored = _r11_completed_successor_fixture()[4]
+    assert restored.disposition is acquisition.AcquisitionControllerDisposition.APPLIED
 
 
 def test_wo0151_r12_retains_retired_stream_route_after_record_replacement() -> None:

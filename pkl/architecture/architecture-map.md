@@ -371,6 +371,14 @@ Seam discipline is what makes the safety invariants structurally enforceable rat
   This preserves the public strict projector, direct bounded map access, one LIVE generation, and
   no-transfer architecture. No R13 production authority exists before independent acceptance and
   ratification.
+- 2026-08-08: The private R13 serial-successor protection-cursor rollover independently
+  `ACCEPT`ed at P0=0/P1=0/P2=0 under exact implementation manifest
+  `b8fa0ab942ca32ec1a4aabb3c3f8d352ff33980437e72b456f26b5695ad11b8c`.
+  The unchanged downstream B-first-fill/late-retired-A detector passed at source SHA-256
+  `c89dc011c359d104d9a2ae851f0a649926e04ac596acf6da444eecbea1774186`.
+  This preserves the existing owner boundaries: venue owns the private zero-economic cursor proof,
+  authority composes it atomically with successor currentness, and acquisition validates the bound
+  receipt. E3 resumes test-only; paired 93% exact-head closeout remains pending.
 - 2026-08-07: R13's frozen semantic packet independently `ACCEPT`s at P0=0/P1=0/P2=0 and has
   exact user ratification (contract `240fc0e1fba4b509cb9a8d5449777b889d43648751abd8cdce54672f89d63c90`,
   manifest `923b23945627e87372e0f9d6e28255247cb3cbaaa4637b9a2cdb272425a5ec95`, result
