@@ -649,3 +649,20 @@ review. Only after that review, documentation publication, and exact-SHA
 reconciliation may R12-R1 implement its four named paths. WO-0152 remains
 paused, and no operational exclusion or paired E2/E3 93% closeout condition is
 changed.
+
+## WO-0151 R12-R1 activation publication and reconciliation - 2026-08-07
+
+The clean R2 records-only activation candidate independently ACCEPTed at
+P0=0/P1=0/P2=0. Its result is retained at
+work/review/REV-0058/result-r12-r1-activation-r2.md, SHA-256
+ef5ba3af97bc76b2e1f77fa4bab0fc9d4677f5dfc7f8eb740c2e5c9dad688444.
+Documentation-only commit
+0beee5843304cafd3cb16d5644e14cb256fd17f7 published that exact packet and
+its normal branch push succeeded.
+
+This reconciliation grants implementation only for the R12-R1 internal
+presence-aware map primitive, existing private GenerationRegistry consumer,
+and focused fills/acquisition tests. It does not ratify the unaccepted former
+R12 working delta, resume E3, or alter any public API, runtime, persistence,
+database/SQL/DDL, broker/network, CI, M2, merge, deletion, cleanup,
+force-push, rebase, safety boundary, or paired 93% closeout condition.

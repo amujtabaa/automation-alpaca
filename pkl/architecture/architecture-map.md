@@ -329,3 +329,9 @@ Seam discipline is what makes the safety invariants structurally enforceable rat
   no public collection, history scan, or authority-side copy is introduced. A records-only
   activation delta must still be independently accepted before R12-R1 source/test work, and E3
   stays paused until later implementation acceptance.
+- 2026-08-07: R12-R1 R2 records-only activation independently ACCEPTed and documentation commit
+  0beee5843304cafd3cb16d5644e14cb256fd17f7 is reconciled. The implementation owner may now add
+  only the private presence-aware fixed-key primitive and its existing direct GenerationRegistry
+  consumer plus focused owning tests. This does not widen the architecture: no public map reader,
+  iterator, controller history, authority duplicate, scan, runtime, or persistence surface. E3
+  remains paused until focused R12-R1 implementation acceptance and frozen-detector confirmation.

@@ -34,8 +34,10 @@ r12_preflight: "SATISFIED - contract 36c7995deb480400a6573e005d47cc8c4878c8638eb
 r12_activation_commit: "a124b3cda866e2a5aaf99d4527e7b231dd4f675d"
 r12_r1_scope: "DRAFT - only app/execution_core/fills.py, app/execution_core/acquisition.py, tests/execution_core/test_fill_position.py, tests/execution_core/test_acquisition.py, and directly necessary current records"
 r12_r1_preflight: "SATISFIED - contract 9cab228aa392292bc44a8758c60317201cf78388d6ec61848edcb3d1f0497a25 and independent ACCEPT result 5dfec4ce0425642148561801d69a035f0fb4ddc540fb7baf93d23747dddb581b at P0=0/P1=0/P2=0"
-r12_r1_status: "SEMANTIC ACCEPTED - former R12 source/test authority remains suspended until a separate R12-R1 records-only activation-delta ACCEPT, documentation publication, and exact-SHA reconciliation"
-r12_r1_activation_required: "PENDING - records-only activation-delta manifest and independent P0=0/P1=0 ACCEPT required before source/test authority"
+r12_r1_status: "ACTIVE - exact records-only R2 activation accepted, documentation publication SHA reconciled below; authority remains limited to four named pure source/test paths"
+r12_r1_activation_required: "SATISFIED - R2 activation manifest/result ACCEPT and exact documentation publication SHA 0beee5843304cafd3cb16d5644e14cb256fd17f7"
+r12_r1_activation_commit: "0beee5843304cafd3cb16d5644e14cb256fd17f7"
+r12_r1_implementation_authority: "GRANTED - only app/execution_core/fills.py, app/execution_core/acquisition.py, tests/execution_core/test_fill_position.py, tests/execution_core/test_acquisition.py, and directly necessary evidence/current records; every existing exclusion remains in force"
 ---
 
 # WO-0151 - Reset kernel E2: aggregate controller, successor admission, and mixed recovery
@@ -563,3 +565,20 @@ source/test delta is preserved as unaccepted working context. No R12-R1 source
 or test implementation may proceed until a fresh immutable manifest receives
 independent `ACCEPT` at P0=0/P1=0 and a separate records-only activation delta
 reconciles its exact publication SHA. WO-0152 remains ACTIVE but paused.
+
+## R12-R1 activation publication and exact-SHA reconciliation -- 2026-08-07
+
+The semantic R12-R1 contract independently ACCEPTed at P0=0/P1=0/P2=0, and
+the clean R2 records-only activation candidate independently ACCEPTed at
+P0=0/P1=0/P2=0. The R2 result is retained at
+work/review/REV-0058/result-r12-r1-activation-r2.md, SHA-256
+ef5ba3af97bc76b2e1f77fa4bab0fc9d4677f5dfc7f8eb740c2e5c9dad688444.
+Documentation-only commit 0beee5843304cafd3cb16d5644e14cb256fd17f7 published the
+accepted R12-R1 activation packet, and its normal branch push succeeded.
+
+This exact-SHA reconciliation activates only the four R12-R1 pure paths:
+fills.py, acquisition.py, test_fill_position.py, and test_acquisition.py.
+The former R12 working delta remains unaccepted until it satisfies R12-R1
+RED-first controls and focused independent implementation acceptance. WO-0152
+remains ACTIVE but paused; frozen E3 evidence/detector, paired E2/E3 93%
+exact-head closeout, and all operational exclusions remain unchanged.

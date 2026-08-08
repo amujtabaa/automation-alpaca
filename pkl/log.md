@@ -508,3 +508,10 @@
   documentation publication, and exact-SHA reconciliation remain mandatory before R12-R1
   implementation. The E3 pause, frozen detector/evidence, paired 93% closeout, and all exclusions
   remain unchanged.
+- 2026-08-07: The R12-R1 clean R2 records-only activation candidate independently ACCEPTed at
+  P0=0/P1=0/P2=0. Documentation-only commit
+  0beee5843304cafd3cb16d5644e14cb256fd17f7 published the activation packet and is reconciled here.
+  It activates only the four named pure R12-R1 map/acquisition/test paths. The former R12 working
+  delta remains unaccepted pending RED-first evidence and focused implementation acceptance. E3
+  remains paused, frozen evidence/detector stays unchanged, and all exclusions plus paired 93%
+  exact-head closeout remain controlling.

@@ -435,3 +435,10 @@ Roadmapping against an unverified codebase state repeats the failure mode Fable 
   repair. R12-R1 source/test work is still ungranted pending a separately reviewed records-only
   activation delta, documentation publication, and exact-SHA reconciliation. WO-0152 remains
   paused and frozen; paired E2/E3 93% closeout and all exclusions remain unchanged.
+- 2026-08-07: The clean R12-R1 R2 records-only activation candidate independently ACCEPTed at
+  P0=0/P1=0/P2=0. Documentation-only commit
+  0beee5843304cafd3cb16d5644e14cb256fd17f7 published it and is now reconciled.
+  R12-R1 may implement only its four named pure map/acquisition/test paths; the current former-R12
+  working delta remains unaccepted until RED-first controls and focused implementation acceptance.
+  WO-0152 remains ACTIVE but paused through that acceptance and the unchanged detector rerun.
+  Paired E2/E3 93% closeout and every operational exclusion remain unchanged.
