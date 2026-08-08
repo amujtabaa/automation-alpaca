@@ -693,3 +693,35 @@ The accepted bounded implementation is fixed at exact local commit
 `a3c15aa79d5b3ac17b8cc7d850eea8da8d2fb972`. This provenance reconciliation
 does not claim a push, external CI, detector run, paired coverage success, or
 any new authority.
+
+## WO-0152 FR-08 detector confirmation after R12-R1 -- 2026-08-07
+
+The existing active test-only WO-0152 scope completed its required unchanged
+public detector rerun after the accepted R12-R1 correction. The detector and
+prior evidence remained exact at SHA-256
+`1a7e685f954dc8de4424ad926285d993e0e9958eae2ce1a2f60af5b03689eb22` and
+`d018c2bddeec79fd624d1fbcb80dde91e49b5535f5db737120d88deb750c6ee7`; all
+three controls passed with exit code 0. The confirmation record SHA-256 is
+`757a6e564abce77193a3d03ab6bcf5ce519e6399062ec987109f384595ac078f`.
+
+This resolves only the FR-08 return to the owning E2 rule and permits the
+already authorized test-only E3 work to resume. It adds no new authority and
+does not establish external CI, paired 93% coverage success, M1 completion,
+runtime/persistence, database/SQL/DDL, broker/network, M2, merge, deletion,
+cleanup, force-push, or rebase work.
+
+## WO-0152 E3 post-confirmation format normalization -- 2026-08-07
+
+After the immutable FR-08 confirmation, Ruff normalized only the now-resumed
+test-only E3 module. The current source SHA-256 is
+`a958cffd97f197adb768255c1480733cbb451f6abe79024d5026a5cf4a2fcb9f`; the same
+three public controls passed again. The original detector confirmation remains
+unchanged at SHA-256
+`757a6e564abce77193a3d03ab6bcf5ce519e6399062ec987109f384595ac078f`; the
+separate normalization record is SHA-256
+`ac688bae5d510bb14190d8f2cd13ccb4f2fdb6871d238d3d7bd6ed968276f65a`.
+
+This is a format-only test baseline normalization within the already active
+WO-0152 scope. It does not alter frozen evidence, provide production or
+operating authority, establish external CI or paired coverage, close WO-0151,
+complete M1, or affect any retained exclusion.

@@ -12,7 +12,7 @@ created: 2026-08-05
 branch: codex/arch-reset-2026-07-r1
 base_sha: a2b84abc1914517cf591f27fb88f0b20b2a47ef7
 predecessor: "Accepted frozen WO-0151 E2 implementation plus exact-head run #741 functional/static success, with the sole coverage-only failure carried to paired E2/E3 closeout"
-implementation_authority: "PAUSED — the accepted R2-R5 test-only E3 scope is stopped at FR-08 after its first public duplicate-stream control exposed an E2 P1; R12-R1 implementation commit a3c15aa79d5b3ac17b8cc7d850eea8da8d2fb972 is reconciled, but resume only after the frozen public detector reruns unchanged and its result is reconciled"
+implementation_authority: "GRANTED — the accepted R2-R5 test-only E3 scope resumed only after the unchanged frozen public detector passed at confirmation SHA 757a6e564abce77193a3d03ab6bcf5ce519e6399062ec987109f384595ac078f; all production/runtime/operational exclusions remain in force"
 activation_required: "SATISFIED — R2-R3 contract 881334b4af6acb566adc57c30a4199f0340129d244cc3d58536c8e7c109a9936, manifest ee5554bf4e6b380fa7c687324adba7f93168e56168fb84cedf519115e4b7c3f6, and independent ACCEPT result 8752e20fa0aba82885d1d49ae8eabca9901218f5659073adcb4324fa9b189a59 at P0=0/P1=0/P2=0"
 re_gate_required: "SATISFIED — R2-R5 contract 79c734b7c0a929d43aeca83ef00e797b7afc8d97754eb30f1c812b1dd5b3221e, manifest 3fbcffbec46dd43248a1a8b569df39880c96e9d539d5a84a07cf58fde19be946, and independent ACCEPT result f3c86daa71a36108bb2757f853d922e992c7c77eed4d7d7626b5e9091e3d5245 at P0=0/P1=0/P2=0"
 r2_r5_acceptance_commit: ef5e53a5d49e189942545f52b7784ad7648fbf28
@@ -20,6 +20,8 @@ activated: 2026-08-07
 activation_commit: a3ceee237d8635f280bd6f200f492bef919170f9
 activation_push: "SUCCESS — normal git push reported a2b84ab..a3ceee2 to origin/codex/arch-reset-2026-07-r1; subsequent git ls-remote could not acquire Windows credentials, so no independent live-ref query is claimed"
 e3_stop_evidence: "work/review/REV-0059/evidence.md (SHA-256 d018c2bddeec79fd624d1fbcb80dde91e49b5535f5db737120d88deb750c6ee7)"
+e3_detector_confirmation: "work/review/REV-0059/WO-0152-FR-08-R12-R1-DETECTOR-CONFIRMATION.md (SHA-256 757a6e564abce77193a3d03ab6bcf5ce519e6399062ec987109f384595ac078f; unchanged three-control rerun exit 0)"
+e3_baseline_format_normalization: "work/review/REV-0059/WO-0152-E3-BASELINE-FORMAT-NORMALIZATION.md (SHA-256 ac688bae5d510bb14190d8f2cd13ccb4f2fdb6871d238d3d7bd6ed968276f65a; same three controls rerun exit 0)"
 ---
 
 # WO-0152 - Reset kernel E3: acquisition-generation generated and stateful conformance
@@ -442,8 +444,32 @@ exclusions remain controlling.
 
 The accepted E2 remediation is fixed at local commit
 `a3c15aa79d5b3ac17b8cc7d850eea8da8d2fb972`. This records its exact local
-boundary only; it does not claim push, external CI, detector execution, or a
-change to E3's pause.
+boundary only; before the following confirmation it did not claim push,
+external CI, detector execution, or a change to E3's pause.
+
+### FR-08 detector confirmation -- E3 test-only scope resumes
+
+The exact frozen detector and its original evidence were verified before and
+after one rerun at their recorded hashes. Its three public-contract controls
+passed with exit code 0; the confirmation record is
+`work/review/REV-0059/WO-0152-FR-08-R12-R1-DETECTOR-CONFIRMATION.md`, SHA-256
+`757a6e564abce77193a3d03ab6bcf5ce519e6399062ec987109f384595ac078f`.
+
+FR-08's bounded E2 return is therefore resolved. The existing R2-R5 test-only
+E3 scope may resume from this preserved baseline using RED-first implementation
+and the remaining acceptance criteria. This changes no production authority,
+runtime/persistence boundary, database/SQL/DDL permission, broker/network
+permission, M2 state, master-merge authority, or paired E2/E3 93% exact-head
+closeout requirement.
+
+After the frozen confirmation, Ruff normalized only the now-resumed test
+module. Its current SHA-256 is
+`a958cffd97f197adb768255c1480733cbb451f6abe79024d5026a5cf4a2fcb9f`; the
+same three public controls passed again. The immutable confirmation remains
+the evidence for the pre-edit baseline, while
+`WO-0152-E3-BASELINE-FORMAT-NORMALIZATION.md` records the separate
+post-confirmation format-only change. Neither record establishes completion or
+widens the test-only scope.
 
 ## Expected completion disposition
 
@@ -527,6 +553,8 @@ allowed_paths:
   - work/review/REV-0059/activation-disposition.md
   - work/review/REV-0059/implementation-manifest.md
   - work/review/REV-0059/evidence.md
+  - work/review/REV-0059/WO-0152-FR-08-R12-R1-DETECTOR-CONFIRMATION.md
+  - work/review/REV-0059/WO-0152-E3-BASELINE-FORMAT-NORMALIZATION.md
   - work/review/REV-0059/handoff.md
 
 forbidden_paths:

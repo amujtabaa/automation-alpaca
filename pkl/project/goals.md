@@ -454,3 +454,14 @@ Roadmapping against an unverified codebase state repeats the failure mode Fable 
   `a3c15aa79d5b3ac17b8cc7d850eea8da8d2fb972`. This SHA records only the bounded E2 map/registry
   repair and evidence reconciliation. It does not change WO-0151's effective `REVIEW`, unpause
   WO-0152, claim a detector rerun or external CI, or satisfy the paired E2/E3 93% closeout.
+- 2026-08-07: The required unchanged WO-0152 FR-08 detector subsequently passed all three
+  public-contract controls with exit code 0. The test and prior evidence retained their exact
+  hashes; confirmation `757a6e564abce77193a3d03ab6bcf5ce519e6399062ec987109f384595ac078f`
+  releases only the existing test-only E3 scope. WO-0151 remains `REVIEW`, and the paired
+  E2/E3 93% exact-head closeout remains mandatory.
+- 2026-08-07: After the frozen FR-08 confirmation, Ruff normalized only the resumed E3 test
+  source. The new SHA-256 is `a958cffd97f197adb768255c1480733cbb451f6abe79024d5026a5cf4a2fcb9f`;
+  the same three public controls passed again. The immutable confirmation remains unmodified at
+  `757a6e564abce77193a3d03ab6bcf5ce519e6399062ec987109f384595ac078f`; normalization evidence is
+  `ac688bae5d510bb14190d8f2cd13ccb4f2fdb6871d238d3d7bd6ed968276f65a`. This releases no authority
+  beyond active test-only E3 work and leaves WO-0151 REVIEW and the paired 93% gate unchanged.

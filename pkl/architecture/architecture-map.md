@@ -346,3 +346,13 @@ Seam discipline is what makes the safety invariants structurally enforceable rat
 - 2026-08-07: The exact local commit for that accepted bounded repair is
   `a3c15aa79d5b3ac17b8cc7d850eea8da8d2fb972`. It retains the same private ownership boundary and
   does not establish external CI, runtime integration, or E3 confirmation.
+- 2026-08-07: The unchanged E3 public detector then confirmed the private direct route repair
+  through its public A-to-B-to-duplicate-stream refusal path (three controls, exit 0; confirmation
+  `757a6e564abce77193a3d03ab6bcf5ce519e6399062ec987109f384595ac078f`). This permits only the
+  retained test-only E3 proof layer to continue; no architecture, runtime, persistence, or public
+  API boundary changes, and paired E2/E3 exact-head 93% closure remains required.
+- 2026-08-07: Ruff then normalized only the resumed E3 proof module after that frozen detector
+  confirmation. Its current SHA-256 is `a958cffd97f197adb768255c1480733cbb451f6abe79024d5026a5cf4a2fcb9f`;
+  the three detector controls passed again. The original immutable confirmation remains distinct,
+  and normalization evidence `ac688bae5d510bb14190d8f2cd13ccb4f2fdb6871d238d3d7bd6ed968276f65a`
+  changes no authority ownership, public surface, or paired E2/E3 93% closure condition.

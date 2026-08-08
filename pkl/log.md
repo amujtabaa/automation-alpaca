@@ -528,3 +528,16 @@
   `a3c15aa79d5b3ac17b8cc7d850eea8da8d2fb972`. This exact-SHA reconciliation records no push,
   external CI, E3 detector execution, or paired-coverage success. WO-0151 remains REVIEW and
   WO-0152 remains ACTIVE but paused pending the unchanged detector confirmation.
+- 2026-08-07: The one required unchanged WO-0152 FR-08 detector rerun completed with exit code 0:
+  all three frozen public-contract controls passed, and the detector/evidence hashes remained
+  `1a7e685f954dc8de4424ad926285d993e0e9958eae2ce1a2f60af5b03689eb22` and
+  `d018c2bddeec79fd624d1fbcb80dde91e49b5535f5db737120d88deb750c6ee7`.
+  Confirmation `757a6e564abce77193a3d03ab6bcf5ce519e6399062ec987109f384595ac078f` releases only
+  the existing test-only E3 scope. It does not claim external CI, paired coverage, M1 completion,
+  or any operating authority.
+- 2026-08-07: After the immutable confirmation, Ruff normalized only the resumed E3 test module.
+  Its current SHA-256 is `a958cffd97f197adb768255c1480733cbb451f6abe79024d5026a5cf4a2fcb9f`; the
+  same three public controls again passed with exit code 0. The original confirmation remains
+  unchanged; format-normalization evidence is
+  `ac688bae5d510bb14190d8f2cd13ccb4f2fdb6871d238d3d7bd6ed968276f65a`. No production, runtime,
+  external CI, paired coverage, or operational authority is claimed.

@@ -623,3 +623,11 @@ The exact local code/evidence commit is
 `a3c15aa79d5b3ac17b8cc7d850eea8da8d2fb972`. This follow-on reconciliation
 records that immutable implementation SHA only; it does not claim a push,
 external CI, detector rerun, or paired coverage closeout.
+
+The required unchanged WO-0152 FR-08 detector rerun subsequently completed
+with exit code 0 and preserved both frozen hashes. Its confirmation is
+`work/review/REV-0059/WO-0152-FR-08-R12-R1-DETECTOR-CONFIRMATION.md`, SHA-256
+`757a6e564abce77193a3d03ab6bcf5ce519e6399062ec987109f384595ac078f`.
+That releases only the existing test-only E3 scope; WO-0151 remains effective
+`REVIEW` pending the paired E2/E3 exact-head 93% closure and all operational
+exclusions remain unchanged.
