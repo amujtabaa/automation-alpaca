@@ -837,3 +837,15 @@ implementation edits exactly to `venue.py`, `authority.py`, `acquisition.py`,
 `test_acquisition.py`, and `test_import_boundary.py`. Other regression suites
 are execution-only evidence. No publication or implementation authority exists
 until focused R1 acceptance and exact publication-SHA reconciliation complete.
+
+### R13-R1 activation publication SHA -- 2026-08-08
+
+The focused activation R1 result independently returned `ACCEPT`,
+P0=0/P1=0/P2=0. Exact documentation-only commit
+`36e69167af234f0f3c048a049e97130219fc954d` published the clean R13-R1
+semantic and activation packet, and its normal branch push succeeded.
+
+This exact-SHA reconciliation activates only the five named R13 edit paths.
+All other source/test paths remain read-only; the three broader regression
+suites are execution-only evidence. E3 remains paused and its frozen detector
+remains unchanged until R13 implementation independently accepts.

@@ -397,3 +397,9 @@ Seam discipline is what makes the safety invariants structurally enforceable rat
   only the three owning production modules and two owning test modules may change; the authority,
   venue, and protection regression suites are execution-only. Any new edit path requires a new
   exact freeze and review. The private zero-economic no-transfer architecture is unchanged.
+- 2026-08-08: Clean activation R1 `ACCEPT` and publication SHA
+  `36e69167af234f0f3c048a049e97130219fc954d` activate only the private venue cursor proof, the
+  existing authority successor-registration composition, acquisition receipt validation, and their
+  two owning test modules. No public API, additional owner, history scan, cursor transfer, or
+  regression-suite edit surface is introduced. E3 remains paused through focused implementation
+  acceptance and unchanged detector confirmation.

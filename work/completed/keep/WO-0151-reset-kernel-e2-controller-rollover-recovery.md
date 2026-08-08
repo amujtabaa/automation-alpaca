@@ -41,11 +41,11 @@ r12_r1_implementation_manifest: "work/review/REV-0058/WO-0151-R12-R1-IMPLEMENTAT
 r12_r1_implementation_result: "work/review/REV-0058/result-r12-r1-implementation.md (SHA-256 5631400bf4734c3781dc407b32182a497778a9cac8341f27ed170be433bfaa80; ACCEPT, P0=0/P1=0/P2=0)"
 r12_r1_implementation_commit: "a3c15aa79d5b3ac17b8cc7d850eea8da8d2fb972"
 r12_r1_implementation_authority: "CONSUMED - the five named source/test paths and directly necessary evidence/current records completed under accepted R12-R1 scope; every existing exclusion remains in force"
-r13_status: "R13-R1 SEMANTIC ACCEPTED AND RATIFIED - first activation candidate retained ACCEPT-WITH-CHANGES P1; focused exact-five-path activation R1 recheck is pending"
-r13_implementation_authority: "NOT GRANTED - no source/test work may begin until the clean R13-R1 activation packet independently ACCEPTs, publishes, and reconciles its exact publication SHA"
+r13_status: "ACTIVE FOR R13 IMPLEMENTATION - clean activation R1 ACCEPTed and documentation publication SHA reconciled; WO-0151 remains effective REVIEW pending implementation acceptance and paired E2/E3 closeout"
+r13_implementation_authority: "GRANTED ONLY FOR app/execution_core/venue.py, authority.py, acquisition.py, tests/execution_core/test_acquisition.py, tests/execution_core/test_import_boundary.py, and directly necessary R13 evidence/current records; all other test suites are execution-only"
 r13_preflight: "SATISFIED - unchanged contract 240fc0e1fba4b509cb9a8d5449777b889d43648751abd8cdce54672f89d63c90, clean manifest c05cddbc4d6d7d7cede2b893d6a3b287791eb25adc3015f7181fda5629fc9222, and independent ACCEPT result 71b7ff74f62bdc64f7f25cff5f8b047a30d82ebad961c0e2cdeb48f16638d1a5 at P0=0/P1=0/P2=0"
 r13_ratification: "2026-08-08 - exact R13-R1 semantic packet ratified; original format-blocked R13 manifests remain immutable historical evidence"
-r13_activation_commit: "NONE - PENDING CLEAN R13-R1 RECORDS-ONLY ACTIVATION ACCEPTANCE, PUBLICATION, AND EXACT-SHA RECONCILIATION"
+r13_activation_commit: "36e69167af234f0f3c048a049e97130219fc954d - exact clean R13-R1 records-only publication reconciled"
 ---
 
 # WO-0151 - Reset kernel E2: aggregate controller, successor admission, and mixed recovery
@@ -733,3 +733,17 @@ to edit another path requires a replacement exact scope and fresh review.
 Source/test authority remains ungranted pending focused independent R1
 acceptance, documentation publication, and exact publication-SHA
 reconciliation.
+
+## R13-R1 exact activation-SHA reconciliation -- 2026-08-08
+
+The focused activation R1 review `ACCEPT`ed at P0=0/P1=0/P2=0. Exact
+documentation-only commit `36e69167af234f0f3c048a049e97130219fc954d`
+published the clean R13-R1 semantic and activation chain, and the normal branch
+push succeeded.
+
+This follow-on record activates edits only to `venue.py`, `authority.py`,
+`acquisition.py`, `test_acquisition.py`, and `test_import_boundary.py`, plus
+directly necessary R13 evidence/current records. The authority, venue, and
+protection regression suites are execution-only. The frozen WO-0152 detector
+remains unchanged and E3 remains paused until focused R13 implementation
+acceptance and downstream detector confirmation.

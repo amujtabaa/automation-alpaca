@@ -508,3 +508,9 @@ Roadmapping against an unverified codebase state repeats the failure mode Fable 
   `test_acquisition.py`, and `test_import_boundary.py`. Publication and implementation remain
   inactive pending focused R1 acceptance and exact-SHA reconciliation; E3 stays paused/frozen and
   the paired 93% exact-head gate remains unchanged.
+- 2026-08-08: Focused activation R1 independently `ACCEPT`ed at P0=0/P1=0/P2=0 and exact
+  documentation publication `36e69167af234f0f3c048a049e97130219fc954d` is reconciled. R13 may now edit
+  only its three owning production modules and two owning test modules; all other regression suites
+  are execution-only. E3 remains ACTIVE/PAUSED and its detector remains frozen until R13
+  implementation independently accepts. WO-0151 remains effective REVIEW and the paired 93%
+  Python 3.11/3.12 closeout remains mandatory.

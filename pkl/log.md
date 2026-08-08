@@ -584,3 +584,7 @@
   `ACCEPT-WITH-CHANGES`, P0=0/P1=1/P2=0. The sole P1 was prospective permission to edit extra
   regression suites beyond the exact five-path R13 boundary. Activation R1 removes that wording,
   makes those suites execution-only, and requires a focused exact-delta recheck before publication.
+- 2026-08-08: Activation R1 independently returned `ACCEPT`, P0=0/P1=0/P2=0. Documentation-only
+  commit `36e69167af234f0f3c048a049e97130219fc954d` published the clean R13-R1 packet and the normal
+  branch push succeeded. This exact-SHA reconciliation activates only the five frozen R13 edit
+  paths. E3 and its detector remain paused/frozen pending bounded implementation acceptance.

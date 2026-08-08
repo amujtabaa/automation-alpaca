@@ -12,7 +12,7 @@ created: 2026-08-05
 branch: codex/arch-reset-2026-07-r1
 base_sha: a2b84abc1914517cf591f27fb88f0b20b2a47ef7
 predecessor: "Accepted frozen WO-0151 E2 implementation plus exact-head run #741 functional/static success, with the sole coverage-only failure carried to paired E2/E3 closeout"
-implementation_authority: "PAUSED - clean R13-R1 semantic preflight and ratification are satisfied; the first activation candidate retained one P1 scope escape and activation R1 recheck is pending; no further E3 implementation is authorized until clean records-only R13-R1 activation, bounded E2 implementation acceptance, and unchanged detector confirmation complete; all production/runtime/operational exclusions remain in force"
+implementation_authority: "PAUSED - clean R13-R1 activation publication 36e69167af234f0f3c048a049e97130219fc954d is reconciled and exact-five-path E2 implementation is active; no further E3 implementation is authorized until bounded E2 implementation acceptance and unchanged detector confirmation complete; all production/runtime/operational exclusions remain in force"
 activation_required: "SATISFIED — R2-R3 contract 881334b4af6acb566adc57c30a4199f0340129d244cc3d58536c8e7c109a9936, manifest ee5554bf4e6b380fa7c687324adba7f93168e56168fb84cedf519115e4b7c3f6, and independent ACCEPT result 8752e20fa0aba82885d1d49ae8eabca9901218f5659073adcb4324fa9b189a59 at P0=0/P1=0/P2=0"
 re_gate_required: "SATISFIED — R2-R5 contract 79c734b7c0a929d43aeca83ef00e797b7afc8d97754eb30f1c812b1dd5b3221e, manifest 3fbcffbec46dd43248a1a8b569df39880c96e9d539d5a84a07cf58fde19be946, and independent ACCEPT result f3c86daa71a36108bb2757f853d922e992c7c77eed4d7d7626b5e9091e3d5245 at P0=0/P1=0/P2=0"
 r2_r5_acceptance_commit: ef5e53a5d49e189942545f52b7784ad7648fbf28
@@ -510,6 +510,13 @@ is now limited to the fresh clean records-only R13-R1 activation sequence and,
 only after its publication SHA is reconciled, the ratified bounded R13
 implementation. E3 resumes only after that E2 implementation independently
 accepts and reruns this unchanged detector.
+
+The clean records-only activation R1 independently `ACCEPT`ed at
+P0=0/P1=0/P2=0 and was published at exact commit
+`36e69167af234f0f3c048a049e97130219fc954d`. This reconciliation activates
+only the bounded R13 E2 five-path implementation. It does not unpause E3 or
+alter the frozen detector, its expectation, the paired 93% gate, or any
+operational exclusion.
 
 ## Expected completion disposition
 
