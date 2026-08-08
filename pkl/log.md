@@ -545,3 +545,10 @@
   committed at `2da9f3eab8f5f3febda964857714d0d178e4fb29`. This is an evidence/current-posture
   reconciliation only: WO-0151 remains REVIEW, WO-0152 remains active test-only E3 work, and
   paired exact-head 93% coverage plus all operating exclusions remain controlling.
+- 2026-08-07: The resumed WO-0152 E3 public B-first-fill detector froze under FR-08 at local test
+  source SHA-256 `c89dc011c359d104d9a2ae851f0a649926e04ac596acf6da444eecbea1774186`.
+  Its valid completed A-to-B successor and B canonical BUY fill reaches composite `REFUSED`.
+  Independent static analysis classifies the stale A venue protection cursor under B authority as
+  an E2 P0. WO-0152 remains ACTIVE/PAUSED; WO-0151 remains REVIEW pending bounded root-cause
+  re-gate. No production, runtime, database/SQL/DDL, broker/network, CI, M2, merge, deletion,
+  cleanup, force-push, or rebase authority is added.

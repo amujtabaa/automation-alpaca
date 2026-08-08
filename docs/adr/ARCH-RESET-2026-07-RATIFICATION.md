@@ -730,3 +730,26 @@ The exact local evidence checkpoint is
 `2da9f3eab8f5f3febda964857714d0d178e4fb29`. It records only the existing
 FR-08 confirmation, its separately normalized test baseline, and their current
 posture; it is not an M1 closeout, external-CI, or operating-authority claim.
+
+## WO-0152 FR-08 B-first-fill detector return -- 2026-08-07
+
+The active test-only E3 slice observed a valid public completed A-to-B
+successor followed by B's first specialized canonical BUY fill. The venue fact
+applied, but the composite reducer returned `REFUSED`. The detector source is
+preserved unstaged at SHA-256
+`c89dc011c359d104d9a2ae851f0a649926e04ac596acf6da444eecbea1774186`; its
+evidence record is
+`work/review/REV-0059/WO-0152-FR-08-B-FIRST-FILL-DETECTOR-FREEZE.md`.
+
+An independent root analysis classifies this as an E2 P0: serial-successor
+registration changes controller/currentness authority from A to B but leaves
+the direct venue-owned protection cursor labelled A, so B cannot establish its
+required fresh protection state on first fill. The accepted ADR-020 R2 and
+ADR-021 R2 model already require distinct successor protection authority, so
+this finding does not ratify an ADR change. It requires a separately frozen,
+independently accepted bounded E2 re-gate before any correction or E3 resumption.
+
+This record does not authorize production changes, runtime/persistence,
+database/SQL/DDL, credentials, broker/network activity, CI workflow changes,
+M2, master merge, PRs, deletion, cleanup, force-push, or rebase. The unchanged
+paired E2/E3 exact-head 93% closure remains mandatory.

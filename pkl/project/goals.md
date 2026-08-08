@@ -465,3 +465,10 @@ Roadmapping against an unverified codebase state repeats the failure mode Fable 
   `757a6e564abce77193a3d03ab6bcf5ce519e6399062ec987109f384595ac078f`; normalization evidence is
   `ac688bae5d510bb14190d8f2cd13ccb4f2fdb6871d238d3d7bd6ed968276f65a`. This releases no authority
   beyond active test-only E3 work and leaves WO-0151 REVIEW and the paired 93% gate unchanged.
+- 2026-08-07: E3 is again `ACTIVE` but implementation-`PAUSED` under FR-08. Its frozen public
+  B-first-fill detector (local source SHA-256
+  `c89dc011c359d104d9a2ae851f0a649926e04ac596acf6da444eecbea1774186`) reached a valid A-to-B
+  successor and B canonical BUY fill, then observed composite `REFUSED`. Independent E2
+  classification identifies a P0 successor/venue protection-cursor integrity gap. WO-0151 remains
+  `REVIEW` pending a bounded root-cause re-gate; E3 may not alter the frozen detector or continue
+  its proof batch. The paired exact-head 93% gate and all operational exclusions remain unchanged.

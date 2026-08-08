@@ -631,3 +631,18 @@ with exit code 0 and preserved both frozen hashes. Its confirmation is
 That releases only the existing test-only E3 scope; WO-0151 remains effective
 `REVIEW` pending the paired E2/E3 exact-head 93% closure and all operational
 exclusions remain unchanged.
+
+## WO-0152 B-first-fill FR-08 return -- 2026-08-07
+
+The resumed E3 public detector found a material E2 integrity disagreement and
+is frozen at `work/review/REV-0059/WO-0152-FR-08-B-FIRST-FILL-DETECTOR-FREEZE.md`.
+The detector preserves a valid completed A-to-B successor followed by B's first
+canonical BUY fill: venue/execution accept the fact, but the composite reducer
+refuses it. Independent static classification identifies a stale A
+venue-owned protection cursor after B currentness has been installed.
+
+WO-0151 remains effective `REVIEW` and is reopened only for bounded causal
+classification and a fresh re-gate of the owning E2 semantic center. This does
+not authorize production work yet, pre-approve a design, reopen the paired
+coverage gate, or alter any retained E3 evidence, operating exclusion, or
+exact-head closeout condition.

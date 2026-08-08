@@ -12,7 +12,7 @@ created: 2026-08-05
 branch: codex/arch-reset-2026-07-r1
 base_sha: a2b84abc1914517cf591f27fb88f0b20b2a47ef7
 predecessor: "Accepted frozen WO-0151 E2 implementation plus exact-head run #741 functional/static success, with the sole coverage-only failure carried to paired E2/E3 closeout"
-implementation_authority: "GRANTED — the accepted R2-R5 test-only E3 scope resumed only after the unchanged frozen public detector passed at confirmation SHA 757a6e564abce77193a3d03ab6bcf5ce519e6399062ec987109f384595ac078f; all production/runtime/operational exclusions remain in force"
+implementation_authority: "PAUSED — the frozen B-first-fill public detector found an independently classified E2 P0 successor/protection-cursor integrity gap; no further E3 implementation is authorized until a bounded E2 re-gate independently accepts and the unchanged detector passes; all production/runtime/operational exclusions remain in force"
 activation_required: "SATISFIED — R2-R3 contract 881334b4af6acb566adc57c30a4199f0340129d244cc3d58536c8e7c109a9936, manifest ee5554bf4e6b380fa7c687324adba7f93168e56168fb84cedf519115e4b7c3f6, and independent ACCEPT result 8752e20fa0aba82885d1d49ae8eabca9901218f5659073adcb4324fa9b189a59 at P0=0/P1=0/P2=0"
 re_gate_required: "SATISFIED — R2-R5 contract 79c734b7c0a929d43aeca83ef00e797b7afc8d97754eb30f1c812b1dd5b3221e, manifest 3fbcffbec46dd43248a1a8b569df39880c96e9d539d5a84a07cf58fde19be946, and independent ACCEPT result f3c86daa71a36108bb2757f853d922e992c7c77eed4d7d7626b5e9091e3d5245 at P0=0/P1=0/P2=0"
 r2_r5_acceptance_commit: ef5e53a5d49e189942545f52b7784ad7648fbf28
@@ -23,6 +23,7 @@ e3_stop_evidence: "work/review/REV-0059/evidence.md (SHA-256 d018c2bddeec79fd624
 e3_detector_confirmation: "work/review/REV-0059/WO-0152-FR-08-R12-R1-DETECTOR-CONFIRMATION.md (SHA-256 757a6e564abce77193a3d03ab6bcf5ce519e6399062ec987109f384595ac078f; unchanged three-control rerun exit 0)"
 e3_baseline_format_normalization: "work/review/REV-0059/WO-0152-E3-BASELINE-FORMAT-NORMALIZATION.md (SHA-256 ac688bae5d510bb14190d8f2cd13ccb4f2fdb6871d238d3d7bd6ed968276f65a; same three controls rerun exit 0)"
 e3_baseline_commit: "2da9f3eab8f5f3febda964857714d0d178e4fb29 — detector confirmation and post-confirmation test-only format normalization"
+e3_b_first_fill_freeze: "work/review/REV-0059/WO-0152-FR-08-B-FIRST-FILL-DETECTOR-FREEZE.md (SHA-256 d83257b7de12dfa440fae5adc3005cf41165b86b83a2c6f7c96295f8712cc9fb; local source SHA-256 c89dc011c359d104d9a2ae851f0a649926e04ac596acf6da444eecbea1774186; focused detector exit 1)"
 ---
 
 # WO-0152 - Reset kernel E3: acquisition-generation generated and stateful conformance
@@ -472,6 +473,32 @@ the evidence for the pre-edit baseline, while
 post-confirmation format-only change. Neither record establishes completion or
 widens the test-only scope.
 
+### FR-08 successor B first-fill detector -- E3 paused
+
+The resumed proof batch observed a new public E2 disagreement. The exact
+uncommitted detector source is frozen at SHA-256
+`c89dc011c359d104d9a2ae851f0a649926e04ac596acf6da444eecbea1774186` and is
+not staged, formatted, weakened, or marked expected-failure. Its focused
+command exited `1`: after a valid completed A-to-B successor handoff, B's
+specialized BUY effect, claim, acknowledgement, discovery, review observation,
+and canonical first BUY fill all apply, yet
+`reduce_acquisition_controller` returns `REFUSED` instead of `APPLIED`.
+
+Independent static classification identifies an E2 P0: successor registration
+changes controller/currentness authority from A to B but leaves the direct
+venue-owned protection cursor bound to A. B's ordinary first-fill protection
+projection then rejects the A-labelled cursor, risking an economically
+accepted BUY without fresh B protection state. The complete minimized trace,
+command result, and bounded attribution are preserved in
+`work/review/REV-0059/WO-0152-FR-08-B-FIRST-FILL-DETECTOR-FREEZE.md`.
+
+WO-0152 remains `ACTIVE` but implementation-**PAUSED** under FR-08. It may
+not alter production, the detector, its expectation, or its proof batch. A
+bounded E2 root-cause re-gate for atomic serial-successor protection-cursor
+rollover must independently accept before this exact detector is rerun. The
+prior immutable FR-08 evidence and confirmation, the paired E2/E3 93%
+exact-head gate, and every operational exclusion remain unchanged.
+
 ## Expected completion disposition
 
 [PKL_UPDATED, RESULT_SUMMARY_KEPT]
@@ -556,6 +583,7 @@ allowed_paths:
   - work/review/REV-0059/evidence.md
   - work/review/REV-0059/WO-0152-FR-08-R12-R1-DETECTOR-CONFIRMATION.md
   - work/review/REV-0059/WO-0152-E3-BASELINE-FORMAT-NORMALIZATION.md
+  - work/review/REV-0059/WO-0152-FR-08-B-FIRST-FILL-DETECTOR-FREEZE.md
   - work/review/REV-0059/handoff.md
 
 forbidden_paths:

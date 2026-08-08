@@ -356,3 +356,11 @@ Seam discipline is what makes the safety invariants structurally enforceable rat
   the three detector controls passed again. The original immutable confirmation remains distinct,
   and normalization evidence `ac688bae5d510bb14190d8f2cd13ccb4f2fdb6871d238d3d7bd6ed968276f65a`
   changes no authority ownership, public surface, or paired E2/E3 93% closure condition.
+- 2026-08-07: The resumed E3 B-first-fill detector returned to the E2 owning boundary. A completed
+  A-to-B serial successor can install B controller/currentness authority while a direct venue
+  protection cursor remains bound to A; B's ordinary first fill then cannot project fresh B
+  protection and the composite reducer refuses. This is an independently classified P0 integrity
+  defect, not an E3 model adjustment. The required correction remains private and atomic at the
+  authority-to-venue successor boundary; no public API, controller history scan, authority-side
+  duplicate, runtime, persistence, or ADR change is implied. E3 is paused pending a fresh bounded
+  E2 re-gate and unchanged detector confirmation.
