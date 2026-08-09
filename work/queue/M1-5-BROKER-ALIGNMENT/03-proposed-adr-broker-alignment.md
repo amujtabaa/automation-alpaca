@@ -59,12 +59,17 @@ ExecutionConnectionProfile
 └── profile_commitment_sha256
 ```
 
-The profile is constructed from canonical, non-secret values. Its
-`profile_commitment_sha256` commits the versioned complete profile preimage,
-including its identity and every listed coordinate. `credential_handle_
-fingerprint` is only a non-reversible recognized-handle/version fingerprint; no
-credential, bearer token, API key, secret, or recoverable secret material may be
-stored in a profile, receipt, log, manifest, or public repository.
+`connection_profile_id` is an opaque activation-minted identity and MUST NOT be
+derived from a profile commitment. The profile is constructed from canonical,
+non-secret values. `profile_commitment_sha256` is the SHA-256 of one versioned,
+domain-separated canonical preimage (`execution-connection-profile/v1`) that
+contains, in the field order shown above, every profile coordinate from
+`connection_profile_id` through `deployment_identity`, but excludes
+`profile_commitment_sha256` itself. The commitment is the digest output, not a
+member of its own preimage. `credential_handle_fingerprint` is only a
+non-reversible recognized-handle/version fingerprint; no credential, bearer
+token, API key, secret, or recoverable secret material may be stored in a
+profile, receipt, log, manifest, or public repository.
 
 For M2–M8 the sole selected profile resolves to broker provider `ALPACA` and
 environment class `PAPER`. The exact Paper account and origins remain mandatory
@@ -132,6 +137,12 @@ MarketDataSourceProfile
 └── source_profile_commitment_sha256
 ```
 
+`market_source_profile_id` is likewise opaque and activation-minted, not
+digest-derived. `source_profile_commitment_sha256` is the SHA-256 of a
+versioned, domain-separated canonical preimage
+(`market-data-source-profile/v1`) containing the preceding market-source fields
+in displayed order and excluding `source_profile_commitment_sha256` itself.
+
 `MarketStreamGenerationId` and market-evidence authority must bind an exact
 market-source profile commitment. An execution connection neither creates nor
 infers market-source authority. This preserves ADR-023's stream-generation,
@@ -139,15 +150,29 @@ strict-coordinate, and restart-fence requirements.
 
 ### 7. Evidence-backed broker capability profile
 
-`BrokerCapabilityProfile` is a versioned evidence-backed contract, identified
-by the profile's `capability_profile_sha256`. It must record tested, dated,
-normalized evidence for the selected product/account scope, sessions and
-early-close rules, extended-hours combinations, order/time-in-force semantics,
-submit/cancel/replace and client-ID behavior, targeted-query and full coverage,
-stream cursor/reconnect, corrections/busts, partial fills, limits/reserved
-capacity, quantity constraints, data entitlements, paper-versus-production
-differences, and adapter/normalization version. Marketing claims and generic
-documentation cannot alone establish conformance.
+`BrokerCapabilityProfile` is a versioned immutable required-capability contract,
+identified by the profile's `capability_profile_sha256`. Its domain-separated
+`broker-capability-profile/v1` preimage names the selected product/account
+scope, required sessions and early-close rules, extended-hours combinations,
+order/time-in-force semantics, submit/cancel/replace and client-ID behavior,
+targeted-query and full coverage, stream cursor/reconnect, corrections/busts,
+partial fills, limits/reserved capacity, quantity constraints, data
+entitlements, paper-versus-production distinctions, and adapter/normalization
+version. The digest commits the required capability contract and validation
+rules, not a mutable observed test result.
+
+`BrokerCapabilityEvidence` is separately append-only, non-secret, and bound to
+the exact capability-profile digest and selected execution-profile commitment.
+It records dated normalized official-source and empirical outcomes, their
+evidence digests, and whether each required capability was proven, refused, or
+unknown. A profile claim is not usable merely because the requirement digest
+exists: an exact complete evidence set must validate every required capability.
+Marketing claims and generic documentation cannot alone establish conformance.
+Refreshing evidence that validates the same required capability contract does
+not rewrite an execution profile. Evidence that refutes, omits, or no longer
+matches a required capability leaves the profile non-serving; changing the
+required capability contract is material and requires the new-generation
+recutover route.
 
 ### 8. M2 schema boundary and explicit refusals
 
@@ -197,8 +222,10 @@ Webull feasibility work. No provider change follows from this ADR alone.
 - Crash/replay controls prove an old-or-new atomic profile binding and refuse
   cross-profile identifier substitution, two eligible profiles, and recutover
   without new-generation proof.
-- M4 measures the selected Alpaca Paper capability profile before any credential
-  or outbound API authority is used.
+- M4, under its existing explicit human gate for credentials and bounded
+  outbound Alpaca Paper conformance calls, produces the complete evidence set
+  for the already selected required-capability contract before any profile can
+  become `PAPER_MUTATION_ELIGIBLE`.
 - M9 records official-document and empirical feasibility evidence before any
   Webull adapter decision.
 - An independent review accepts the exact candidate with P0=0/P1=0 and the

@@ -9,8 +9,8 @@ b5d0057cb8895559b9d4689acb4671c6b48ed0ef6a41e3d4d0ef4cfccbfc0bed  work/active/WO
 b512282ea043272d8339bf0e7d67e2634ddf86bbf738a59d386647e7f2ee22d4  work/queue/M1-5-BROKER-ALIGNMENT/README.md
 b702ee8a37c1a3bd4e13ef0af49f84cafd734eba3c21cddb0593864691bdf098  work/queue/M1-5-BROKER-ALIGNMENT/01-current-authority-and-conflict-audit.md
 ae12f4ea82106deecdd6c903b4aba80fc5012ca11b39ed041452965911c1b907  work/queue/M1-5-BROKER-ALIGNMENT/02-option-matrix-and-decision.md
-6251344e5d5de7afcffdaedd6629b8fc4a99943524130caa2695a7778cf50c49  work/queue/M1-5-BROKER-ALIGNMENT/03-proposed-adr-broker-alignment.md
-2ab2b0f10f288db364d1819b05de7405d6df9b726048c1a1faba987c2531d7da  work/queue/M1-5-BROKER-ALIGNMENT/04-m2-persistence-contract-amendment.md
+5764dd5f15d8e06f9e9c13e1f87c163fbaa9eca73fa38472a74ef38df3088e70  work/queue/M1-5-BROKER-ALIGNMENT/03-proposed-adr-broker-alignment.md
+83063058f8fe60b3ae8931c46333b19aa7ceba10b9012c0581ca70758c739f34  work/queue/M1-5-BROKER-ALIGNMENT/04-m2-persistence-contract-amendment.md
 e197c4166191d90136270f4d0011f123ca165927add10e5226180adb15f7bf9b  work/queue/M1-5-BROKER-ALIGNMENT/05-roadmap-and-milestone-reconciliation.md
 8db33b4dc3c8f3c628e5872d52fc721f54bed5b9a8ddb6218eb23b9433fbb0df  work/queue/M1-5-BROKER-ALIGNMENT/06-m2-m9-obligations-and-acceptance.md
 4e7ede1e0e7ef258e96efc97526f2d5fe15c8da92e7477fe738123be176c30b3  work/queue/M1-5-BROKER-ALIGNMENT/07-human-ratification-request.md

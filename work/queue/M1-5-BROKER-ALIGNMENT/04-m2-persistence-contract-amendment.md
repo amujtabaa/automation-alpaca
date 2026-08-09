@@ -31,9 +31,15 @@ Status: **schema-neutral candidate contract — no DDL or database work authoriz
 7. `MarketDataSourceProfile` is separately committed. Market stream provenance
    binds the market-source commitment; no M2 query may infer it from the
    execution profile.
-8. `BrokerCapabilityProfile` is versioned evidence, not a user-editable broker
-   setting. Its hash must be profile-bound and runtime use must refuse absent or
-   unproven capabilities.
+8. `BrokerCapabilityProfile` is an immutable versioned required-capability
+   contract, not a user-editable broker setting. Its profile-bound hash freezes
+   requirements and validation rules without claiming empirical conformance.
+   Separately append-only `BrokerCapabilityEvidence`, bound to the exact
+   capability and execution-profile commitments, must prove every required
+   capability before the existing M4 human credential/call gate may lead to
+   `PAPER_MUTATION_ELIGIBLE`. Evidence refresh for the same requirement profile
+   does not rewrite the selected profile; an altered requirement hash is a
+   material new-generation recutover change.
 
 ## Provider-literal clauses inadmissible for future M2 schema approval
 
