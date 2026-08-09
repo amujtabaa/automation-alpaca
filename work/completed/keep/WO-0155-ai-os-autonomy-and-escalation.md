@@ -10,6 +10,7 @@ disposition: [PKL_UPDATED, RESULT_SUMMARY_KEPT]
 owner: Codex implementation seat
 created: 2026-08-08
 execution_authority: "User explicitly authorized durable AI-OS and Claude-workflow improvements, including removal of any temporary Terra/Sol escalation rule. Ordinary in-scope reversible implementation, tests, records, commit, and normal push are authorized."
+publication_commit: 7004d51266aec37c8d4cdb91cd31b9beb6b15e7b
 ---
 
 # Work Order: Persist autonomous execution and bounded escalation policy
@@ -161,6 +162,7 @@ and root-cause re-gating before human escalation, and has no mandatory named-mod
 ladder. The policy is canonical in core, machine-readable in rules, propagated to Claude/Codex/Fable
 entrypoints, and protected by failure-capable regression tests. Verification also exposed and fixed
 a package/install path-resolution defect in the AI-OS harness without changing product code.
+The exact policy publication commit is `7004d51266aec37c8d4cdb91cd31b9beb6b15e7b`.
 
 ## Fable DONE
 

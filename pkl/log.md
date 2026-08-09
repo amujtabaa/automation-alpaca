@@ -651,4 +651,5 @@
   new authority, unapproved human-gated or destructive actions, unresolved authority conflicts, or
   unavailable external secrets and decisions. Claude, Codex, Fable, prompt templates, and
   machine-readable rules share this boundary. No fixed named-model escalation ladder remains; the
-  current capable model is inherited unless a concrete task reason justifies an override.
+  current capable model is inherited unless a concrete task reason justifies an override. Exact
+  policy publication commit: `7004d51266aec37c8d4cdb91cd31b9beb6b15e7b`.
