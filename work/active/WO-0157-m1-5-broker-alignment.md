@@ -113,7 +113,9 @@ allowed_paths:
   - work/queue/M1-5-BROKER-ALIGNMENT/07-human-ratification-request.md
   - work/queue/M1-5-BROKER-ALIGNMENT/AUTHORITY-MANIFEST.sha256
   - work/review/REV-0063/request.md
+  - work/review/REV-0063/request-remediation-01.md
   - work/review/REV-0063/result.md
+  - work/review/REV-0063/result-remediation-01.md
   - work/review/REV-0063/disposition.md
   - docs/adr/ADR-024-broker-roles-execution-connection-profile.md
   - docs/adr/ARCH-RESET-2026-07-RATIFICATION.md
@@ -147,12 +149,12 @@ forbidden_operations:
 ## Candidate and review rules
 
 - Semantic candidate is exactly the eight `work/queue/M1-5-BROKER-ALIGNMENT/` documents plus
-  this active work order and `work/review/REV-0063/request.md`; all are frozen by
+  this active work order and each exact `REV-0063` request; all are frozen by
   `AUTHORITY-MANIFEST.sha256`. The manifest excludes its own file to avoid a hash cycle and lists
   its included paths, algorithm, base SHA, and exclusion rule.
-- The reviewer owns `work/review/REV-0063/result.md`; the author never edits it. Any finding is
-  dispositioned in `disposition.md` and every semantic correction triggers rehash plus independent
-  re-review.
+- The reviewer owns `work/review/REV-0063/result.md` and each result addendum; the author never
+  edits either. Any finding is dispositioned in `disposition.md` and every semantic correction
+  triggers rehash plus independent re-review.
 - Candidate commit and review result are normal committed/pushed checkpoints. A missing separate
   reviewer stops only at `SEPARATE REVIEW SESSION REQUIRED`; it is not disguised as acceptance.
 
