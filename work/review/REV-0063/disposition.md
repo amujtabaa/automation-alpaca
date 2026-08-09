@@ -12,3 +12,15 @@ reviewed candidate and `ACCEPT-WITH-CHANGES` verdict remain historical evidence.
 
 No P0 or P2 finding was disputed. No source, test, DDL, database, runtime,
 broker, credential, dependency, workflow, or Cloud-candidate file changed.
+
+## Remediation-01 focused re-review disposition
+
+`result-remediation-01.md` is preserved unchanged. Its P1-2 accepted the
+capability lifecycle correction. Its remaining P1-1 is accepted and corrected:
+the proposed ADR now defines exact domain framing, length prefixes, field order,
+text normalization/encoding, opaque-ID and digest bytes, origin canonicalization,
+lowercase output, and self-output exclusion for both commitment algorithms.
+The correction also requires independent literal known-answer and mutation
+controls before M2 implementation reliance. It changes no M1/M2 operating
+authority or forbidden surface. A fresh independent remediation-02 review must
+verify constructibility and absence of safety regression before any `ACCEPT`.

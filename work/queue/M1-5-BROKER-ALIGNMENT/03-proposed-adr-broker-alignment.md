@@ -71,6 +71,46 @@ non-reversible recognized-handle/version fingerprint; no credential, bearer
 token, API key, secret, or recoverable secret material may be stored in a
 profile, receipt, log, manifest, or public repository.
 
+#### Canonical profile-commitment encoding
+
+Both profile commitments use this exact v1 byte construction. It is a contract,
+not a requirement to introduce a shared production helper:
+
+1. A commitment payload starts with a four-byte unsigned big-endian length of
+   its ASCII domain followed by the exact domain bytes. It then appends each
+   field part in the stated order as an eight-byte unsigned big-endian length
+   followed by that field's bytes. There is no delimiter, JSON, implicit
+   ordering, optional field, or omitted/empty field in v1.
+2. All ordinary text is NFC-normalized UTF-8, nonempty, and contains no ASCII
+   control character. `broker_provider` and `environment_class` are uppercase
+   ASCII tokens matching `[A-Z][A-Z0-9_]{0,31}`. `adapter_contract_version` and
+   `normalization_contract_version` are ASCII `MAJOR.MINOR.PATCH` decimal
+   triples with no leading zero except the literal `0`.
+3. Every `*_profile_id`, `account_identity`, `credential_handle_fingerprint`,
+   and `deployment_identity` is an opaque exactly-32-byte value rendered as 64
+   lowercase hexadecimal characters; its field bytes are the decoded 32 bytes.
+   It is activation-minted and never digest-derived. Every `*_sha256` field is
+   likewise exactly 64 lowercase hexadecimal characters and contributes its
+   decoded 32 digest bytes. The digest output field of the profile being
+   calculated is excluded rather than encoded.
+4. Each `*_origin` is canonical ASCII `https://host[:port]`: lowercase scheme
+   and host, no userinfo/path/query/fragment, port 443 omitted, and a non-443
+   decimal port without leading zero retained. No origin may be absent.
+5. `profile_commitment_sha256` is lowercase hexadecimal SHA-256 of the exact
+   resulting execution payload with domain
+   `execution-connection-profile/v1` and these parts: `connection_profile_id`,
+   `application_generation`, `broker_provider`, `environment_class`,
+   `account_identity`, `trade_command_origin`, `order_query_origin`,
+   `order_event_origin`, `credential_handle_fingerprint`,
+   `adapter_contract_version`, `capability_profile_sha256`, and
+   `deployment_identity`.
+
+No consumer may compare a reserialized, normalized-by-library, or partially
+known profile. An M2 known-answer control must independently construct the
+literal preimage bytes and digest, while mutations to domain, part order, length
+width, text normalization, hex case, origin canonicalization, omitted field, or
+digest self-inclusion must fail the intended check.
+
 For M2–M8 the sole selected profile resolves to broker provider `ALPACA` and
 environment class `PAPER`. The exact Paper account and origins remain mandatory
 profile coordinates. A live origin, live credential, absent field, unknown
@@ -138,10 +178,14 @@ MarketDataSourceProfile
 ```
 
 `market_source_profile_id` is likewise opaque and activation-minted, not
-digest-derived. `source_profile_commitment_sha256` is the SHA-256 of a
-versioned, domain-separated canonical preimage
-(`market-data-source-profile/v1`) containing the preceding market-source fields
-in displayed order and excluding `source_profile_commitment_sha256` itself.
+digest-derived. `source_profile_commitment_sha256` uses the same exact framing,
+text, opaque-identity, digest, and origin rules above, with domain
+`market-data-source-profile/v1` and these parts: `market_source_profile_id`,
+`provider`, `environment_or_feed`, `source_origin`, `entitlement_class`,
+`normalization_contract_version`, and `data_capability_profile_sha256`. Its own
+digest output is excluded. `provider` and `entitlement_class` are uppercase
+ASCII tokens matching the stated provider-token rule; `environment_or_feed` is
+ordinary canonical text under rule 2.
 
 `MarketStreamGenerationId` and market-evidence authority must bind an exact
 market-source profile commitment. An execution connection neither creates nor
@@ -219,6 +263,10 @@ Webull feasibility work. No provider change follows from this ADR alone.
 - A reviewed M2 contract/DDL design proves one selected immutable profile per
   generation, total profile binding, historical retention, and refusal of
   profile mismatch at startup and final claim.
+- Independent literal known-answer controls reproduce both v1 profile
+  commitment preimages and digests without a production helper and fail for
+  domain, part-order, length, normalization, origin, digest-case, omitted-field,
+  and self-inclusion mutations.
 - Crash/replay controls prove an old-or-new atomic profile binding and refuse
   cross-profile identifier substitution, two eligible profiles, and recutover
   without new-generation proof.
