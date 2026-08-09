@@ -26,7 +26,7 @@ closed: 2026-08-07
 implementation_manifest: "work/review/REV-0058/WO-0151-R11-R1-IMPLEMENTATION-REMEDIATION-01-CANDIDATE-MANIFEST.md (SHA-256 2538656a49ea643c6befc8e4c55882cf27534f266d2335ef4a630a73182af853)"
 implementation_result: "work/review/REV-0058/WO-0151-R11-R1-IMPLEMENTATION-REMEDIATION-01-RECHECK-RESULT.md (SHA-256 96d08654369894eeaeda0b1b22f8e869735d179daa336c5c3e69d7f19e0e68fd; ACCEPT, P0=0/P1=0/P2=0)"
 closeout_handoff: "work/review/REV-0058/WO-0151-R11-R1-IMPLEMENTATION-CLOSEOUT.md (SHA-256 971a18fab876d84e2e49a0cfe960e38828bc2f9853e187529e374f7ee58cdcdc)"
-external_exact_head: "REVIEW - exact run #741 on a2b84abc1914517cf591f27fb88f0b20b2a47ef7 passed functional/static Python 3.11/3.12 gates but failed only the unchanged 93% coverage ratchet at 91.34%; paired E2/E3 exact-head success is required before effective closure"
+external_exact_head: "PASSED - paired E2/E3 exact SHA c148b93bb66cc7d943615337eb4ddf1ab61313ee passed GitHub Actions run #771 / ID 31291594513; Python 3.12 job 93189636234 SUCCESS; Python 3.11 job 93189636264 SUCCESS; all static, governance, R2, pytest, and independent 93.00% line / 85.25% branch ratchets passed"
 r12_re_gate: "REPLACED BY R12-R1 - original bounded controller-lifetime MarketStreamGenerationId remediation remains retained, but its map lookup could not distinguish absent from present malformed route entries"
 r12_status: "RE-GATED FOR R12-R1 PREFLIGHT - R12 semantic and activation-delta ACCEPTs remain retained evidence; implementation is paused because PersistentKeyMap.get cannot prove absent-versus-present-malformed route presence"
 r12_implementation_authority: "SUSPENDED - activation SHA a124b3cda866e2a5aaf99d4527e7b231dd4f675d authorized only the former acquisition.py/test_acquisition.py scope and cannot cover the required internal map correction"
@@ -34,14 +34,14 @@ r12_preflight: "SATISFIED - contract 36c7995deb480400a6573e005d47cc8c4878c8638eb
 r12_activation_commit: "a124b3cda866e2a5aaf99d4527e7b231dd4f675d"
 r12_r1_scope: "COMPLETE - only app/execution_core/fills.py, app/execution_core/acquisition.py, tests/execution_core/test_fill_position.py, tests/execution_core/test_acquisition.py, tests/execution_core/test_protection.py for bounded-map provenance, and directly necessary current records were used"
 r12_r1_preflight: "SATISFIED - contract 9cab228aa392292bc44a8758c60317201cf78388d6ec61848edcb3d1f0497a25 and independent ACCEPT result 5dfec4ce0425642148561801d69a035f0fb4ddc540fb7baf93d23747dddb581b at P0=0/P1=0/P2=0"
-r12_r1_status: "IMPLEMENTATION ACCEPTED AND PUBLISHED - exact code/evidence commit reconciled below; R12-R1 authority is consumed while WO-0151 remains effective REVIEW pending paired E2/E3 exact-head 93% closure"
+r12_r1_status: "IMPLEMENTATION ACCEPTED AND PUBLISHED - exact code/evidence commit reconciled below; R12-R1 authority is consumed and the paired E2/E3 exact-head closeout gate is satisfied"
 r12_r1_activation_required: "SATISFIED - R2 activation manifest/result ACCEPT and exact documentation publication SHA 0beee5843304cafd3cb16d5644e14cb256fd17f7"
 r12_r1_activation_commit: "0beee5843304cafd3cb16d5644e14cb256fd17f7"
 r12_r1_implementation_manifest: "work/review/REV-0058/WO-0151-R12-R1-IMPLEMENTATION-CANDIDATE-MANIFEST.md (SHA-256 abe0df5d723df536263e99a72d1b612ffcf39032de71753aaee9a6304e8166f0)"
 r12_r1_implementation_result: "work/review/REV-0058/result-r12-r1-implementation.md (SHA-256 5631400bf4734c3781dc407b32182a497778a9cac8341f27ed170be433bfaa80; ACCEPT, P0=0/P1=0/P2=0)"
 r12_r1_implementation_commit: "a3c15aa79d5b3ac17b8cc7d850eea8da8d2fb972"
 r12_r1_implementation_authority: "CONSUMED - the five named source/test paths and directly necessary evidence/current records completed under accepted R12-R1 scope; every existing exclusion remains in force"
-r13_status: "IMPLEMENTATION ACCEPTED - exact five-path R13 candidate independently ACCEPTed P0=0/P1=0/P2=0 and the unchanged WO-0152 detector passed; WO-0151 remains effective REVIEW pending paired E2/E3 exact-head 93% closeout"
+r13_status: "IMPLEMENTATION ACCEPTED - exact five-path R13 candidate independently ACCEPTed P0=0/P1=0/P2=0; the unchanged WO-0152 detector and paired E2/E3 exact-head closeout gate both passed"
 r13_implementation_authority: "CONSUMED - the exact five named source/test paths and directly necessary R13 evidence/current records completed under accepted R13-R1 scope; all other test suites remained execution-only"
 r13_preflight: "SATISFIED - unchanged contract 240fc0e1fba4b509cb9a8d5449777b889d43648751abd8cdce54672f89d63c90, clean manifest c05cddbc4d6d7d7cede2b893d6a3b287791eb25adc3015f7181fda5629fc9222, and independent ACCEPT result 71b7ff74f62bdc64f7f25cff5f8b047a30d82ebad961c0e2cdeb48f16638d1a5 at P0=0/P1=0/P2=0"
 r13_ratification: "2026-08-08 - exact R13-R1 semantic packet ratified; original format-blocked R13 manifests remain immutable historical evidence"
@@ -51,7 +51,7 @@ r13_implementation_result: "work/review/REV-0060/result-r13-implementation.md (S
 r13_implementation_clean_manifest: "work/review/REV-0060/WO-0151-R13-IMPLEMENTATION-CANDIDATE-MANIFEST.md (replacement SHA-256 d101bcbe3f5ba070f07c2de497ed2d61a5fb11580eeaa9a134eeeaf428a36df1; source/test bytes unchanged)"
 r13_implementation_clean_result: "work/review/REV-0060/result-r13-implementation-r1.md (SHA-256 8d931aba8a859f75e42a7b80cb2dd83df1e69783a8d23e9958af2fc57cade263; focused ACCEPT, P0=0/P1=0/P2=0)"
 r13_detector_confirmation: "work/review/REV-0059/WO-0152-FR-08-R13-DETECTOR-CONFIRMATION.md (SHA-256 dd860117e38c045146869742ac8b6dc3797f404e39f9645bdd20d749258affc9; unchanged detector SHA-256 c89dc011c359d104d9a2ae851f0a649926e04ac596acf6da444eecbea1774186; focused exit 0)"
-paired_e3_candidate: "REMEDIATION-03 LOCAL PASS - final focused independent acceptance and exact-head Python 3.11/3.12 CI remain required before effective closure"
+paired_e3_candidate: "CLOSED - R3 manifest ecc85f9ad803080a7a159468be404ecacb60464db0249316fdfba0a962f3ae46 and result 96680be9a550bf40e48104e12686dfab985866cd76d5c0de6e46519698a2ac9c ACCEPT P0=0/P1=0/P2=0; published at c148b93bb66cc7d943615337eb4ddf1ab61313ee; run #771 passed Python 3.11/3.12 and both ratchets"
 ---
 
 # WO-0151 - Reset kernel E2: aggregate controller, successor admission, and mixed recovery
@@ -423,18 +423,18 @@ fable_done:
     - item: "Static quality, imports, lifecycle scope, and retained evidence are coherent."
       status: MET
       evidence: "Ruff, mypy, import-linter, scope, ledger, PKL, disposition, hashes, and diff gates passed."
-    - item: "Paired E2/E3 exact-head Python 3.11 and 3.12 CI passes the unchanged 93% coverage gate."
-      status: DEFERRED
-      evidence: "Run #741 verified exact-head functional/static success but failed only 91.34% coverage; the authorized E3 proof layer now supplies the remaining behavior-first coverage evidence."
+    - item: "Paired E2/E3 exact-head Python 3.11 and 3.12 CI passes the separately enforced 93.00% line and 85.25% branch ratchets."
+      status: MET
+      evidence: "Run #771 / 31291594513 at c148b93bb66cc7d943615337eb4ddf1ab61313ee; jobs 93189636264 and 93189636234 SUCCESS; 24,826/26,530 lines in both and 8,460/9,920 (3.11) or 8,461/9,920 (3.12) branches."
   scope_check:
     allowed_paths_respected: true
     drive_by_edits: false
-  debt_check: "No in-scope P0/P1 remains. E3 generated/stateful conformance, persistence, runtime composition, broker behavior, M2, and master landing remain separately gated."
+  debt_check: "No in-scope P0/P1 remains. Persistence, runtime composition, broker behavior, M2, and master landing remain separately gated."
   deferred:
-    - "Unchanged exact-head Python 3.11/3.12 CI is the sole remaining WO-0151 effectiveness gate."
+    - "M2 persistence/crash recovery, runtime composition, broker correlation, observation integration, and master landing."
   status: VERIFIED
-  verification_scope: "Pure E2 implementation, focused/static/type/import/scope checks, mutation evidence, and final independent acceptance only."
-  acceptance_condition: "PAIRED_E2_E3_EXACT_HEAD_CI_93_PERCENT_REQUIRED_BEFORE_EFFECTIVE_CLOSEOUT_OR_M1_COMPLETION"
+  verification_scope: "Pure E2 implementation, focused/static/type/import/scope checks, mutation evidence, independent acceptance, and paired E2/E3 exact-head CI."
+  acceptance_condition: "SATISFIED_BY_RUN_771_EXACT_SHA_C148B93_AND_RECORDS_COMMIT_EXACT_HEAD_CI"
 ```
 
 This is a filed `CLOSED` closeout record only. Its effective lifecycle remains
@@ -843,3 +843,28 @@ The exact replacement candidate passes the full repository with 5,977 tests,
 `93.577083%` lines, and `85.302419%` branches. WO-0151 remains effective
 `REVIEW`; it can close only after focused E3 P0=0/P1=0 acceptance, exact
 publication, and unchanged Python 3.11/3.12 CI on the exact pushed candidate.
+
+## Paired E2/E3 external effectiveness closure -- 2026-08-08
+
+The final WO-0152 R3 candidate manifest SHA-256 is
+`ecc85f9ad803080a7a159468be404ecacb60464db0249316fdfba0a962f3ae46`.
+The focused independent result SHA-256 is
+`96680be9a550bf40e48104e12686dfab985866cd76d5c0de6e46519698a2ac9c`,
+with verdict `ACCEPT`, P0=0/P1=0/P2=0. The candidate was normally published at
+exact SHA `c148b93bb66cc7d943615337eb4ddf1ab61313ee`.
+
+GitHub Actions run #771, ID `31291594513`, tested that exact SHA. Python 3.11
+job `93189636264` and Python 3.12 job `93189636234` both concluded `success`.
+Each passed Ruff, mypy, import boundaries, contamination and AI-OS hygiene,
+the R2 oracle, 5,977 tests, and the independent coverage validator. Python
+3.11 measured 24,826/26,530 lines (`93.577083%`) and 8,460/9,920 branches
+(`85.282258%`); Python 3.12 measured the same lines and 8,461/9,920 branches
+(`85.292339%`). Run #741 remains retained functional/static-positive and
+coverage-negative evidence; it is not reclassified.
+
+WO-0151 is now effectively `CLOSED`. The records-only commit carrying this
+truth, WO-0152's lifecycle move, the closeout manifest, and the M1-to-M2
+handoff must itself pass exact-head Python 3.11 and 3.12 CI before the overall
+M1 completion claim becomes effective. No M2, persistence, runtime, broker,
+database, SQL/DDL, credential, master merge, PR, deletion, cleanup,
+force-push, or rebase authority follows.

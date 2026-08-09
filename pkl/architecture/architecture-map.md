@@ -15,21 +15,20 @@ superseded_by: null
 
 ## Summary
 
-Current 2026-08-08 posture: the pure reset kernel now has a locally green paired
-E2/E3 candidate. R13's private predecessor-bound successor protection-cursor
-rollover is accepted, and WO-0152's public-contract generated/stateful/replay/
-boundedness proof passes the complete repository suite. Coverage is gated by
-independent non-decreasing `93.00%` executable-line and `85.25%` branch
-ratchets, correcting the former mixed denominator without changing production
-code, instrumentation, exclusions, or pragmas. WO-0151 remains effective
-`REVIEW` and WO-0152 `ACTIVE` until the final remediation-03 focused recheck
-and unchanged exact-head Python 3.11/3.12 CI both succeed.
+Current 2026-08-08 posture: the pure reset M1 reference kernel is filed
+`CLOSED`. R13's private predecessor-bound successor protection-cursor rollover
+and WO-0152's public-contract generated/stateful/replay/boundedness proof are
+independently accepted and published at exact SHA
+`c148b93bb66cc7d943615337eb4ddf1ab61313ee`. GitHub Actions run #771
+(`31291594513`) passed Python 3.11 and 3.12, all 5,977 tests, and independent
+non-decreasing `93.00%` executable-line and `85.25%` branch ratchets. The
+records-only lifecycle/manifest/handoff publication is the final exact-head
+dual-version gate and changes no production code, instrumentation, exclusion,
+pragma, authority, reader, scan, or accepted ADR.
 
-Remediation 03 changes only E3 tests. It completes the failure-capable lexical
-setup boundary, maps E1 AC-01 to its deterministic identity owner, and proves
-all public predecessor/genesis, compatibility, and aggregate binding
-coordinates across the 32-generation bounded trace. It introduces no
-production seam, authority, reader, scan, or accepted-ADR change.
+The milestone remains pure and unwired. M2 SQLite schema/atomic crash recovery,
+M4 broker correlation, M7/M8 observation, runtime composition, credentials,
+master landing, and operational cutover remain separate authority domains.
 
 The accepted reset target is a modular monolith with one sequenced writer, one pure transition
 kernel, transactional current state plus a broker-effect outbox, and SQLite as the sole beta
@@ -444,3 +443,11 @@ Seam discipline is what makes the safety invariants structurally enforceable rat
   coordinates. No production or architecture file changed. The exact full
   candidate passes both ratchets; external exact-head acceptance remains the
   only M1 effectiveness gate.
+- 2026-08-08: Remediation 03 independently `ACCEPT`ed at P0=0/P1=0/P2=0 and
+  exact SHA `c148b93bb66cc7d943615337eb4ddf1ab61313ee` passed GitHub Actions
+  run #771 on Python 3.11 and 3.12. The pure M1 controller/currentness,
+  direct-lineage, protection, venue, and authority composition is filed
+  `CLOSED`; its schema-neutral handoff freezes one composite atomic M2
+  persistence boundary without adding DDL, database, runtime, broker, public
+  API, history scan, or operational authority. The records-only publication is
+  the final exact-head dual-version gate.

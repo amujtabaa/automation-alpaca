@@ -1,18 +1,18 @@
 ---
 type: Work Order
 title: "Reset kernel E3: acquisition-generation generated and stateful conformance"
-status: ACTIVE
+status: CLOSED
 work_order_id: WO-0152
 wave: RESET-M1E-3
 model_tier: strong
 risk: high
-disposition: []
+disposition: [PKL_UPDATED, RESULT_SUMMARY_KEPT]
 owner: Codex implementation seat
 created: 2026-08-05
 branch: codex/arch-reset-2026-07-r1
 base_sha: a2b84abc1914517cf591f27fb88f0b20b2a47ef7
 predecessor: "Accepted frozen WO-0151 E2 implementation plus exact-head run #741 functional/static success, with the sole coverage-only failure carried to paired E2/E3 closeout"
-implementation_authority: "ACTIVE TEST-ONLY E3 plus the exact coverage-gate semantics correction recorded below - R13 implementation independently ACCEPTed P0=0/P1=0/P2=0 and the unchanged B-first-fill detector passed; only the machine-readable allowed paths may change; all production/runtime/operational exclusions remain in force"
+implementation_authority: "CONSUMED - the accepted test-only E3 and exact coverage-gate correction are published at the implementation commit below; no production/runtime/operational authority follows"
 activation_required: "SATISFIED — R2-R3 contract 881334b4af6acb566adc57c30a4199f0340129d244cc3d58536c8e7c109a9936, manifest ee5554bf4e6b380fa7c687324adba7f93168e56168fb84cedf519115e4b7c3f6, and independent ACCEPT result 8752e20fa0aba82885d1d49ae8eabca9901218f5659073adcb4324fa9b189a59 at P0=0/P1=0/P2=0"
 re_gate_required: "SATISFIED — R2-R5 contract 79c734b7c0a929d43aeca83ef00e797b7afc8d97754eb30f1c812b1dd5b3221e, manifest 3fbcffbec46dd43248a1a8b569df39880c96e9d539d5a84a07cf58fde19be946, and independent ACCEPT result f3c86daa71a36108bb2757f853d922e992c7c77eed4d7d7626b5e9091e3d5245 at P0=0/P1=0/P2=0"
 r2_r5_acceptance_commit: ef5e53a5d49e189942545f52b7784ad7648fbf28
@@ -23,7 +23,15 @@ e3_stop_evidence: "work/review/REV-0059/evidence.md (SHA-256 d018c2bddeec79fd624
 e3_r13_detector_confirmation: "work/review/REV-0059/WO-0152-FR-08-R13-DETECTOR-CONFIRMATION.md (SHA-256 dd860117e38c045146869742ac8b6dc3797f404e39f9645bdd20d749258affc9; unchanged detector SHA-256 c89dc011c359d104d9a2ae851f0a649926e04ac596acf6da444eecbea1774186; one selected public trace passed, exit 0)"
 coverage_ratchet_r1: "ACCEPT - manifest 230a5ec0d5aeccc68518a7def172e49d52aad7e22e218da692aa04a54aec8309; result d8931dda45422622c668927ba5c0777b5c4dda836ddcc17b1c2354f0bbad2d5c; P0=0/P1=0/P2=0"
 e3_local_full_gate: "PASSED AFTER REMEDIATION-03 - 5,977 passed, 11 skipped, 1 xfailed, 19 warnings; line 24,825/26,530=93.573313%; branch 8,461/9,920=85.292339%; full pytest exit 0 and both independent ratchets passed"
-e3_final_review: "REMEDIATION-03 CANDIDATE FROZEN FOR final focused independent recheck of the three remediation-02 P1 findings; exact-head Python 3.11/3.12 CI remains pending"
+e3_final_review: "ACCEPT - R3 manifest ecc85f9ad803080a7a159468be404ecacb60464db0249316fdfba0a962f3ae46; result 96680be9a550bf40e48104e12686dfab985866cd76d5c0de6e46519698a2ac9c; P0=0/P1=0/P2=0"
+closed: 2026-08-08
+implementation_commit: c148b93bb66cc7d943615337eb4ddf1ab61313ee
+implementation_tree: 0bbe3a0432bb1a62bfa1a5cd849e43d989b5bbaa
+external_exact_head: "PASSED - GitHub Actions run #771, ID 31291594513, exact SHA c148b93bb66cc7d943615337eb4ddf1ab61313ee; Python 3.12 job 93189636234 SUCCESS; Python 3.11 job 93189636264 SUCCESS; all static, governance, R2, pytest, and independent line/branch ratchet steps passed"
+implementation_manifest: "work/review/REV-0059/implementation-manifest.md (self-excluded from its hash table; exact SHA recorded by result-closeout.md)"
+m1_handoff: "work/review/REV-0059/handoff.md"
+closeout_review: "work/review/REV-0059/result-closeout.md"
+effective_closeout_condition: "FILED CLOSED - effective M1 closeout requires this records-only closeout publication commit itself to pass exact-head Python 3.11 and 3.12 CI"
 e3_detector_confirmation: "work/review/REV-0059/WO-0152-FR-08-R12-R1-DETECTOR-CONFIRMATION.md (SHA-256 757a6e564abce77193a3d03ab6bcf5ce519e6399062ec987109f384595ac078f; unchanged three-control rerun exit 0)"
 e3_baseline_format_normalization: "work/review/REV-0059/WO-0152-E3-BASELINE-FORMAT-NORMALIZATION.md (SHA-256 ac688bae5d510bb14190d8f2cd13ccb4f2fdb6871d238d3d7bd6ed968276f65a; same three controls rerun exit 0)"
 e3_baseline_commit: "2da9f3eab8f5f3febda964857714d0d178e4fb29 — detector confirmation and post-confirmation test-only format normalization"
@@ -656,6 +664,8 @@ allowed_paths:
   - work/review/REV-0059/request-implementation-r3.md
   - work/review/REV-0059/result-implementation-r3.md
   - work/review/REV-0059/handoff.md
+  - work/review/REV-0059/request-closeout.md
+  - work/review/REV-0059/result-closeout.md
   - work/review/REV-0061/WO-0152-COVERAGE-RATCHET-SEMANTICS-AMENDMENT.md
   - work/review/REV-0061/WO-0152-COVERAGE-RATCHET-CANDIDATE-MANIFEST.md
   - work/review/REV-0061/request.md
@@ -818,3 +828,53 @@ coverage is 24,825/26,530 executable lines (`93.573313%`) and 8,461/9,920
 branches (`85.292339%`); both independent ratchets pass. WO-0152 remains
 `ACTIVE` and WO-0151 remains effective `REVIEW` pending final independent
 P0=0/P1=0 acceptance, exact publication, and unchanged Python 3.11/3.12 CI.
+
+## Final paired E2/E3 external closeout -- 2026-08-08
+
+The exact R3 publication candidate was independently accepted at P0=0/P1=0/
+P2=0 in `result-implementation-r3.md`, SHA-256
+`96680be9a550bf40e48104e12686dfab985866cd76d5c0de6e46519698a2ac9c`.
+It was committed and normally pushed at exact SHA
+`c148b93bb66cc7d943615337eb4ddf1ab61313ee`, tree
+`0bbe3a0432bb1a62bfa1a5cd849e43d989b5bbaa`.
+
+GitHub Actions run #771, ID `31291594513`, tested that exact SHA. Python 3.11
+job `93189636264` passed all 5,977 tests with 11 skips and one expected
+failure, then passed the independent ratchets at 24,826/26,530 lines
+(`93.577083%`) and 8,460/9,920 branches (`85.282258%`). Python 3.12 job
+`93189636234` passed the same test counts and passed the ratchets at
+24,826/26,530 lines (`93.577083%`) and 8,461/9,920 branches (`85.292339%`).
+Every Ruff, mypy, import-boundary, contamination, AI-OS hygiene, R2 oracle,
+pytest, coverage, and cleanup step completed successfully in both jobs.
+
+This work order is filed `CLOSED` with disposition
+`[PKL_UPDATED, RESULT_SUMMARY_KEPT]`. The pure, unwired M1 reference kernel is
+complete only when the records-only commit containing this lifecycle move,
+manifest, PKL/ledger reconciliation, and M1-to-M2 handoff itself passes exact-
+head Python 3.11 and 3.12 CI. No schema, SQL/DDL, database, persistence,
+runtime, credential, broker/Alpaca/network, M2, merge, PR, deletion, cleanup,
+force-push, or rebase authority follows.
+
+```yaml
+fable_done:
+  task: "WO-0152 reset kernel E3: generated/stateful acquisition-generation conformance"
+  done_when_results:
+    - item: "Behavior-first generated, stateful, replay/restart, mutation, boundedness, and long-sequence proof is complete through public contracts."
+      status: MET
+      evidence: "R3 manifest ecc85f9ad803080a7a159468be404ecacb60464db0249316fdfba0a962f3ae46; independent ACCEPT result 96680be9a550bf40e48104e12686dfab985866cd76d5c0de6e46519698a2ac9c; 18 E3 controls and full local suite passed."
+    - item: "The exact pushed implementation passes unchanged Python 3.11 and 3.12 CI with separate line and branch ratchets."
+      status: MET
+      evidence: "Run #771 / 31291594513 at c148b93bb66cc7d943615337eb4ddf1ab61313ee; jobs 93189636264 and 93189636234 SUCCESS; line >=93.00% and branch >=85.25% in both."
+    - item: "M1-to-M2 handoff freezes public interfaces, atomic persistence boundary, evidence, and deferred work without activating M2."
+      status: MET
+      evidence: "work/review/REV-0059/handoff.md and implementation-manifest.md in the records-only closeout candidate."
+  scope_check:
+    allowed_paths_respected: true
+    drive_by_edits: false
+  debt_check: "No in-scope P0/P1 remains. M2 persistence/crash recovery, M4 broker correlation, M7/M8 observation, runtime wiring, and master landing remain separately gated."
+  deferred:
+    - "M2 database/schema/atomic crash-recovery implementation."
+    - "M4 broker correlation, M7/M8 observation, runtime wiring, and master landing."
+  status: VERIFIED
+  verification_scope: "Pure M1 implementation, independent reviews, exact-head implementation CI, records reconciliation, and M1-to-M2 handoff only."
+```

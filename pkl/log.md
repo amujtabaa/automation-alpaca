@@ -633,3 +633,14 @@
   validator controls, 24,825/26,530 lines (`93.573313%`), and 8,461/9,920
   branches (`85.292339%`). Final independent acceptance, exact publication,
   and unchanged Python 3.11/3.12 CI remain open; no M1/M2 closeout is claimed.
+- 2026-08-08: WO-0152 remediation 03 independently `ACCEPT`ed at
+  P0=0/P1=0/P2=0 in result
+  `96680be9a550bf40e48104e12686dfab985866cd76d5c0de6e46519698a2ac9c`.
+  The exact implementation/evidence publication
+  `c148b93bb66cc7d943615337eb4ddf1ab61313ee` then passed GitHub Actions run
+  #771 (`31291594513`) on Python 3.11 job `93189636264` and Python 3.12 job
+  `93189636234`. Each passed all 5,977 tests and both independent ratchets;
+  lines were 24,826/26,530 in both, branches were 8,460/9,920 on 3.11 and
+  8,461/9,920 on 3.12. WO-0151 and WO-0152 are filed `CLOSED`; the records-
+  only lifecycle/manifest/handoff publication is the final exact-head CI
+  condition. M2/runtime/persistence/broker/master authority remains inactive.

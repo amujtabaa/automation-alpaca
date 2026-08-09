@@ -15,24 +15,21 @@ superseded_by: null
 
 ## Summary
 
-Current 2026-08-08 posture: the accepted R13 E2 correction and the complete
-behavior-first WO-0152 E3 candidate are locally green. A fresh full run passed
-5,977 tests after final-review remediation 03, with executable-line coverage
-`93.573313%` and branch coverage `85.292339%`. The independently accepted
-coverage-gate correction now enforces
-non-decreasing `93.00%` line and `85.25%` branch ratchets separately; it changes
-no source selection, branch instrumentation, omit rule, pragma, or application
-code. WO-0151 remains effective `REVIEW` and WO-0152 remains `ACTIVE` pending
-the final focused independent remediation-03 recheck and unchanged exact-head Python
-3.11/3.12 CI.
-M1 is not yet claimed complete, and M2/runtime/persistence remain inactive.
+Current 2026-08-08 posture: the pure, unwired M1 reference kernel is filed
+`CLOSED` across WO-0151 E2 and WO-0152 E3. Final remediation 03 independently
+`ACCEPT`ed at P0=0/P1=0/P2=0, was normally published at exact SHA
+`c148b93bb66cc7d943615337eb4ddf1ab61313ee`, and passed GitHub Actions run
+#771 (`31291594513`) on Python 3.11 and 3.12. Both jobs passed 5,977 tests and
+the separately enforced non-decreasing `93.00%` executable-line and `85.25%`
+branch ratchets. The records-only commit containing the lifecycle move,
+manifest, ledger/PKL reconciliation, and M1-to-M2 handoff is the final exact-
+head dual-version gate; its successful run makes the filed closure effective
+without a recursive evidence-only commit.
 
-The remediation-02 result is retained negative evidence at SHA-256
-`191a2641766e83c93059267df12f1c43f962398f3eb3eb150259c649e9fafccc`
-(`ACCEPT-WITH-CHANGES`, P0=0/P1=3/P2=0). Remediation 03 closes only those
-three test-contract gaps: exact setup privilege, the true E1 AC-01 owner, and
-complete public generation-binding coordinates. The final local candidate is
-green but not yet published or externally accepted.
+M2, runtime, persistence, schema/DDL, database, broker/Alpaca/network,
+credentials, master landing, and UI/API observation integration remain
+inactive and separately gated. Run #741 remains retained functional/static-
+positive and coverage-negative evidence; it is not reclassified.
 
 Build a narrow, reliable, browser-operated protection/acquisition engine for Alpaca Paper. The
 accepted reset target is a modular monolith with one sequenced writer, one pure transition kernel,
@@ -562,3 +559,12 @@ Roadmapping against an unverified codebase state repeats the failure mode Fable 
   `85.302419%` branches. WO-0151 remains REVIEW and WO-0152 ACTIVE pending
   focused P0=0/P1=0 acceptance, exact publication, and unchanged Python
   3.11/3.12 exact-head CI.
+- 2026-08-08: Final remediation 03 independently `ACCEPT`ed at P0=0/P1=0/
+  P2=0, published at exact SHA
+  `c148b93bb66cc7d943615337eb4ddf1ab61313ee`, and passed GitHub Actions run
+  #771 (`31291594513`) on Python 3.11 and 3.12. Both jobs passed 5,977 tests,
+  the `93.00%` line ratchet, and the `85.25%` branch ratchet. WO-0151 and
+  WO-0152 are filed `CLOSED`; the records-only publication containing their
+  manifest and M1-to-M2 handoff is the final exact-head CI condition. M2,
+  runtime, persistence, database/schema, broker/network, credentials, master
+  landing, and observation integration remain inactive.

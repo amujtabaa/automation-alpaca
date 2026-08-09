@@ -941,3 +941,29 @@ expected failure, 18 E3 tests, and both coverage ratchets at `93.573313%`
 lines and `85.292339%` branches. This entry records a candidate only. Final
 independent P0=0/P1=0 acceptance, normal publication, and unchanged exact-head
 Python 3.11/3.12 CI remain mandatory before effective M1 closeout.
+
+### M1 paired E2/E3 external closure -- 2026-08-08
+
+WO-0152 remediation 03 independently returned `ACCEPT`, P0=0/P1=0/P2=0, at
+result SHA-256
+`96680be9a550bf40e48104e12686dfab985866cd76d5c0de6e46519698a2ac9c`.
+Its exact manifest SHA-256 is
+`ecc85f9ad803080a7a159468be404ecacb60464db0249316fdfba0a962f3ae46`.
+The accepted candidate was normally published at exact SHA
+`c148b93bb66cc7d943615337eb4ddf1ab61313ee`.
+
+GitHub Actions run #771, ID `31291594513`, tested that exact SHA. Python 3.11
+job `93189636264` and Python 3.12 job `93189636234` both concluded `success`
+after Ruff, mypy, import boundaries, contamination and AI-OS hygiene, the R2
+oracle, all 5,977 tests, and the independent coverage validator. Python 3.11
+measured 24,826/26,530 lines (`93.577083%`) and 8,460/9,920 branches
+(`85.282258%`); Python 3.12 measured the same lines and 8,461/9,920 branches
+(`85.292339%`). Both the `93.00%` line and `85.25%` branch ratchets passed.
+
+WO-0151 and WO-0152 are therefore filed `CLOSED` for the pure, unwired M1
+reference kernel. Their records-only lifecycle/manifest/handoff publication
+must itself pass exact-head Python 3.11 and 3.12 CI before the overall M1
+completion claim is effective. Run #741 remains historical coverage-negative
+evidence. No accepted ADR body is changed, and no M2, schema/DDL, database,
+persistence, runtime, broker/Alpaca/network, credential, master merge, PR,
+deletion, cleanup, force-push, or rebase authority follows.
