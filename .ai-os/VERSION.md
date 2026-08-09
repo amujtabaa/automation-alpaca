@@ -1,7 +1,7 @@
 # AI Project OS Version
 
-Package version: **v0.9.1**  
-Release date: **2026-07-07**
+Package version: **v0.9.2**
+Release date: **2026-08-08**
 
 ## Canonical version rule
 
@@ -11,13 +11,13 @@ Release date: **2026-07-07**
 
 | Component | Version | Notes |
 |---|---:|---|
-| Core docs | 0.9.1 | Main OS documentation set. |
-| Manifest | 0.9.1 | Installer/source-of-truth metadata. |
-| AI OS rules schema | 0.9.1 | `rules/ai-os-rules.yaml`. |
-| Prompt rules schema | 0.9.1 | `rules/prompt-rules.yaml`. |
-| MCP control-plane spec | 0.9.1 | `14_MCP_CONTROL_PLANE.md` and `mcp/`. |
-| Adapter shims | 0.9.1 | Claude, Codex, and generic adapters. |
-| Scripts | 0.9.1 | Tested harness checks; no stubs remaining. |
+| Core docs | 0.9.2 | Main OS documentation set, including autonomy/escalation policy. |
+| Manifest | 0.9.2 | Installer/source-of-truth metadata. |
+| AI OS rules schema | 0.9.2 | `rules/ai-os-rules.yaml`. |
+| Prompt rules schema | 0.9.2 | `rules/prompt-rules.yaml`. |
+| MCP control-plane spec | 0.9.2 | `14_MCP_CONTROL_PLANE.md` and `mcp/`. |
+| Adapter shims | 0.9.2 | Claude, Codex, and generic adapters. |
+| Scripts | 0.9.2 | Tested harness checks; no stubs remaining. |
 
 ## Versioning policy
 
@@ -25,6 +25,14 @@ Release date: **2026-07-07**
 - Component/schema versions should normally match the package release unless a component is deliberately versioned independently.
 - If a component intentionally diverges, explain why in this file and `CHANGELOG.md`.
 - The installer should report mismatches between `VERSION.md`, `AI_OS_MANIFEST.yaml`, rule-schema version fields, and MCP target metadata.
+
+## v0.9.2 scope
+
+v0.9.2 is the autonomy-and-escalation patch. It makes recorded execution authority reusable,
+requires bounded investigation before `NEEDS-INPUT`, turns repeated failed fixes into root-cause
+re-gating instead of automatic human return, defines the exact human-escalation boundary, and
+removes any requirement for a named-model escalation ladder. Canonical rules, prompts, Claude/Codex
+adapters, and regression tests carry the same policy.
 
 ## v0.9.1 scope
 

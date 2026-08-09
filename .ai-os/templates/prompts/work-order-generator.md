@@ -25,14 +25,17 @@ Produce a work order that includes:
 11. Acceptance criteria
 12. Required tests
 13. Verification commands
-14. Stop conditions
-15. Human approval gates
+14. Existing execution authority (what must not be re-requested)
+15. True stop conditions
+16. Human approval gates still outstanding, or `none`
 
 Rules:
 - Do not implement.
 - Do not ask for broad repo review unless needed.
 - Use exact paths where possible.
 - If required information is missing and cannot be safely assumed, mark NEEDS-INPUT.
+- Investigate discoverable facts before marking NEEDS-INPUT and batch material questions.
+- Do not turn ordinary reversible in-scope steps into approval gates.
 - Keep the work order short enough to paste into an agent session.
 ```
 

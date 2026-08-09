@@ -51,7 +51,13 @@ Execute in batches of 3 tasks maximum. After each batch:
 2. Are tests passing?
 3. Is the session file updated?
 
-On blockers: stop immediately, document, ask user.
+### Blocker triage
+
+On a blocker, do not immediately return to the user. Reproduce or inspect it, classify attribution,
+check the nearest working analogue, try safe in-scope alternatives, and re-gate a root correction.
+Continue other independent work. Ask one batched question only when the blocker requires new
+authority, an unapproved human-gated/destructive action, resolution of conflicting accepted
+authority, or indispensable external human input.
 
 ---
 

@@ -644,3 +644,11 @@
   8,461/9,920 on 3.12. WO-0151 and WO-0152 are filed `CLOSED`; the records-
   only lifecycle/manifest/handoff publication is the final exact-head CI
   condition. M2/runtime/persistence/broker/master authority remains inactive.
+- 2026-08-08: WO-0155 distilled the multi-day ARCH-RESET M1 execution lessons into AI Project OS
+  v0.9.2. Explicit implementation requests, ACTIVE work orders, and recorded grants now authorize
+  ordinary reversible in-scope execution without repeated permission requests. Agents investigate
+  and re-gate failed approaches before `NEEDS-INPUT`; human escalation is reserved for genuinely
+  new authority, unapproved human-gated or destructive actions, unresolved authority conflicts, or
+  unavailable external secrets and decisions. Claude, Codex, Fable, prompt templates, and
+  machine-readable rules share this boundary. No fixed named-model escalation ladder remains; the
+  current capable model is inherited unless a concrete task reason justifies an override.

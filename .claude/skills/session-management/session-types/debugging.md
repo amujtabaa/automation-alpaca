@@ -147,16 +147,19 @@ When tracing bugs, identify which layer failed. Bugs often occur because validat
 
 ---
 
-## Escalation Rule
+## Re-gate rule
 
 **After 3+ failed fix attempts:**
 
-Stop trying fixes. The problem is likely architectural.
+Stop the patch loop. The current hypothesis or boundary is wrong; the task is not automatically
+blocked.
 
 1. Document what was tried
 2. List what each attempt revealed
 3. Question the approach/pattern
-4. Escalate to user or specialist
+4. Re-run root-cause analysis and choose a materially different approach
+5. Use a specialist or independent reviewer when useful
+6. Escalate to the user only if the redesign needs new authority or an irreducible human decision
 
 ---
 

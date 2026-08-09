@@ -15,7 +15,9 @@ description: Engineering discipline protocol (Claude adapter for Fable v3). Use 
 2. No completion claim without fresh evidence pasted in the same reply. Statuses: VERIFIED | UNVERIFIED | BLOCKED | NEEDS-INPUT — nothing else.
 3. No fix without a diagnosed root cause; "to see if it helps" is a labeled experiment, not a fix.
 4. Touch only what the task requires; out-of-scope problems get logged, not fixed.
-5. Surface assumptions before building; unsure whether to ask or assume → ask.
+5. Surface assumptions before building; investigate first, then use a conservative reversible
+   assumption when it cannot materially change the result. Ask only when the missing fact is both
+   undiscoverable and material.
 
 **Visible-deviation rule:** can't/won't follow a rule → `[FABLE DEVIATION] skipping X because Y`. Silent deviation is the only unforgivable failure.
 
@@ -26,7 +28,7 @@ Emit the structured blocks from v3, not v1 prose forms, so all seats (Claude, Co
 - Task header: `[FABLE • FULL|LITE • verification: DIRECT|DELEGATED • task: <n>]`
 - `fable_gate:` before building (FULL tasks) — goal, assumptions (each VERIFIED|UNVERIFIED with evidence), approach + alternatives, out_of_scope, done_when (behavior/test/command triples), blast_radius, rollback. Irreversible actions wait for approval.
 - `evidence:` for every verification — phase (RED|GREEN|REFACTOR|FULL_SUITE|MANUAL_QA), command, result PASS|FAIL|NOT_RUN, decisive_output pasted.
-- `fable_fix:` for every bug — symptom, root_cause, evidence, fix, regression_test, red_green_verified, attempt #. **Circuit breaker at attempt 3:** stop, state what failed, return to the gate, discuss redesign with the human.
+- `fable_fix:` for every bug — symptom, root_cause, evidence, fix, regression_test, red_green_verified, attempt #. **Circuit breaker at attempt 3:** stop the patch loop, state what failed, return to root cause and re-gate a materially different approach. Discuss with the human only if that redesign requires new authority or an irreducible decision.
 - DONE block closing every task: each done_when → met/not, evidence, scope check, status.
 
 ## Claude Code integration (this repo)
@@ -36,6 +38,18 @@ Emit the structured blocks from v3, not v1 prose forms, so all seats (Claude, Co
 - **ClaudeFast interplay:** skill-activation suggestions never override the gate; `/team-plan` output feeds the gate, not replaces it; quality-engineer validation is in-process adversarial checking; it supplements pasted evidence and never counts as the independent cross-model review, which runs at the human's discretion per the CLAUDE.md Review policy.
 - **Repo safety core:** the invariants and human-gated surfaces in `CLAUDE.md` bind inside every Fable task. Gated surfaces are never LITE.
 - **On close:** assign work-order disposition (PKL_UPDATED | ADR_CREATED | RESULT_SUMMARY_KEPT | ARCHIVED | DELETED | SUPERSEDED | ABANDONED) and distill durable knowledge into PKL/ADRs per `.ai-os/` §12. **Close-out ships with the work (CLAUDE.md repo rule):** status flip + disposition + ledger entry + file move out of live folders + refresh of any doc/PKL/ADR claim the work invalidates land in the SAME commit/PR as the work itself — a DONE block over undispositioned work is incomplete. CI fails a completed order parked in `work/queue|active|review`.
+
+## Persistence and escalation
+
+- An explicit implementation request or `ACTIVE` work order is authority for ordinary, reversible
+  in-scope execution. Do not ask the human to repeat it.
+- Diagnose failures and necessary in-flight root causes; update the gate and continue when the
+  correction remains inside safety and architecture boundaries.
+- Before `NEEDS-INPUT`, inspect current artifacts, reproduce/query the state, check precedent, and
+  exhaust safe alternatives. Batch any remaining material questions.
+- Ask only for new material authority, unapproved human-gated/destructive action, unresolved
+  accepted-authority conflict, or indispensable external human input.
+- Inherit the session model by default. No named-model escalation ladder is required.
 
 ## Triage
 

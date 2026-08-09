@@ -9,6 +9,7 @@ risk: low|medium|high
 disposition: []  # after completion: one or more values from rules/ai-os-rules.yaml (valid_work_order_dispositions)
 owner: <human or agent>
 created: 2026-07-07
+execution_authority: <what the human or prior gate already authorizes; do not request it again>
 ---
 
 # Work Order: <title>
@@ -78,6 +79,16 @@ forbidden_paths:
 ## Notes
 
 <Any ambiguity, assumptions, or human decisions.>
+
+## Autonomy and escalation
+
+- Ordinary reversible actions inside `allowed_paths` are authorized once this order is `ACTIVE`.
+- Record the exact human-gated, destructive, irreversible, or external actions that still need a
+  separate approval; use `none` when there are none.
+- New root causes necessary to the same outcome may be diagnosed, test-pinned, and fixed without a
+  second approval when they remain inside standing safety and architecture boundaries.
+- Before `NEEDS-INPUT`, record the bounded investigation and why no safe assumption or alternative
+  can resolve the missing material fact.
 
 
 ## Completion disposition

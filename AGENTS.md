@@ -17,6 +17,17 @@ For engineering tasks:
 Do not paste or load the entire OS unless explicitly asked. Use the smallest useful context packet.
 <!-- AI-PROJECT-OS:END -->
 
+## Autonomy and escalation
+
+An explicit request to implement/fix/finish or an `ACTIVE` work order authorizes ordinary,
+reversible work inside its scope. Do not ask for the same permission again. Investigate missing
+facts and failed checks, make only conservative reversible assumptions, and continue through
+necessary in-scope root corrections. Ask the human only when the next material action needs new
+authority, an unapproved human-gated/destructive action, resolution of conflicting accepted
+authority, or indispensable external human input. After repeated failed attempts, re-diagnose and
+re-gate a materially different approach before considering `BLOCKED`. Canonical policy:
+`.ai-os/core/19_AUTONOMY_AND_ESCALATION.md`.
+
 ## Safety core
 
 The safety invariants and human-gated surfaces are canonical in `CLAUDE.md` ("Safety core —

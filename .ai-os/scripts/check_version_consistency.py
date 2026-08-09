@@ -6,20 +6,29 @@ by walking up to AI_OS_MANIFEST.yaml and paths are resolved through the
 manifest install_map (see ai_os_paths.py). Exposes collect_failures() for
 reuse by the MCP server's doctor tool.
 """
+
 from __future__ import annotations
 import re
 from pathlib import Path
 
 from ai_os_paths import find_root, resolve
 
-EXPECTED = "0.9.1"
+EXPECTED = "0.9.2"
 CHECKS = {
     "VERSION.md": [rf"Package version:\s*\*\*v{EXPECTED}\*\*"],
-    "AI_OS_MANIFEST.yaml": [rf'os_version:\s*"{EXPECTED}"', rf'package_version:\s*"{EXPECTED}"'],
+    "AI_OS_MANIFEST.yaml": [
+        rf'os_version:\s*"{EXPECTED}"',
+        rf'package_version:\s*"{EXPECTED}"',
+    ],
     "rules/ai-os-rules.yaml": [rf"version:\s*{EXPECTED}", rf"os_version:\s*{EXPECTED}"],
-    "rules/prompt-rules.yaml": [rf"version:\s*{EXPECTED}", rf"os_version:\s*{EXPECTED}"],
+    "rules/prompt-rules.yaml": [
+        rf"version:\s*{EXPECTED}",
+        rf"os_version:\s*{EXPECTED}",
+    ],
     "00_START_HERE.md": [rf"AI Project Operating System — v{EXPECTED}"],
-    "14_MCP_CONTROL_PLANE.md": [r"MCP is the OS access layer, not the OS source of truth"],
+    "14_MCP_CONTROL_PLANE.md": [
+        r"MCP is the OS access layer, not the OS source of truth"
+    ],
     "mcp/server/pyproject.toml": [rf'target_ai_os_version = "{EXPECTED}"'],
 }
 
@@ -54,6 +63,7 @@ def main() -> int:
         return 1
     print(f"VERSION CHECK PASSED: v{EXPECTED}")
     return 0
+
 
 if __name__ == "__main__":
     raise SystemExit(main())

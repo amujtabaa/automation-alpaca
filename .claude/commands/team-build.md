@@ -17,6 +17,17 @@ Execute the plan at `PATH_TO_PLAN` using Claude Code's Agent Teams feature. Unli
 
 PATH_TO_PLAN: $ARGUMENTS
 
+### Persistence and permission discipline
+
+- The implementation request or `ACTIVE` work order authorizes ordinary reversible actions inside
+  the plan; teammates must not re-request that authority.
+- A teammate blocker first routes to the lead for investigation, contract clarification, safe
+  alternative, or root-cause re-gating. Escalate to the human only at the boundary in
+  `.ai-os/core/19_AUTONOMY_AND_ESCALATION.md`.
+- After failed attempts, change the diagnosis or task design rather than repeatedly patching or
+  returning early. Continue other unblocked work and batch any genuinely human decisions.
+- Model pins are optional and evidence-based; there is no mandatory named-model ladder.
+
 ## Prerequisites
 
 Agent Teams must be enabled via the `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` environment variable. This flag may be set several ways: persisted in `~/.claude/settings.json` under `env`, exported in the shell, or injected at launch (e.g. `just teams` / `just cc`). The AUTHORITATIVE check is the live process environment of the running session, NOT any single config file:
@@ -24,7 +35,7 @@ Agent Teams must be enabled via the `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` env
 - bash: `echo "${CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS:-UNSET}"`
 - PowerShell: `$env:CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS`
 
-A value of `1` means enabled. Do NOT conclude it is disabled because the key is absent from `settings.json` -- a launcher may have injected it into the process env without writing it there. Only if the live env check returns empty/unset: STOP and instruct the user to enable it (add to `settings.json` `env` and restart, or relaunch via `just teams`).
+A value of `1` means enabled. Do NOT conclude it is disabled because the key is absent from `settings.json` -- a launcher may have injected it into the process env without writing it there. If the live env check returns empty/unset, fall back to `/build` and continue unless Agent Teams itself is an explicit acceptance criterion. Ask the user to enable it only when that capability is materially required.
 
 ## Workflow
 

@@ -6,6 +6,7 @@
 - [ ] Add `.ai-os/` or equivalent folder for scripts/rules/templates.
 - [ ] Add `pkl/` folder with index and log.
 - [ ] Add Fable Core v3 or adapter-specific skill.
+- [ ] Install `19_AUTONOMY_AND_ESCALATION.md` and propagate its authority boundary into agent adapters.
 
 ## Phase 1 — Create project truth
 
@@ -28,7 +29,7 @@
 
 - [ ] Create work order for each feature.
 - [ ] Create one branch/worktree per work order.
-- [ ] Assign model tier per work order.
+- [ ] Inherit the current capable model by default; record an override only when a concrete task reason requires it.
 - [ ] Merge one branch at a time after full review.
 
 ## Phase 4 — Improve by evals
@@ -49,6 +50,7 @@
 - [ ] Update work-order template to include `Prompt type`.
 - [ ] Log prompt-template performance after each wave.
 - [ ] Retire prompt templates that do not improve success, cost, or review quality.
+- [ ] Regression-test that granted execution authority is reused and that `NEEDS-INPUT` is reserved for genuine human boundaries.
 
 
 ## Phase 5 — Keep the OS right-sized

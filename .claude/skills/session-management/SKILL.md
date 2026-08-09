@@ -56,6 +56,15 @@ PENDING -> IN_PROGRESS -> COMPLETE -> VERIFIED
 
 Update status as work progresses. Mark tasks `[x]` immediately upon completion.
 
+## Cross-cutting autonomy rule
+
+An implementation request or `ACTIVE` work order is reusable execution authority for ordinary,
+reversible in-scope work. Session protocols must investigate and re-gate before `NEEDS-INPUT`; they
+must not convert every blocker, failed attempt, or plan into a fresh approval pause. Ask only for
+new authority, an unapproved human-gated/destructive action, an unresolved accepted-authority
+conflict, or indispensable external human input. See
+`.ai-os/core/19_AUTONOMY_AND_ESCALATION.md`.
+
 ---
 
 ## Cross-Cutting Practices

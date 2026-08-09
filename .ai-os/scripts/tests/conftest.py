@@ -1,4 +1,5 @@
 """Shared helpers for AI Project OS script tests."""
+
 from __future__ import annotations
 
 import shutil
@@ -12,7 +13,9 @@ PKG = Path(__file__).resolve().parents[2]
 SCRIPTS = PKG / "scripts"
 
 
-def run_script(script: Path, args=(), cwd: Path | None = None, stdin_text: str | None = None):
+def run_script(
+    script: Path, args=(), cwd: Path | None = None, stdin_text: str | None = None
+):
     """Run a package script in a subprocess and return the CompletedProcess."""
     return subprocess.run(
         [sys.executable, str(script), *[str(a) for a in args]],
@@ -38,7 +41,7 @@ def installed_repo(tmp_path: Path) -> Path:
     shutil.copy(PKG / "AI_OS_MANIFEST.yaml", aios / "AI_OS_MANIFEST.yaml")
     shutil.copy(PKG / "VERSION.md", aios / "VERSION.md")
     for doc in ("00_START_HERE.md", "14_MCP_CONTROL_PLANE.md"):
-        shutil.copy(PKG / doc, aios / "core" / doc)
+        shutil.copy(PKG / "core" / doc, aios / "core" / doc)
     for rule_file in (PKG / "rules").glob("*.yaml"):
         shutil.copy(rule_file, aios / "rules" / rule_file.name)
     for script in SCRIPTS.glob("*.py"):

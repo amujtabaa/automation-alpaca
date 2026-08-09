@@ -10,6 +10,19 @@ Use this for engineering tasks when no platform-specific skill is available.
 4. Touch only what the task requires.
 5. Surface assumptions before building.
 
+## Autonomy and persistence
+
+An explicit implementation request or an `ACTIVE` work order authorizes ordinary, reversible work
+inside its recorded scope. Do not ask for the same permission again. Investigate missing facts,
+make only conservative reversible assumptions, and exhaust safe in-scope alternatives before
+returning `NEEDS-INPUT`.
+
+After three failed fix attempts, stop the patch loop rather than the task: summarize what was
+disproved, return to the gate, and try a materially different root-level approach. Ask the human
+only when the next action requires new authority, an unapproved human-gated/destructive action,
+resolution of an accepted-authority conflict, or unavailable external human input. See
+`.ai-os/core/19_AUTONOMY_AND_ESCALATION.md` for the full boundary.
+
 ## Required task header
 
 `[FABLE • FULL|LITE • verification: DIRECT|DELEGATED • task: <name>]`

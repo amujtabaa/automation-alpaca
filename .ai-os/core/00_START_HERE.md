@@ -1,7 +1,7 @@
-# AI Project Operating System — v0.9.1
+# AI Project Operating System — v0.9.2
 
-Package release: v0.9.1  
-Release date: 2026-07-07  
+Package release: v0.9.2
+Release date: 2026-08-08
 Canonical version source: `VERSION.md` and `AI_OS_MANIFEST.yaml`
 
 This package refines the AI Project Operating System after a targeted research pass focused on actual in-use performance: context efficiency, repository instructions, Prompt Architecture, deterministic enforcement, Project Knowledge Layer design, model-tier economics, Fable integration, and an optional MCP control plane.
@@ -28,6 +28,11 @@ AI Project Operating System
 ├── 12 Work Order Retention and Disposition
 ├── 13 Session Length and Context Hygiene
 ├── 14 MCP Control Plane
+├── 15 Cross-Model Review Packets
+├── 16 Cross-Model Build
+├── 17 Internal Adversarial Review
+├── 18 Wargame Protocol
+├── 19 Autonomy and Escalation
 └── templates, prompts, rules, scripts, adapters, mcp
 ```
 
@@ -44,6 +49,8 @@ AI Project Operating System
 9. After every merge or closed task, apply `12_WORK_ORDER_RETENTION_AND_DISPOSITION.md`.
 10. During long sessions, compaction, or handoff, apply `13_SESSION_LENGTH_AND_CONTEXT_HYGIENE.md`.
 11. If using MCP, treat `14_MCP_CONTROL_PLANE.md` and `mcp/` as the optional access/control layer; the repo-installed OS remains canonical.
+12. Apply `19_AUTONOMY_AND_ESCALATION.md` so agents reuse recorded authority, investigate before
+    `NEEDS-INPUT`, and keep solving until a real human boundary is reached.
 
 ## Definitions
 
@@ -54,6 +61,8 @@ AI Project Operating System
 - **Harness:** deterministic scripts/hooks/CI that validate behavior and scope. It turns some instructions into enforceable checks.
 - **Disposition:** final handling of a work order after completion. The vocabulary is defined canonically in `rules/ai-os-rules.yaml` (`valid_work_order_dispositions`).
 - **MCP control plane:** optional local server/interface that exposes targeted AI OS resources, prompts, and tools. It improves access and context routing; it is not the source of truth.
+- **Execution authority:** the recorded human request or active work-order grant that permits
+  ordinary reversible work without repeated approval prompts.
 
 ## Non-goals
 

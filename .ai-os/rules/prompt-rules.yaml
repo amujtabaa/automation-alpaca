@@ -1,5 +1,5 @@
-version: 0.9.1
-os_version: 0.9.1
+version: 0.9.2
+os_version: 0.9.2
 name: ai-project-os-prompt-rules
 purpose: Rules for selecting and evaluating reusable prompt templates.
 
@@ -29,6 +29,18 @@ runtime_rules:
       - verification_commands
   evidence:
     completion_claims_require_fresh_evidence: true
+  execution_autonomy:
+    activated_scope_authorizes_reversible_execution: true
+    repeat_permission_requests_for_granted_scope: false
+    investigate_before_needs_input: true
+    failed_attempts_trigger_regate_before_human_escalation: true
+    fixed_named_model_escalation_required: false
+    human_input_required_for:
+      - human_gated_surface_without_recorded_approval
+      - destructive_or_irreversible_action_without_recorded_approval
+      - material_scope_or_authority_expansion
+      - unresolved_authority_or_architecture_conflict
+      - unavailable_external_secret_credential_or_human_decision
   routing:
     ambiguous_task_requires_work_order_first: true
     debugging_requires_debugger_prompt: true
@@ -36,6 +48,9 @@ runtime_rules:
     pkl_update_requires_pkl_curator_prompt: true
 
 model_tier_rules:
+  default:
+    inherit_current_capable_model: true
+    mandatory_named_model_ladder: false
   cheap_or_local:
     prompt_requirements:
       - exact files

@@ -1,5 +1,5 @@
-version: 0.9.1
-os_version: 0.9.1
+version: 0.9.2
+os_version: 0.9.2
 rules:
   require_work_order: true
   require_fable_done: true
@@ -12,6 +12,8 @@ rules:
   delete_low_value_raw_work_orders_after_distillation: true
   require_context_hygiene_after_compaction: true
   require_ledger_entry_for_deleted_work_orders: true
+  honor_recorded_execution_authority_without_repeat_approval: true
+  require_investigation_before_needs_input: true
 sensitive_paths:
   - "**/auth/**"
   - "**/security/**"

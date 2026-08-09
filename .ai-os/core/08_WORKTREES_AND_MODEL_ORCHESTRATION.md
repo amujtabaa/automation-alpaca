@@ -44,6 +44,16 @@ The cheapest model is not always cheapest if it takes multiple repair turns. Cho
 ambiguity + blast radius + number of files + need for diagnosis + required review judgment
 ```
 
+## No mandatory named-model ladder
+
+The matrix describes capability needs, not a required sequence of named models. Inherit the current
+capable model by default. Do not force a cheap-model-first or other named escalation ladder merely
+to conserve budget or satisfy ceremony. Override a model only when a concrete subtask benefits from
+a different capability, cost profile, or independent review seat, and record that reason.
+
+If a chosen model is not making progress, re-gate the task and choose the right capability directly;
+do not spend multiple repair turns climbing a preset ladder.
+
 ## Dispatch format
 
 Every delegated agent receives:

@@ -20,6 +20,12 @@ For engineering tasks, follow Fable:
 - FIX block for bugs
 - DONE block before status
 
+Treat an explicit implementation request or ACTIVE work order as authority for ordinary,
+reversible in-scope work. Do not ask for the same permission twice. Investigate and re-gate before
+returning NEEDS-INPUT; ask only for new authority, unapproved human-gated/destructive action,
+unresolved authority conflict, or indispensable external human input. See
+`.ai-os/core/19_AUTONOMY_AND_ESCALATION.md`.
+
 After completion, recommend a disposition for the raw work order from the
 vocabulary in rules/ai-os-rules.yaml (valid_work_order_dispositions).
 ```

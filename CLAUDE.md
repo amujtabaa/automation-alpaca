@@ -19,8 +19,24 @@ Read order for engineering work:
 
 Execution discipline: **Fable v3** (`.ai-os/templates/fable-core-v3.md`; Claude adapter: `.claude/skills/fable`). GATE before building, TDD, fresh pasted evidence for every claim, FIX blocks with root cause, disposition on close. No completion claims without evidence — VERIFIED / UNVERIFIED / BLOCKED / NEEDS-INPUT only.
 
-No work order? Ask for one or draft one for approval (`.ai-os/templates/work-order.md`). Don't freelance.
+No work order? Draft the smallest work order (`.ai-os/templates/work-order.md`). Ask only when the
+request does not provide enough authority for a material decision; an explicit implementation
+request may supply activation authority without a second ceremonial approval.
 <!-- AI-PROJECT-OS:END -->
+
+## Autonomy and escalation
+
+An explicit request to implement/fix/finish or an `ACTIVE` work order authorizes ordinary,
+reversible work inside its scope. Do not ask for permission already recorded. Investigate missing
+facts and failures, use conservative reversible assumptions, and continue through necessary
+in-scope root corrections. After three failed fix attempts, stop the patch loop, return to root
+cause and re-gate a materially different approach; do not automatically return to the human.
+
+Human input is required only for new material authority, an unapproved human-gated/destructive or
+irreversible action, an unresolved conflict in accepted authority, or indispensable external
+secrets/state/business decisions. Batch related questions. Terminal requests such as “finish” or
+“do not stop” require continued monitoring and remediation while safe in-scope progress remains.
+Canonical policy: `.ai-os/core/19_AUTONOMY_AND_ESCALATION.md`.
 
 **Close-out ships with the work** (repo rule, adopted 2026-07-11). The commit/PR that finishes a work order also flips its status, records its disposition and ledger entry, moves the file out of `work/queue|active|review`, and refreshes any doc/PKL/ADR claim the work invalidates. "Done but not dispositioned" is not done — four stale open-items accumulated this way in three days. CI enforces the mechanical part: the AI-OS hygiene checks run on every push, and a completed work order parked in a live folder fails the build.
 
@@ -82,9 +98,12 @@ Three-seat model: planning seat accepts decisions → implementer executes bound
 ## ClaudeFast kit (subordinate tooling)
 
 The kit in `.claude/` provides skill activation, session backups, session types, `/team-plan → /build|/team-build|/workflow-build`, and specialist agents. Rules:
-- Plans always **pause for human approval**; no auto-execution, no auto-advance.
+- `/team-plan` is planning-only when the human asks for a plan. When the human requested
+  implementation or an `ACTIVE` work order exists, the plan feeds execution without a second
+  approval pause.
 - Anything touching a human-gated surface above is Complex by definition, regardless of size.
-- Permission auto-approve (`cf-approve`): off, or deny-by-default with mandatory escalation on gated surfaces.
+- Permission auto-approve (`cf-approve`): off, or deny-by-default for unapproved human-gated
+  surfaces. Ordinary actions already covered by recorded authority must not trigger repeat prompts.
 - FormatterHook → `ruff format` or disabled; Biome validator disabled.
 - Out-of-scope agents/skills (frontend/Supabase/mobile/n8n/SEO/growth, React/payments/email) — do not invoke.
 

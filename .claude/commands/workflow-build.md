@@ -26,6 +26,17 @@ section.
 
 PATH_TO_PLAN: $ARGUMENTS
 
+### Persistence and permission discipline
+
+- The implementation request or `ACTIVE` work order authorizes ordinary reversible actions inside
+  the plan; agents must not re-request that authority.
+- A null/skipped agent, failed attempt, or surprising finding triggers bounded recovery, re-routing,
+  or root-cause re-gating before any human return.
+- Continue independent safe phases and batch genuinely human decisions. Ask only at the authority
+  boundary in `.ai-os/core/19_AUTONOMY_AND_ESCALATION.md`.
+- Inherit the current model unless a role records a concrete reason to override it; no named-model
+  escalation ladder is required.
+
 ## Prerequisites
 
 Dynamic workflows ship enabled by default on all paid plans (research preview, Claude

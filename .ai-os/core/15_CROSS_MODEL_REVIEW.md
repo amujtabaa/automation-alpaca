@@ -1,4 +1,4 @@
-# Cross-Model Review Packets (v0.9.1)
+# Cross-Model Review Packets (v0.9.2)
 
 > **See also — `pkl/process/review-hardening.md` (accepted 2026-07-18, REV-0029 post-mortem):**
 > mechanical review gates (enum-total classification, mutation checks for safety pins,

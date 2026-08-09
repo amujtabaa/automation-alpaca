@@ -9,6 +9,7 @@ directly or under .ai-os/ (same pattern as the MCP server scaffold's
 find_repo_root). Paths are then resolved source-relative through the manifest
 install_map, never from a script's __file__ position.
 """
+
 from __future__ import annotations
 
 import re
@@ -27,7 +28,9 @@ def find_root(start: Path | None = None) -> Path | None:
     for base in bases:
         cur = base.resolve()
         for candidate in [cur, *cur.parents]:
-            if (candidate / MANIFEST_NAME).exists() or (candidate / ".ai-os" / MANIFEST_NAME).exists():
+            if (candidate / MANIFEST_NAME).exists() or (
+                candidate / ".ai-os" / MANIFEST_NAME
+            ).exists():
                 return candidate
     return None
 
@@ -72,14 +75,24 @@ def resolve(root: Path, rel: str) -> Path:
         return direct
     install_map = load_install_map(root)
     if rel in install_map:
-        return root / install_map[rel]
+        destination = install_map[rel]
+        if (root / MANIFEST_NAME).exists() and destination.startswith(".ai-os/"):
+            package_path = root / destination.removeprefix(".ai-os/")
+            if package_path.exists():
+                return package_path
+        return root / destination
     best_src = ""
     best_dst = ""
     for src, dst in install_map.items():
         if src.endswith("/") and rel.startswith(src) and len(src) > len(best_src):
             best_src, best_dst = src, dst
     if best_src:
-        return root / (best_dst + rel[len(best_src):])
+        destination = best_dst + rel[len(best_src) :]
+        if (root / MANIFEST_NAME).exists() and destination.startswith(".ai-os/"):
+            package_path = root / destination.removeprefix(".ai-os/")
+            if package_path.exists():
+                return package_path
+        return root / destination
     return direct
 
 
@@ -91,7 +104,12 @@ def resolve_dir(root: Path, rel_dir: str) -> Path:
     key = rel_dir.rstrip("/") + "/"
     install_map = load_install_map(root)
     if key in install_map:
-        return root / install_map[key].rstrip("/")
+        destination = install_map[key].rstrip("/")
+        if (root / MANIFEST_NAME).exists() and destination.startswith(".ai-os/"):
+            package_path = root / destination.removeprefix(".ai-os/")
+            if package_path.exists():
+                return package_path
+        return root / destination
     return direct
 
 
@@ -105,7 +123,9 @@ def _clean_item(raw: str) -> str:
     return raw.split("#", 1)[0].strip().strip("\"'")
 
 
-def load_yaml_list(root: Path, key: str, rel_file: str = "rules/ai-os-rules.yaml") -> list[str]:
+def load_yaml_list(
+    root: Path, key: str, rel_file: str = "rules/ai-os-rules.yaml"
+) -> list[str]:
     """Parse a top-level YAML list block: `key:` followed by `- item` lines."""
     path = resolve(root, rel_file)
     if not path.exists():
@@ -127,12 +147,16 @@ def load_yaml_list(root: Path, key: str, rel_file: str = "rules/ai-os-rules.yaml
     return items
 
 
-def load_scalar(root: Path, key: str, rel_file: str = "rules/ai-os-rules.yaml") -> str | None:
+def load_scalar(
+    root: Path, key: str, rel_file: str = "rules/ai-os-rules.yaml"
+) -> str | None:
     """Return the value of a `key: value` line anywhere in the file (first match)."""
     path = resolve(root, rel_file)
     if not path.exists():
         return None
-    m = re.search(rf"^\s*{re.escape(key)}:\s*(.+)$", path.read_text(encoding="utf-8"), re.M)
+    m = re.search(
+        rf"^\s*{re.escape(key)}:\s*(.+)$", path.read_text(encoding="utf-8"), re.M
+    )
     return _clean_item(m.group(1)) if m else None
 
 

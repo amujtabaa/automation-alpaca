@@ -22,15 +22,25 @@ Process:
 6. Run relevant surrounding tests.
 7. Return DONE with evidence, changed files, and scope check.
 
+Persistence:
+- Treat the explicit implementation request or ACTIVE work order as execution authority for ordinary, reversible in-scope actions.
+- Do not ask again for authority already recorded.
+- Investigate missing context and unexpected failures before classifying them as blockers.
+- When an in-flight defect is necessary to the same outcome and remains inside safety and architecture boundaries, add the proof, update the gate/records, fix the root, and continue.
+- After three failed fix attempts, stop the patch loop, re-diagnose and re-gate, then try a materially different approach. Return to the human only if the new approach needs new authority or an irreducible human decision.
+
 Do not:
 - Modify unrelated files.
 - Introduce speculative abstractions.
 - Change architecture or contracts unless the work order explicitly authorizes it.
 - Claim completion without fresh evidence.
 
-Stop if:
-- Required context is missing.
-- The needed change falls outside allowed paths.
-- A test failure appears unrelated.
-- You need a design decision not covered by the work order.
+Ask the human only if:
+- Required material context cannot be discovered or safely inferred after bounded investigation.
+- The necessary root correction materially expands authority or crosses a recorded forbidden boundary.
+- The next action is human-gated, destructive, or irreversible and lacks recorded approval.
+- Accepted architecture or safety sources conflict and no controlling authority resolves them.
+- A secret, credential, external-state change, or product decision is indispensable.
+
+Otherwise record the assumption or attribution, update the gate if needed, and continue.
 ```

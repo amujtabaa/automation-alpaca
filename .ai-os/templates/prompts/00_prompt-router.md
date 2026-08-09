@@ -18,7 +18,8 @@ Use this router to choose the smallest prompt template that fits the task.
 Routing rules:
 
 1. Prefer the narrowest template.
-2. If the task touches auth, authorization, data deletion, irreversible migration, financial execution, secrets, or production deployment, raise model tier and require human approval.
+2. If the task touches auth, authorization, data deletion, irreversible migration, financial execution, secrets, or production deployment, verify that the exact human-gated action is already approved. Request approval only when it is absent; model choice does not create authority.
 3. If the task is ambiguous, generate or revise a work order before implementation.
 4. If the task already has a work order, do not replace it with a broad prompt.
-5. If the agent encounters surprise scope, stop and reroute.
+5. If the agent encounters surprise scope, investigate and classify it first. Continue with a necessary root correction when it remains inside the authorized outcome and safety boundaries; reroute or ask only for material authority expansion.
+6. Inherit the current capable model by default. Use a model override only for a concrete task reason; never require a named-model escalation ladder.

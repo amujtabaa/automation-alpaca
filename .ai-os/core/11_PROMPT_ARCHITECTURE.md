@@ -119,6 +119,11 @@ Stop conditions:
   When should the agent stop instead of guessing?
 ```
 
+Stop conditions must describe a real authority boundary, not ordinary uncertainty. Prompts should
+require bounded investigation, conservative reversible assumptions, and root-cause re-gating before
+`NEEDS-INPUT`. “A test failed,” “scope was surprising,” or “three patches failed” is not sufficient
+by itself. See `19_AUTONOMY_AND_ESCALATION.md`.
+
 ## Model-tier adaptation
 
 Prompt detail should increase as model capability decreases.
@@ -165,7 +170,9 @@ Make one discriminating check.
 Add or identify a failing regression test.
 Fix the root cause, not the symptom.
 Return FIX and DONE blocks with evidence.
-Stop after three failed fix attempts and return BLOCKED with redesign notes.
+After three failed fix attempts, stop the patch loop, preserve the evidence, return to root-cause
+analysis, and re-gate a materially different approach. Continue if it remains authorized; return
+`NEEDS-INPUT` only when the redesign requires new authority or an irreducible human decision.
 ```
 
 ### Reviewer prompt

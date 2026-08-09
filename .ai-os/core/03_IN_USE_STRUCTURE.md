@@ -13,15 +13,16 @@ A developer or agent should not begin by reading the whole operating system. The
 2. Prompt Architecture converts intent into a work order or selects the right prompt template
 3. Work order lists exact PKL pages and file paths
 4. Agent reads the relevant adapter shim (`CLAUDE.md`, `AGENTS.md`, or generic session prompt) + work order + linked context
-5. Agent runs Fable GATE
-6. Agent writes failing test
-7. Agent implements minimal code
-8. Agent verifies with evidence
-9. Harness checks scope and quality rules
-10. Reviewer checks diff against work order
-11. Merge updates PKL and ledger
-12. Work order is distilled, summarized, archived, or deleted
-13. Hygiene pass prunes stale context before the next task
+5. Agent identifies recorded execution authority and outstanding human gates
+6. Agent runs Fable GATE
+7. Agent writes failing test
+8. Agent implements and persists through in-scope root causes without repeated approval requests
+9. Agent verifies with evidence
+10. Harness checks scope and quality rules
+11. Reviewer checks diff against work order
+12. Merge updates PKL and ledger
+13. Work order is distilled, summarized, archived, or deleted
+14. Hygiene pass prunes stale context before the next task
 ```
 
 ## Directory structure
@@ -87,6 +88,9 @@ repo/
 - Letting PKL become uncited AI-generated folklore.
 - Using the strongest model for routine mechanical edits.
 - Using the cheapest model for final review.
+- Treating discoverable uncertainty, a failed test, or a third patch attempt as automatic human
+  escalation.
+- Requiring a named-model escalation ladder instead of choosing the needed capability directly.
 
 
 ## Prompt Architecture in the runtime flow
@@ -98,6 +102,9 @@ Vague intent → work-order-generator prompt → work order → implementation/d
 Complete work order → selected prompt template → Fable execution
 Completed work → PKL curator prompt → knowledge update
 ```
+
+An explicit implementation request or `ACTIVE` work order goes directly to execution; a generated
+plan is not a second approval gate unless the human asked for planning only.
 
 
 ## Work-order disposition in the runtime flow

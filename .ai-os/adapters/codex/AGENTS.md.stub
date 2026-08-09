@@ -13,6 +13,10 @@ For engineering tasks:
 7. Architecture rules live in accepted ADRs and `pkl/architecture/` pages; follow them. Architecture changes require ADR approval.
 8. After completion, distill durable knowledge into code, tests, PKL, ADRs, logs, or the ledger, then apply a completion disposition from `rules/ai-os-rules.yaml` (`valid_work_order_dispositions`). Delete routine, duplicate, placeholder, or low-value raw prompts after distillation.
 9. Trust current code/tests/ADRs/PKL over conversation memory; run a hygiene pass after compaction, merge, wave completion, or long-session handoff.
+10. Reuse recorded execution authority. Do not ask again for ordinary reversible in-scope actions;
+    investigate and re-gate before `NEEDS-INPUT`. Ask only for new authority, an unapproved
+    human-gated/destructive action, an unresolved authority conflict, or indispensable external
+    human input. See `.ai-os/core/19_AUTONOMY_AND_ESCALATION.md`.
 
 Do not paste or load the entire OS unless explicitly asked. Use the smallest useful context packet.
 <!-- AI-PROJECT-OS:END -->

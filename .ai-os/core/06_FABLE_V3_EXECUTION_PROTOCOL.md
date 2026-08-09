@@ -24,6 +24,21 @@ Fable is the agent execution discipline layer. It makes skipped engineering prac
 4. Touch only what the task requires.
 5. Surface assumptions before building.
 
+## Autonomy and persistence
+
+An explicit implementation request or an `ACTIVE` work order is authority for ordinary,
+reversible work inside its recorded scope. Do not ask for the same permission again. Investigate
+missing facts, use safe reversible assumptions, and exhaust in-scope alternatives before returning
+`NEEDS-INPUT`.
+
+A failed check or surprise root cause triggers diagnosis and re-gating, not automatic human
+escalation. After three failed fix attempts, stop the patch loop, summarize what was disproved, and
+return to the gate with a materially different approach. Continue unless the next action requires
+new authority, an unapproved human-gated/destructive action, resolution of an accepted-authority
+conflict, or unavailable external human input.
+
+The full decision boundary is canonical in `19_AUTONOMY_AND_ESCALATION.md`.
+
 ## Required blocks
 
 ### Block grammar dialects

@@ -1,19 +1,19 @@
-os_version: "0.9.1"
-package_version: "0.9.1"
-release_name: "AI Project OS v0.9.1"
-release_date: "2026-07-07"
+os_version: "0.9.2"
+package_version: "0.9.2"
+release_name: "AI Project OS v0.9.2"
+release_date: "2026-08-08"
 version_source: "VERSION.md"
 canonical_root: ".ai-os"
 pkl_root: "pkl"  # PKL location; scripts and the MCP server read it from here
 model_agnostic_core: true
 
 component_versions:
-  core_docs: "0.9.1"
-  adapter_schema: "0.9.1"
-  rules_schema: "0.9.1"
-  prompt_rules_schema: "0.9.1"
-  scripts_stub_api: "0.9.1"
-  mcp_control_plane: "0.9.1"
+  core_docs: "0.9.2"
+  adapter_schema: "0.9.2"
+  rules_schema: "0.9.2"
+  prompt_rules_schema: "0.9.2"
+  scripts_stub_api: "0.9.2"
+  mcp_control_plane: "0.9.2"
 
 install:
   repo_local_only_by_default: true
@@ -58,6 +58,7 @@ install_map:
   # Cross-model review module (core doc + its 3 templates under the templates/ tree
   # below: review-request.md, review-result.md, disposition.md).
   "15_CROSS_MODEL_REVIEW.md": ".ai-os/core/15_CROSS_MODEL_REVIEW.md"
+  "19_AUTONOMY_AND_ESCALATION.md": ".ai-os/core/19_AUTONOMY_AND_ESCALATION.md"
   # Package metadata
   "VERSION.md": ".ai-os/VERSION.md"
   "AI_OS_MANIFEST.yaml": ".ai-os/AI_OS_MANIFEST.yaml"

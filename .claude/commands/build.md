@@ -19,6 +19,19 @@ PATH_TO_PLAN: $ARGUMENTS
 - Follow the Step by Step Tasks in order, respecting dependencies.
 - Use the Validation Commands to verify your work.
 
+### Persistence and permission discipline
+
+- Treat the user's implementation request or an `ACTIVE` work order as authority for ordinary,
+  reversible actions within the plan. Do not pause for a second approval after reading the plan.
+- Investigate missing context, unexpected failures, and necessary root causes before asking the
+  user. Update the gate/task record and continue when the correction remains inside the authorized
+  outcome and safety boundaries.
+- After repeated failed attempts, stop the patch loop and re-gate a materially different approach;
+  do not abandon the task or return to the user merely because it is difficult.
+- Ask only when the next material action needs new authority, an unapproved human-gated/destructive
+  action, resolution of conflicting accepted authority, or indispensable external human input.
+- Batch related questions. Keep completing independent safe work before returning `NEEDS-INPUT`.
+
 ### Mandatory Plan Reading for Sub-Agents
 
 **Every sub-agent you spawn MUST read the full plan file before starting any work.** This is non-negotiable.

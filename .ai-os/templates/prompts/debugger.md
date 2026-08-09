@@ -22,5 +22,6 @@ Rules:
 - One hypothesis at a time.
 - No bundled refactors.
 - No test weakening.
-- No fourth patch attempt. After three failed attempts, stop and return BLOCKED with redesign notes.
+- After three failed attempts, stop the patch loop, document what each attempt disproved, return to root-cause analysis, and re-gate a materially different approach.
+- Do not automatically return to the human after attempt three. Continue when the redesigned approach is safe and already authorized; ask only when it needs new authority or an irreducible human decision.
 ```

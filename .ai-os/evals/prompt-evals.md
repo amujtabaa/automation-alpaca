@@ -36,4 +36,22 @@ Decision: keep | revise | retire
 
 ## Current baseline
 
-No prompt eval data recorded yet. Begin logging after the first AI Project OS implementation wave.
+## 2026-08-08 — ARCH-RESET M1 multi-day closeout
+
+Prompt template used: Fable FULL + repeated RED/preflight/review packets
+Model tier: mixed; temporary named-model routing was session-specific
+Worktree: `codex/arch-reset-2026-07-r1`
+Outcome: VERIFIED
+First-pass success: no
+Iterations to verified: multi-day; several contract re-gates and exact-head CI cycles
+Token estimate: high
+Unexpected files changed: 0 at final publication
+Missing evidence: none at final publication
+Review findings: multiple material constructibility and evidence gaps found and closed
+Observed failure mode: Claude-oriented policy treated every plan as a fresh approval gate, every
+blocker as an immediate human question, and the third failed patch as a terminal stop. This caused
+serial permission requests and fragmented root-cause work even after the human granted bounded
+authority to finish.
+Prompt revision: v0.9.2 adds execution-authority inheritance, investigation before NEEDS-INPUT,
+root-cause re-gating after failed attempts, batched human escalation, and model-neutral routing.
+Decision: revise
