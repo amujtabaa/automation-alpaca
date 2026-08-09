@@ -15,7 +15,7 @@ Proposed ADR number/title/path: ADR-024 — Broker roles, single active executio
 Proposed ADR body SHA-256: <hash>
 Candidate manifest path: work/queue/M1-5-BROKER-ALIGNMENT/AUTHORITY-MANIFEST.sha256
 Candidate manifest SHA-256: <hash>
-Independent review result path: work/review/REV-0063/result.md
+Independent review result path: work/review/REV-0063/result-remediation-03.md
 Independent review result SHA-256: <hash>
 Verdict: ACCEPT
 P0: 0
@@ -45,3 +45,11 @@ activity, credentials, Webull integration, FIX, routing, or live trading.
 
 Any semantic candidate change after review creates new hashes and requires a
 fresh independent review and exact new approval.
+
+`result.md`, `result-remediation-01.md`, and `result-remediation-02.md` are
+immutable negative review provenance. They must remain available for audit but
+must not be substituted for the terminal `result-remediation-03.md` hash or
+its required `ACCEPT`, P0=0, P1=0 verdict. If that terminal result is not an
+`ACCEPT`, no ratification request may be presented; the next correction must
+name a new terminal accepting result path, regenerate the manifest, and obtain
+a fresh independent review.

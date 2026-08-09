@@ -93,9 +93,19 @@ not a requirement to introduce a shared production helper:
    likewise exactly 64 lowercase hexadecimal characters and contributes its
    decoded 32 digest bytes. The digest output field of the profile being
    calculated is excluded rather than encoded.
-4. Each `*_origin` is canonical ASCII `https://host[:port]`: lowercase scheme
-   and host, no userinfo/path/query/fragment, port 443 omitted, and a non-443
-   decimal port without leading zero retained. No origin may be absent.
+4. Each `*_origin` is canonical ASCII `https://host[:port]`, defined without
+   URL-parser normalization. The scheme is the literal lowercase `https://`.
+   `host` is one or more dot-separated DNS labels, total length 1--253 bytes;
+   each label is 1--63 bytes and matches
+   `[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?`. Thus every label starts with a
+   lowercase ASCII letter; an empty label, leading/trailing hyphen, trailing
+   dot, percent encoding, underscore, internationalized form, IPv4 (including
+   legacy numeric forms), IPv6 literal, userinfo, path, query, and fragment are
+   invalid. An origin without `:port` means only port 443. `:443` is invalid;
+   any retained port is decimal 1--65535 with no leading zero. The supplied
+   bytes must already meet this rule; a URI/URL library must neither accept an
+   alternative spelling nor reserialize a value before comparison. No origin
+   may be absent.
 5. `profile_commitment_sha256` is lowercase hexadecimal SHA-256 of the exact
    resulting execution payload with domain
    `execution-connection-profile/v1` and these parts: `connection_profile_id`,

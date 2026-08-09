@@ -11,11 +11,14 @@ authority to trade.
 ## Semantic candidate boundary
 
 The semantic candidate consists exactly of this README, numbered documents
-`01` through `07`, active `WO-0157`, and `work/review/REV-0063/request.md`.
-`AUTHORITY-MANIFEST.sha256` lists every included path and SHA-256 digest; it
-excludes itself to avoid a self-referential digest cycle. The reviewer-owned
-`result.md` is deliberately outside the semantic candidate and has its own
-SHA-256 at human ratification.
+`01` through `07`, active `WO-0157`, and every exact `REV-0063` request path
+listed in `AUTHORITY-MANIFEST.sha256`. The manifest lists every included path
+and SHA-256 digest; it excludes itself to avoid a self-referential digest
+cycle. Reviewer-owned `result.md` and each `result-remediation-*.md` addendum
+are deliberately outside the semantic candidate and retain their own hashes.
+At human ratification, only the named terminal
+`result-remediation-03.md` may supply the required `ACCEPT`, P0=0, P1=0
+review verdict; earlier negative results remain immutable provenance.
 
 ## Binding outcome
 

@@ -24,3 +24,17 @@ The correction also requires independent literal known-answer and mutation
 controls before M2 implementation reliance. It changes no M1/M2 operating
 authority or forbidden surface. A fresh independent remediation-02 review must
 verify constructibility and absence of safety regression before any `ACCEPT`.
+
+## Remediation-02 focused re-review disposition
+
+`result-remediation-02.md` is preserved unchanged. Its two P1 findings are
+accepted and corrected without disputing the reviewer evidence:
+
+| Finding | Disposition | Root cause | Bounded correction | Re-review requirement |
+| --- | --- | --- | --- | --- |
+| P1-1 origin host canonicalization was implementation-selected | Accepted and fixed | The origin rule specified scheme, broad host case, and port treatment but not a complete accepted host language. | Define a lowercase ASCII DNS-label grammar, total/label lengths, no IP or encoded forms, and an explicit 1--65535 non-default port range; require rejection before any URL-library normalization. | Fresh reviewer independently tests the stated boundary spellings and verifies byte-stable profile framing. |
+| P1-2 ratification named a historical negative result | Accepted and fixed | The prebuilt request referenced `result.md` despite later immutable remediation addenda. | Name `result-remediation-03.md` as the only terminal accepting result; preserve every earlier result as negative provenance, and reconcile README/manifest text. | Fresh reviewer verifies the named terminal artifact, hash routing, provenance retention, and no ratification bypass. |
+
+The subsequent focused review must write only
+`result-remediation-03.md`. It must return `ACCEPT`, P0=0, P1=0 before this
+work stops for human ratification; otherwise no human gate may be presented.

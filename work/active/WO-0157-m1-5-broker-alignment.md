@@ -115,9 +115,11 @@ allowed_paths:
   - work/review/REV-0063/request.md
   - work/review/REV-0063/request-remediation-01.md
   - work/review/REV-0063/request-remediation-02.md
+  - work/review/REV-0063/request-remediation-03.md
   - work/review/REV-0063/result.md
   - work/review/REV-0063/result-remediation-01.md
   - work/review/REV-0063/result-remediation-02.md
+  - work/review/REV-0063/result-remediation-03.md
   - work/review/REV-0063/disposition.md
   - docs/adr/ADR-024-broker-roles-execution-connection-profile.md
   - docs/adr/ARCH-RESET-2026-07-RATIFICATION.md
