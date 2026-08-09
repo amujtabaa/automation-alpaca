@@ -5,16 +5,17 @@
 # semantic_rule: every path below is ratified candidate meaning; reviewer results and this manifest are excluded.
 # self_exclusion: this manifest is excluded to prevent a self-referential hash cycle; hash this file separately at ratification.
 # reviewer_result_exclusion: work/review/REV-0063/result.md and every result-remediation-*.md are reviewer-owned evidence, not author candidate meaning; the named terminal accepting result is separately hashed at ratification.
-4efbbd9619823c2bc812f02553664df3655f595eb0f0d3706ab36be3a06d3da0  work/active/WO-0157-m1-5-broker-alignment.md
-67d25c15e9ac50c81213db4082d52bc8157c25338b7c938ea1da8e5b86dbb798  work/queue/M1-5-BROKER-ALIGNMENT/README.md
+bf22306862d64998119c0d4e1e0624cc67e45b07e1af1b7e614a3770c96a40e1  work/active/WO-0157-m1-5-broker-alignment.md
+24350dce0a39de724b96b96d79005163c5ea95aa930cb6bb3f1cd96322293b5a  work/queue/M1-5-BROKER-ALIGNMENT/README.md
 b702ee8a37c1a3bd4e13ef0af49f84cafd734eba3c21cddb0593864691bdf098  work/queue/M1-5-BROKER-ALIGNMENT/01-current-authority-and-conflict-audit.md
 ae12f4ea82106deecdd6c903b4aba80fc5012ca11b39ed041452965911c1b907  work/queue/M1-5-BROKER-ALIGNMENT/02-option-matrix-and-decision.md
-d3bd94f1784196a67877cfc4ab8906b12cbe357265acaf8de6b801a42e121d91  work/queue/M1-5-BROKER-ALIGNMENT/03-proposed-adr-broker-alignment.md
-83063058f8fe60b3ae8931c46333b19aa7ceba10b9012c0581ca70758c739f34  work/queue/M1-5-BROKER-ALIGNMENT/04-m2-persistence-contract-amendment.md
+93a3baecfbdd63efc722b6d9159e2d7f2c18e970be02145fee09a48a15011c13  work/queue/M1-5-BROKER-ALIGNMENT/03-proposed-adr-broker-alignment.md
+41956dc1438116e0f4e4e29bae42ddf5bb98a821a8e894677353cff0c3dd4640  work/queue/M1-5-BROKER-ALIGNMENT/04-m2-persistence-contract-amendment.md
 e197c4166191d90136270f4d0011f123ca165927add10e5226180adb15f7bf9b  work/queue/M1-5-BROKER-ALIGNMENT/05-roadmap-and-milestone-reconciliation.md
-8db33b4dc3c8f3c628e5872d52fc721f54bed5b9a8ddb6218eb23b9433fbb0df  work/queue/M1-5-BROKER-ALIGNMENT/06-m2-m9-obligations-and-acceptance.md
-b7219ae38e6cf0d5cbf6ee74abcd46a36b79880c15cc95e8c092cb364368befe  work/queue/M1-5-BROKER-ALIGNMENT/07-human-ratification-request.md
+e2ad80bcd0fedabd148823d0ae028de6c94bf1c3ad22651663581803ae0ff163  work/queue/M1-5-BROKER-ALIGNMENT/06-m2-m9-obligations-and-acceptance.md
+9aa2792b7063cddab69a8437c2efcbf5ca4efd09d744f5f7bfb93bf43bad4c58  work/queue/M1-5-BROKER-ALIGNMENT/07-human-ratification-request.md
 c4bc4abb2f30d7e7593c378bd3d986b3d900d39cffead738303789ddfa64af82  work/review/REV-0063/request.md
 01a117ccbd3553420d86c0e09835972fd320713caf7a3481233d709a08e4a689  work/review/REV-0063/request-remediation-01.md
 0e3e433c5162e089d08fec09a1495480980e689cb4038f935c29c936a78f0afe  work/review/REV-0063/request-remediation-02.md
 fc98425afac5e06aa89d0bd425cd19cc65f866919131d99409b8184e4dfe5e48  work/review/REV-0063/request-remediation-03.md
+170243c90fc23104d94a7601825dbf0a2fb274b1026d4a0b8a30fe3a97015815  work/review/REV-0063/request-remediation-04.md

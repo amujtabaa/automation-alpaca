@@ -19,8 +19,13 @@ Status: **schema-neutral candidate contract — no DDL or database work authoriz
 4. Startup, reconciliation, and each final effect claim re-derive and compare
    profile provider, environment, account, all command/query/event origins,
    credential-handle fingerprint, adapter version, capability digest, deployment
-   identity, and complete profile commitment. Any missing, unknown, live,
-   cross-profile, or changed coordinate refuses broker I/O and mutation.
+   identity, and complete profile commitment. `account` means the exact
+   profile-committed `broker-account-identity/v1` assertion: one selected
+   adapter extractor produces one non-secret provider-authoritative account
+   identifier, then the implementation re-derives and compares its digest.
+   A local alias, label, or account-name match cannot stand in for that
+   comparison. Any missing, unknown, live, cross-profile, or changed coordinate
+   refuses broker I/O and mutation.
 5. Historical records retain their original profile binding. No repair, replay,
    current-symbol lookup, or account-name match may reattribute an old fact,
    effect, owner, claim, closure, or receipt to a newer profile.

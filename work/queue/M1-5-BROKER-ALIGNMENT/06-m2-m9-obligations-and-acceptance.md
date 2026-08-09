@@ -14,6 +14,11 @@
   generation and reject a second mutation-eligible profile before I/O.
 - **Binding completeness:** enumerate every capital-relevant relation and prove a
   missing, null, copied, or mismatched profile binding prevents serving.
+- **External-account equality:** prove the one selected adapter extractor
+  produces a valid provider-authoritative identifier whose
+  `broker-account-identity/v1` commitment equals the profile; a different,
+  absent, plural, alias, label, normalized, or reused raw value prevents
+  preflight, mutation, final claim completion, and later broker requests.
 - **Historical integrity:** prove exact historical profile retention through fact
   correction/bust, effect closure, restart, replay, and new-generation recutover.
 - **Cutover:** prove an in-place provider/account/origin/credential/capability/

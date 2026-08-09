@@ -86,14 +86,42 @@ not a requirement to introduce a shared production helper:
    ASCII tokens matching `[A-Z][A-Z0-9_]{0,31}`. `adapter_contract_version` and
    `normalization_contract_version` are ASCII `MAJOR.MINOR.PATCH` decimal
    triples with no leading zero except the literal `0`.
-3. Every `*_profile_id`, `account_identity`, `credential_handle_fingerprint`,
-   and `deployment_identity` is an opaque exactly-32-byte value rendered as 64
+3. Every `*_profile_id`, `credential_handle_fingerprint`, and
+   `deployment_identity` is an opaque exactly-32-byte value rendered as 64
    lowercase hexadecimal characters; its field bytes are the decoded 32 bytes.
-   It is activation-minted and never digest-derived. Every `*_sha256` field is
-   likewise exactly 64 lowercase hexadecimal characters and contributes its
-   decoded 32 digest bytes. The digest output field of the profile being
-   calculated is excluded rather than encoded.
-4. Each `*_origin` is canonical ASCII `https://host[:port]`, defined without
+   It is activation-minted and never digest-derived. `account_identity` is not
+   an opaque alias: it is the immutable non-secret external-account assertion
+   commitment defined below, also rendered as 64 lowercase hexadecimal
+   characters whose profile field bytes are the decoded 32 digest bytes. Every
+   `*_sha256` field is likewise exactly 64 lowercase hexadecimal characters
+   and contributes its decoded 32 digest bytes. The digest output field of the
+   profile being calculated is excluded rather than encoded.
+4. `account_identity` is lowercase hexadecimal SHA-256 of an account-assertion
+   payload using rule 1 framing, domain `broker-account-identity/v1`, and parts
+   in this exact order: `broker_provider`, `environment_class`,
+   `adapter_contract_version`, and `provider_account_identifier`. The selected
+   versioned adapter contract must name exactly one non-secret,
+   provider-authoritative scalar account-identifier extractor (a protocol
+   field/path or equivalent transport token); it must produce exactly one
+   `provider_account_identifier`, not an account label, alias, display name,
+   credential, or locally minted value. The identifier is 1--256 Unicode
+   scalar values, already NFC, with no ASCII control character; its payload
+   bytes are its exact UTF-8 bytes. Trim, case folding, URL decoding,
+   reserialization, substitution, or any normalization that would change the
+   supplied bytes is forbidden. A missing, plural, non-string, non-NFC, or
+   otherwise invalid extraction is a mismatch.
+5. At approved profile activation, only this commitment is placed in the
+   profile; the external identifier itself is not copied into the candidate,
+   manifest, ledger, ratification record, or public repository. Before broker
+   I/O, the supervisor re-derives the commitment from the selected
+   provider-account assertion and compares it to `account_identity`; mismatch
+   refuses the preflight. When the selected adapter first receives the
+   provider-authoritative account identity for a session, and again before any
+   final mutation claim, it re-derives the same commitment. Missing or unequal
+   results deny mutation, claim completion, and further broker requests for
+   that session. No raw account string, local opaque alias, or account-name
+   match may substitute for the profile-commitment check.
+6. Each `*_origin` is canonical ASCII `https://host[:port]`, defined without
    URL-parser normalization. The scheme is the literal lowercase `https://`.
    `host` is one or more dot-separated DNS labels, total length 1--253 bytes;
    each label is 1--63 bytes and matches
@@ -106,7 +134,7 @@ not a requirement to introduce a shared production helper:
    bytes must already meet this rule; a URI/URL library must neither accept an
    alternative spelling nor reserialize a value before comparison. No origin
    may be absent.
-5. `profile_commitment_sha256` is lowercase hexadecimal SHA-256 of the exact
+7. `profile_commitment_sha256` is lowercase hexadecimal SHA-256 of the exact
    resulting execution payload with domain
    `execution-connection-profile/v1` and these parts: `connection_profile_id`,
    `application_generation`, `broker_provider`, `environment_class`,
@@ -117,9 +145,10 @@ not a requirement to introduce a shared production helper:
 
 No consumer may compare a reserialized, normalized-by-library, or partially
 known profile. An M2 known-answer control must independently construct the
-literal preimage bytes and digest, while mutations to domain, part order, length
-width, text normalization, hex case, origin canonicalization, omitted field, or
-digest self-inclusion must fail the intended check.
+literal execution, market-source, and account-assertion preimage bytes and
+digests, while mutations to domain, part order, length width, text
+normalization, hex case, origin canonicalization, account-identifier extractor
+or bytes, omitted field, or digest self-inclusion must fail the intended check.
 
 For M2–M8 the sole selected profile resolves to broker provider `ALPACA` and
 environment class `PAPER`. The exact Paper account and origins remain mandatory
@@ -161,7 +190,8 @@ broker-authoritative TRADE_CORRECT/TRADE_BUST truth rules remain unchanged.
 
 ### 5. Material change requires a new-generation recutover
 
-Provider, environment, account identity, any command/query/event origin,
+Provider, environment, account-assertion commitment or its selected extractor,
+any command/query/event origin,
 credential-handle fingerprint, adapter contract version, capability-profile
 digest, or deployment identity is material. It cannot be edited in place after
 profile creation. Any material change requires a new application generation and

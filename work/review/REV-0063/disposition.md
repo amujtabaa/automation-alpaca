@@ -38,3 +38,16 @@ accepted and corrected without disputing the reviewer evidence:
 The subsequent focused review must write only
 `result-remediation-03.md`. It must return `ACCEPT`, P0=0, P1=0 before this
 work stops for human ratification; otherwise no human gate may be presented.
+
+## Remediation-03 focused re-review disposition
+
+`result-remediation-03.md` is preserved unchanged. Its P1 is accepted and
+corrected without disputing the reviewer evidence:
+
+| Finding | Disposition | Root cause | Bounded correction | Re-review requirement |
+| --- | --- | --- | --- | --- |
+| P1 account coordinate could not prove selected provider account | Accepted and fixed | `account_identity` was called opaque and activation-minted, leaving no equality bridge to the exact provider account required by ADR-022. | Define `account_identity` as a domain-separated immutable commitment to exactly one adapter-versioned, provider-authoritative non-secret account identifier; define its bytes, extractor, equality/re-derivation, mismatch refusal, and no-raw-account-publication rule. | Fresh reviewer reconstructs the assertion hash, attempts alias/normalization/missing/plural substitution, and verifies ADR-022 account-fence preservation. |
+
+The subsequent focused review must write only
+`result-remediation-04.md`. It must return `ACCEPT`, P0=0, P1=0 before this
+work stops for human ratification; otherwise no human gate may be presented.

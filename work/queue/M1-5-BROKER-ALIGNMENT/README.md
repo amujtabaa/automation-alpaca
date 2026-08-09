@@ -17,7 +17,7 @@ and SHA-256 digest; it excludes itself to avoid a self-referential digest
 cycle. Reviewer-owned `result.md` and each `result-remediation-*.md` addendum
 are deliberately outside the semantic candidate and retain their own hashes.
 At human ratification, only the named terminal
-`result-remediation-03.md` may supply the required `ACCEPT`, P0=0, P1=0
+`result-remediation-04.md` may supply the required `ACCEPT`, P0=0, P1=0
 review verdict; earlier negative results remain immutable provenance.
 
 ## Binding outcome
