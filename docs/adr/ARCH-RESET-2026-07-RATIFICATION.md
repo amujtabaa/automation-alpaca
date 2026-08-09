@@ -865,3 +865,79 @@ public API, runtime, persistence, database, broker, network, credential, M2,
 master-landing, deletion, cleanup, force-push, or rebase authority. Paired
 unchanged 93% exact-head Python 3.11/3.12 success remains mandatory before M1
 closeout.
+
+### WO-0152 coverage-ratchet semantics and local candidate -- 2026-08-08
+
+Under the user's explicit pre-consent to complete root-level M1 corrections,
+the former coverage.py combined-denominator gate is superseded by two mandatory,
+independently calculated, non-decreasing ratchets: `93.00%` executable lines and
+`85.25%` branches. This preserves the former line floor and turns the measured
+branch baseline into its own fail-closed gate. Coverage source, branch
+instrumentation, omit rules, pragmas, and application code remain unchanged.
+
+The first review retained P0=0/P1=2/P2=1. Focused R1 manifest SHA-256
+`230a5ec0d5aeccc68518a7def172e49d52aad7e22e218da692aa04a54aec8309`
+then independently returned `ACCEPT`, P0=0/P1=0/P2=0, in result SHA-256
+`d8931dda45422622c668927ba5c0777b5c4dda836ddcc17b1c2354f0bbad2d5c`.
+The prior combined failures remain negative historical evidence; they are not
+reclassified as successful CI.
+
+Fresh local full-repository evidence passed 5,977 tests and both ratchets at
+`93.577083%` lines and `85.302419%` branches. This is not M1 completion:
+WO-0151 remains effective REVIEW and WO-0152 ACTIVE pending final exact-candidate
+acceptance and successful unchanged Python 3.11/3.12 CI on the exact pushed SHA.
+No runtime, persistence, database/SQL/DDL, credential, broker/network, M2,
+master-landing, PR, deletion, cleanup, force-push, or rebase authority is added.
+
+### WO-0152 final-review remediation 01 -- 2026-08-08
+
+The first final implementation review is retained unchanged at SHA-256
+`a8279d770bc226670745342f2247f480d3e35723f94cd98318fe20521d4905a9`
+with `ACCEPT-WITH-CHANGES`, P0=0/P1=4/P2=0. It found no architecture or
+production defect. Its four P1 findings were incomplete failure-capable proof
+for the E1/E2 ownership inventory, setup-source policy, long-sequence bounded
+routing, and decisive observer mutations.
+
+The authorized test-only remediation closes those evidence gaps without
+changing application code or accepted ADR semantics. A fresh complete local
+run then passed 5,977 tests, 11 expected skips, one expected failure, and zero
+unexpected failures, with `93.573313%` executable-line coverage and
+`85.292339%` branch coverage. Both mandatory ratchets passed. This remains a
+candidate, not M1 completion: focused independent acceptance, normal exact
+publication, and unchanged exact-head Python 3.11/3.12 CI remain mandatory.
+
+### WO-0152 final-review remediation 02 -- 2026-08-08
+
+The remediation-01 result is retained unchanged at SHA-256
+`1fa71ac536e339b602255d17ef511c32415e5b9353c418af791b3426caba3091`
+with `ACCEPT-WITH-CHANGES`, P0=0/P1=3/P2=0. AC-04 was closed; the remaining
+findings were test-evidence completeness only.
+
+Remediation 02 freezes exact lexical ownership and bypass mutants for all
+test-only setup privileges, maps every frozen E1/E2 acceptance criterion to
+semantic owning-test predicates with assertion-erasure controls, and proves
+AC-05 controller-head progression, generation-local capacity/binding, and
+application/scope/ordinal identity across 32 generations. No production or
+accepted ADR body changes.
+
+The exact full local candidate passed 5,977 tests, 11 expected skips, one
+expected failure, and zero unexpected failures. Executable-line coverage is
+`93.577083%`; branch coverage is `85.302419%`; both ratchets pass. This remains
+a review candidate until focused P0=0/P1=0 acceptance, normal publication, and
+unchanged exact-head Python 3.11/3.12 CI succeed.
+
+### WO-0152 final-review remediation 03 -- 2026-08-08
+
+The remediation-02 focused result is retained at SHA-256
+`191a2641766e83c93059267df12f1c43f962398f3eb3eb150259c649e9fafccc`
+with `ACCEPT-WITH-CHANGES`, P0=0/P1=3/P2=0. Final remediation 03 is test-only:
+it failure-pins direct patch, schedule-comprehension, and extra private venue
+reducer bypasses; maps E1 AC-01 to the exact deterministic known-answer owner;
+and proves the predecessor/genesis head, compatibility, and aggregate binding
+coordinates for every generation in the bounded 32-generation route.
+
+The exact local candidate passes all 5,977 tests, 11 expected skips, one
+expected failure, 18 E3 tests, and both coverage ratchets at `93.573313%`
+lines and `85.292339%` branches. This entry records a candidate only. Final
+independent P0=0/P1=0 acceptance, normal publication, and unchanged exact-head
+Python 3.11/3.12 CI remain mandatory before effective M1 closeout.

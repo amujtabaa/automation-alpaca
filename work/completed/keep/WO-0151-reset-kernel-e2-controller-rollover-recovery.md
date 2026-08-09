@@ -51,6 +51,7 @@ r13_implementation_result: "work/review/REV-0060/result-r13-implementation.md (S
 r13_implementation_clean_manifest: "work/review/REV-0060/WO-0151-R13-IMPLEMENTATION-CANDIDATE-MANIFEST.md (replacement SHA-256 d101bcbe3f5ba070f07c2de497ed2d61a5fb11580eeaa9a134eeeaf428a36df1; source/test bytes unchanged)"
 r13_implementation_clean_result: "work/review/REV-0060/result-r13-implementation-r1.md (SHA-256 8d931aba8a859f75e42a7b80cb2dd83df1e69783a8d23e9958af2fc57cade263; focused ACCEPT, P0=0/P1=0/P2=0)"
 r13_detector_confirmation: "work/review/REV-0059/WO-0152-FR-08-R13-DETECTOR-CONFIRMATION.md (SHA-256 dd860117e38c045146869742ac8b6dc3797f404e39f9645bdd20d749258affc9; unchanged detector SHA-256 c89dc011c359d104d9a2ae851f0a649926e04ac596acf6da444eecbea1774186; focused exit 0)"
+paired_e3_candidate: "REMEDIATION-03 LOCAL PASS - final focused independent acceptance and exact-head Python 3.11/3.12 CI remain required before effective closure"
 ---
 
 # WO-0151 - Reset kernel E2: aggregate controller, successor admission, and mixed recovery
@@ -799,3 +800,46 @@ self-referential freeze inputs. Focused result
 `8d931aba8a859f75e42a7b80cb2dd83df1e69783a8d23e9958af2fc57cade263`
 returned `ACCEPT`, P0=0/P1=0/P2=0. Exact restaging and cached diff success gate
 publication.
+
+## Paired E2/E3 local candidate and corrected coverage semantics -- 2026-08-08
+
+WO-0152 completed its behavior-first generated/stateful/replay/boundedness proof
+locally after the accepted R13 successor cursor correction. The coverage gate's
+single combined denominator was then identified as the root of the remaining
+cycle: its complete measurement was already above `93.00%` executable-line
+coverage while independently measuring branch coverage. The reviewed
+correction retains a mandatory `93.00%` line ratchet and adds a mandatory
+`85.25%` branch ratchet, with source selection, branch instrumentation, omit
+rules, and pragmas unchanged. Exact replacement manifest
+`230a5ec0d5aeccc68518a7def172e49d52aad7e22e218da692aa04a54aec8309`
+received independent `ACCEPT`, P0=0/P1=0/P2=0, in result
+`d8931dda45422622c668927ba5c0777b5c4dda836ddcc17b1c2354f0bbad2d5c`.
+
+The fresh full local candidate passed 5,977 tests and both ratchets at
+`93.577083%` lines and `85.302419%` branches. WO-0151 nevertheless remains
+effective `REVIEW`: only final independent E3 acceptance followed by successful
+unchanged Python 3.11 and 3.12 CI on the exact pushed candidate can satisfy its
+paired external effectiveness condition.
+
+## Paired E2/E3 final-review remediation 01 -- 2026-08-08
+
+The first final WO-0152 review returned `ACCEPT-WITH-CHANGES`, P0=0/P1=4/P2=0,
+with no production defect. Its four test-evidence gaps were remediated only in
+the E3 owner module: exact E1/E2 control ownership, the frozen setup/source
+policy, 32-generation direct bounded routing, and failure-capable decisive
+observer comparisons. The complete E3 module passed, followed by a fresh full
+repository run with 5,977 tests and both ratchets at `93.573313%` lines and
+`85.292339%` branches. WO-0151 remains effective `REVIEW` pending focused
+independent acceptance, exact publication, and unchanged Python 3.11/3.12 CI.
+
+## Paired E2/E3 final-review remediation 02 -- 2026-08-08
+
+The first focused E3 remediation review retained P0=0/P1=3/P2=0 and closed
+AC-04. The second test-only remediation addresses only exact setup-source
+authority, all-criterion AC-01 semantic ownership, and AC-05 comparison
+completeness. It adds no production code and changes no accepted E2 semantics.
+
+The exact replacement candidate passes the full repository with 5,977 tests,
+`93.577083%` lines, and `85.302419%` branches. WO-0151 remains effective
+`REVIEW`; it can close only after focused E3 P0=0/P1=0 acceptance, exact
+publication, and unchanged Python 3.11/3.12 CI on the exact pushed candidate.

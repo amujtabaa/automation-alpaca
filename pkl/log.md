@@ -596,3 +596,40 @@
   `c89dc011c359d104d9a2ae851f0a649926e04ac596acf6da444eecbea1774186`. The bounded FR-08 return
   is resolved and test-only E3 resumes. WO-0151 remains REVIEW; paired unchanged 93% exact-head
   Python 3.11/3.12 success and all operating exclusions remain controlling.
+- 2026-08-08: WO-0152 completed its local behavior-first E3 candidate. The
+  first coverage-semantics review retained P0=0/P1=2/P2=1; focused R1 manifest
+  `230a5ec0d5aeccc68518a7def172e49d52aad7e22e218da692aa04a54aec8309`
+  then independently `ACCEPT`ed at P0=0/P1=0/P2=0 in result
+  `d8931dda45422622c668927ba5c0777b5c4dda836ddcc17b1c2354f0bbad2d5c`.
+  The corrected gate preserves `93.00%` executable-line coverage and adds an
+  independently enforced `85.25%` branch ratchet; source, branch instrumentation,
+  excludes, pragmas, and application code are unchanged. A fresh full run passed
+  5,977 tests and both ratchets at `93.577083%` lines and `85.302419%` branches.
+  WO-0151 remains REVIEW and WO-0152 ACTIVE pending final independent acceptance
+  plus unchanged exact-head Python 3.11/3.12 CI; M1/M2 completion is not claimed.
+- 2026-08-08: The first final E3 implementation review returned
+  `ACCEPT-WITH-CHANGES`, P0=0/P1=4/P2=0, for four test-evidence gaps only. A
+  test-only remediation now pins the exact E1/E2 owning-control inventory,
+  frozen setup/source policy, 32-generation bounded direct routing, and real
+  decisive-comparison omission mutants. The complete E3 module passed, then a
+  fresh full repository run passed 5,977 tests with `93.573313%` lines and
+  `85.292339%` branches. A focused independent recheck, exact publication, and
+  unchanged Python 3.11/3.12 CI remain required; WO-0151 stays REVIEW,
+  WO-0152 stays ACTIVE, and M1/M2 completion is not claimed.
+- 2026-08-08: WO-0152 final-review remediation 02 froze after the first focused
+  recheck retained P0=0/P1=3/P2=0. The test-only correction closes exact setup
+  privilege, all-criterion AC-01 ownership, and AC-05 semantic comparison
+  completeness. Fresh exact evidence: complete E3 and validator suites pass;
+  full repository 5,977 passed, 11 skipped, 1 xfailed, 19 warnings; lines
+  24,826/26,530 (`93.577083%`); branches 8,462/9,920 (`85.302419%`).
+  Independent acceptance, exact publication, and dual-version CI remain open.
+- 2026-08-08: The remediation-02 focused result
+  `191a2641766e83c93059267df12f1c43f962398f3eb3eb150259c649e9fafccc`
+  retained three test-contract P1 findings. Final remediation 03 closes the
+  remaining direct-patch/comprehension/private-reducer lexical bypasses, maps
+  E1 AC-01 to its exact deterministic identity owner, and proves the full
+  public generation-binding coordinates across the real 32-generation trace.
+  Fresh local evidence passed all 5,977 tests, 18 E3 controls, 11 coverage
+  validator controls, 24,825/26,530 lines (`93.573313%`), and 8,461/9,920
+  branches (`85.292339%`). Final independent acceptance, exact publication,
+  and unchanged Python 3.11/3.12 CI remain open; no M1/M2 closeout is claimed.

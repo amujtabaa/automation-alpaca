@@ -4,7 +4,7 @@ title: Architecture Map (reset target and frozen Spine v2 evidence)
 status: active
 authority: high
 owner: Ameen
-last_verified: 2026-08-07
+last_verified: 2026-08-08
 tags: [architecture, boundaries, layers]
 source_refs: [docs/adr/ADR-020-current-state-execution-kernel.md, docs/adr/ADR-021-position-protection-liquidity-execution.md, docs/adr/ADR-022-reset-beta-scope-cutover-governance.md, docs/adr/ADR-023-bounded-market-occurrence-authority.md, docs/adr/ARCH-RESET-2026-07-RATIFICATION.md, docs/01_ARCHITECTURE.md]
 supersedes: []
@@ -14,6 +14,22 @@ superseded_by: null
 # Architecture Map (reset target and frozen Spine v2 evidence)
 
 ## Summary
+
+Current 2026-08-08 posture: the pure reset kernel now has a locally green paired
+E2/E3 candidate. R13's private predecessor-bound successor protection-cursor
+rollover is accepted, and WO-0152's public-contract generated/stateful/replay/
+boundedness proof passes the complete repository suite. Coverage is gated by
+independent non-decreasing `93.00%` executable-line and `85.25%` branch
+ratchets, correcting the former mixed denominator without changing production
+code, instrumentation, exclusions, or pragmas. WO-0151 remains effective
+`REVIEW` and WO-0152 `ACTIVE` until the final remediation-03 focused recheck
+and unchanged exact-head Python 3.11/3.12 CI both succeed.
+
+Remediation 03 changes only E3 tests. It completes the failure-capable lexical
+setup boundary, maps E1 AC-01 to its deterministic identity owner, and proves
+all public predecessor/genesis, compatibility, and aggregate binding
+coordinates across the 32-generation bounded trace. It introduces no
+production seam, authority, reader, scan, or accepted-ADR change.
 
 The accepted reset target is a modular monolith with one sequenced writer, one pure transition
 kernel, transactional current state plus a broker-effect outbox, and SQLite as the sole beta
@@ -411,3 +427,20 @@ Seam discipline is what makes the safety invariants structurally enforceable rat
   two owning test modules. No public API, additional owner, history scan, cursor transfer, or
   regression-suite edit surface is introduced. E3 remains paused through focused implementation
   acceptance and unchanged detector confirmation.
+- 2026-08-08: Final E3 review found no production defect and retained four P1
+  test-evidence gaps. The remediation remains entirely in the E3 test owner:
+  it statically freezes setup authority, maps E1/E2 requirements to owning
+  controls, exercises the constant-space design across 32 public serial
+  generations, and makes each decisive observer comparison failure-capable.
+  The architecture remains direct-map/current-state driven; no history scan,
+  public API, runtime, persistence, exclusion, or production change was added.
+  Fresh full evidence passes both independent coverage ratchets, pending the
+  focused review recheck and exact-head dual-version CI.
+- 2026-08-08: Remediation-01's focused review closed the long-sequence AC-04
+  finding and retained three test-evidence P1s. Remediation 02 makes setup
+  privileges exact and mutation-pinned, maps every frozen E1/E2 acceptance
+  criterion to semantic owning-test assertions, and completes AC-05 with
+  controller-head, generation-local capacity/binding, and full identity
+  coordinates. No production or architecture file changed. The exact full
+  candidate passes both ratchets; external exact-head acceptance remains the
+  only M1 effectiveness gate.

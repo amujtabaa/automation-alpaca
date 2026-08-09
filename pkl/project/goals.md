@@ -4,7 +4,7 @@ title: Project Goals and Current Posture
 status: active
 authority: high
 owner: Ameen
-last_verified: 2026-08-07
+last_verified: 2026-08-08
 tags: [goals, posture, roadmap]
 source_refs: [docs/adr/ADR-020-current-state-execution-kernel.md, docs/adr/ADR-021-position-protection-liquidity-execution.md, docs/adr/ADR-022-reset-beta-scope-cutover-governance.md, docs/adr/ADR-023-bounded-market-occurrence-authority.md, docs/adr/ARCH-RESET-2026-07-RATIFICATION.md]
 supersedes: []
@@ -14,6 +14,25 @@ superseded_by: null
 # Project Goals and Current Posture
 
 ## Summary
+
+Current 2026-08-08 posture: the accepted R13 E2 correction and the complete
+behavior-first WO-0152 E3 candidate are locally green. A fresh full run passed
+5,977 tests after final-review remediation 03, with executable-line coverage
+`93.573313%` and branch coverage `85.292339%`. The independently accepted
+coverage-gate correction now enforces
+non-decreasing `93.00%` line and `85.25%` branch ratchets separately; it changes
+no source selection, branch instrumentation, omit rule, pragma, or application
+code. WO-0151 remains effective `REVIEW` and WO-0152 remains `ACTIVE` pending
+the final focused independent remediation-03 recheck and unchanged exact-head Python
+3.11/3.12 CI.
+M1 is not yet claimed complete, and M2/runtime/persistence remain inactive.
+
+The remediation-02 result is retained negative evidence at SHA-256
+`191a2641766e83c93059267df12f1c43f962398f3eb3eb150259c649e9fafccc`
+(`ACCEPT-WITH-CHANGES`, P0=0/P1=3/P2=0). Remediation 03 closes only those
+three test-contract gaps: exact setup privilege, the true E1 AC-01 owner, and
+complete public generation-binding coordinates. The final local candidate is
+green but not yet published or externally accepted.
 
 Build a narrow, reliable, browser-operated protection/acquisition engine for Alpaca Paper. The
 accepted reset target is a modular monolith with one sequenced writer, one pure transition kernel,
@@ -524,3 +543,22 @@ Roadmapping against an unverified codebase state repeats the failure mode Fable 
   paired unchanged 93% exact-head Python 3.11/3.12 gate remains the M1 closeout
   condition. No runtime, persistence, broker, network, database, or M2
   authority is added.
+- 2026-08-08: The first final WO-0152 implementation review returned
+  `ACCEPT-WITH-CHANGES`, P0=0/P1=4/P2=0, solely for test-evidence gaps. The
+  test-only remediation pins the exact E1/E2 ownership inventory and source
+  policy, extends boundedness to a 32-generation public lane with direct
+  earliest/current routing, and binds decisive omission mutants to a real
+  rooted/serial behavior oracle. The complete E3 module and a fresh full
+  repository run passed afterward: 5,977 tests, `93.573313%` lines, and
+  `85.292339%` branches. WO-0151 remains REVIEW and WO-0152 ACTIVE pending the
+  focused independent recheck, exact publication, and unchanged dual-version
+  exact-head CI.
+- 2026-08-08: The first focused E3 remediation review retained P0=0/P1=3/P2=0
+  and closed AC-04. Remediation 02 addresses only its remaining setup-source,
+  AC-01 ownership, and AC-05 semantic-oracle findings with exact lexical
+  privilege tables, all fifteen frozen E1/E2 criterion mappings plus
+  assertion-erasure mutants, and 32-generation head/capacity/identity proofs.
+  The exact full candidate passed 5,977 tests at `93.577083%` lines and
+  `85.302419%` branches. WO-0151 remains REVIEW and WO-0152 ACTIVE pending
+  focused P0=0/P1=0 acceptance, exact publication, and unchanged Python
+  3.11/3.12 exact-head CI.

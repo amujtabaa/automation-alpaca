@@ -95,7 +95,10 @@ jobs:
         # default pytest discovery does not collect. Run it explicitly so all
         # 61 observable R2 ownership/safety cases gate every push and PR.
         run: python -m pytest -q tests/r2_conformance_oracle.py
-      - name: Run tests with coverage
-        # --cov-branch + the fail_under floor in pyproject [tool.coverage.report]
-        # gate the build; a real coverage regression fails here.
-        run: pytest --cov=app --cov-branch --cov-report=term-missing
+      - name: Run tests with coverage measurements
+        # Keep branch instrumentation and emit exact numerator/denominator data.
+        # The following step gates lines and branches independently so neither
+        # dimension can conceal a regression in the other.
+        run: pytest --cov=app --cov-branch --cov-report=term-missing --cov-report=json:coverage.json
+      - name: Enforce independent coverage ratchets
+        run: python .ai-os/scripts/check_coverage_ratchet.py coverage.json
