@@ -967,3 +967,37 @@ completion claim is effective. Run #741 remains historical coverage-negative
 evidence. No accepted ADR body is changed, and no M2, schema/DDL, database,
 persistence, runtime, broker/Alpaca/network, credential, master merge, PR,
 deletion, cleanup, force-push, or rebase authority follows.
+
+## ADR-024 broker-role and persistence-boundary alignment — accepted 2026-08-09
+
+Ameen approved the exact M1.5 candidate after independent `REV-0063`
+`ACCEPT`, P0=0/P1=0/P2=0. The approved identities are:
+
+- Canonical body: [ADR-024 — Broker roles, single active execution-connection
+  identity, and provider-neutral M2 persistence boundary](ADR-024-broker-roles-execution-connection-profile.md),
+  SHA-256 `93a3baecfbdd63efc722b6d9159e2d7f2c18e970be02145fee09a48a15011c13`.
+- Candidate manifest SHA-256:
+  `9f77a39faa6fe8b9f8772efc7a3c6495e80f2b754652831343f7be9b936e352d`.
+- Terminal independent-review result:
+  `work/review/REV-0063/result-remediation-04.md`, SHA-256
+  `b4bca0001efa3dd94584ceadbb7cac4b4fa5be5b3312c52ad10b3bdf535fd246`.
+
+The canonical ADR is a byte-for-byte copy of the approved proposed body; its
+embedded `PROPOSED — DRAFT ONLY — NOT RATIFIED` status remains deliberately
+unchanged. This index records acceptance and current authority rather than
+rewriting ratified bytes. Earlier `REV-0063` results remain immutable negative
+review provenance and are not acceptance evidence.
+
+ADR-024 narrowly supersedes only the inference that ADR-022's selected
+Alpaca/Paper/account/origin/credential fence must be permanently duplicated as
+provider-literal durable-schema constraints. It preserves the exact selected
+Alpaca Paper profile for M2--M8, one mutation-eligible immutable profile per
+application generation, full startup/final-claim refusal, and all current M1
+truth/safety authority. It additionally requires a separate market-data source
+profile and defers provider changes to reviewed new-generation recutover.
+
+M1 remains closed and unchanged. M2 remains inactive; this ratification grants
+no DDL, database, runtime, broker/network, credential, Webull/FIX/IBKR/
+Robinhood/Tradier, routing/failover, live-trading, or master-merge authority.
+Webull remains a separate M9 official-document and empirical feasibility gate,
+not an assumed integration.

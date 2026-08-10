@@ -4,9 +4,9 @@ title: Architecture Map (reset target and frozen Spine v2 evidence)
 status: active
 authority: high
 owner: Ameen
-last_verified: 2026-08-08
+last_verified: 2026-08-09
 tags: [architecture, boundaries, layers]
-source_refs: [docs/adr/ADR-020-current-state-execution-kernel.md, docs/adr/ADR-021-position-protection-liquidity-execution.md, docs/adr/ADR-022-reset-beta-scope-cutover-governance.md, docs/adr/ADR-023-bounded-market-occurrence-authority.md, docs/adr/ARCH-RESET-2026-07-RATIFICATION.md, docs/01_ARCHITECTURE.md]
+source_refs: [docs/adr/ADR-020-current-state-execution-kernel.md, docs/adr/ADR-021-position-protection-liquidity-execution.md, docs/adr/ADR-022-reset-beta-scope-cutover-governance.md, docs/adr/ADR-023-bounded-market-occurrence-authority.md, docs/adr/ADR-024-broker-roles-execution-connection-profile.md, docs/adr/ARCH-RESET-2026-07-RATIFICATION.md, docs/01_ARCHITECTURE.md]
 supersedes: []
 superseded_by: null
 ---
@@ -98,6 +98,19 @@ R2--R11-plus-R11-R1 composite. Its exact-head run #741 is functional/static succ
  `ef5e53a5d49e189942545f52b7784ad7648fbf28` is reconciled; M2 and all
  runtime/persistence work remain inactive until their applicable gates.
 
+## M1.5 execution-connection boundary — ratified 2026-08-09
+
+ADR-024 is accepted through the ratification index at exact canonical-body
+SHA-256 `93a3baecfbdd63efc722b6d9159e2d7f2c18e970be02145fee09a48a15011c13`.
+It retains Alpaca Paper as the sole M2--M8 mutation-capable profile while
+making external-connection identity provider-neutral and immutable. One
+`ExecutionConnectionProfile` per application generation may be mutation
+eligible; all capital-relevant durable authority and external identifiers are
+profile-scoped. A separate `MarketDataSourceProfile` prevents execution broker
+identity from implying market-source authority. Material profile changes require
+a separately reviewed new-generation recutover, never hot swap, routing,
+failover, or cross-provider inventory. M2 implementation remains inactive.
+
 ## Rules / facts
 
 - Reset target layers and seams:
@@ -133,6 +146,10 @@ R2--R11-plus-R11-R1 composite. Its exact-head run #741 is functional/static succ
   coordinate retained in a constant-size authenticated cursor. Projection, market, and invalidation
   transitions are structurally separate. No lifetime receipt collection, history scan, runtime
   wiring, persistence, adapter fence, or broker authority is part of this pure M1 boundary.
+- ADR-024 defines only the future M2 persistence boundary: selected profile identity/commitment,
+  exact profile-scoped external identities, market-source separation, account-assertion equality,
+  and recutover-only material change. It creates no adapter implementation, database schema,
+  runtime broker path, credential use, or live authority.
 - The R2 serial acquisition foundation is split across E1 identity/direct venue correlation, E2
   controller/recovery behavior, and E3 generated/stateful conformance. WO-0150's exact E1
   closeout manifest `a68c5897717e0e3ee735af6a95ff768c59951338dff321aca9ab42bc662acfde` was
@@ -168,6 +185,7 @@ Seam discipline is what makes the safety invariants structurally enforceable rat
 - `pkl/architecture/testing-model.md`
 - `pkl/safety/invariants-rationale.md`
 - `docs/adr/ARCH-RESET-2026-07-RATIFICATION.md`
+- `docs/adr/ADR-024-broker-roles-execution-connection-profile.md`
 - `work/queue/ARCH-RESET-2026-07/12-proposed-adr-set.md`
 
 ## Change log

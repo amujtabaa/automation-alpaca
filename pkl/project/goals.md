@@ -4,9 +4,9 @@ title: Project Goals and Current Posture
 status: active
 authority: high
 owner: Ameen
-last_verified: 2026-08-08
+last_verified: 2026-08-09
 tags: [goals, posture, roadmap]
-source_refs: [docs/adr/ADR-020-current-state-execution-kernel.md, docs/adr/ADR-021-position-protection-liquidity-execution.md, docs/adr/ADR-022-reset-beta-scope-cutover-governance.md, docs/adr/ADR-023-bounded-market-occurrence-authority.md, docs/adr/ARCH-RESET-2026-07-RATIFICATION.md]
+source_refs: [docs/adr/ADR-020-current-state-execution-kernel.md, docs/adr/ADR-021-position-protection-liquidity-execution.md, docs/adr/ADR-022-reset-beta-scope-cutover-governance.md, docs/adr/ADR-023-bounded-market-occurrence-authority.md, docs/adr/ADR-024-broker-roles-execution-connection-profile.md, docs/adr/ARCH-RESET-2026-07-RATIFICATION.md]
 supersedes: []
 superseded_by: null
 ---
@@ -70,6 +70,26 @@ production/API/runtime boundary change.
  runtime/persistence/cutover slice remain inactive. WO-0153
 has completed its bounded cleanup scope with environment-controlled deferred artifacts only; it
 adds no implementation authority.
+
+## M1.5 broker-role alignment — ratified 2026-08-09
+
+ADR-024 is accepted at exact body SHA-256
+`93a3baecfbdd63efc722b6d9159e2d7f2c18e970be02145fee09a48a15011c13`;
+the ratification index preserves the human-approved manifest
+`9f77a39faa6fe8b9f8772efc7a3c6495e80f2b754652831343f7be9b936e352d`
+and terminal independent `ACCEPT`, P0=0/P1=0, result
+`b4bca0001efa3dd94584ceadbb7cac4b4fa5be5b3312c52ad10b3bdf535fd246`.
+Alpaca Paper remains the sole M2--M8 mutation-capable conformance provider.
+Each application generation selects one immutable, provider-neutral execution
+connection profile; exactly one can become mutation-eligible, and all
+capital-relevant durable authority remains bound to it. M2 remains inactive.
+
+The current roadmap is: M1 closed; M1.5 architecture alignment; M2
+persistence/crash semantics; M3 simulator/replay; M4 Alpaca Paper; M5 SELL;
+M6 BUY; M7 cockpit/handoff; M8 paper soak/acceptance; and M9 Webull
+official-document plus empirical feasibility work. M9 is not an adapter or
+live-trading authorization. FIX/QuickFIX, Robinhood, Tradier, multi-broker
+routing/failover, and live trading remain deferred.
 
 ## Current R2 ratification posture
 
@@ -234,6 +254,11 @@ runtime, persistence, broker/network, credential, database, or M2 authority.
   may not require 3.12-only syntax.
 - Legacy migration/event-log/dual-store behavior remains read-only evidence; reset live decisions
   use transactional current state under ADR-020.
+- ADR-024 preserves Alpaca Paper as the M2--M8 selected profile while preventing M2 durable
+  authority from treating provider literals as permanent schema identity. It requires one
+  immutable selected execution profile, a separate market-data source profile, profile-scoped
+  external identifiers, and reviewed new-generation recutover for material changes; it does not
+  activate M2, DDL, database, runtime, credentials, or broker activity.
 - The permanent safety core lives verbatim in `CLAUDE.md` and is never overridden by tooling or convenience defaults.
 - Reset implementation advances only through independently reviewed work orders explicitly
   activated after their predecessor gates. `WO-0145` through `WO-0148` are effective `CLOSED`.
@@ -256,6 +281,7 @@ Roadmapping against an unverified codebase state repeats the failure mode Fable 
 
 - `pkl/safety/invariants-rationale.md`
 - `pkl/architecture/architecture-map.md`
+- `docs/adr/ADR-024-broker-roles-execution-connection-profile.md`
 - `pkl/process/migration-history.md`
 
 ## Change log

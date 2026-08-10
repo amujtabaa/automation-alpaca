@@ -1,16 +1,17 @@
 ---
 type: Work Order
 title: M1.5 broker-role and provider-neutral persistence-boundary alignment
-status: ACTIVE
+status: CLOSED
 work_order_id: WO-0157
 wave: M1.5
 model_tier: strong
 risk: high
-disposition: []
+disposition: [PKL_UPDATED, ADR_CREATED, RESULT_SUMMARY_KEPT, ARCHIVED]
 owner: Codex local architecture and delivery seat
 created: 2026-08-09
 branch: codex/m1-5-broker-alignment-local-r1
 base_sha: 5eea154f7fbdaa6d77519bdda0edd7ac706f9b5f
+publication_commit: PENDING_M1_5_CLOSEOUT_PUBLICATION
 execution_authority: "The 2026-08-09 Codex Local Orchestrator Prompt authorizes ordinary reversible documentation-only work, independent-review orchestration, normal commits/pushes, and draft-PR work inside this exact scope. Exact human ratification remains required before ADR landing or authority reconciliation; merge remains human-gated."
 cloud_attempt: "PR #12 is closed, unmerged, abandoned, non-authoritative, and unusable. It consumed WO-0156 and REV-0062; this order deliberately uses fresh WO-0157 and REV-0063 and re-derives every artifact from current master."
 ---
@@ -188,10 +189,23 @@ full pytest with line/branch coverage, coverage ratchet, and git diff --check
 
 ## Completion disposition
 
-- [ ] PKL_UPDATED
-- [ ] ADR_CREATED
-- [ ] RESULT_SUMMARY_KEPT
-- [ ] ARCHIVED
+- [x] PKL_UPDATED
+- [x] ADR_CREATED
+- [x] RESULT_SUMMARY_KEPT
+- [x] ARCHIVED
+
+## Ratification and outcome
+
+On 2026-08-09, the human approved the exact ADR body
+`93a3baecfbdd63efc722b6d9159e2d7f2c18e970be02145fee09a48a15011c13`,
+candidate manifest `9f77a39faa6fe8b9f8772efc7a3c6495e80f2b754652831343f7be9b936e352d`,
+and terminal independent review
+`b4bca0001efa3dd94584ceadbb7cac4b4fa5be5b3312c52ad10b3bdf535fd246`
+(`ACCEPT`, P0=0/P1=0/P2=0). The canonical ADR-024 is a byte-for-byte copy of
+the approved body; the ratification index, PKL, log, ledger, and retained
+review packet carry the resulting current authority. M1 remains unchanged and
+M2 remains inactive. The post-ratification local and exact-head CI gates apply
+to this records-only closeout before merge readiness is claimed.
 
 ## Deletion decision
 

@@ -51,3 +51,15 @@ corrected without disputing the reviewer evidence:
 The subsequent focused review must write only
 `result-remediation-04.md`. It must return `ACCEPT`, P0=0, P1=0 before this
 work stops for human ratification; otherwise no human gate may be presented.
+
+## Final independent acceptance and ratification closure
+
+`result-remediation-04.md` is the terminal independent result. It returned
+`ACCEPT`, P0=0/P1=0/P2=0 at SHA-256
+`b4bca0001efa3dd94584ceadbb7cac4b4fa5be5b3312c52ad10b3bdf535fd246` for
+the manifest `9f77a39faa6fe8b9f8772efc7a3c6495e80f2b754652831343f7be9b936e352d`
+and proposed ADR body
+`93a3baecfbdd63efc722b6d9159e2d7f2c18e970be02145fee09a48a15011c13`.
+On 2026-08-09 the human ratified those exact values. The candidate's canonical
+ADR copy is unchanged; prior results remain immutable negative provenance, not
+an acceptance substitute. REV-0063 is closed as retained review evidence.

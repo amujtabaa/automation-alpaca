@@ -653,3 +653,12 @@
   machine-readable rules share this boundary. No fixed named-model escalation ladder remains; the
   current capable model is inherited unless a concrete task reason justifies an override. Exact
   policy publication commit: `7004d51266aec37c8d4cdb91cd31b9beb6b15e7b`.
+- 2026-08-09: The M1.5 broker-role and persistence-boundary candidate received exact human
+  ratification after independent `REV-0063` `ACCEPT`, P0=0/P1=0/P2=0. Approved hashes are ADR
+  body `93a3baecfbdd63efc722b6d9159e2d7f2c18e970be02145fee09a48a15011c13`, manifest
+  `9f77a39faa6fe8b9f8772efc7a3c6495e80f2b754652831343f7be9b936e352d`, and terminal result
+  `b4bca0001efa3dd94584ceadbb7cac4b4fa5be5b3312c52ad10b3bdf535fd246`. ADR-024 is a
+  byte-identical canonical copy; it preserves M1 closure, M2 inactivity, and Alpaca Paper M2--M8
+  while making future M2 profile identity provider-neutral and single-active. No DDL, database,
+  runtime, broker/network, credential, Webull implementation, routing, live-trading, or merge
+  authority follows.
