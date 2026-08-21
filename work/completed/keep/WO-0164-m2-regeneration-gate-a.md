@@ -1,12 +1,12 @@
 ---
 type: Work Order
 title: Fresh M2 authority reconciliation, Gate-A regeneration, and obsolete-branch retirement
-status: ACTIVE
+status: CLOSED
 work_order_id: WO-0164
 wave: M2-REGENERATION-GATE-A
 model_tier: strong
 risk: high
-disposition: []
+disposition: [RESULT_SUMMARY_KEPT, ARCHIVED]
 owner: Codex
 created: 2026-08-21
 branch: codex/m2-regeneration-gate-a-r1
@@ -104,34 +104,34 @@ forbidden_paths:
 
 ## Required behavior
 
-- [ ] Preserve original decision-packet SHA-256 `0ff73c46...` and bind the ratified overlay
+- [x] Preserve original decision-packet SHA-256 `0ff73c46...` and bind the ratified overlay
   `32adab8c...` separately.
-- [ ] Verify the quarantined tar and input manifest before listing or extraction.
-- [ ] Acquire exact bytes for WO-0158b, the 89-row authority stream/inventory, the cold-restart
+- [x] Verify the quarantined tar and input manifest before listing or extraction.
+- [x] Acquire exact bytes for WO-0158b, the 89-row authority stream/inventory, the cold-restart
   contract, ADR-023, and ADR-024; reproduce the stream count and digest independently.
-- [ ] Reconcile only M2-relevant authority once using `KEEP / REWRITE / DROP / NEW`.
-- [ ] Preserve every `NOT_RUN`, `NOT_EVALUATED`, refusal, negative finding, and
+- [x] Reconcile only M2-relevant authority once using `KEEP / REWRITE / DROP / NEW`.
+- [x] Preserve every `NOT_RUN`, `NOT_EVALUATED`, refusal, negative finding, and
   `NOT_READY / HOLD_ALL_PROMOTION` state.
-- [ ] Produce a new documentation-only candidate from accepted current authority without reusing
+- [x] Produce a new documentation-only candidate from accepted current authority without reusing
   c9 candidate hashes or treating old prose as accepted.
-- [ ] Freeze all candidate inputs/outputs under an external SHA-256 manifest and obtain separate
+- [x] Freeze all candidate inputs/outputs under an external SHA-256 manifest and obtain separate
   independent `REV-0069` review. Any semantic edit requires rehash and re-review.
-- [ ] Retire only `codex/m2-planning-preflight-r1` after every gate in the recorded retirement
+- [x] Retire only `codex/m2-planning-preflight-r1` after every gate in the recorded retirement
   document passes; verify exact local/live-remote absence and unrelated-ref stability.
-- [ ] Stop at `READY_FOR_HUMAN_M2_REGENERATION_RATIFICATION — GATE B`.
+- [x] Stop at `READY_FOR_HUMAN_M2_REGENERATION_RATIFICATION — GATE B`.
 
 ## Validation
 
-- [ ] SHA-256 verification for every controlling input, comparison surface, candidate file, and
+- [x] SHA-256 verification for every controlling input, comparison surface, candidate file, and
   review result.
-- [ ] Independent reproduction of the canonical `G|` stream: exactly 89 rows and digest
+- [x] Independent reproduction of the canonical `G|` stream: exactly 89 rows and digest
   `95e826f2ce22aa3125ce258a457ea22ea9f7dc529be2d7386b11c324d3cda5ed` or a recorded failure.
-- [ ] Static traceability: every candidate statement maps to current accepted authority or a frozen
+- [x] Static traceability: every candidate statement maps to current accepted authority or a frozen
   Rxx/Sxx decision/hold.
-- [ ] Negative scan rejects stale c9 candidate hashes, REV-0067 activation, implementation
+- [x] Negative scan rejects stale c9 candidate hashes, REV-0067 activation, implementation
   authority, false PASS language, provider selection, and promotion gain.
-- [ ] Git ancestry proves the successor descends from accepted master and does not descend from c9.
-- [ ] `git diff --check` and repository-native AI Project OS install/scope/disposition checks pass.
+- [x] Git ancestry proves the successor descends from accepted master and does not descend from c9.
+- [x] `git diff --check` and repository-native AI Project OS install/scope/disposition checks pass.
 
 ## Review and remediation
 
@@ -164,18 +164,42 @@ fable_fix:
 
 ## Acceptance criteria
 
-- [ ] Required behavior and validation are freshly evidenced.
-- [ ] Independent review is `ACCEPT` with P0=0/P1=0.
-- [ ] Scope is limited to allowed paths and no forbidden path changed.
-- [ ] Obsolete branch retirement evidence is complete and exact.
-- [ ] PKL update is completed or explicitly not required because no accepted architecture changed.
-- [ ] Work order, ledger, disposition, result retention, and move close atomically.
+- [x] Required behavior and validation are freshly evidenced.
+- [x] Independent review is `ACCEPT` with P0=0/P1=0.
+- [x] Scope is limited to allowed paths and no forbidden path changed.
+- [x] Obsolete branch retirement evidence is complete and exact.
+- [x] PKL update explicitly not required because no accepted architecture changed.
+- [x] Work order, ledger, disposition, result retention, and move close atomically.
 
 ## Completion disposition
 
-- [ ] RESULT_SUMMARY_KEPT
-- [ ] ARCHIVED
-- [ ] PKL_UPDATED only if accepted architecture state changes
+- [x] RESULT_SUMMARY_KEPT
+- [x] ARCHIVED
+- [x] PKL update not required; accepted architecture state did not change
+
+## Completion evidence
+
+- Fresh candidate manifest SHA-256:
+  `e59b2d70f1511a741372a3ee01d0c8feb07d68ea60a0e583a64b300da0f83d4c`.
+- Independent `REV-0069` result SHA-256:
+  `c1e153e737f4f0cf3d4d5eb159f3be87f4f12cf91d0773afa3fceea93f529764`;
+  verdict `ACCEPT`, P0=0, P1=0, P2=0.
+- Exact retirement and post-delete stability evidence:
+  `work/queue/M2-REGENERATION-2026-08-21/05-RETIREMENT-AND-GATE-B-EVIDENCE.md`.
+- Local, remote-tracking, and fresh live-remote target refs are absent; unrelated ref/worktree
+  inventories are unchanged.
+- Terminal state: `READY_FOR_HUMAN_M2_REGENERATION_RATIFICATION — GATE B`.
+- No accepted architecture changed, so no PKL update was required.
+- No M2 implementation, schema/DDL, database, runtime, broker/credential activity, provider
+  selection, promotion, or merge to `master` occurred.
+
+```yaml
+fable_done:
+  status: VERIFIED
+  evidence: "REV-0069 ACCEPT P0=0/P1=0/P2=0; exact local/live-remote c9 retirement; unchanged unrelated ref/worktree inventory; repository-native closeout checks."
+  command: "See 05-RETIREMENT-AND-GATE-B-EVIDENCE.md and the final validation transcript."
+  terminal_state: "READY_FOR_HUMAN_M2_REGENERATION_RATIFICATION — GATE B"
+```
 
 ## Distillation and deletion decision
 

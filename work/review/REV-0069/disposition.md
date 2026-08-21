@@ -27,11 +27,16 @@ findings. No candidate remediation is required.
 - Obsolete comparison head: `c9b27dca6236606b3792dfc75c6418fd735be6cb`; it is not an ancestor of
   the candidate.
 
-## Scope and remaining gate
+## Completed retirement and scope
 
-This disposition clears only the independent-review condition in the exact retirement contract.
-It grants no implementation, SQL/DDL, database, runtime, broker, credential, provider-selection,
-promotion, or `master`-merge authority. Exact pre-delete ref/worktree evidence, successor
-publication, local/remote deletion of only `codex/m2-planning-preflight-r1`, post-delete absence,
-unrelated-ref stability, and governance closeout remain required before the packet may stop at
-`READY_FOR_HUMAN_M2_REGENERATION_RATIFICATION — GATE B`.
+The recorded retirement gate passed after successor publication. Local and live-remote
+`codex/m2-planning-preflight-r1` were both deleted from exact head
+`c9b27dca6236606b3792dfc75c6418fd735be6cb`; fresh post-delete queries found both absent. Unrelated
+local refs, remote-tracking refs, and worktrees retained their exact pre-delete counts and SHA-256
+inventories. Full evidence is retained in
+`work/queue/M2-REGENERATION-2026-08-21/05-RETIREMENT-AND-GATE-B-EVIDENCE.md`.
+
+The packet now stops at
+`READY_FOR_HUMAN_M2_REGENERATION_RATIFICATION — GATE B`. This disposition grants no implementation,
+SQL/DDL, database, runtime, broker, credential, provider-selection, promotion, or `master`-merge
+authority.
