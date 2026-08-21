@@ -21,7 +21,9 @@ findings. No candidate remediation is required.
 - Candidate manifest SHA-256:
   `e59b2d70f1511a741372a3ee01d0c8feb07d68ea60a0e583a64b300da0f83d4c`.
 - Reviewer-owned `result.md` SHA-256:
-  `b1af379d7de3844c41295f4942067ddd4ea66202bf048dd5ff63dc717c9a21d6`.
+  `c1e153e737f4f0cf3d4d5eb159f3be87f4f12cf91d0773afa3fceea93f529764`.
+- The reviewer seat removed five Markdown hard-break space pairs and restored the terminal LF after
+  its first transport omitted it; no visible word, value, verdict, count, or ordering changed.
 - Obsolete comparison head: `c9b27dca6236606b3792dfc75c6418fd735be6cb`; it is not an ancestor of
   the candidate.
 

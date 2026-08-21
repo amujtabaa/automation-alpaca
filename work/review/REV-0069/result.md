@@ -10,8 +10,8 @@ date: 2026-08-21
 
 The exact documentation-only Gate-A candidate is acceptable for the recorded retirement gate and human Gate B stop condition.
 
-P0: 0  
-P1: 0  
+P0: 0
+P1: 0
 P2: 0
 
 ## Findings
@@ -93,7 +93,7 @@ The current review worktree `HEAD` is `a0f0ebf5b9cd9e80581bb293ba6871d565cc32cb`
 - Full historical equivalence of every non-authoritative c9 review artifact was not replayed; the exact retirement gate still requires a fresh sole-material comparison before deletion.
 - Full pytest, Ruff, mypy, import-linter, configured-database, broker/network, runtime, schema, restore, soak, and R16 checks were intentionally not run and are not represented as passing.
 
-P0: 0  
-P1: 0  
-P2: 0  
+P0: 0
+P1: 0
+P2: 0
 Unverified: live retirement operations, exhaustive historical c9 replay, and intentionally out-of-scope runtime/schema/broker checks.
