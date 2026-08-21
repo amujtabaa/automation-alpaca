@@ -140,6 +140,19 @@ forbidden_paths:
 - At most two semantic remediation rounds are allowed. A third same-root P1 or unresolved P0
   returns to the human without branch retirement.
 
+## In-flight FIX-01 — malformed quarantined-tar manifest row
+
+```yaml
+fable_fix:
+  symptom: "The first INPUT_MANIFEST.sha256 token is 63 hexadecimal characters and cannot equal any SHA-256 digest."
+  root_cause: "The row omits one `b` at offset 46 relative to the actual tar digest; the manifest file itself remains exact-hash-bound and must not be rewritten."
+  evidence: "Manifest token f163ac6cca5a1dbebdf17d585bb9dfa3e2bd4197f048fbafa1364ac69ab4604 (63 chars); actual tar and independently frozen 01/03 handoff binding f163ac6cca5a1dbebdf17d585bb9dfa3e2bd4197f048fbbafa1364ac69ab4604 (64 chars)."
+  fix: "Preserve the malformed external manifest as negative evidence; gate the container against the identical 64-character digest independently recorded in both frozen handoff artifacts, then verify every extracted surface against its valid 64-character entry row."
+  regression_test: "Reject non-64-character SHA tokens, require the tar to match both independent handoff bindings, and require all six manifest-bound inner-file digests plus the 89-row stream digest to reproduce."
+  red_green_verified: true
+  attempt: 1
+```
+
 ## Autonomy and escalation
 
 - Ordinary reversible documentation/governance work inside `allowed_paths` is authorized.

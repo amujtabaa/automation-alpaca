@@ -1,0 +1,12 @@
+# Fresh M2 Gate-A candidate manifest
+# algorithm: SHA-256 lowercase hexadecimal over exact file bytes
+# accepted_base: 177ea5fcd959b9e7d7d5a3172070f90f89ece963
+# branch: codex/m2-regeneration-gate-a-r1
+# work_order: WO-0164
+# review: REV-0069
+# self_exclusion: this manifest is excluded to avoid a self-referential digest; the review request binds its exact SHA-256 separately.
+6eb728ff1c7724df910d09119390d605b0d93a50ce5f9f7990086b9901e8a939 *work/queue/M2-REGENERATION-2026-08-21/00-AUTHORITY-AND-BOUNDARY.md
+6e6d775bf2c53265a816b20e3230f8dd029078f141993471c7a7e700d57bd601 *work/queue/M2-REGENERATION-2026-08-21/01-FIVE-SURFACE-VERIFICATION.md
+9d1d82d883372fdad3f4dc00b52c2f096dc1284d941bf61cc91189bae7da72b3 *work/queue/M2-REGENERATION-2026-08-21/02-KEEP-REWRITE-DROP-NEW-MATRIX.md
+927c17d4d87c404a28c406a4994ec84676dfff63aad865d434b4600fcd15eb31 *work/queue/M2-REGENERATION-2026-08-21/03-FRESH-M2-GATE-A-CANDIDATE.md
+3bc51dab32cfe84872523cbd47903ced76c4b971ecb25d64505470e3ed130461 *work/queue/M2-REGENERATION-2026-08-21/04-VALIDATION-REVIEW-AND-RETIREMENT.md
