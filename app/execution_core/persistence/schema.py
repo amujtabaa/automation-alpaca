@@ -248,6 +248,11 @@ CREATE INDEX ix_root_fill_owner ON root_fill (owner_generation_id, root_fill_key
 CREATE TABLE execution_fact (
     fact_id INTEGER PRIMARY KEY,
     scope_id INTEGER NOT NULL REFERENCES acquisition_scope (scope_id),
+    application_generation_id TEXT NOT NULL
+        REFERENCES application_generation (application_generation_id),
+    broker_text TEXT NOT NULL CHECK (length(broker_text) >= 1),
+    environment_text TEXT NOT NULL CHECK (length(environment_text) >= 1),
+    account_text TEXT NOT NULL CHECK (length(account_text) >= 1),
     root_fill_key_id INTEGER NOT NULL REFERENCES root_fill (root_fill_key_id),
     source_event_id TEXT NOT NULL CHECK (length(source_event_id) >= 1),
     kind TEXT NOT NULL CHECK (kind IN ('FILL', 'TRADE_CORRECT', 'TRADE_BUST')),
@@ -276,7 +281,12 @@ CREATE TABLE execution_fact (
 );
 
 CREATE UNIQUE INDEX uq_execution_fact_root_fact ON execution_fact (root_fill_key_id, fact_id);
-CREATE UNIQUE INDEX uq_execution_fact_scope_event ON execution_fact (scope_id, source_event_id);
+CREATE UNIQUE INDEX uq_execution_fact_m1_key ON execution_fact (
+    broker_text,
+    environment_text,
+    account_text,
+    source_event_id
+);
 CREATE INDEX ix_execution_fact_root_head ON execution_fact (root_fill_key_id, fact_ordinal DESC);
 
 CREATE TABLE venue_effect (
@@ -487,6 +497,28 @@ BEGIN
     SELECT RAISE (ABORT, 'root_fill economics head may only advance');
 END;
 
+CREATE TRIGGER trg_execution_fact_scope_coordinates
+    BEFORE INSERT ON execution_fact
+    FOR EACH ROW
+    WHEN EXISTS (
+            SELECT 1
+              FROM acquisition_scope AS scope
+             WHERE scope.scope_id = NEW.scope_id
+               AND (
+                    scope.application_generation_id
+                    <> NEW.application_generation_id
+                 OR scope.broker_text <> NEW.broker_text
+                 OR scope.environment_text <> NEW.environment_text
+                 OR scope.account_text <> NEW.account_text
+                )
+        )
+BEGIN
+    SELECT RAISE (
+        ABORT,
+        'execution_fact coordinates must equal their scope coordinates'
+    );
+END;
+
 CREATE TRIGGER trg_execution_fact_append_only_update
     BEFORE UPDATE ON execution_fact
 BEGIN
@@ -582,6 +614,20 @@ CREATE TRIGGER trg_acceptance_evidence_append_only_update
     BEFORE UPDATE ON acceptance_evidence
 BEGIN
     SELECT RAISE (ABORT, 'acceptance_evidence rows are append-only');
+END;
+
+CREATE TRIGGER trg_closure_chain_no_gap
+    BEFORE INSERT ON closure_chain
+    FOR EACH ROW
+    WHEN NEW.predecessor_closure_id IS NOT NULL
+BEGIN
+    SELECT RAISE (ABORT, 'closure ordinals must be gap-free')
+    WHERE NOT EXISTS (
+            SELECT 1
+              FROM closure_chain AS predecessor
+             WHERE predecessor.closure_id = NEW.predecessor_closure_id
+               AND predecessor.ordinal = NEW.ordinal - 1
+        );
 END;
 
 CREATE TRIGGER trg_closure_chain_append_only_update

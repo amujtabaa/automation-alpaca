@@ -17,7 +17,6 @@ in-memory database is ever used.
 
 from __future__ import annotations
 
-import re
 import sqlite3
 
 import pytest
@@ -34,7 +33,7 @@ from app.execution_core.persistence.schema import (
 
 
 _GATE_DIGEST: str | None = (
-    "e88ceb3f0056a7ea93265c9b560662a0c409d73084d7a44f4e050909a2169179"
+    "b49ab05a33ccff4265e780d0b6d89a862475ddd279287d5ffcb959bcace4c1c6"
 )
 
 _FORBIDDEN_COLUMN_FRAGMENTS = (
@@ -50,6 +49,17 @@ _ORIGIN_COLUMNS = (
     "order_query_origin",
     "order_event_origin",
     "source_origin",
+)
+
+_DEFAULT_GENERATION_ID = "ab" * 32
+_SCOPE_BROKER_TEXT = "alpaca"
+_SCOPE_ENVIRONMENT_TEXT = "paper"
+_SCOPE_ACCOUNT_TEXT = "account-1"
+_FACT_COORDS = (
+    _DEFAULT_GENERATION_ID,
+    _SCOPE_BROKER_TEXT,
+    _SCOPE_ENVIRONMENT_TEXT,
+    _SCOPE_ACCOUNT_TEXT,
 )
 
 
@@ -183,17 +193,24 @@ def _insert_fill(
     root_id: int,
     event: str,
     scope_id: int = 1,
+    generation_id: str = _DEFAULT_GENERATION_ID,
 ) -> int:
     connection.execute(
         """
         INSERT INTO execution_fact (
-            fact_id, scope_id, root_fill_key_id, source_event_id, kind,
+            fact_id, scope_id, application_generation_id,
+            broker_text, environment_text, account_text,
+            root_fill_key_id, source_event_id, kind,
             quantity, price_units, scale_sign, scale_digits,
             scale_exponent, predecessor_fact_id, fact_ordinal
         )
-        VALUES (?, ?, ?, ?, 'FILL', 10, 10000, 0, '1', -2, NULL, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'FILL', 10, 10000, 0, '1', -2,
+                NULL, ?)
         """,
-        (fact_id, scope_id, root_id, event, fact_id),
+        (fact_id, scope_id)
+        + (generation_id,)
+        + _FACT_COORDS[1:]
+        + (root_id, event, fact_id),
     )
     return fact_id
 
@@ -211,13 +228,17 @@ def _insert_revision(
     connection.execute(
         """
         INSERT INTO execution_fact (
-            fact_id, scope_id, root_fill_key_id, source_event_id, kind,
+            fact_id, scope_id, application_generation_id,
+            broker_text, environment_text, account_text,
+            root_fill_key_id, source_event_id, kind,
             quantity, price_units, scale_sign, scale_digits,
             scale_exponent, predecessor_fact_id, fact_ordinal
         )
-        VALUES (?, ?, ?, ?, ?, 7, 10100, 0, '1', -2, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 7, 10100, 0, '1', -2, ?, ?)
         """,
-        (fact_id, scope_id, root_id, event, kind, predecessor_fact_id, fact_id),
+        (fact_id, scope_id)
+        + _FACT_COORDS
+        + (root_id, event, kind, predecessor_fact_id, fact_id),
     )
     return fact_id
 
@@ -234,13 +255,18 @@ def _insert_bust(
     connection.execute(
         """
         INSERT INTO execution_fact (
-            fact_id, scope_id, root_fill_key_id, source_event_id, kind,
+            fact_id, scope_id, application_generation_id,
+            broker_text, environment_text, account_text,
+            root_fill_key_id, source_event_id, kind,
             quantity, price_units, scale_sign, scale_digits,
             scale_exponent, predecessor_fact_id, fact_ordinal
         )
-        VALUES (?, ?, ?, ?, 'TRADE_BUST', 0, NULL, NULL, NULL, NULL, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'TRADE_BUST', 0, NULL, NULL, NULL,
+                NULL, ?, ?)
         """,
-        (fact_id, scope_id, root_id, event, predecessor_fact_id, fact_id),
+        (fact_id, scope_id)
+        + _FACT_COORDS
+        + (root_id, event, predecessor_fact_id, fact_id),
     )
     return fact_id
 
@@ -301,21 +327,6 @@ def test_disabled_foreign_keys_are_refused(tmp_path: object) -> None:
 
     with pytest.raises(SchemaForeignKeysDisabledError):
         install_schema(connection, approved_ddl_sha256=approved)
-
-
-def _revised_origin_predicate(origin: str) -> bool:
-    """Pure-Python mirror of the revised origin CHECK chain (no database)."""
-
-    host_part = origin[8:]
-    return (
-        origin.startswith("https://")
-        and 9 <= len(origin) <= 261
-        and re.search(r"[^a-z0-9.:\-]", host_part) is None
-        and "@" not in host_part
-        and "//" not in host_part
-        and not host_part.endswith(":443")
-        and "::" not in host_part
-    )
 
 
 def test_module_import_stays_inert_without_any_database() -> None:
@@ -396,15 +407,29 @@ def test_retiring_then_reopening_is_the_only_status_path(tmp_path: object) -> No
 def test_cross_scope_or_cross_profile_event_reuse_is_rejected(
     tmp_path: object,
 ) -> None:
+    """The exact M1 ExecutionFactKey dedupes across scopes and symbols."""
+
     connection = _installed_connection(tmp_path)
-    generation_id = _insert_profiles_and_generation(connection)
+    generation_a = _insert_profiles_and_generation(connection)
+    connection.execute(
+        "INSERT INTO application_generation VALUES (?, ?, ?, 2)",
+        ("56" * 32, "cd" * 32, "ef" * 32),
+    )
     connection.execute(
         """
         INSERT INTO acquisition_scope VALUES
         (1, ?, 'alpaca', 'paper', 'account-1', 'AAPL'),
         (2, ?, 'alpaca', 'paper', 'account-1', 'MSFT')
         """,
-        (generation_id, generation_id),
+        (generation_a, "56" * 32),
+    )
+    connection.execute(
+        """
+        INSERT INTO acquisition_generation VALUES
+        (?, 1, 'LIVE', 1, NULL, ?, ?),
+        (?, 2, 'LIVE', 1, NULL, ?, ?)
+        """,
+        ("12" * 32, "9a" * 32, "9b" * 32, "34" * 32, "8a" * 32, "8b" * 32),
     )
     connection.execute(
         """
@@ -417,12 +442,61 @@ def test_cross_scope_or_cross_profile_event_reuse_is_rejected(
         (1, 1, ?, 'r-A', 10, 10000, 0, '1', -2, 0),
         (2, 2, ?, 'r-B', 10, 10000, 0, '1', -2, 0)
         """,
-        ("12" * 32, "12" * 32),
+        ("12" * 32, "34" * 32),
     )
-    _insert_fill(connection, fact_id=1, root_id=1, event="evt-1", scope_id=1)
 
+    stored = _insert_fill(connection, fact_id=1, root_id=1, event="evt-1", scope_id=1)
+    assert stored == 1
+
+    # Mutant: the identical ExecutionFactKey under the second scope. Only the
+    # four-column M1-key uniqueness can refuse this insert.
     with pytest.raises(sqlite3.IntegrityError):
-        _insert_fill(connection, fact_id=2, root_id=2, event="evt-1", scope_id=2)
+        _insert_fill(
+            connection,
+            fact_id=2,
+            root_id=2,
+            event="evt-1",
+            scope_id=2,
+            generation_id="56" * 32,
+        )
+
+    # Positive control: a distinct event on the second scope is accepted.
+    assert (
+        _insert_fill(
+            connection,
+            fact_id=3,
+            root_id=2,
+            event="evt-2",
+            scope_id=2,
+            generation_id="56" * 32,
+        )
+        == 3
+    )
+
+
+def test_fact_coordinates_must_equal_their_scope_coordinates(
+    tmp_path: object,
+) -> None:
+    """A fact row cannot silently carry coordinates foreign to its scope."""
+
+    connection = _installed_connection(tmp_path)
+    _seed_scope_with_live_generation(connection)
+
+    with pytest.raises(sqlite3.IntegrityError, match="scope coordinates"):
+        connection.execute(
+            """
+            INSERT INTO execution_fact (
+                fact_id, scope_id, application_generation_id,
+                broker_text, environment_text, account_text,
+                root_fill_key_id, source_event_id, kind,
+                quantity, price_units, scale_sign, scale_digits,
+                scale_exponent, predecessor_fact_id, fact_ordinal
+            )
+            VALUES (?, 1, ?, ?, 'paper', 'account-1', 1, 'evt-x',
+                    'FILL', 10, 10000, 0, '1', -2, NULL, 1)
+            """,
+            (1, "ab" * 32, "other-broker"),
+        )
 
 
 def test_revision_predecessor_must_exist_inside_same_root(
@@ -480,15 +554,32 @@ def test_revision_predecessor_must_exist_inside_same_root(
 def test_closure_chain_rejects_gap_branch_and_cross_owner(
     tmp_path: object,
 ) -> None:
-    connection = _installed_connection(tmp_path)
-    scope_id = _seed_scope_with_live_generation(connection)
-    _insert_root(connection, scope_id=scope_id)
-    _insert_open_effect(connection, 1)
-    second_effect = _insert_open_effect(connection, 2)
-    third_effect = _insert_open_effect(connection, 3)
+    """Gap, branch, and cross-owner mutants fail on isolated fresh chains."""
 
-    def _closure(
+    def _fresh(name: str) -> tuple[sqlite3.Connection, int]:
+        connection = sqlite3.connect(tmp_path / name)
+        connection.execute("PRAGMA foreign_keys = ON")
+        install_schema(connection, approved_ddl_sha256=_require_gate_open())
+        scope_id = _seed_scope_with_live_generation(connection)
+        _insert_root(connection, scope_id=scope_id)
+        for effect_id in (1, 2, 3):
+            _insert_open_effect(connection, effect_id)
+        connection.execute(
+            """
+            INSERT INTO closure_chain (
+                closure_id, scope_id, owner_external, ordinal, effect_id,
+                closure_kind, predecessor_closure_id
+            )
+            VALUES (1, ?, 'owner-A', 1, 1, 'TERMINAL_LEG', NULL)
+            """,
+            (scope_id,),
+        )
+        return connection, scope_id
+
+    def _append(
+        connection: sqlite3.Connection,
         closure_id: int,
+        scope_id: int,
         owner: str,
         ordinal: int,
         effect_id: int,
@@ -500,34 +591,45 @@ def test_closure_chain_rejects_gap_branch_and_cross_owner(
                 closure_id, scope_id, owner_external, ordinal, effect_id,
                 closure_kind, predecessor_closure_id
             )
-            VALUES (?, ?, ?, ?, ?, 'TERMINAL_LEG', ?)
+            VALUES (?, ?, ?, ?, ?, 'ACCEPTANCE_CLOSED', ?)
             """,
             (closure_id, scope_id, owner, ordinal, effect_id, predecessor),
         )
 
-    _closure(1, "owner-A", 1, 1, None)
+    # Positive control: the immediate same-owner continuation is accepted.
+    continued, scope_id = _fresh("positive.db")
+    _append(continued, 2, scope_id, "owner-A", 2, 2, 1)
+    head = continued.execute(
+        "SELECT ordinal FROM closure_chain WHERE closure_id = 2"
+    ).fetchone()
+    assert head == (2,)
 
-    # Gap mutant: ordinal 3 cannot follow ordinal 1 directly.
+    # Gap mutant: ordinal 3 declared after predecessor at ordinal 1. The
+    # composite FK passes (row exists), the ordinal unique is free, and no
+    # successor of row 1 exists yet - only the no-gap trigger can refuse.
+    gapped, gap_scope = _fresh("gap.db")
+    with pytest.raises(sqlite3.IntegrityError, match="gap-free"):
+        _append(gapped, 2, gap_scope, "owner-A", 3, 2, 1)
+
+    # Branch mutant: a second successor of the same immediate predecessor.
+    branched, branch_scope = _fresh("branch.db")
+    _append(branched, 2, branch_scope, "owner-A", 2, 2, 1)
     with pytest.raises(sqlite3.IntegrityError):
-        _closure(2, "owner-A", 3, 1, 1)
+        _append(branched, 3, branch_scope, "owner-A", 3, 3, 1)
 
-    _closure(3, "owner-A", 2, 1, 1)
-
-    # Branch mutant: two successors of the same predecessor.
+    # Cross-owner mutant: predecessor belongs to another owner string; the
+    # composite foreign key cannot resolve it within this owner's chain.
+    crossed, cross_scope = _fresh("cross.db")
     with pytest.raises(sqlite3.IntegrityError):
-        _closure(4, "owner-A", 3, second_effect, 1)
-
-    # Cross-owner mutant: predecessor belongs to another owner string.
-    with pytest.raises(sqlite3.IntegrityError):
-        connection.execute(
+        crossed.execute(
             """
             INSERT INTO closure_chain (
                 closure_id, scope_id, owner_external, ordinal, effect_id,
                 closure_kind, predecessor_closure_id
             )
-            VALUES (5, ?, 'owner-B', 1, ?, 'TERMINAL_LEG', 1)
+            VALUES (2, ?, 'owner-B', 2, 3, 'TERMINAL_LEG', 1)
             """,
-            (scope_id, third_effect),
+            (cross_scope,),
         )
 
 
@@ -600,9 +702,19 @@ def test_close_requires_committed_claim_and_terminal_freezes(
         connection.execute(
             "UPDATE venue_effect SET disposition = 'OPEN' WHERE effect_id = 1"
         )
+
+    # Accepted authority (EC-2 / acceptance_set machine): CLOSED advances
+    # only to INVALIDATED, which is then fully terminal.
+    connection.execute(
+        "UPDATE venue_effect SET disposition = 'INVALIDATED' WHERE effect_id = 1"
+    )
     with pytest.raises(sqlite3.IntegrityError):
         connection.execute(
-            "UPDATE venue_effect SET disposition = 'INVALIDATED' WHERE effect_id = 1"
+            "UPDATE venue_effect SET disposition = 'OPEN' WHERE effect_id = 1"
+        )
+    with pytest.raises(sqlite3.IntegrityError):
+        connection.execute(
+            "UPDATE venue_effect SET disposition = 'CLOSED' WHERE effect_id = 1"
         )
 
     connection.execute(
@@ -751,28 +863,75 @@ def test_origin_charset_predicates_target_the_host_part_only() -> None:
         assert f"AND length({column}) >= 9" in ddl
 
 
-def test_revised_origin_predicate_accepts_canonical_and_refuses_mutants() -> None:
-    """Mirror of the exact revised CHECK chain, proven without any database."""
-
-    _require_gate_open()
-
-    valid = (
-        "https://trade.example.com",
-        "https://feed.example.com",
-        "https://x-y.example.com:8443",
-        "https://ab.example:1",
+def _insert_profile_with_event_origin(
+    connection: sqlite3.Connection,
+    *,
+    profile_id: str,
+    order_event_origin: str,
+) -> None:
+    connection.execute(
+        """
+        INSERT INTO execution_connection_profile (
+            connection_profile_id, broker_provider, environment_class,
+            account_identity, trade_command_origin, order_query_origin,
+            order_event_origin, credential_handle_fingerprint,
+            adapter_contract_version, capability_profile_sha256,
+            deployment_identity, profile_commitment_sha256
+        )
+        VALUES (?, 'ALPACA', 'PAPER', ?,
+                'https://trade.example.com',
+                'https://query.example.com',
+                ?, ?, '1.2.3', ?, ?, ?)
+        """,
+        (
+            profile_id,
+            "aa" * 32,
+            order_event_origin,
+            "bb" * 32,
+            "cc" * 32,
+            "dd" * 32,
+            "ee" * 32,
+        ),
     )
-    invalid = (
-        "http://trade.example.com",
-        "",
-        "https://",
-        "https://Host.example.com",
-        "https://pa/th",
-        "https://u@h.example.com",
-        "https://h.example.com:443",
-        "https://a::b",
-        "https://a b.c",
+
+
+def test_sqlite_origin_checks_accept_canonical_and_refuse_every_mutant(
+    tmp_path: object,
+) -> None:
+    """Origin CHECK clauses are exercised by the real SQLite engine itself."""
+
+    connection = _connection(tmp_path)
+    install_schema(connection, approved_ddl_sha256=_require_gate_open())
+
+    canonical_mutants: dict[str, str] = {
+        "scheme": "http://stream.example.com",
+        "bare-scheme": "https://",
+        "uppercase-host": "https://Stream.example.com",
+        "path": "https://stream.example.com/v1",
+        "userinfo": "https://user@stream.example.com",
+        "port-443": "https://stream.example.com:443",
+        "double-colon": "https://str::eam.example.com",
+        "space": "https://stream.example.com path",
+        "second-double-slash": "https://stream.example.com//x",
+        "empty-origin": "",
+    }
+
+    accepted_profile = "cd" * 32
+    _insert_profile_with_event_origin(
+        connection,
+        profile_id=accepted_profile,
+        order_event_origin="https://stream.example.com",
     )
 
-    assert all(_revised_origin_predicate(value) for value in valid)
-    assert all(not _revised_origin_predicate(value) for value in invalid)
+    for label, mutant_origin in canonical_mutants.items():
+        with pytest.raises(sqlite3.IntegrityError):
+            _insert_profile_with_event_origin(
+                connection,
+                profile_id=label.encode().hex().ljust(64, "0")[:64],
+                order_event_origin=mutant_origin,
+            )
+
+    remaining = connection.execute(
+        "SELECT count(*) FROM execution_connection_profile"
+    ).fetchone()
+    assert remaining is not None and remaining[0] == 1
