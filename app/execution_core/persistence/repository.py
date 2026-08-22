@@ -32,6 +32,27 @@ def _committed() -> _records.RepositoryOutcome:
     return _records.RepositoryOutcome(_records.RepositoryOutcomeKind.COMMITTED)
 
 
+_SQLITE_FAILURE_NAMES = frozenset(
+    {"IntegrityError", "OperationalError", "DatabaseError", "DataError"}
+)
+
+
+def _classified_failure(caught: Exception) -> _records.RepositoryOutcome:
+    """Translate only genuine SQLite failures; propagate everything else."""
+
+    name = type(caught).__name__
+    if name not in _SQLITE_FAILURE_NAMES:
+        raise caught
+    message = str(caught)
+    if name == "IntegrityError":
+        if "FOREIGN KEY constraint failed" in message:
+            return _records.RepositoryOutcome(
+                _records.RepositoryOutcomeKind.INTEGRITY_FAILURE
+            )
+        return _records.RepositoryOutcome(_records.RepositoryOutcomeKind.CONFLICT)
+    return _records.RepositoryOutcome(_records.RepositoryOutcomeKind.INTEGRITY_FAILURE)
+
+
 def _write(
     connection: _SQLiteConnectionProtocol,
     sql: str,
@@ -40,14 +61,9 @@ def _write(
     _verify_schema_connection(connection)
     try:
         connection.execute(sql, parameters)
-    except Exception as caught:  # typed by sqlite class name only
-        kind_name = type(caught).__name__
-        if kind_name == "IntegrityError":
-            return _records.RepositoryOutcome(_records.RepositoryOutcomeKind.CONFLICT)
-        return _records.RepositoryOutcome(
-            _records.RepositoryOutcomeKind.INTEGRITY_FAILURE
-        )
-    return _committed()
+    except Exception as caught:
+        return _classified_failure(caught)
+    return _records.RepositoryOutcome(_records.RepositoryOutcomeKind.COMMITTED)
 
 
 def _load(
@@ -59,10 +75,8 @@ def _load(
     _verify_schema_connection(connection)
     try:
         row = connection.execute(sql, parameters).fetchone()
-    except Exception:
-        return _records.RepositoryOutcome(
-            _records.RepositoryOutcomeKind.INTEGRITY_FAILURE
-        )
+    except Exception as caught:
+        return _classified_failure(caught)
     if row is None:
         return _records.RepositoryOutcome(_records.RepositoryOutcomeKind.ABSENT)
     record = build(row)

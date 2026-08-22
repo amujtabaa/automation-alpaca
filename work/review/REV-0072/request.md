@@ -11,8 +11,7 @@ human_gated_surfaces: []
 
 - Branch `codex/m2-i3-sqlite-repository-hydration-r1`
 - Base `0a7b5ae324c34be488da24478f95e2658a1bb894` (tree `9e76edce…`)
-- Candidate head/tree at time of writing: `ea22a6f01f27c543241475c8a391639053ea326b` (re-freeze
-  exact values from branch tip when reviewing; commits after activation are RED, GREEN, boundary fix)
+- Candidate binding: review the diff range `0a7b5ae324c34be488da24478f95e2658a1bb894..adc8c592dc6700d2063cd5a29e99f24fc4a44846` (implementation and tests). Any later commit touching only `work/review/REV-0072/**` is documentation-only; the authoritative tip at review time is the branch HEAD.
 - Diff range: `0a7b5ae..HEAD`; changed paths exactly:
   app/execution_core/persistence/{repository.py,records.py},
   tests/execution_core/{test_persistence_repository.py,test_persistence_directness.py},
@@ -58,6 +57,31 @@ store_acceptance_set/load_acceptance_set. records.py exports the record/outcome 
 
 No DDL/schema bytes changed; only fresh tmp_path file databases; no in-memory/configured DB;
 no credentials/network/broker/orders/runtime/M2-I4 work; nothing merged; reviewer owns result.md.
+
+## Self-review remediation and declared coverage gaps
+
+Self-review found and fixed before handoff: non-SQLite exceptions were
+laundered into typed outcomes (now propagated); FOREIGN-KEY refusals are now
+distinguished from identity conflicts (typed INTEGRITY_FAILURE vs CONFLICT);
+stale candidate hash above replaced by range binding; acquisition-generation
+store/duplicate-conflict round trip added.
+
+Declared gaps requiring reviewer judgment (not silently covered):
+
+1. Untested exported operations pending upstream family seeds:
+   record_execution_fact_head / load_execution_fact_head,
+   record_dispatch_claim / load_dispatch_claim,
+   store_acceptance_set / load_acceptance_set.
+2. acquisition_generation_current store returns CONFLICT on first insert in
+   integrated flow while an equivalent raw insert succeeds and a subsequent
+   raw duplicate reports 'already retained' — an apparent trigger/state
+   interaction needing design clarification before repository semantics are
+   frozen. Test intentionally withdrawn rather than weakened.
+3. No advance/update primitives yet for mutable-current rows
+   (kernel_checkpoint, current proof rows); insert-only in this increment.
+
+These are P1-level findings against THIS candidate; treat completeness as
+described, not as full WO-0167 coverage.
 
 ## Requested lenses
 

@@ -7,6 +7,11 @@ import sqlite3
 import pytest
 
 import app.execution_core.persistence.repository as repository_module
+from app.execution_core.persistence.repository import (
+    RepositoryOutcomeKind,
+    store_acquisition_generation,
+    store_scope,
+)
 from app.execution_core.persistence import records
 from app.execution_core.persistence.schema import (
     install_schema,
@@ -235,3 +240,23 @@ def test_direct_load_query_shape_is_bounded(connection) -> None:
     ).fetchall()
     plan_text = " ".join(str(row[-1]) for row in plan)
     assert "SCAN" not in plan_text
+
+
+def test_acquisition_generation_store_then_duplicate_conflicts(
+    connection,
+) -> None:
+    _seed_chain(connection)
+    store_scope(connection, records.ScopeRecord(1, "ab" * 32, "cd" * 32, "AAPL"))
+    generation = records.AcquisitionGenerationRecord(
+        acquisition_generation_id="12" * 32,
+        scope_id=1,
+        status="LIVE",
+        successor_ordinal=1,
+        predecessor_generation_id=None,
+        mandate_commitment_sha256="9a" * 32,
+        emergency_compatibility_sha256="9b" * 32,
+    )
+    stored = store_acquisition_generation(connection, generation)
+    assert stored.kind is RepositoryOutcomeKind.COMMITTED
+    duplicate = store_acquisition_generation(connection, generation)
+    assert duplicate.kind is RepositoryOutcomeKind.CONFLICT
