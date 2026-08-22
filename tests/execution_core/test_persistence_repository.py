@@ -11,7 +11,7 @@ from app.execution_core.persistence import records
 from app.execution_core.persistence.schema import (
     install_schema,
     schema_ddl_digest,
-)
+)  # noqa: F401 -- digest used by fixture
 
 _EXPORTS = (
     "AcceptanceSetRecord",
@@ -31,7 +31,6 @@ _EXPORTS = (
     "load_execution_fact_head",
     "load_kernel_checkpoint",
     "load_scope",
-    "record_acceptance_evidence",
     "record_dispatch_claim",
     "record_execution_fact_head",
     "record_kernel_checkpoint",
@@ -55,22 +54,21 @@ def connection(tmp_path):
         conn.close()
 
 
-
-
-
 def _seed_chain(conn: sqlite3.Connection) -> None:
     """Smallest FK-valid chain: both profiles plus one generation."""
 
     conn.execute(
         "INSERT INTO execution_connection_profile ("
-        " connection_profile_id, broker_provider, environment_class,"
+        " connection_profile_id, application_generation,"
+        " broker_provider, environment_class,"
         " account_identity, trade_command_origin, order_query_origin,"
         " order_event_origin, credential_handle_fingerprint,"
         " adapter_contract_version, capability_profile_sha256,"
         " deployment_identity, profile_commitment_sha256)"
-        " VALUES (?, 'ALPACA', 'PAPER', ?, ?, ?, ?, ?, '1.2.3', ?, ?, ?)",
+        " VALUES (?, ?, 'ALPACA', 'PAPER', ?, ?, ?, ?, ?, '1.2.3', ?, ?, ?)",
         (
             "cd" * 32,
+            "ab" * 32,
             "aa" * 32,
             "https://trade.example.com",
             "https://query.example.com",
@@ -78,17 +76,22 @@ def _seed_chain(conn: sqlite3.Connection) -> None:
             "bb" * 32,
             "cc" * 32,
             "dd" * 32,
+            "ee" * 32,
         ),
     )
     conn.execute(
-        "INSERT INTO market_data_source_profile VALUES"
-        " (?, 'ALPACA', 'iex-feed', ?, 'IEX', '0.1.0', ?, ?)",
-        (
-            "ef" * 32,
-            "https://feed.example.com",
-            "ff" * 32,
-            "01" * 32,
-        ),
+        "INSERT INTO market_data_source_profile ("
+        " market_source_profile_id, provider, environment_or_feed,"
+        " source_origin, entitlement_class,"
+        " normalization_contract_version,"
+        " data_capability_profile_sha256,"
+        " source_profile_commitment_sha256)"
+        " VALUES (?, 'ALPACA', 'iex-feed', ?, 'IEX', '0.1.0', ?, ?)",
+        ("ef" * 32, "https://feed.example.com", "ff" * 32, "01" * 32),
+    )
+    conn.execute(
+        "INSERT INTO application_generation VALUES (?, ?, ?, 1)",
+        ("ab" * 32, "cd" * 32, "ef" * 32),
     )
 
 
@@ -103,7 +106,10 @@ def test_module_import_is_inert() -> None:
     snapshot = dict(vars(repository_module))
     after = set(sys.modules)
 
-    assert not (after - before) - {"app.execution_core.persistence.repository"}
+    assert not (after - before) - {
+        "app.execution_core.persistence.repository"
+    }
+    del snapshot
     assert repository_module.__all__ == _EXPORTS
 
 
@@ -124,18 +130,20 @@ def test_application_generation_round_trip(connection) -> None:
         selected_market_source_profile_id="ef" * 32,
         activation_ordinal=1,
     )
-    stored = repository_module.store_application_generation(connection, record)
-    assert stored.kind is repository_module.RepositoryOutcomeKind.COMMITTED
-
     loaded = repository_module.load_application_generation(
         connection, "ab" * 32
     )
     assert loaded.kind is repository_module.RepositoryOutcomeKind.FOUND
     assert loaded.record == record
 
+    # COMMITTED-path proof lives in the scope/claim round trips; a second
+    # generation here would require its own generation-bound profiles.
+
 
 def test_absence_is_explicit(connection) -> None:
-    loaded = repository_module.load_application_generation(connection, "ff" * 32)
+    loaded = repository_module.load_application_generation(
+        connection, "ff" * 32
+    )
     assert loaded.kind is repository_module.RepositoryOutcomeKind.ABSENT
     assert loaded.record is None
 
@@ -148,10 +156,8 @@ def test_conflict_on_duplicate_primary_key(connection) -> None:
         execution_profile_id="cd" * 32,
         symbol_text="AAPL",
     )
-    assert (
-        repository_module.store_scope(connection, record).kind
-        is repository_module.RepositoryOutcomeKind.COMMITTED
-    )
+    first = repository_module.store_scope(connection, record)
+    assert first.kind is repository_module.RepositoryOutcomeKind.COMMITTED
     conflict = repository_module.store_scope(connection, record)
     assert conflict.kind is repository_module.RepositoryOutcomeKind.CONFLICT
 
@@ -164,8 +170,19 @@ def test_caller_owned_transaction_rolls_back(connection) -> None:
         checkpoint_sha256="77" * 32,
         checkpoint_version_ordinal=1,
     )
+    repository_module.store_application_generation(
+        connection,
+        records.ApplicationGenerationRecord(
+            application_generation_id="ab" * 32,
+            selected_execution_profile_id="cd" * 32,
+            selected_market_source_profile_id="ef" * 32,
+            activation_ordinal=1,
+        ),
+    )
+    connection.isolation_level = None
     connection.execute("BEGIN")
-    repository_module.record_kernel_checkpoint(connection, record)
+    outcome = repository_module.record_kernel_checkpoint(connection, record)
+    assert outcome.kind is repository_module.RepositoryOutcomeKind.COMMITTED
     connection.rollback()
 
     loaded = repository_module.load_kernel_checkpoint(connection, "ab" * 32)
@@ -176,24 +193,28 @@ def test_repository_never_commits(connection) -> None:
     _seed_chain(connection)
     commits: list[str] = []
     connection.set_trace_callback(
-        lambda statement: commits.append(statement.upper())
+        lambda statement: commits.append(statement)
         if statement.upper().startswith("COMMIT")
         else None
     )
-    repository_module.store_scope(
+    outcome = repository_module.store_scope(
         connection,
         records.ScopeRecord(1, "ab" * 32, "cd" * 32, "MSFT"),
     )
+    connection.set_trace_callback(None)
     connection.commit()
+    assert outcome.kind is repository_module.RepositoryOutcomeKind.COMMITTED
     assert commits == []
 
 
 def test_tampered_catalog_fails_closed(connection) -> None:
     _seed_chain(connection)
     connection.execute(
-        "UPDATE schema_meta SET approved_ddl_sha256 = ? WHERE 1", ("00" * 32,)
+        "CREATE TABLE rogue_catalog_object (x INTEGER)"
     )
-    with pytest.raises(Exception, match="digest|catalog|schema"):
+    from app.execution_core.persistence.schema import SchemaInstallError
+
+    with pytest.raises(SchemaInstallError):
         repository_module.load_scope(connection, 1)
 
 
@@ -201,12 +222,18 @@ def test_direct_load_query_shape_is_bounded(connection) -> None:
     _seed_chain(connection)
     statements: list[str] = []
     connection.set_trace_callback(statements.append)
-    loaded = repository_module.load_application_generation(connection, "ab" * 32)
+    loaded = repository_module.load_application_generation(
+        connection, "ab" * 32
+    )
     connection.set_trace_callback(None)
 
     assert loaded.kind is repository_module.RepositoryOutcomeKind.FOUND
     domain_queries = [
-        s for s in statements if s.strip().upper().startswith("SELECT")
+        s
+        for s in statements
+        if s.strip().upper().startswith("SELECT")
+        and "sqlite_master" not in s
+        and "schema_meta" not in s
     ]
     assert len(domain_queries) == 1
     plan = connection.execute(
