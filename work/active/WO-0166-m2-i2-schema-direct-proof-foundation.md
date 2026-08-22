@@ -1,18 +1,19 @@
 ---
 type: Work Order
 title: M2-I2 schema and direct-current-proof foundation
-status: READY
+status: ACTIVE
 work_order_id: WO-0166
 wave: M2-I2
 model_tier: strong
 risk: critical
 disposition: []
-owner: unassigned local coding LLM; Codex checkpoint governor
+owner: Ox Alpha local coding LLM implementation seat; Codex checkpoint governor
 created: 2026-08-21
-predecessor: WO-0165 exact accepted head
-branch: TO_ASSIGN_ON_ACTIVATION
-review_id: TO_ASSIGN_ON_ACTIVATION
-execution_authority: NOT_ACTIVE; exact DDL and temporary-database test plan require a fresh human gate.
+predecessor: WO-0165 exact accepted closeout head 2e47702c926515bf587aa71de987a3fb879e4d75
+base_sha: 2e47702c926515bf587aa71de987a3fb879e4d75
+branch: codex/m2-i2-schema-direct-proof-r1
+review_id: REV-0071
+execution_authority: Ameen Mujtabaa separately activated WO-0166 in the Codex task on 2026-08-21 for a documentation and RED-test/schema candidate only; exact DDL execution, any SQLite database open/create, and every schema test remain NOT_AUTHORIZED until the recorded HUMAN-GATE packet is approved.
 ---
 
 # Work Order: M2-I2 schema and direct-proof foundation
@@ -21,7 +22,7 @@ execution_authority: NOT_ACTIVE; exact DDL and temporary-database test plan requ
 
 **Date:** 2026-08-21
 
-**Status:** Ready specification — not implementation authority
+**Status:** Active for documentation and RED-test/schema candidate only — stopped before DDL/database execution
 
 `[FABLE • FULL • spec-first/TDD • human-gated schema surface]`
 
@@ -34,9 +35,9 @@ does not yet provide a repository, runtime, or transition unit of work.
 
 ## Activation and human gate
 
-This order is not active. After WO-0165 acceptance, activation may authorize only a documentation
-and RED-test candidate. Before any DDL is executed, any SQLite database is created/opened, or any
-schema test runs, the coding LLM must return a `HUMAN-GATE` bundle containing:
+This order is active only for a documentation and RED-test/schema candidate. Before any DDL is
+executed, any SQLite database is created/opened, or any schema test runs, the coding LLM must return
+a `HUMAN-GATE` bundle containing:
 
 - exact proposed DDL bytes and SHA-256;
 - entity/constraint/index/trigger inventory;
@@ -46,6 +47,24 @@ schema test runs, the coding LLM must return a `HUMAN-GATE` bundle containing:
 
 Ameen must approve that exact candidate. Any semantic DDL change after approval requires a new
 hash and gate.
+
+## Activation checkpoint
+
+| Item | Exact value |
+| --- | --- |
+| Human activation | Ameen Mujtabaa: close WO-0165, then move to the next work order promptly (Codex task, 2026-08-21) |
+| Accepted predecessor | `WO-0165` closeout `2e47702c926515bf587aa71de987a3fb879e4d75`, tree `e8d2b0d4a8f734934252b8719cb0241574d03654` |
+| Branch | `codex/m2-i2-schema-direct-proof-r1` created directly from that predecessor |
+| Review identity | `REV-0071` reserved; independent packet not yet opened |
+| Current authority | Author exact DDL/schema bytes, inventory, RED tests, and the HUMAN-GATE bundle only |
+| DDL execution | `NOT_AUTHORIZED` |
+| SQLite create/open/access | `NOT_AUTHORIZED` |
+| Schema-test execution | `NOT_AUTHORIZED` |
+
+The implementation seat may inspect accepted authority, create the two new source/test files, run
+read-only/static checks that cannot execute SQL or open SQLite, commit/push the exact candidate,
+and then stop. It must not import or run a test path if doing so could connect to SQLite. The return
+bundle must disclose every command run and retain all `NOT_RUN` items.
 
 ## Functional requirements
 
@@ -120,19 +139,21 @@ Then every capital row is profile-scoped, no raw secret/account identifier is st
   discovery fails before schema execution.
 - EC-4: DDL bytes differing from the human-approved digest return to the human gate before execution.
 
-## Proposed allowed paths on activation
+## Allowed paths
 
 ```yaml
 allowed_paths:
   - app/execution_core/persistence/__init__.py
   - app/execution_core/persistence/schema.py
   - tests/execution_core/test_persistence_schema.py
+  - work/queue/WO-0166-m2-i2-schema-direct-proof-foundation.md
   - work/active/WO-0166-m2-i2-schema-direct-proof-foundation.md
   - work/completed/keep/WO-0166-m2-i2-schema-direct-proof-foundation.md
+  - work/review/REV-0071/**
   - work/ledger.jsonl
 ```
 
-Activation must append one exact fresh review path. Any additional source or test path requires a
+Any additional source, test, work, PKL, ADR, dependency, migration, or workflow path requires a
 reviewed scope amendment before editing.
 
 ## Out of scope and completion
