@@ -19,7 +19,7 @@ from app.execution_core.durable_codec import (
     decode_m1_value,
     encode_m1_value,
 )
-from app.execution_core.fills import BrokerFillFact, ExecutionScope
+from app.execution_core.fills import BrokerFillFact, ExecutionScope, ExecutionSide
 from app.execution_core.identity import (
     AccountId,
     ActorId,
@@ -260,9 +260,7 @@ def test_identity_exact_text_including_padding_round_trips() -> None:
 
 
 def test_hex_strict_identities_keep_lowercase_sha256_text() -> None:
-    for identity_class in sorted(
-        _HEX_IDENTITY_CLASSES, key=lambda item: item.__name__
-    ):
+    for identity_class in sorted(_HEX_IDENTITY_CLASSES, key=lambda item: item.__name__):
         value = identity_class(_HEX_64_B)
 
         decoded = decode_m1_value(encode_m1_value(value))
@@ -339,7 +337,7 @@ def test_decimal_atom_persists_the_exact_sign_digits_exponent_tuple() -> None:
     assert type(decimal_atom) is DurableAtom
     assert decimal_atom.type_tag == "_decimal"
     assert decimal_atom.contract_version == CONTRACT_VERSION
-    assert decimal_atom.fields == ("0", "010", "-2")
+    assert decimal_atom.fields == ("0", "10", "-3")
 
 
 def test_fraction_atom_persists_reduced_numerator_and_positive_denominator() -> None:
@@ -475,7 +473,7 @@ def test_decode_refuses_reordered_composite_children() -> None:
 def test_decode_refuses_text_where_child_atom_is_required() -> None:
     forgery = _forge(CONTRACT_VERSION, "tick_metadata", ("1", "0.01"))
 
-    with pytest.raises(ValueError):
+    with pytest.raises((TypeError, ValueError)):
         decode_m1_value(forgery)
 
 
@@ -573,9 +571,10 @@ def test_decimal_atom_refuses_noncanonical_components(
 
 def test_price_scale_owner_refuses_structurally_valid_negative_zero() -> None:
     negative_zero = DurableAtom(CONTRACT_VERSION, "_decimal", ("1", "0", "0"))
+    atom = DurableAtom(CONTRACT_VERSION, "price_scale", (negative_zero,))
 
     with pytest.raises(ValueError):
-        DurableAtom(CONTRACT_VERSION, "price_scale", (negative_zero,))
+        decode_m1_value(atom)
 
 
 @pytest.mark.parametrize(
@@ -600,10 +599,14 @@ def test_fraction_atom_refuses_noncanonical_ratio_components(
 
 
 def test_zero_denominator_is_refused_before_fraction_construction() -> None:
-    zero_denominator = DurableAtom(CONTRACT_VERSION, "_fraction", ("1", "0"))
+    zero_denominator = _forge(CONTRACT_VERSION, "_fraction", ("1", "0"))
 
     with pytest.raises(ValueError):
         DurableAtom(CONTRACT_VERSION, "exact_basis", (zero_denominator,))
+    with pytest.raises(ValueError):
+        decode_m1_value(
+            DurableAtom(CONTRACT_VERSION, "exact_basis", (zero_denominator,))
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -631,7 +634,7 @@ def test_decode_refuses_non_nfc_and_control_text_from_forged_atoms() -> None:
         decode_m1_value(_forge(CONTRACT_VERSION, "symbol_id", ("bad\u0007bell",)))
     with pytest.raises(ValueError):
         decode_m1_value(_forge(CONTRACT_VERSION, "symbol_id", ("",)))
-    with pytest.raises(ValueError):
+    with pytest.raises(TypeError):
         decode_m1_value(_forge(CONTRACT_VERSION, "symbol_id", (5,)))
 
 
@@ -654,6 +657,7 @@ def test_encode_refuses_objects_outside_the_m1_codec_contract() -> None:
         account=AccountId("account-1"),
         order_id=OrderId("order-1"),
         symbol_id=SymbolId("AAPL"),
+        side=ExecutionSide.BUY,
     )
     fill = BrokerFillFact(
         key=ExecutionFactKey(

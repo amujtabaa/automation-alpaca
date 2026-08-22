@@ -31,6 +31,9 @@ _ALLOWED_STDLIB_ROOTS = {
     "fractions",
     "hashlib",
     "typing",
+    # M2-I1 (WO-0165): ADR-024 makes already-NFC text a fail-closed contract;
+    # unicodedata is the standard library's deterministic NFC facility.
+    "unicodedata",
 }
 
 _FORBIDDEN_IMPORT_ROOTS = {
@@ -550,9 +553,12 @@ def _python_files() -> list[Path]:
         "__init__.py",
         "acquisition.py",
         "authority.py",
+        # M2-I1 (WO-0165): durable value/profile codec modules.
+        "durable_codec.py",
         "fills.py",
         "identity.py",
         "position.py",
+        "profiles.py",
         "protection.py",
         "recovery.py",
         "values.py",

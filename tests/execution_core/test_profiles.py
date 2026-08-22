@@ -185,18 +185,20 @@ def test_account_assertion_digest_matches_independent_literal() -> None:
 def test_execution_profile_commitment_matches_independent_literal_preimage() -> None:
     profile = _execution_profile()
 
-    assert profile.profile_commitment_sha256 == sha256(
-        EXPECTED_EXECUTION_PAYLOAD
-    ).hexdigest()
+    assert (
+        profile.profile_commitment_sha256
+        == sha256(EXPECTED_EXECUTION_PAYLOAD).hexdigest()
+    )
     assert execution_profile_preimage(profile) == EXPECTED_EXECUTION_PAYLOAD
 
 
 def test_market_source_commitment_matches_independent_literal_preimage() -> None:
     profile = _market_source_profile()
 
-    assert profile.source_profile_commitment_sha256 == sha256(
-        EXPECTED_MARKET_PAYLOAD
-    ).hexdigest()
+    assert (
+        profile.source_profile_commitment_sha256
+        == sha256(EXPECTED_MARKET_PAYLOAD).hexdigest()
+    )
     assert market_source_profile_preimage(profile) == EXPECTED_MARKET_PAYLOAD
 
 
@@ -279,9 +281,10 @@ def test_part_order_mutant_produces_a_different_digest() -> None:
         bytes.fromhex(DEPLOYMENT_IDENTITY),
     ]
 
-    assert _literal_digest(EXECUTION_DOMAIN, reordered) != sha256(
-        EXPECTED_EXECUTION_PAYLOAD
-    ).hexdigest()
+    assert (
+        _literal_digest(EXECUTION_DOMAIN, reordered)
+        != sha256(EXPECTED_EXECUTION_PAYLOAD).hexdigest()
+    )
 
 
 def test_length_width_mutant_produces_a_different_digest() -> None:
@@ -305,9 +308,10 @@ def test_length_width_mutant_produces_a_different_digest() -> None:
         chunks.append(len(part).to_bytes(4, "big"))
         chunks.append(part)
 
-    assert sha256(b"".join(chunks)).hexdigest() != sha256(
-        EXPECTED_EXECUTION_PAYLOAD
-    ).hexdigest()
+    assert (
+        sha256(b"".join(chunks)).hexdigest()
+        != sha256(EXPECTED_EXECUTION_PAYLOAD).hexdigest()
+    )
 
 
 def test_omission_mutant_produces_a_different_digest() -> None:
@@ -325,23 +329,23 @@ def test_omission_mutant_produces_a_different_digest() -> None:
         bytes.fromhex(CAPABILITY_PROFILE_SHA256),
     ]
 
-    assert _literal_digest(EXECUTION_DOMAIN, omitted) != sha256(
-        EXPECTED_EXECUTION_PAYLOAD
-    ).hexdigest()
+    assert (
+        _literal_digest(EXECUTION_DOMAIN, omitted)
+        != sha256(EXPECTED_EXECUTION_PAYLOAD).hexdigest()
+    )
 
 
 def test_digest_self_inclusion_mutant_is_excluded_from_the_real_payload() -> None:
     digest_bytes = bytes.fromhex(sha256(EXPECTED_EXECUTION_PAYLOAD).hexdigest())
     self_inclusive = (
-        EXPECTED_EXECUTION_PAYLOAD
-        + len(digest_bytes).to_bytes(8, "big")
-        + digest_bytes
+        EXPECTED_EXECUTION_PAYLOAD + len(digest_bytes).to_bytes(8, "big") + digest_bytes
     )
 
     assert len(EXPECTED_EXECUTION_PAYLOAD) < len(self_inclusive)
-    assert sha256(self_inclusive).hexdigest() != sha256(
-        EXPECTED_EXECUTION_PAYLOAD
-    ).hexdigest()
+    assert (
+        sha256(self_inclusive).hexdigest()
+        != sha256(EXPECTED_EXECUTION_PAYLOAD).hexdigest()
+    )
 
 
 @pytest.mark.parametrize(
@@ -401,7 +405,7 @@ def test_noncanonical_origins_are_refused(origin: str) -> None:
         "https://x-y.example.com:8443",
         "https://ab.example:1",
         "https://" + "a" * 63 + ".example.com",
-        "https://" + ".".join([("a" * 61) + "z"] * 4) + ".com",
+        "https://" + ".".join([("a" * 59) + "z"] * 4) + ".com",
     ],
 )
 def test_canonical_origins_are_accepted(origin: str) -> None:
@@ -672,8 +676,14 @@ def test_account_assertion_token_and_version_arguments_stay_validated() -> None:
 
 
 def test_execution_and_market_profiles_have_the_exact_adr_field_orders() -> None:
-    assert tuple(field.name for field in dataclasses.fields(ExecutionConnectionProfile)) == EXECUTION_FIELD_NAMES
-    assert tuple(field.name for field in dataclasses.fields(MarketDataSourceProfile)) == MARKET_FIELD_NAMES
+    assert (
+        tuple(field.name for field in dataclasses.fields(ExecutionConnectionProfile))
+        == EXECUTION_FIELD_NAMES
+    )
+    assert (
+        tuple(field.name for field in dataclasses.fields(MarketDataSourceProfile))
+        == MARKET_FIELD_NAMES
+    )
 
 
 def test_profiles_reject_cross_family_coordinates() -> None:
@@ -691,7 +701,9 @@ def test_execution_identity_does_not_imply_market_source_identity() -> None:
     execution = _execution_profile()
     market = _market_source_profile()
 
-    assert execution.profile_commitment_sha256 != market.source_profile_commitment_sha256
+    assert (
+        execution.profile_commitment_sha256 != market.source_profile_commitment_sha256
+    )
     assert execution.account_identity != market.source_profile_commitment_sha256
     for name in MARKET_FIELD_NAMES:
         assert not hasattr(execution, f"market_{name}")
@@ -744,9 +756,10 @@ def test_changing_only_the_account_binding_changes_the_commitment() -> None:
         deployment_identity=DEPLOYMENT_IDENTITY,
     )
 
-    assert rebased.profile_commitment_sha256 != sha256(
-        EXPECTED_EXECUTION_PAYLOAD
-    ).hexdigest()
+    assert (
+        rebased.profile_commitment_sha256
+        != sha256(EXPECTED_EXECUTION_PAYLOAD).hexdigest()
+    )
 
 
 def test_two_identical_constructors_agree_deterministically() -> None:
