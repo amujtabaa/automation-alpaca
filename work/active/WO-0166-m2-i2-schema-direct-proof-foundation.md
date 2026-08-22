@@ -172,6 +172,27 @@ identity: 60 focused schema tests and all 1,668 collected `tests/execution_core`
 CPython 3.12.13; Ruff, formatting, mypy over 91 source files, six import contracts, scope, and
 whitespace checks passed. `request-addendum.md` opens the required fresh re-review.
 
+### Second review verdict and terminal remediation
+
+The second exact review returned `BLOCK` on `dbd2a086fe861047e5df49cdd65a4ded33c7f758`.
+`result-round2.md` preserves three P0 and four P1 findings: evidence-free direct invalidation,
+stale-head dispatch claims, connection-local enforcement loss after reopen, replaceable schema
+metadata, global protection versions, and non-load-bearing sticky quarantine.
+
+The terminal repair makes invalidation evidence the sole atomic CLOSED-to-INVALIDATED route;
+persists the effect's expected controller head and revalidates exact controller identity/head at
+creation and claim; adds an explicit per-open/per-operation connection verifier for both SQLite
+enforcement pragmas and exact installed schema identity; prevents schema-metadata replacement
+independent of recursive-trigger behavior; makes protection versions scope-local; and gates both
+protection insertion and transfer on controller integrity.
+
+The replacement candidate is commit `57d795aa9da0e96638fd89ba9243ae9819cc37cb`, tree
+`e9a1dc259c970d3366161fcf2129e251213280f8`, with `SCHEMA_DDL` exactly `97,064` UTF-8 bytes and
+SHA-256 `cd9ffbd8997ce66c5a332473de4697f5d3ecfbab9b8810866af380d7968ee1cf`. Fresh evidence: 65
+schema tests and all 1,673 collected `tests/execution_core` tests passed on CPython 3.12.13; Ruff,
+formatting, mypy over 91 source files, six import contracts, scope, and whitespace checks passed.
+`request-terminal.md` opens the final fresh review.
+
 ## Functional requirements
 
 - FR-1: The schema MUST bind one immutable application generation to one selected execution profile and a
