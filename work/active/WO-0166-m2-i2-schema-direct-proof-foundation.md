@@ -193,6 +193,33 @@ schema tests and all 1,673 collected `tests/execution_core` tests passed on CPyt
 formatting, mypy over 91 source files, six import contracts, scope, and whitespace checks passed.
 `request-terminal.md` opens the final fresh review.
 
+### Terminal review verdict and final root remediation
+
+The terminal review of `57d795aa9da0e96638fd89ba9243ae9819cc37cb` remained `BLOCK`.
+`result-round3.md` preserves four P0 and one P1 findings: outbound actions remained possible under
+controller quarantine; acquisition-root routing was neither total nor generation-exact;
+protection could bind retired generation history; INVALIDATED authority could be relabeled as
+ACCEPTANCE_CLOSED; and the connection verifier trusted a spoofable metadata row.
+
+Codex resolved these at their shared semantic roots. An immutable `acquisition_root_route` now
+seals each accepted root to exact effect, owner, observation, scope, profile, and acquisition
+generation coordinates. Broker truth without that route remains durable and advances exact
+economics, but drives a sticky unmatched-lineage quarantine that cannot serve. Effect, claim, and
+all protection mutation boundaries require the exact current consistent controller; protection
+also requires the controller's exact LIVE generation. Exact invalidation evidence atomically
+appends a distinct negative-ID `INVALIDATED_TERMINAL`, while ACCEPTANCE_CLOSED requires exact CLOSED
+authority. Finally, installation and every verified reopen compare a deterministic fingerprint of
+the complete application-owned SQLite catalog, not merely the metadata row.
+
+The final source/test candidate is commit `5c44b2ea517be306b94851199ccb9c15ef407e93`,
+tree `4d6e6d3657d278259babb9e104e464efd10febad`, with `SCHEMA_DDL` exactly `104,851`
+UTF-8 bytes and SHA-256 `6871d276b2a59b136579c4535dd689f5d85ab73e508d0ad6ec82dc3dd804797f`.
+Its installed-catalog fingerprint is
+`5dc150333a89ff369956ad16c364b1bcbb7d15e93e71860236ebeaebcbac309f`. Fresh evidence:
+70 schema tests and all 1,678 collected `tests/execution_core` tests passed on CPython 3.12.13;
+Ruff, formatting, mypy over 91 source files, six import contracts, scope, and whitespace checks
+passed. `request-final.md` opens a fresh exact-commit review.
+
 ## Functional requirements
 
 - FR-1: The schema MUST bind one immutable application generation to one selected execution profile and a
