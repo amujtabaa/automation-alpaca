@@ -1,7 +1,7 @@
 ---
 type: Work Order
 title: M2-I3 narrow SQLite repository hydration
-status: ACTIVE
+status: REVIEW
 work_order_id: WO-0167
 wave: M2-I3
 model_tier: strong
@@ -21,7 +21,7 @@ execution_authority: Ameen Mujtabaa activated WO-0167 (Codex task, 2026-08-21) a
 
 **Date:** 2026-08-21
 
-**Status:** ACTIVE — Codex root-cause remediation after REV-0072 BLOCK
+**Status:** REVIEW — Codex remediation candidate awaits fresh REV-0073 acceptance
 
 `[FABLE • FULL • spec-first/TDD • direct-key repository only]`
 
@@ -109,6 +109,7 @@ allowed_paths:
   - app/execution_core/persistence/records.py
   - tests/execution_core/test_persistence_repository.py
   - tests/execution_core/test_persistence_directness.py
+  - work/queue/WO-0167-m2-i3-sqlite-repository-hydration.md
   - work/active/WO-0167-m2-i3-sqlite-repository-hydration.md
   - work/completed/keep/WO-0167-m2-i3-sqlite-repository-hydration.md
   - work/ledger.jsonl
@@ -198,3 +199,23 @@ with separately authenticated runtime context; it may not bypass them or manufac
   rollback proof, and total-proof omission refusal.
 - FIX-7: repaired the active ledger entry to the canonical schema and expanded exact review scope;
   REV-0072 remains unchanged and REV-0073 will bind the final remediation candidate.
+
+## Codex remediation evidence and review handoff (2026-08-22)
+
+| Item | Exact value |
+| --- | --- |
+| Implementation commit | `356297b042fc3b5ba00ccb36526717ffc5aa6dde` |
+| Implementation tree | `d5576b711150b1c41902ba921a188638c7a7e70c` |
+| Accepted base | `0a7b5ae324c34be488da24478f95e2658a1bb894` |
+| Focused repository/directness gate | 23 passed |
+| Codec/profile/value/schema/import integration gate | 396 passed |
+| R2 conformance oracle | 61 passed |
+| Full `tests/execution_core` gate | 1,713 passed, 0 failed, 0 skipped in 582.993 seconds |
+| Static gates | Ruff check and format, mypy `app/` (93 files), Import Linter (6 kept/0 broken), `git diff --check` all passed |
+| Governance gates | install, version v0.9.2, ledger, PKL, disposition, and exact changed-path scope passed |
+
+All database-bearing tests used explicit fresh file-backed pytest temporary databases with foreign
+keys and recursive triggers enabled. No configured or in-memory database, DDL/schema-byte change,
+migration, runtime composition, credential, broker/network call, order, M2-I4+ implementation,
+promotion, PR, or merge occurred. REV-0073 must independently re-derive the candidate; these author
+results are reproduction inputs, not an acceptance verdict.
