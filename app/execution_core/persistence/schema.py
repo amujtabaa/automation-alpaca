@@ -205,6 +205,9 @@ CREATE TABLE acquisition_generation (
         CHECK (length(emergency_compatibility_sha256) = 64 AND emergency_compatibility_sha256 NOT GLOB '*[^0-9a-f]*'),
     UNIQUE (scope_id, successor_ordinal),
     UNIQUE (acquisition_generation_id, scope_id),
+    UNIQUE (
+        acquisition_generation_id, scope_id, mandate_commitment_sha256
+    ),
     CHECK ((predecessor_generation_id IS NULL) = (successor_ordinal = 1))
 );
 
@@ -227,7 +230,13 @@ CREATE TABLE symbol_controller (
     execution_profile_id TEXT NOT NULL,
     live_acquisition_generation_id TEXT,
 
-    aggregate_quantity INTEGER NOT NULL CHECK (aggregate_quantity >= 0),
+    aggregate_quantity INTEGER NOT NULL,
+    integrity_state TEXT NOT NULL
+        CHECK (
+            integrity_state IN (
+                'CONSISTENT', 'NEGATIVE_POSITION_QUARANTINED'
+            )
+        ),
     currentness_head_ordinal INTEGER NOT NULL CHECK (currentness_head_ordinal >= 0),
     controller_version_ordinal INTEGER NOT NULL CHECK (controller_version_ordinal >= 1),
     emergency_compatibility_sha256 TEXT NOT NULL
@@ -334,6 +343,10 @@ CREATE TABLE root_fill (
 );
 
 CREATE INDEX ix_root_fill_owner ON root_fill (owner_generation_id, root_fill_key_id);
+CREATE INDEX ix_root_fill_scope_current_economics
+    ON root_fill (
+        scope_id, current_fact_id, current_side, current_quantity
+    );
 
 CREATE TABLE execution_fact (
     fact_id INTEGER PRIMARY KEY,
@@ -483,12 +496,27 @@ CREATE TABLE execution_fact_head (
 
 CREATE TABLE venue_effect (
     effect_id INTEGER PRIMARY KEY,
+    effect_external TEXT NOT NULL CHECK (length(effect_external) >= 1),
     scope_id INTEGER NOT NULL,
     application_generation_id TEXT NOT NULL,
     execution_profile_id TEXT NOT NULL,
-    root_fill_key_id INTEGER NOT NULL,
-
-    order_external TEXT NOT NULL CHECK (length(order_external) >= 1),
+    acquisition_generation_id TEXT NOT NULL,
+    generation_mandate_commitment_sha256 TEXT NOT NULL
+        CHECK (
+            length(generation_mandate_commitment_sha256) = 64
+            AND generation_mandate_commitment_sha256
+                NOT GLOB '*[^0-9a-f]*'
+        ),
+    request_occurrence_external TEXT NOT NULL
+        CHECK (length(request_occurrence_external) >= 1),
+    mandate_external TEXT NOT NULL CHECK (length(mandate_external) >= 1),
+    effect_kind TEXT NOT NULL
+        CHECK (effect_kind IN ('SUBMIT', 'CANCEL', 'REPLACE')),
+    client_order_external TEXT,
+    target_order_external TEXT,
+    side TEXT NOT NULL CHECK (side IN ('BUY', 'SELL')),
+    quantity INTEGER NOT NULL CHECK (quantity > 0),
+    economic_scope BLOB NOT NULL CHECK (length(economic_scope) >= 1),
     lifecycle_state TEXT NOT NULL
         CHECK (
             lifecycle_state IN (
@@ -518,12 +546,36 @@ CREATE TABLE venue_effect (
     closure_proof_evidence_id INTEGER,
     closure_proof_claim_id INTEGER,
     created_ordinal INTEGER NOT NULL UNIQUE CHECK (created_ordinal >= 1),
-    UNIQUE (execution_profile_id, order_external),
+    UNIQUE (execution_profile_id, effect_external),
+    UNIQUE (execution_profile_id, request_occurrence_external),
+    UNIQUE (execution_profile_id, client_order_external),
     UNIQUE (effect_id, scope_id),
-    UNIQUE (effect_id, scope_id, root_fill_key_id),
+    UNIQUE (effect_id, execution_profile_id),
+    UNIQUE (effect_id, scope_id, execution_profile_id),
     UNIQUE (
         effect_id, scope_id, application_generation_id,
-        execution_profile_id, root_fill_key_id
+        execution_profile_id, acquisition_generation_id
+    ),
+    CHECK (
+        (
+            effect_kind = 'SUBMIT'
+            AND client_order_external IS NOT NULL
+            AND length(client_order_external) >= 1
+            AND target_order_external IS NULL
+        )
+        OR (
+            effect_kind = 'CANCEL'
+            AND client_order_external IS NULL
+            AND target_order_external IS NOT NULL
+            AND length(target_order_external) >= 1
+        )
+        OR (
+            effect_kind = 'REPLACE'
+            AND client_order_external IS NOT NULL
+            AND length(client_order_external) >= 1
+            AND target_order_external IS NOT NULL
+            AND length(target_order_external) >= 1
+        )
     ),
     CHECK (
         (
@@ -552,12 +604,15 @@ CREATE TABLE venue_effect (
             )
         )
     ),
+    FOREIGN KEY (scope_id, application_generation_id, execution_profile_id)
+        REFERENCES acquisition_scope (
+            scope_id, application_generation_id, execution_profile_id
+        ),
     FOREIGN KEY (
-        root_fill_key_id, scope_id, application_generation_id,
-        execution_profile_id
-    ) REFERENCES root_fill (
-        root_fill_key_id, scope_id, application_generation_id,
-        execution_profile_id
+        acquisition_generation_id, scope_id,
+        generation_mandate_commitment_sha256
+    ) REFERENCES acquisition_generation (
+        acquisition_generation_id, scope_id, mandate_commitment_sha256
     ),
     FOREIGN KEY (effect_id, closure_proof_claim_id)
         REFERENCES dispatch_claim (effect_id, claim_id),
@@ -573,27 +628,45 @@ CREATE INDEX ix_venue_effect_scope_state ON venue_effect (scope_id, disposition,
 
 CREATE TABLE venue_identity_owner (
     scope_id INTEGER NOT NULL REFERENCES acquisition_scope (scope_id),
+    execution_profile_id TEXT NOT NULL,
     owner_external TEXT NOT NULL CHECK (length(owner_external) >= 1),
+    observation_external TEXT NOT NULL
+        CHECK (length(observation_external) >= 1),
     effect_id INTEGER NOT NULL,
-    root_fill_key_id INTEGER NOT NULL,
+    root_fill_key_id INTEGER,
     owner_generation_id TEXT NOT NULL,
-    PRIMARY KEY (scope_id, owner_external),
+    PRIMARY KEY (execution_profile_id, owner_external),
     UNIQUE (scope_id, owner_external, effect_id),
-    FOREIGN KEY (effect_id, scope_id, root_fill_key_id)
-        REFERENCES venue_effect (effect_id, scope_id, root_fill_key_id),
-    FOREIGN KEY (root_fill_key_id, scope_id, owner_generation_id)
-        REFERENCES root_fill (root_fill_key_id, scope_id, owner_generation_id)
+    UNIQUE (effect_id, owner_external, observation_external),
+    UNIQUE (effect_id, scope_id, execution_profile_id),
+    FOREIGN KEY (effect_id, scope_id, execution_profile_id)
+        REFERENCES venue_effect (effect_id, scope_id, execution_profile_id),
+    FOREIGN KEY (owner_generation_id, scope_id)
+        REFERENCES acquisition_generation (acquisition_generation_id, scope_id),
+    FOREIGN KEY (
+        root_fill_key_id, scope_id, owner_generation_id
+    ) REFERENCES root_fill (
+        root_fill_key_id, scope_id, owner_generation_id
+    )
 );
 
 CREATE INDEX ix_venue_identity_owner_effect
-    ON venue_identity_owner (effect_id, scope_id, owner_external);
+    ON venue_identity_owner (
+        effect_id, scope_id, execution_profile_id, owner_external
+    );
 
 CREATE TABLE dispatch_claim (
     claim_id INTEGER PRIMARY KEY,
-    effect_id INTEGER NOT NULL UNIQUE REFERENCES venue_effect (effect_id),
+    effect_id INTEGER NOT NULL UNIQUE,
+    execution_profile_id TEXT NOT NULL,
+    claim_occurrence_external TEXT NOT NULL
+        CHECK (length(claim_occurrence_external) >= 1),
     claim_ordinal INTEGER NOT NULL UNIQUE CHECK (claim_ordinal >= 1),
     UNIQUE (effect_id, claim_id),
-    UNIQUE (effect_id, claim_ordinal)
+    UNIQUE (effect_id, claim_ordinal),
+    UNIQUE (execution_profile_id, claim_occurrence_external),
+    FOREIGN KEY (effect_id, execution_profile_id)
+        REFERENCES venue_effect (effect_id, execution_profile_id)
 );
 
 CREATE INDEX ix_dispatch_claim_effect ON dispatch_claim (effect_id, claim_id);
@@ -622,10 +695,32 @@ CREATE TABLE acceptance_evidence (
     evidence_digest TEXT NOT NULL
         CHECK (length(evidence_digest) = 64 AND evidence_digest NOT GLOB '*[^0-9a-f]*'),
     evidence_ordinal INTEGER NOT NULL UNIQUE CHECK (evidence_ordinal >= 1),
+    contradiction_owner_external TEXT,
+    contradiction_observation_external TEXT,
     UNIQUE (evidence_id, effect_id, evidence_digest, proof_kind),
     CHECK ((evidence_kind = 'CLOSURE_PROOF') = (proof_kind IS NOT NULL)),
+    CHECK (
+        (
+            evidence_kind = 'INVALIDATION'
+            AND contradiction_owner_external IS NOT NULL
+            AND length(contradiction_owner_external) >= 1
+            AND contradiction_observation_external IS NOT NULL
+            AND length(contradiction_observation_external) >= 1
+        )
+        OR (
+            evidence_kind <> 'INVALIDATION'
+            AND contradiction_owner_external IS NULL
+            AND contradiction_observation_external IS NULL
+        )
+    ),
     FOREIGN KEY (acceptance_set_id, effect_id)
-        REFERENCES acceptance_set (acceptance_set_id, effect_id)
+        REFERENCES acceptance_set (acceptance_set_id, effect_id),
+    FOREIGN KEY (
+        effect_id, contradiction_owner_external,
+        contradiction_observation_external
+    ) REFERENCES venue_identity_owner (
+        effect_id, owner_external, observation_external
+    )
 );
 
 CREATE INDEX ix_acceptance_evidence_set ON acceptance_evidence (acceptance_set_id, evidence_ordinal DESC);
@@ -662,20 +757,35 @@ CREATE TABLE market_stream_authority (
         CHECK (length(stream_generation_id) = 64 AND stream_generation_id NOT GLOB '*[^0-9a-f]*'),
     scope_id INTEGER NOT NULL,
     application_generation_id TEXT NOT NULL,
+    acquisition_generation_id TEXT NOT NULL,
+    generation_mandate_commitment_sha256 TEXT NOT NULL
+        CHECK (
+            length(generation_mandate_commitment_sha256) = 64
+            AND generation_mandate_commitment_sha256
+                NOT GLOB '*[^0-9a-f]*'
+        ),
     source_profile_id TEXT NOT NULL,
     session_external TEXT NOT NULL CHECK (length(session_external) >= 1),
     sequence_mode TEXT NOT NULL CHECK (sequence_mode IN ('SEQUENCED', 'SOURCE_TIME')),
     PRIMARY KEY (stream_generation_id),
     UNIQUE (
         stream_generation_id, scope_id, application_generation_id,
+        acquisition_generation_id, generation_mandate_commitment_sha256,
         source_profile_id, session_external, sequence_mode
     ),
     UNIQUE (
-        stream_generation_id, scope_id, source_profile_id,
+        stream_generation_id, scope_id, acquisition_generation_id,
+        generation_mandate_commitment_sha256, source_profile_id,
         session_external, sequence_mode
     ),
     FOREIGN KEY (scope_id, application_generation_id)
         REFERENCES acquisition_scope (scope_id, application_generation_id),
+    FOREIGN KEY (
+        acquisition_generation_id, scope_id,
+        generation_mandate_commitment_sha256
+    ) REFERENCES acquisition_generation (
+        acquisition_generation_id, scope_id, mandate_commitment_sha256
+    ),
     FOREIGN KEY (application_generation_id, source_profile_id)
         REFERENCES application_generation (
             application_generation_id, selected_market_source_profile_id
@@ -686,6 +796,8 @@ CREATE TABLE market_cursor (
     stream_generation_id TEXT PRIMARY KEY,
     scope_id INTEGER NOT NULL,
     application_generation_id TEXT NOT NULL,
+    acquisition_generation_id TEXT NOT NULL,
+    generation_mandate_commitment_sha256 TEXT NOT NULL,
     source_profile_id TEXT NOT NULL,
     session_external TEXT NOT NULL,
     sequence_mode TEXT NOT NULL,
@@ -694,9 +806,11 @@ CREATE TABLE market_cursor (
     CHECK (fixed_cursor_ordinal <= published_head_ordinal),
     FOREIGN KEY (
         stream_generation_id, scope_id, application_generation_id,
+        acquisition_generation_id, generation_mandate_commitment_sha256,
         source_profile_id, session_external, sequence_mode
     ) REFERENCES market_stream_authority (
         stream_generation_id, scope_id, application_generation_id,
+        acquisition_generation_id, generation_mandate_commitment_sha256,
         source_profile_id, session_external, sequence_mode
     )
 );
@@ -704,6 +818,8 @@ CREATE TABLE market_cursor (
 CREATE TABLE protection_authority (
     scope_id INTEGER PRIMARY KEY REFERENCES acquisition_scope (scope_id),
     active_stream_generation_id TEXT,
+    active_acquisition_generation_id TEXT,
+    active_generation_mandate_commitment_sha256 TEXT,
     active_source_profile_id TEXT,
     active_session_external TEXT,
     active_sequence_mode TEXT,
@@ -712,6 +828,10 @@ CREATE TABLE protection_authority (
     version_ordinal INTEGER NOT NULL UNIQUE CHECK (version_ordinal >= 1),
     CHECK (
         (active_stream_generation_id IS NULL)
+        = (active_acquisition_generation_id IS NULL)
+        AND (active_stream_generation_id IS NULL)
+        = (active_generation_mandate_commitment_sha256 IS NULL)
+        AND (active_stream_generation_id IS NULL)
         = (active_source_profile_id IS NULL)
         AND (active_stream_generation_id IS NULL)
         = (active_session_external IS NULL)
@@ -719,10 +839,14 @@ CREATE TABLE protection_authority (
         = (active_sequence_mode IS NULL)
     ),
     FOREIGN KEY (
-        active_stream_generation_id, scope_id, active_source_profile_id,
+        active_stream_generation_id, scope_id,
+        active_acquisition_generation_id,
+        active_generation_mandate_commitment_sha256,
+        active_source_profile_id,
         active_session_external, active_sequence_mode
     ) REFERENCES market_stream_authority (
-        stream_generation_id, scope_id, source_profile_id,
+        stream_generation_id, scope_id, acquisition_generation_id,
+        generation_mandate_commitment_sha256, source_profile_id,
         session_external, sequence_mode
     )
 );
@@ -737,6 +861,270 @@ CREATE TRIGGER trg_schema_meta_immutable_delete
     BEFORE DELETE ON schema_meta
 BEGIN
     SELECT RAISE (ABORT, 'schema_meta is immutable');
+END;
+
+CREATE TRIGGER trg_acquisition_generation_no_conflict_replace
+    BEFORE INSERT ON acquisition_generation
+    FOR EACH ROW
+    WHEN EXISTS (
+            SELECT 1
+              FROM acquisition_generation AS retained
+             WHERE retained.acquisition_generation_id =
+                    NEW.acquisition_generation_id
+                OR (
+                    retained.scope_id = NEW.scope_id
+                    AND retained.successor_ordinal = NEW.successor_ordinal
+                )
+        )
+BEGIN
+    SELECT RAISE (ABORT, 'acquisition generation identity is already retained');
+END;
+
+CREATE TRIGGER trg_execution_profile_no_conflict_replace
+    BEFORE INSERT ON execution_connection_profile
+    FOR EACH ROW
+    WHEN EXISTS (
+            SELECT 1 FROM execution_connection_profile AS retained
+             WHERE retained.connection_profile_id = NEW.connection_profile_id
+                OR retained.profile_commitment_sha256 =
+                    NEW.profile_commitment_sha256
+        )
+BEGIN
+    SELECT RAISE (ABORT, 'execution profile identity is already retained');
+END;
+
+CREATE TRIGGER trg_market_profile_no_conflict_replace
+    BEFORE INSERT ON market_data_source_profile
+    FOR EACH ROW
+    WHEN EXISTS (
+            SELECT 1 FROM market_data_source_profile AS retained
+             WHERE retained.market_source_profile_id =
+                    NEW.market_source_profile_id
+                OR retained.source_profile_commitment_sha256 =
+                    NEW.source_profile_commitment_sha256
+        )
+BEGIN
+    SELECT RAISE (ABORT, 'market profile identity is already retained');
+END;
+
+CREATE TRIGGER trg_application_generation_no_conflict_replace
+    BEFORE INSERT ON application_generation
+    FOR EACH ROW
+    WHEN EXISTS (
+            SELECT 1 FROM application_generation AS retained
+             WHERE retained.application_generation_id =
+                    NEW.application_generation_id
+                OR retained.selected_execution_profile_id =
+                    NEW.selected_execution_profile_id
+        )
+BEGIN
+    SELECT RAISE (ABORT, 'application generation identity is already retained');
+END;
+
+CREATE TRIGGER trg_acquisition_scope_no_conflict_replace
+    BEFORE INSERT ON acquisition_scope
+    FOR EACH ROW
+    WHEN EXISTS (
+            SELECT 1 FROM acquisition_scope AS retained
+             WHERE retained.scope_id = NEW.scope_id
+                OR (
+                    retained.application_generation_id =
+                        NEW.application_generation_id
+                    AND retained.execution_profile_id = NEW.execution_profile_id
+                    AND retained.symbol_text = NEW.symbol_text
+                )
+        )
+BEGIN
+    SELECT RAISE (ABORT, 'acquisition scope identity is already retained');
+END;
+
+CREATE TRIGGER trg_kernel_checkpoint_no_conflict_replace
+    BEFORE INSERT ON kernel_checkpoint
+    FOR EACH ROW
+    WHEN EXISTS (
+            SELECT 1 FROM kernel_checkpoint AS retained
+             WHERE retained.application_generation_id =
+                    NEW.application_generation_id
+        )
+BEGIN
+    SELECT RAISE (ABORT, 'kernel checkpoint identity is already retained');
+END;
+
+CREATE TRIGGER trg_symbol_controller_no_conflict_replace
+    BEFORE INSERT ON symbol_controller
+    FOR EACH ROW
+    WHEN EXISTS (
+            SELECT 1 FROM symbol_controller AS retained
+             WHERE retained.scope_id = NEW.scope_id
+        )
+BEGIN
+    SELECT RAISE (ABORT, 'symbol controller identity is already retained');
+END;
+
+CREATE TRIGGER trg_root_fill_no_conflict_replace
+    BEFORE INSERT ON root_fill
+    FOR EACH ROW
+    WHEN EXISTS (
+            SELECT 1 FROM root_fill AS retained
+             WHERE retained.root_fill_key_id = NEW.root_fill_key_id
+                OR (
+                    retained.execution_profile_id = NEW.execution_profile_id
+                    AND retained.root_fill_external = NEW.root_fill_external
+                )
+        )
+BEGIN
+    SELECT RAISE (ABORT, 'root fill identity is already retained');
+END;
+
+CREATE TRIGGER trg_execution_fact_no_conflict_replace
+    BEFORE INSERT ON execution_fact
+    FOR EACH ROW
+    WHEN EXISTS (
+            SELECT 1 FROM execution_fact AS retained
+             WHERE retained.fact_id = NEW.fact_id
+                OR (
+                    retained.execution_profile_id = NEW.execution_profile_id
+                    AND retained.source_event_id = NEW.source_event_id
+                )
+        )
+BEGIN
+    SELECT RAISE (ABORT, 'execution fact identity is already retained');
+END;
+
+CREATE TRIGGER trg_execution_fact_head_no_conflict_replace
+    BEFORE INSERT ON execution_fact_head
+    FOR EACH ROW
+    WHEN EXISTS (
+            SELECT 1 FROM execution_fact_head AS retained
+             WHERE retained.root_fill_key_id = NEW.root_fill_key_id
+                OR retained.fact_id = NEW.fact_id
+        )
+BEGIN
+    SELECT RAISE (ABORT, 'execution fact head identity is already retained');
+END;
+
+CREATE TRIGGER trg_venue_effect_no_conflict_replace
+    BEFORE INSERT ON venue_effect
+    FOR EACH ROW
+    WHEN EXISTS (
+            SELECT 1 FROM venue_effect AS retained
+             WHERE retained.effect_id = NEW.effect_id
+                OR (
+                    retained.execution_profile_id = NEW.execution_profile_id
+                    AND retained.effect_external = NEW.effect_external
+                )
+                OR (
+                    retained.execution_profile_id = NEW.execution_profile_id
+                    AND retained.request_occurrence_external =
+                        NEW.request_occurrence_external
+                )
+                OR (
+                    NEW.client_order_external IS NOT NULL
+                    AND retained.execution_profile_id = NEW.execution_profile_id
+                    AND retained.client_order_external = NEW.client_order_external
+                )
+        )
+BEGIN
+    SELECT RAISE (ABORT, 'venue effect identity is already retained');
+END;
+
+CREATE TRIGGER trg_venue_owner_no_conflict_replace
+    BEFORE INSERT ON venue_identity_owner
+    FOR EACH ROW
+    WHEN EXISTS (
+            SELECT 1 FROM venue_identity_owner AS retained
+             WHERE retained.execution_profile_id = NEW.execution_profile_id
+               AND retained.owner_external = NEW.owner_external
+        )
+BEGIN
+    SELECT RAISE (ABORT, 'venue owner identity is already retained');
+END;
+
+CREATE TRIGGER trg_dispatch_claim_no_conflict_replace
+    BEFORE INSERT ON dispatch_claim
+    FOR EACH ROW
+    WHEN EXISTS (
+            SELECT 1 FROM dispatch_claim AS retained
+             WHERE retained.claim_id = NEW.claim_id
+                OR retained.effect_id = NEW.effect_id
+                OR (
+                    retained.execution_profile_id = NEW.execution_profile_id
+                    AND retained.claim_occurrence_external =
+                        NEW.claim_occurrence_external
+                )
+        )
+BEGIN
+    SELECT RAISE (ABORT, 'dispatch claim identity is already retained');
+END;
+
+CREATE TRIGGER trg_acceptance_set_no_conflict_replace
+    BEFORE INSERT ON acceptance_set
+    FOR EACH ROW
+    WHEN EXISTS (
+            SELECT 1 FROM acceptance_set AS retained
+             WHERE retained.acceptance_set_id = NEW.acceptance_set_id
+                OR retained.effect_id = NEW.effect_id
+        )
+BEGIN
+    SELECT RAISE (ABORT, 'acceptance set identity is already retained');
+END;
+
+CREATE TRIGGER trg_acceptance_evidence_no_conflict_replace
+    BEFORE INSERT ON acceptance_evidence
+    FOR EACH ROW
+    WHEN EXISTS (
+            SELECT 1 FROM acceptance_evidence AS retained
+             WHERE retained.evidence_id = NEW.evidence_id
+                OR retained.evidence_ordinal = NEW.evidence_ordinal
+        )
+BEGIN
+    SELECT RAISE (ABORT, 'acceptance evidence identity is already retained');
+END;
+
+CREATE TRIGGER trg_closure_chain_no_conflict_replace
+    BEFORE INSERT ON closure_chain
+    FOR EACH ROW
+    WHEN EXISTS (
+            SELECT 1 FROM closure_chain AS retained
+             WHERE retained.closure_id = NEW.closure_id
+                OR (
+                    NEW.predecessor_closure_id IS NOT NULL
+                    AND retained.scope_id = NEW.scope_id
+                    AND retained.owner_external = NEW.owner_external
+                    AND retained.predecessor_closure_id =
+                        NEW.predecessor_closure_id
+                )
+                OR (
+                    NEW.predecessor_closure_id IS NULL
+                    AND retained.scope_id = NEW.scope_id
+                    AND retained.owner_external = NEW.owner_external
+                    AND retained.predecessor_closure_id IS NULL
+                )
+        )
+BEGIN
+    SELECT RAISE (ABORT, 'closure identity is already retained');
+END;
+
+CREATE TRIGGER trg_market_stream_no_conflict_replace
+    BEFORE INSERT ON market_stream_authority
+    FOR EACH ROW
+    WHEN EXISTS (
+            SELECT 1 FROM market_stream_authority AS retained
+             WHERE retained.stream_generation_id = NEW.stream_generation_id
+        )
+BEGIN
+    SELECT RAISE (ABORT, 'market stream identity is already retained');
+END;
+
+CREATE TRIGGER trg_market_cursor_no_conflict_replace
+    BEFORE INSERT ON market_cursor
+    FOR EACH ROW
+    WHEN EXISTS (
+            SELECT 1 FROM market_cursor AS retained
+             WHERE retained.stream_generation_id = NEW.stream_generation_id
+        )
+BEGIN
+    SELECT RAISE (ABORT, 'market cursor identity is already retained');
 END;
 
 CREATE TRIGGER trg_execution_profile_canonical_insert
@@ -1211,6 +1599,7 @@ CREATE TRIGGER trg_symbol_controller_versioned_replace
                 NEW.live_acquisition_generation_id
                     IS NOT OLD.live_acquisition_generation_id
                 OR NEW.aggregate_quantity IS NOT OLD.aggregate_quantity
+                OR NEW.integrity_state IS NOT OLD.integrity_state
                 OR NEW.currentness_head_ordinal
                     IS NOT OLD.currentness_head_ordinal
             )
@@ -1222,13 +1611,15 @@ BEGIN
 END;
 
 CREATE TRIGGER trg_symbol_controller_payload_advances_head
-    BEFORE UPDATE OF live_acquisition_generation_id, aggregate_quantity
+    BEFORE UPDATE OF live_acquisition_generation_id, aggregate_quantity,
+        integrity_state
         ON symbol_controller
     FOR EACH ROW
     WHEN (
             NEW.live_acquisition_generation_id
                 IS NOT OLD.live_acquisition_generation_id
             OR NEW.aggregate_quantity IS NOT OLD.aggregate_quantity
+            OR NEW.integrity_state IS NOT OLD.integrity_state
         )
       AND NEW.currentness_head_ordinal <= OLD.currentness_head_ordinal
 BEGIN
@@ -1280,6 +1671,34 @@ BEGIN
     SELECT RAISE (
         ABORT,
         'symbol controller aggregate must equal canonical root economics'
+    );
+END;
+
+CREATE TRIGGER trg_symbol_controller_integrity_exact_insert
+    BEFORE INSERT ON symbol_controller
+    FOR EACH ROW
+    WHEN NEW.integrity_state <> CASE
+            WHEN NEW.aggregate_quantity < 0
+                THEN 'NEGATIVE_POSITION_QUARANTINED'
+            ELSE 'CONSISTENT'
+        END
+BEGIN
+    SELECT RAISE (ABORT, 'symbol controller integrity must match economics');
+END;
+
+CREATE TRIGGER trg_symbol_controller_integrity_sticky_update
+    BEFORE UPDATE OF aggregate_quantity, integrity_state ON symbol_controller
+    FOR EACH ROW
+    WHEN NEW.integrity_state <> CASE
+            WHEN OLD.integrity_state = 'NEGATIVE_POSITION_QUARANTINED'
+              OR NEW.aggregate_quantity < 0
+                THEN 'NEGATIVE_POSITION_QUARANTINED'
+            ELSE 'CONSISTENT'
+        END
+BEGIN
+    SELECT RAISE (
+        ABORT,
+        'negative-position quarantine is exact and cannot be cleared in place'
     );
 END;
 
@@ -1441,6 +1860,39 @@ BEGIN
     );
 END;
 
+CREATE TRIGGER trg_execution_fact_revision_exact_predecessor_scope
+    BEFORE INSERT ON execution_fact
+    FOR EACH ROW
+    WHEN NEW.predecessor_fact_id IS NOT NULL
+     AND NOT EXISTS (
+            SELECT 1
+              FROM execution_fact AS predecessor
+             WHERE predecessor.fact_id = NEW.predecessor_fact_id
+               AND predecessor.root_fill_key_id = NEW.root_fill_key_id
+               AND predecessor.scope_id = NEW.scope_id
+               AND predecessor.application_generation_id =
+                    NEW.application_generation_id
+               AND predecessor.execution_profile_id = NEW.execution_profile_id
+               AND predecessor.order_external = NEW.order_external
+               AND predecessor.side = NEW.side
+               AND predecessor.authority = 'BROKER_AUTHORITATIVE'
+               AND NEW.authority = 'BROKER_AUTHORITATIVE'
+        )
+BEGIN
+    SELECT RAISE (ABORT, 'revision must preserve exact predecessor scope');
+END;
+
+CREATE TRIGGER trg_execution_fact_global_sequence_no_gap
+    BEFORE INSERT ON execution_fact
+    FOR EACH ROW
+    WHEN NEW.fact_ordinal <> COALESCE(
+            (SELECT MAX(fact.fact_ordinal) FROM execution_fact AS fact),
+            0
+        ) + 1
+BEGIN
+    SELECT RAISE (ABORT, 'fact ordinal must be next global execution sequence');
+END;
+
 CREATE TRIGGER trg_execution_fact_ordinal_advances
     BEFORE INSERT ON execution_fact
     FOR EACH ROW
@@ -1518,6 +1970,25 @@ BEGIN
                 ),
                 0
             ),
+           integrity_state = CASE
+                WHEN integrity_state = 'NEGATIVE_POSITION_QUARANTINED'
+                  OR COALESCE(
+                        (
+                            SELECT SUM(
+                                CASE root.current_side
+                                    WHEN 'BUY' THEN root.current_quantity
+                                    ELSE -root.current_quantity
+                                END
+                            )
+                              FROM root_fill AS root
+                             WHERE root.scope_id = NEW.scope_id
+                               AND root.current_fact_id IS NOT NULL
+                        ),
+                        0
+                    ) < 0
+                    THEN 'NEGATIVE_POSITION_QUARANTINED'
+                ELSE 'CONSISTENT'
+            END,
            currentness_head_ordinal = currentness_head_ordinal + 1,
            controller_version_ordinal = controller_version_ordinal + 1
      WHERE scope_id = NEW.scope_id;
@@ -1643,16 +2114,29 @@ BEGIN
 END;
 
 CREATE TRIGGER trg_venue_effect_identity_immutable
-    BEFORE UPDATE OF effect_id, scope_id, application_generation_id,
-        execution_profile_id, root_fill_key_id, order_external,
-        created_ordinal ON venue_effect
+    BEFORE UPDATE OF effect_id, effect_external, scope_id,
+        application_generation_id, execution_profile_id,
+        acquisition_generation_id, generation_mandate_commitment_sha256,
+        request_occurrence_external, mandate_external, effect_kind,
+        client_order_external, target_order_external, side, quantity,
+        economic_scope, created_ordinal ON venue_effect
     FOR EACH ROW
     WHEN NEW.effect_id IS NOT OLD.effect_id
+      OR NEW.effect_external IS NOT OLD.effect_external
       OR NEW.scope_id IS NOT OLD.scope_id
       OR NEW.application_generation_id IS NOT OLD.application_generation_id
       OR NEW.execution_profile_id IS NOT OLD.execution_profile_id
-      OR NEW.root_fill_key_id IS NOT OLD.root_fill_key_id
-      OR NEW.order_external IS NOT OLD.order_external
+      OR NEW.acquisition_generation_id IS NOT OLD.acquisition_generation_id
+      OR NEW.generation_mandate_commitment_sha256
+            IS NOT OLD.generation_mandate_commitment_sha256
+      OR NEW.request_occurrence_external IS NOT OLD.request_occurrence_external
+      OR NEW.mandate_external IS NOT OLD.mandate_external
+      OR NEW.effect_kind IS NOT OLD.effect_kind
+      OR NEW.client_order_external IS NOT OLD.client_order_external
+      OR NEW.target_order_external IS NOT OLD.target_order_external
+      OR NEW.side IS NOT OLD.side
+      OR NEW.quantity IS NOT OLD.quantity
+      OR NEW.economic_scope IS NOT OLD.economic_scope
       OR NEW.created_ordinal IS NOT OLD.created_ordinal
 BEGIN
     SELECT RAISE (ABORT, 'venue_effect identity is immutable');
@@ -1813,6 +2297,34 @@ BEGIN
     SELECT RAISE (ABORT, 'closed acceptance retains prior proof; only invalidation may append');
 END;
 
+CREATE TRIGGER trg_acceptance_invalidation_requires_closed_authority
+    BEFORE INSERT ON acceptance_evidence
+    FOR EACH ROW
+    WHEN NEW.evidence_kind = 'INVALIDATION'
+     AND NOT EXISTS (
+            SELECT 1
+              FROM venue_effect AS effect
+             WHERE effect.effect_id = NEW.effect_id
+               AND effect.disposition IN ('CLOSED', 'INVALIDATED')
+        )
+BEGIN
+    SELECT RAISE (
+        ABORT,
+        'invalidation evidence requires closed or invalidated acceptance'
+    );
+END;
+
+CREATE TRIGGER trg_acceptance_invalidation_advances_effect
+    AFTER INSERT ON acceptance_evidence
+    FOR EACH ROW
+    WHEN NEW.evidence_kind = 'INVALIDATION'
+BEGIN
+    UPDATE venue_effect
+       SET disposition = 'INVALIDATED'
+     WHERE effect_id = NEW.effect_id
+       AND disposition = 'CLOSED';
+END;
+
 CREATE TRIGGER trg_acceptance_evidence_append_only_update
     BEFORE UPDATE ON acceptance_evidence
 BEGIN
@@ -1884,6 +2396,10 @@ CREATE TRIGGER trg_protection_authority_version_monotonic
             (
                 NEW.active_stream_generation_id
                     IS NOT OLD.active_stream_generation_id
+                OR NEW.active_acquisition_generation_id
+                    IS NOT OLD.active_acquisition_generation_id
+                OR NEW.active_generation_mandate_commitment_sha256
+                    IS NOT OLD.active_generation_mandate_commitment_sha256
                 OR NEW.active_source_profile_id
                     IS NOT OLD.active_source_profile_id
                 OR NEW.active_session_external
@@ -1897,6 +2413,36 @@ CREATE TRIGGER trg_protection_authority_version_monotonic
         )
 BEGIN
     SELECT RAISE (ABORT, 'protection version must advance');
+END;
+
+CREATE TRIGGER trg_protection_authority_no_nonflat_transfer
+    BEFORE UPDATE OF active_stream_generation_id,
+        active_acquisition_generation_id,
+        active_generation_mandate_commitment_sha256,
+        active_source_profile_id, active_session_external,
+        active_sequence_mode ON protection_authority
+    FOR EACH ROW
+    WHEN (
+            NEW.active_stream_generation_id
+                IS NOT OLD.active_stream_generation_id
+            OR NEW.active_acquisition_generation_id
+                IS NOT OLD.active_acquisition_generation_id
+            OR NEW.active_generation_mandate_commitment_sha256
+                IS NOT OLD.active_generation_mandate_commitment_sha256
+            OR NEW.active_source_profile_id
+                IS NOT OLD.active_source_profile_id
+            OR NEW.active_session_external
+                IS NOT OLD.active_session_external
+            OR NEW.active_sequence_mode IS NOT OLD.active_sequence_mode
+        )
+     AND EXISTS (
+            SELECT 1
+              FROM symbol_controller AS controller
+             WHERE controller.scope_id = NEW.scope_id
+               AND controller.aggregate_quantity <> 0
+        )
+BEGIN
+    SELECT RAISE (ABORT, 'nonflat protection authority cannot transfer');
 END;
 
 CREATE TRIGGER trg_market_stream_authority_no_update
@@ -1919,6 +2465,18 @@ BEGIN
     SELECT RAISE (ABORT, 'protection_authority identity is immutable');
 END;
 
+CREATE TRIGGER trg_protection_authority_no_duplicate_insert
+    BEFORE INSERT ON protection_authority
+    FOR EACH ROW
+    WHEN EXISTS (
+            SELECT 1
+              FROM protection_authority AS retained
+             WHERE retained.scope_id = NEW.scope_id
+        )
+BEGIN
+    SELECT RAISE (ABORT, 'protection_authority identity is already retained');
+END;
+
 CREATE TRIGGER trg_protection_authority_no_delete
     BEFORE DELETE ON protection_authority
 BEGIN
@@ -1936,12 +2494,16 @@ END;
 
 CREATE TRIGGER trg_market_cursor_identity_immutable
     BEFORE UPDATE OF stream_generation_id, scope_id,
-        application_generation_id, source_profile_id,
+        application_generation_id, acquisition_generation_id,
+        generation_mandate_commitment_sha256, source_profile_id,
         session_external, sequence_mode ON market_cursor
     FOR EACH ROW
     WHEN NEW.stream_generation_id IS NOT OLD.stream_generation_id
       OR NEW.scope_id IS NOT OLD.scope_id
       OR NEW.application_generation_id IS NOT OLD.application_generation_id
+      OR NEW.acquisition_generation_id IS NOT OLD.acquisition_generation_id
+      OR NEW.generation_mandate_commitment_sha256
+            IS NOT OLD.generation_mandate_commitment_sha256
       OR NEW.source_profile_id IS NOT OLD.source_profile_id
       OR NEW.session_external IS NOT OLD.session_external
       OR NEW.sequence_mode IS NOT OLD.sequence_mode
