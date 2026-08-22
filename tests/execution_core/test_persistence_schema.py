@@ -30,7 +30,7 @@ from app.execution_core.persistence.schema import (
 
 
 _GATE_DIGEST: str | None = (
-    "5eea2c7fb32e4cfc2643149e03d1f628a92748008b07f5931c1e40224f58d776"
+    "b5f43175736fb4eafe2e6db1f847286e957dae0339ea44e2e5ce548b78feb80c"
 )
 
 _OPEN_CONNECTIONS: list[sqlite3.Connection] = []
@@ -573,7 +573,9 @@ def _insert_venue_owner(
         (effect_id,),
     ).fetchone()
     assert effect_row is not None
-    admitted_after_effect_closed = int(str(effect_row[0]) == "CLOSED")
+    effect_disposition = str(effect_row[0])
+    assert effect_disposition in {"OPEN", "CLOSED", "INVALIDATED"}
+    admitted_after_effect_closed = int(effect_disposition != "OPEN")
     connection.execute(
         """
         INSERT INTO venue_identity_owner (
@@ -2666,7 +2668,12 @@ def test_post_closure_owner_atomically_quarantines_serial_successor(
         )
     _insert_venue_owner(
         connection,
-        owner_external="late-owner",
+        owner_external="late-owner-1",
+        effect_id=1,
+    )
+    _insert_venue_owner(
+        connection,
+        owner_external="late-owner-2",
         effect_id=1,
     )
 
@@ -2678,7 +2685,7 @@ def test_post_closure_owner_atomically_quarantines_serial_successor(
     assert connection.execute(
         "SELECT integrity_state, currentness_head_ordinal,"
         " controller_version_ordinal FROM symbol_controller"
-    ).fetchone() == ("UNRESOLVED_VENUE_QUARANTINED", 3, 4)
+    ).fetchone() == ("UNRESOLVED_VENUE_QUARANTINED", 4, 5)
     with pytest.raises(sqlite3.IntegrityError, match="current controller head"):
         _insert_claim(connection, claim_id=2, effect_id=2)
 
@@ -2688,7 +2695,8 @@ def test_post_closure_owner_atomically_quarantines_serial_successor(
     ):
         with pytest.raises(sqlite3.IntegrityError, match="invalidation evidence"):
             connection.execute(
-                "INSERT INTO closure_chain VALUES (?, 1, 'late-owner', 1, 1, ?, NULL)",
+                "INSERT INTO closure_chain VALUES"
+                " (?, 1, 'late-owner-1', 1, 1, ?, NULL)",
                 (closure_id, closure_kind),
             )
 
@@ -2701,22 +2709,83 @@ def test_post_closure_owner_atomically_quarantines_serial_successor(
         "INSERT INTO acceptance_evidence (evidence_id, acceptance_set_id,"
         " effect_id, evidence_kind, proof_kind, evidence_digest, evidence_ordinal,"
         " contradiction_owner_external, contradiction_observation_external)"
-        " VALUES (99, ?, 1, 'INVALIDATION', NULL, ?, 2, 'late-owner',"
-        " 'observation-late-owner')",
+        " VALUES (99, ?, 1, 'INVALIDATION', NULL, ?, 2, 'late-owner-1',"
+        " 'observation-late-owner-1')",
         (acceptance_set_id, "a6" * 32),
     )
     assert connection.execute(
         "SELECT disposition FROM venue_effect WHERE effect_id = 1"
     ).fetchone() == ("INVALIDATED",)
+
+    with pytest.raises(sqlite3.IntegrityError, match="canonical effect authority"):
+        connection.execute(
+            "INSERT INTO closure_chain VALUES"
+            " (-1000, 1, 'late-owner-2', 1, 1, 'INVALIDATED_TERMINAL', NULL)"
+        )
+    with pytest.raises(sqlite3.IntegrityError, match="exact canonical effect state"):
+        connection.execute(
+            "INSERT INTO venue_identity_owner (scope_id, execution_profile_id,"
+            " owner_external, observation_external, effect_id, root_fill_key_id,"
+            " owner_generation_id, admitted_after_effect_closed)"
+            " VALUES (1, ?, 'misclassified-invalidated-owner',"
+            " 'misclassified-invalidated-observation', 1, 1, ?, 0)",
+            (_DEFAULT_EXECUTION_PROFILE_ID, "12" * 32),
+        )
+    _insert_venue_owner(
+        connection,
+        owner_external="late-owner-3",
+        effect_id=1,
+    )
+
+    for evidence_id, evidence_ordinal, owner in (
+        (100, 3, "late-owner-2"),
+        (101, 4, "late-owner-3"),
+    ):
+        connection.execute(
+            "INSERT INTO acceptance_evidence (evidence_id, acceptance_set_id,"
+            " effect_id, evidence_kind, proof_kind, evidence_digest,"
+            " evidence_ordinal, contradiction_owner_external,"
+            " contradiction_observation_external)"
+            " VALUES (?, ?, 1, 'INVALIDATION', NULL, ?, ?, ?, ?)",
+            (
+                evidence_id,
+                acceptance_set_id,
+                f"{evidence_id:064x}",
+                evidence_ordinal,
+                owner,
+                f"observation-{owner}",
+            ),
+        )
+
+    with pytest.raises(sqlite3.IntegrityError, match="UNIQUE"):
+        connection.execute(
+            "INSERT INTO acceptance_evidence (evidence_id, acceptance_set_id,"
+            " effect_id, evidence_kind, proof_kind, evidence_digest,"
+            " evidence_ordinal, contradiction_owner_external,"
+            " contradiction_observation_external)"
+            " VALUES (102, ?, 1, 'INVALIDATION', NULL, ?, 5, 'late-owner-1',"
+            " 'observation-late-owner-1')",
+            (acceptance_set_id, "a7" * 32),
+        )
+
     assert connection.execute(
-        "SELECT closure_kind FROM closure_chain"
-        " WHERE effect_id = 1 AND owner_external = 'late-owner'"
-    ).fetchone() == ("INVALIDATED_TERMINAL",)
+        "SELECT closure_id, owner_external, closure_kind FROM closure_chain"
+        " WHERE effect_id = 1 AND owner_external LIKE 'late-owner-%'"
+        " ORDER BY owner_external"
+    ).fetchall() == [
+        (-99, "late-owner-1", "INVALIDATED_TERMINAL"),
+        (-100, "late-owner-2", "INVALIDATED_TERMINAL"),
+        (-101, "late-owner-3", "INVALIDATED_TERMINAL"),
+    ]
     assert connection.execute(
         "SELECT unresolved_effect_count FROM acquisition_generation_current"
         " WHERE acquisition_generation_id = ?",
         ("12" * 32,),
     ).fetchone() == (1,)
+    assert connection.execute(
+        "SELECT integrity_state, currentness_head_ordinal,"
+        " controller_version_ordinal FROM symbol_controller"
+    ).fetchone() == ("UNRESOLVED_VENUE_QUARANTINED", 6, 7)
 
 
 def test_normal_effect_and_claim_require_current_normal_protection(

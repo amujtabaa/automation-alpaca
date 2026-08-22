@@ -830,6 +830,13 @@ CREATE TABLE acceptance_evidence (
 
 CREATE INDEX ix_acceptance_evidence_set ON acceptance_evidence (acceptance_set_id, evidence_ordinal DESC);
 
+CREATE UNIQUE INDEX uq_acceptance_invalidation_owner_observation
+    ON acceptance_evidence (
+        effect_id, contradiction_owner_external,
+        contradiction_observation_external
+    )
+    WHERE evidence_kind = 'INVALIDATION';
+
 CREATE TABLE closure_chain (
     closure_id INTEGER PRIMARY KEY,
     scope_id INTEGER NOT NULL REFERENCES acquisition_scope (scope_id),
@@ -1180,7 +1187,7 @@ CREATE TRIGGER trg_venue_owner_requires_exact_admission_phase
                         AND NEW.admitted_after_effect_closed = 0
                     )
                     OR (
-                        effect.disposition = 'CLOSED'
+                        effect.disposition IN ('CLOSED', 'INVALIDATED')
                         AND NEW.admitted_after_effect_closed = 1
                     )
                )
@@ -3236,7 +3243,7 @@ CREATE TRIGGER trg_acceptance_invalidation_requires_closed_authority
             SELECT 1
                  FROM venue_effect AS effect
                  WHERE effect.effect_id = NEW.effect_id
-                   AND effect.disposition = 'CLOSED'
+                   AND effect.disposition IN ('CLOSED', 'INVALIDATED')
             )
 BEGIN
     SELECT RAISE (
@@ -3285,7 +3292,13 @@ BEGIN
             SELECT effect.scope_id
               FROM venue_effect AS effect
              WHERE effect.effect_id = NEW.effect_id
-        );
+        )
+       AND (
+            SELECT COUNT(*)
+              FROM acceptance_evidence AS evidence
+             WHERE evidence.effect_id = NEW.effect_id
+               AND evidence.evidence_kind = 'INVALIDATION'
+       ) = 1;
 
     INSERT INTO closure_chain (
         closure_id, scope_id, owner_external, ordinal, effect_id,
@@ -3382,11 +3395,28 @@ CREATE TRIGGER trg_closure_chain_matches_effect_authority
         )
        OR (
             NEW.closure_kind = 'INVALIDATED_TERMINAL'
-            AND NOT EXISTS (
-                SELECT 1
-                  FROM venue_effect AS effect
-                 WHERE effect.effect_id = NEW.effect_id
-                   AND effect.disposition = 'INVALIDATED'
+            AND (
+                NOT EXISTS (
+                    SELECT 1
+                      FROM venue_effect AS effect
+                     WHERE effect.effect_id = NEW.effect_id
+                       AND effect.disposition = 'INVALIDATED'
+                )
+                OR NOT EXISTS (
+                    SELECT 1
+                      FROM acceptance_evidence AS evidence
+                      JOIN venue_identity_owner AS owner
+                        ON owner.effect_id = evidence.effect_id
+                       AND owner.owner_external =
+                            evidence.contradiction_owner_external
+                       AND owner.observation_external =
+                            evidence.contradiction_observation_external
+                     WHERE evidence.evidence_id = -NEW.closure_id
+                       AND evidence.effect_id = NEW.effect_id
+                       AND evidence.evidence_kind = 'INVALIDATION'
+                       AND owner.scope_id = NEW.scope_id
+                       AND owner.owner_external = NEW.owner_external
+                )
             )
         )
 BEGIN
@@ -3672,7 +3702,7 @@ END;
 """
 
 _SCHEMA_CATALOG_SHA256 = (
-    "510dd56f88ab2fcd88895c2713d7525f65448a711b90433fb232fe2ba079ac4f"
+    "0f81942dbec205583f0f44f115736d1256370550b9d1452e9ca0235c53188428"
 )
 
 
