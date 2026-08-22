@@ -169,7 +169,7 @@ def _insert_root(
             scale_sign, scale_digits, scale_exponent,
             economics_head_ordinal
         )
-        VALUES (?, ?, ?, ?, 100, 10000, 0, '01', -2, 0)
+        VALUES (?, ?, ?, ?, 100, 10000, 0, '1', -2, 0)
         """,
         (key_id, scope_id, "12" * 32, external),
     )
@@ -191,7 +191,7 @@ def _insert_fill(
             quantity, price_units, scale_sign, scale_digits,
             scale_exponent, predecessor_fact_id, fact_ordinal
         )
-        VALUES (?, ?, ?, ?, 'FILL', 10, 10000, 0, '01', -2, NULL, ?)
+        VALUES (?, ?, ?, ?, 'FILL', 10, 10000, 0, '1', -2, NULL, ?)
         """,
         (fact_id, scope_id, root_id, event, fact_id),
     )
@@ -215,7 +215,7 @@ def _insert_revision(
             quantity, price_units, scale_sign, scale_digits,
             scale_exponent, predecessor_fact_id, fact_ordinal
         )
-        VALUES (?, ?, ?, ?, ?, 7, 10100, 0, '01', -2, ?, ?)
+        VALUES (?, ?, ?, ?, ?, 7, 10100, 0, '1', -2, ?, ?)
         """,
         (fact_id, scope_id, root_id, event, kind, predecessor_fact_id, fact_id),
     )
@@ -414,8 +414,8 @@ def test_cross_scope_or_cross_profile_event_reuse_is_rejected(
             scale_sign, scale_digits, scale_exponent, economics_head_ordinal
         )
         VALUES
-        (1, 1, ?, 'r-A', 10, 10000, 0, '01', -2, 0),
-        (2, 2, ?, 'r-B', 10, 10000, 0, '01', -2, 0)
+        (1, 1, ?, 'r-A', 10, 10000, 0, '1', -2, 0),
+        (2, 2, ?, 'r-B', 10, 10000, 0, '1', -2, 0)
         """,
         ("12" * 32, "12" * 32),
     )
@@ -444,7 +444,7 @@ def test_revision_predecessor_must_exist_inside_same_root(
                 quantity, price_units, scale_sign, scale_digits,
                 scale_exponent, predecessor_fact_id, fact_ordinal
             )
-            VALUES (9, ?, ?, 'evt-x', 'TRADE_CORRECT', 7, 10100, 0, '01',
+            VALUES (9, ?, ?, 'evt-x', 'TRADE_CORRECT', 7, 10100, 0, '1',
                     -2, 999, 9)
             """,
             (scope_id, root_a),
