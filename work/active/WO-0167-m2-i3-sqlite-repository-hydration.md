@@ -7,12 +7,12 @@ wave: M2-I3
 model_tier: strong
 risk: high
 disposition: []
-owner: Ox Alpha implementation seat; Codex checkpoint governor
+owner: Codex remediation implementation seat; fresh independent reviewer required
 created: 2026-08-21
 predecessor: WO-0166 exact accepted head
 branch: codex/m2-i3-sqlite-repository-hydration-r1
-review_id: REV-0072
-execution_authority: Ameen Mujtabaa activated WO-0167 (Codex task, 2026-08-21). SQLite access only via explicit connections to fresh pytest tmp_path file databases. Excluded: in-memory SQLite, configured/existing databases, migration, credentials, broker/network calls by application code or tests, orders, runtime composition, M2-I4+ implementation, promotion, PR, merge to master, rebase, force-push, branch deletion, history rewrite.
+review_id: REV-0073
+execution_authority: Ameen Mujtabaa activated WO-0167 (Codex task, 2026-08-21) and explicitly authorized Codex to remediate all REV-0072 findings (Codex task, 2026-08-22). SQLite access only via explicit connections to fresh pytest tmp_path file databases. Excluded: in-memory SQLite, configured/existing databases, migration, credentials, broker/network calls by application code or tests, orders, runtime composition, M2-I4+ implementation, promotion, PR, merge to master, rebase, force-push, branch deletion, history rewrite.
 ---
 
 # Work Order: M2-I3 narrow SQLite repository hydration
@@ -21,7 +21,7 @@ execution_authority: Ameen Mujtabaa activated WO-0167 (Codex task, 2026-08-21). 
 
 **Date:** 2026-08-21
 
-**Status:** Ready specification — not implementation authority
+**Status:** ACTIVE — Codex root-cause remediation after REV-0072 BLOCK
 
 `[FABLE • FULL • spec-first/TDD • direct-key repository only]`
 
@@ -112,6 +112,8 @@ allowed_paths:
   - work/active/WO-0167-m2-i3-sqlite-repository-hydration.md
   - work/completed/keep/WO-0167-m2-i3-sqlite-repository-hydration.md
   - work/ledger.jsonl
+  - work/review/REV-0072/**
+  - work/review/REV-0073/**
 ```
 
 Activation appends one exact review path and reconciles paths against the accepted I2 head.
@@ -143,3 +145,56 @@ Database authority for this order: explicit connections to fresh file-backed
 temporary databases created by tests under pytest `tmp_path`, with
 `PRAGMA foreign_keys=ON` and `PRAGMA recursive_triggers=ON`, installing only
 the unchanged accepted schema through the accepted installer and digest.
+
+## REV-0072 root-cause remediation checkpoint (2026-08-22)
+
+Ameen Mujtabaa assigned the blocked WO-0167 candidate to Codex for complete root-cause
+remediation. REV-0072 remains immutable findings evidence; REV-0073 is the fresh acceptance seat.
+This authority does not change the accepted DDL, create a configured database, or activate M2-I4.
+
+### Accepted no-DDL interpretation
+
+The M2-I2 DDL stores canonical M2-I1 atom leaves rather than a per-row codec tag/version. Therefore
+the exact verified schema version/catalog binds codec contract v1 and the expected type tag for each
+column position. Repository writes encode through `encode_m1_value`; reads reconstruct that exact v1
+atom shape and decode through `decode_m1_value`. A different schema/catalog or malformed/cross-type
+shape fails closed. This is the only interpretation possible without an unauthorized DDL change.
+
+The repository hydrates typed persistence projections. It cannot reconstruct secret/raw broker
+account coordinates deliberately absent from the schema, and it does not pretend that relational
+closure-head rows are complete legacy reducer objects. M2-I4 may compose these typed projections
+with separately authenticated runtime context; it may not bypass them or manufacture missing data.
+
+### Schema ownership matrix
+
+| Family | Repository authority | Trigger-derived authority |
+| --- | --- | --- |
+| Execution/market profiles, application, scope | typed insert + direct load | none |
+| Acquisition generation | insert, direct load, guarded retirement | current row initialization/counts |
+| Kernel checkpoint | insert, direct load, expected-version advance | none |
+| Symbol controller | insert, direct load, expected-version advance | accepted fact/invalidation projections |
+| Root fill | empty-root insert + direct load | current economics from execution facts |
+| Execution fact | append + direct load | fact head/root/controller/current projections |
+| Venue effect | insert, direct load, expected-state lifecycle/closure advance | claim/invalidation transitions |
+| Venue owner/root route/claim/set/evidence/closure | append/insert + direct loads | current counts and invalidation closure |
+| Market stream | insert + direct load | none |
+| Market cursor/protection authority | insert, direct load, expected-version advance | protection current-count projection |
+| Acquisition current/fact head | load only | exclusive trigger ownership |
+
+### FIX log
+
+- FIX-1: replaced the non-failure-capable in-process import snapshot with a clean isolated import
+  probe and a top-level filesystem-write mutant that the probe demonstrably kills.
+- FIX-2: replaced the partial eight-family DTO surface with typed operations for every accepted
+  M2-I2 family plus an exact-coordinate total current-proof request/slice.
+- FIX-3: routed M1 identities, quantities, and reported prices through the accepted durable codec;
+  profiles hydrate through their accepted constructors and exact recomputed commitments.
+- FIX-4: removed public writers for trigger-owned acquisition-current and fact-head rows; added
+  guarded advances for checkpoint, controller, effect, market cursor, and protection authority.
+- FIX-5: replaced exception class-name matching with exact SQLite module/MRO authentication and
+  extended-code/operation-aware duplicate classification; same-named non-SQLite errors propagate.
+- FIX-6: added exact-export guard coverage, tampered-catalog coverage, all-family round trips,
+  same-family directness stress, actual production SQL/EXPLAIN checks, duplicate cardinality refusal,
+  rollback proof, and total-proof omission refusal.
+- FIX-7: repaired the active ledger entry to the canonical schema and expanded exact review scope;
+  REV-0072 remains unchanged and REV-0073 will bind the final remediation candidate.
