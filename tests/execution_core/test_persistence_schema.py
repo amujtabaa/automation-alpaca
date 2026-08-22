@@ -57,6 +57,9 @@ def _require_gate_open() -> str:
 
 
 def _connection(tmp_path: object) -> sqlite3.Connection:
+    """Gate first: while locked, no connection object or file is ever made."""
+
+    _require_gate_open()
     connection = sqlite3.connect(tmp_path / "m2-i2-gate.db")  # type: ignore[arg-type]
     connection.execute("PRAGMA foreign_keys = ON")
     return connection
