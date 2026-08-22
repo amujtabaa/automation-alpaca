@@ -55,4 +55,3 @@ Later packet-only commits are outside the reviewed source/test tree.
 
 Ameen Mujtabaa authorized fresh in-process adversarial agents for this bounded closeout and waived
 another external-model stop. Do not describe an in-process seat as external cross-model review.
-

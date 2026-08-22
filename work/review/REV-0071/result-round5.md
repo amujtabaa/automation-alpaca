@@ -49,4 +49,3 @@ One planned seat returned no review because the platform interrupted it before a
 completed seats independently reproduced the findings above. No external cross-model review is
 claimed. Candidate `fead0234c4428678c673b9a6e34e632116030281` remains preserved as rejected
 evidence and is superseded only by a separately frozen replacement candidate.
-
