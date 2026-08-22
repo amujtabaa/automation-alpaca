@@ -1,12 +1,12 @@
 ---
 type: Work Order
 title: M2-I1 immutable durable value and profile codec contract
-status: ACTIVE
+status: CLOSED
 work_order_id: WO-0165
 wave: M2-I1
 model_tier: strong
 risk: high
-disposition: []
+disposition: [RESULT_SUMMARY_KEPT, ARCHIVED]
 owner: local coding LLM implementation seat; Codex checkpoint governor
 created: 2026-08-21
 branch: codex/m2-i1-durable-codec-r1
@@ -19,7 +19,7 @@ execution_authority: Ameen Mujtabaa approved the exact M2-I1 activation in the C
 
 **Author:** Codex planning/orchestrator seat
 **Date:** 2026-08-21
-**Status:** Approved by Ameen Mujtabaa; implementation held for the saved-baseline merge
+**Status:** Closed after implementation, remediation, and independent acceptance
 
 `[FABLE • FULL • spec-first/TDD • task: pure schema-neutral value/profile codecs and known answers]`
 
@@ -218,3 +218,40 @@ excluded surface.
 Completion requires P0=0/P1=0 independent acceptance, exact publication, clean worktree, lifecycle/
 ledger/disposition closeout, and no activation of M2-I2. PKL update is required only if a current
 accepted claim actually changes; otherwise record why it is not required.
+
+## Completion disposition
+
+- [x] `RESULT_SUMMARY_KEPT`
+- [x] `ARCHIVED`
+- [x] PKL update not required: implementation realizes the accepted WO-0165/ADR-024 contract and
+  changes no accepted architecture claim.
+
+## Completion evidence
+
+- Accepted implementation candidate: `3c85b17bc04fa587cac1995c8999155d6583006b`, tree
+  `eb283de534d4f97919a9aefa31cb73599f76f99d`.
+- Preserved initial REV-0070 result: `ACCEPT-WITH-CHANGES`, P0=0/P1=3/P2=0, SHA-256
+  `dc2efc73ab4bda1e7cf63b20db942dc2719f3520a3a963a7d8491a0083fbd34b`.
+- Independent remediation addendum: `ACCEPT`, P0=0/P1=0/P2=0, SHA-256
+  `e7fa3553a2bc109e4182c69f4b4b4879f73829fe8b4998981ad48af5b1f22f15`.
+- Fresh reviewer evidence: focused suite `291 passed`; supported CPython 3.12.13 full
+  `tests/execution_core` suite `1608 passed`; ratio/export mutation probes, Ruff, formatting,
+  mypy, import boundaries, scope, and repository governance passed.
+- Reviewer publication head `56bd7bae2c15dc122110facfd2328505b21759a7` was pushed and matched
+  `origin/codex/m2-i1-durable-codec-r1`; the worktree was clean and `master` remained
+  `abcefca80d1a16ae86f7982d27ba6212a9504bfa`.
+- No SQL/DDL, database creation/access, runtime composition, credentials, broker/network calls,
+  orders, promotion, M2-I2 implementation, or merge to `master` occurred.
+
+```yaml
+fable_done:
+  status: VERIFIED
+  evidence: "REV-0070 remediation addendum ACCEPT P0=0/P1=0/P2=0; 291 focused and 1608 supported-Python execution-core tests; mutation/static/governance gates passed."
+  command: "See work/review/REV-0070/result-addendum-01.md."
+  terminal_state: "WO-0165 CLOSED — READY FOR SEPARATELY ACTIVATED WO-0166"
+```
+
+## Distillation decision
+
+Keep this work order and the complete REV-0070 chain as the compact durable authority, negative
+evidence, remediation, and acceptance record. Delete no source, test, ADR, PKL, or review history.
