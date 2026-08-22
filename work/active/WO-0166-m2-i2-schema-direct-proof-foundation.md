@@ -220,6 +220,31 @@ Its installed-catalog fingerprint is
 Ruff, formatting, mypy over 91 source files, six import contracts, scope, and whitespace checks
 passed. `request-final.md` opens a fresh exact-commit review.
 
+### Final review verdict and retired-lineage remediation
+
+The review of `5c44b2ea517be306b94851199ccb9c15ef407e93` returned `BLOCK`.
+`result-round4.md` preserves one P0 and one P1: a late exact retired-generation fact left normal
+successor BUY/protection authority serving, and one root could borrow another root's owner/effect
+proof inside the same generation.
+
+The remediation introduces sticky `MIXED_GENERATION_RECOVERY` for non-no-op exact retired-root
+economics. Normal effects, claims, and protection mutations cannot serve in that state. The schema
+retains one explicit `HARD_BAIL` authority class: only a head-bound SELL effect and matching
+protection classification may proceed, with at most one HARD_BAIL effect per scope/controller
+head. Non-flat or non-consistent controllers cannot unbind/rebind live generations around the
+fence. The acquisition route's owner-side foreign key now carries `root_fill_key_id` end-to-end,
+making same-generation cross-root proof borrowing structurally impossible.
+
+The replacement source/test candidate is commit `fead0234c4428678c673b9a6e34e632116030281`,
+tree `f3e335738020bf5655648193183509ccf5cf2db4`, with `SCHEMA_DDL` exactly `111,149`
+UTF-8 bytes and SHA-256 `ef4f4fb3fc6a98705c6f713d3d0e9a330863ad2d975bfb444baa4801aa4ba2cf`.
+Its installed-catalog fingerprint is
+`88b9dc1cbe4771f689f8d308802c2786b5e283910acfba70b7d341a1973113da`. Fresh evidence:
+73 schema tests and all 1,681 collected `tests/execution_core` tests passed on CPython 3.12.13;
+the catalog fingerprint also matched on CPython 3.14.5 / SQLite 3.50.4; Ruff, formatting, mypy over
+91 source files, six import contracts, scope, and whitespace checks passed. `request-final-02.md`
+opens the next exact-commit review.
+
 ## Functional requirements
 
 - FR-1: The schema MUST bind one immutable application generation to one selected execution profile and a
