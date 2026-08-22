@@ -12,9 +12,6 @@ from app.execution_core.persistence.schema import (
 )
 
 
-
-
-
 @pytest.fixture()
 def connection(tmp_path):
     conn = sqlite3.connect(tmp_path / "wo167-directness.db")
@@ -38,13 +35,15 @@ def test_unrelated_history_cannot_change_query_count(tmp_path, connection):
     connection.set_trace_callback(statements.append)
     first = repo.load_kernel_checkpoint(connection, "ab" * 32)
     connection.set_trace_callback(None)
-    base_count = len([
-        s
-        for s in statements
-        if s.upper().startswith("SELECT")
-        and "sqlite_master" not in s
-        and "schema_meta" not in s
-    ])
+    base_count = len(
+        [
+            s
+            for s in statements
+            if s.upper().startswith("SELECT")
+            and "sqlite_master" not in s
+            and "schema_meta" not in s
+        ]
+    )
 
     # Unrelated growth in a family the load never touches.
     for ordinal in range(200):
@@ -68,13 +67,15 @@ def test_unrelated_history_cannot_change_query_count(tmp_path, connection):
     connection.set_trace_callback(statements.append)
     second = repo.load_kernel_checkpoint(connection, "ab" * 32)
     connection.set_trace_callback(None)
-    stressed_count = len([
-        s
-        for s in statements
-        if s.upper().startswith("SELECT")
-        and "sqlite_master" not in s
-        and "schema_meta" not in s
-    ])
+    stressed_count = len(
+        [
+            s
+            for s in statements
+            if s.upper().startswith("SELECT")
+            and "sqlite_master" not in s
+            and "schema_meta" not in s
+        ]
+    )
 
     assert first == second
     assert base_count == stressed_count

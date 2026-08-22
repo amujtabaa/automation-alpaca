@@ -106,9 +106,7 @@ def test_module_import_is_inert() -> None:
     snapshot = dict(vars(repository_module))
     after = set(sys.modules)
 
-    assert not (after - before) - {
-        "app.execution_core.persistence.repository"
-    }
+    assert not (after - before) - {"app.execution_core.persistence.repository"}
     del snapshot
     assert repository_module.__all__ == _EXPORTS
 
@@ -130,9 +128,7 @@ def test_application_generation_round_trip(connection) -> None:
         selected_market_source_profile_id="ef" * 32,
         activation_ordinal=1,
     )
-    loaded = repository_module.load_application_generation(
-        connection, "ab" * 32
-    )
+    loaded = repository_module.load_application_generation(connection, "ab" * 32)
     assert loaded.kind is repository_module.RepositoryOutcomeKind.FOUND
     assert loaded.record == record
 
@@ -141,9 +137,7 @@ def test_application_generation_round_trip(connection) -> None:
 
 
 def test_absence_is_explicit(connection) -> None:
-    loaded = repository_module.load_application_generation(
-        connection, "ff" * 32
-    )
+    loaded = repository_module.load_application_generation(connection, "ff" * 32)
     assert loaded.kind is repository_module.RepositoryOutcomeKind.ABSENT
     assert loaded.record is None
 
@@ -193,9 +187,11 @@ def test_repository_never_commits(connection) -> None:
     _seed_chain(connection)
     commits: list[str] = []
     connection.set_trace_callback(
-        lambda statement: commits.append(statement)
-        if statement.upper().startswith("COMMIT")
-        else None
+        lambda statement: (
+            commits.append(statement)
+            if statement.upper().startswith("COMMIT")
+            else None
+        )
     )
     outcome = repository_module.store_scope(
         connection,
@@ -209,9 +205,7 @@ def test_repository_never_commits(connection) -> None:
 
 def test_tampered_catalog_fails_closed(connection) -> None:
     _seed_chain(connection)
-    connection.execute(
-        "CREATE TABLE rogue_catalog_object (x INTEGER)"
-    )
+    connection.execute("CREATE TABLE rogue_catalog_object (x INTEGER)")
     from app.execution_core.persistence.schema import SchemaInstallError
 
     with pytest.raises(SchemaInstallError):
@@ -222,9 +216,7 @@ def test_direct_load_query_shape_is_bounded(connection) -> None:
     _seed_chain(connection)
     statements: list[str] = []
     connection.set_trace_callback(statements.append)
-    loaded = repository_module.load_application_generation(
-        connection, "ab" * 32
-    )
+    loaded = repository_module.load_application_generation(connection, "ab" * 32)
     connection.set_trace_callback(None)
 
     assert loaded.kind is repository_module.RepositoryOutcomeKind.FOUND

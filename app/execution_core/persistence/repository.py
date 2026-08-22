@@ -11,8 +11,6 @@ swallowed. No dynamic SQL, no upserts, no reducer semantics.
 
 from __future__ import annotations as _annotations
 
-import sqlite3 as _sqlite3
-
 from . import records as _records
 from .records import (
     AcceptanceSetRecord,
@@ -26,6 +24,7 @@ from .records import (
     RepositoryOutcomeKind,
     ScopeRecord,
 )
+from .schema import SQLiteConnectionProtocol as _SQLiteConnectionProtocol
 from .schema import verify_schema_connection as _verify_schema_connection
 
 
@@ -34,18 +33,17 @@ def _committed() -> _records.RepositoryOutcome:
 
 
 def _write(
-    connection: _sqlite3.Connection,
+    connection: _SQLiteConnectionProtocol,
     sql: str,
     parameters: tuple,
 ) -> _records.RepositoryOutcome:
     _verify_schema_connection(connection)
     try:
         connection.execute(sql, parameters)
-    except _sqlite3.IntegrityError:
-        return _records.RepositoryOutcome(
-            _records.RepositoryOutcomeKind.CONFLICT
-        )
-    except _sqlite3.DatabaseError:
+    except Exception as caught:  # typed by sqlite class name only
+        kind_name = type(caught).__name__
+        if kind_name == "IntegrityError":
+            return _records.RepositoryOutcome(_records.RepositoryOutcomeKind.CONFLICT)
         return _records.RepositoryOutcome(
             _records.RepositoryOutcomeKind.INTEGRITY_FAILURE
         )
@@ -53,7 +51,7 @@ def _write(
 
 
 def _load(
-    connection: _sqlite3.Connection,
+    connection: _SQLiteConnectionProtocol,
     sql: str,
     parameters: tuple,
     build,
@@ -61,7 +59,7 @@ def _load(
     _verify_schema_connection(connection)
     try:
         row = connection.execute(sql, parameters).fetchone()
-    except _sqlite3.DatabaseError:
+    except Exception:
         return _records.RepositoryOutcome(
             _records.RepositoryOutcomeKind.INTEGRITY_FAILURE
         )
@@ -72,9 +70,7 @@ def _load(
         return _records.RepositoryOutcome(
             _records.RepositoryOutcomeKind.INTEGRITY_FAILURE
         )
-    return _records.RepositoryOutcome(
-        _records.RepositoryOutcomeKind.FOUND, record
-    )
+    return _records.RepositoryOutcome(_records.RepositoryOutcomeKind.FOUND, record)
 
 
 _APPLICATION_GENERATION_COLUMNS = (
@@ -84,7 +80,7 @@ _APPLICATION_GENERATION_COLUMNS = (
 
 
 def store_application_generation(
-    connection: _sqlite3.Connection,
+    connection: _SQLiteConnectionProtocol,
     record: _records.ApplicationGenerationRecord,
 ) -> _records.RepositoryOutcome:
     return _write(
@@ -101,7 +97,7 @@ def store_application_generation(
 
 
 def load_application_generation(
-    connection: _sqlite3.Connection,
+    connection: _SQLiteConnectionProtocol,
     application_generation_id: str,
 ) -> _records.RepositoryOutcome:
     return _load(
@@ -113,17 +109,18 @@ def load_application_generation(
     )
 
 
-_SCOPE_COLUMNS = "scope_id, application_generation_id, execution_profile_id, symbol_text"
+_SCOPE_COLUMNS = (
+    "scope_id, application_generation_id, execution_profile_id, symbol_text"
+)
 
 
 def store_scope(
-    connection: _sqlite3.Connection,
+    connection: _SQLiteConnectionProtocol,
     record: _records.ScopeRecord,
 ) -> _records.RepositoryOutcome:
     return _write(
         connection,
-        f"INSERT INTO acquisition_scope ({_SCOPE_COLUMNS})"
-        " VALUES (?, ?, ?, ?)",
+        f"INSERT INTO acquisition_scope ({_SCOPE_COLUMNS}) VALUES (?, ?, ?, ?)",
         (
             record.scope_id,
             record.application_generation_id,
@@ -134,7 +131,7 @@ def store_scope(
 
 
 def load_scope(
-    connection: _sqlite3.Connection,
+    connection: _SQLiteConnectionProtocol,
     scope_id: int,
 ) -> _records.RepositoryOutcome:
     return _load(
@@ -153,7 +150,7 @@ _ACQUISITION_GENERATION_COLUMNS = (
 
 
 def store_acquisition_generation(
-    connection: _sqlite3.Connection,
+    connection: _SQLiteConnectionProtocol,
     record: _records.AcquisitionGenerationRecord,
 ) -> _records.RepositoryOutcome:
     return _write(
@@ -173,7 +170,7 @@ def store_acquisition_generation(
 
 
 def load_acquisition_generation_current(
-    connection: _sqlite3.Connection,
+    connection: _SQLiteConnectionProtocol,
     acquisition_generation_id: str,
 ) -> _records.RepositoryOutcome:
     columns = (
@@ -191,7 +188,7 @@ def load_acquisition_generation_current(
 
 
 def store_acquisition_generation_current(
-    connection: _sqlite3.Connection,
+    connection: _SQLiteConnectionProtocol,
     record: _records.AcquisitionGenerationCurrentRecord,
 ) -> _records.RepositoryOutcome:
     columns = (
@@ -224,13 +221,12 @@ _CHECKPOINT_COLUMNS = (
 
 
 def record_kernel_checkpoint(
-    connection: _sqlite3.Connection,
+    connection: _SQLiteConnectionProtocol,
     record: _records.KernelCheckpointRecord,
 ) -> _records.RepositoryOutcome:
     return _write(
         connection,
-        f"INSERT INTO kernel_checkpoint ({_CHECKPOINT_COLUMNS})"
-        " VALUES (?, ?, ?, ?)",
+        f"INSERT INTO kernel_checkpoint ({_CHECKPOINT_COLUMNS}) VALUES (?, ?, ?, ?)",
         (
             record.application_generation_id,
             record.currentness_head_ordinal,
@@ -241,7 +237,7 @@ def record_kernel_checkpoint(
 
 
 def load_kernel_checkpoint(
-    connection: _sqlite3.Connection,
+    connection: _SQLiteConnectionProtocol,
     application_generation_id: str,
 ) -> _records.RepositoryOutcome:
     return _load(
@@ -257,19 +253,18 @@ _FACT_HEAD_COLUMNS = "root_fill_key_id, fact_id, fact_ordinal"
 
 
 def record_execution_fact_head(
-    connection: _sqlite3.Connection,
+    connection: _SQLiteConnectionProtocol,
     record: _records.ExecutionFactHeadRecord,
 ) -> _records.RepositoryOutcome:
     return _write(
         connection,
-        f"INSERT INTO execution_fact_head ({_FACT_HEAD_COLUMNS})"
-        " VALUES (?, ?, ?)",
+        f"INSERT INTO execution_fact_head ({_FACT_HEAD_COLUMNS}) VALUES (?, ?, ?)",
         (record.root_fill_key_id, record.fact_id, record.fact_ordinal),
     )
 
 
 def load_execution_fact_head(
-    connection: _sqlite3.Connection,
+    connection: _SQLiteConnectionProtocol,
     root_fill_key_id: int,
 ) -> _records.RepositoryOutcome:
     return _load(
@@ -288,13 +283,12 @@ _CLAIM_COLUMNS = (
 
 
 def record_dispatch_claim(
-    connection: _sqlite3.Connection,
+    connection: _SQLiteConnectionProtocol,
     record: _records.DispatchClaimRecord,
 ) -> _records.RepositoryOutcome:
     return _write(
         connection,
-        f"INSERT INTO dispatch_claim ({_CLAIM_COLUMNS})"
-        " VALUES (?, ?, ?, ?, ?)",
+        f"INSERT INTO dispatch_claim ({_CLAIM_COLUMNS}) VALUES (?, ?, ?, ?, ?)",
         (
             record.claim_id,
             record.effect_id,
@@ -306,7 +300,7 @@ def record_dispatch_claim(
 
 
 def load_dispatch_claim(
-    connection: _sqlite3.Connection,
+    connection: _SQLiteConnectionProtocol,
     claim_id: int,
 ) -> _records.RepositoryOutcome:
     return _load(
@@ -321,19 +315,18 @@ _ACCEPTANCE_SET_COLUMNS = "acceptance_set_id, effect_id"
 
 
 def store_acceptance_set(
-    connection: _sqlite3.Connection,
+    connection: _SQLiteConnectionProtocol,
     record: _records.AcceptanceSetRecord,
 ) -> _records.RepositoryOutcome:
     return _write(
         connection,
-        f"INSERT INTO acceptance_set ({_ACCEPTANCE_SET_COLUMNS})"
-        " VALUES (?, ?)",
+        f"INSERT INTO acceptance_set ({_ACCEPTANCE_SET_COLUMNS}) VALUES (?, ?)",
         (record.acceptance_set_id, record.effect_id),
     )
 
 
 def load_acceptance_set(
-    connection: _sqlite3.Connection,
+    connection: _SQLiteConnectionProtocol,
     acceptance_set_id: int,
 ) -> _records.RepositoryOutcome:
     return _load(
