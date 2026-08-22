@@ -30,7 +30,7 @@ from app.execution_core.persistence.schema import (
 
 
 _GATE_DIGEST: str | None = (
-    "a798137e8d9b062abec70317167242a6afd68732654258e912c49e1317f2bd16"
+    "5eea2c7fb32e4cfc2643149e03d1f628a92748008b07f5931c1e40224f58d776"
 )
 
 _OPEN_CONNECTIONS: list[sqlite3.Connection] = []
@@ -568,14 +568,20 @@ def _insert_venue_owner(
         if observation_external is None
         else observation_external
     )
+    effect_row = connection.execute(
+        "SELECT disposition FROM venue_effect WHERE effect_id = ?",
+        (effect_id,),
+    ).fetchone()
+    assert effect_row is not None
+    admitted_after_effect_closed = int(str(effect_row[0]) == "CLOSED")
     connection.execute(
         """
         INSERT INTO venue_identity_owner (
             scope_id, execution_profile_id, owner_external,
             observation_external, effect_id, root_fill_key_id,
-            owner_generation_id
+            owner_generation_id, admitted_after_effect_closed
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             scope_id,
@@ -585,6 +591,7 @@ def _insert_venue_owner(
             effect_id,
             root_id,
             owner_generation_id,
+            admitted_after_effect_closed,
         ),
     )
     return owner_external
@@ -2616,6 +2623,100 @@ def test_unresolved_generation_authority_blocks_serial_successor_until_closed(
     ).fetchone() == (1,)
     with pytest.raises(sqlite3.IntegrityError, match="current controller head"):
         _insert_claim(connection, claim_id=2, effect_id=2)
+
+
+def test_post_closure_owner_atomically_quarantines_serial_successor(
+    tmp_path: object,
+) -> None:
+    connection = _installed_connection(tmp_path)
+    _seed_scope_with_live_generation(connection)
+    _insert_controller(connection)
+    _insert_root(connection)
+    _insert_open_effect(connection, 1)
+    _insert_venue_owner(connection, owner_external="known-owner", effect_id=1)
+    _insert_claim(connection, claim_id=1, effect_id=1)
+    _close_generation_authority(connection, generation_id="12" * 32)
+    connection.execute(
+        "UPDATE symbol_controller"
+        " SET live_acquisition_generation_id = NULL,"
+        " currentness_head_ordinal = 1, controller_version_ordinal = 2"
+    )
+    successor_id = _retire_first_and_insert_live_successor(connection)
+    connection.execute(
+        "UPDATE symbol_controller"
+        " SET live_acquisition_generation_id = ?,"
+        " currentness_head_ordinal = 2, controller_version_ordinal = 3",
+        (successor_id,),
+    )
+    _insert_open_effect(
+        connection,
+        2,
+        acquisition_generation_id=successor_id,
+        generation_mandate_commitment_sha256="9c" * 32,
+    )
+
+    with pytest.raises(sqlite3.IntegrityError, match="exact canonical effect state"):
+        connection.execute(
+            "INSERT INTO venue_identity_owner (scope_id, execution_profile_id,"
+            " owner_external, observation_external, effect_id, root_fill_key_id,"
+            " owner_generation_id, admitted_after_effect_closed)"
+            " VALUES (1, ?, 'misclassified-late-owner',"
+            " 'misclassified-late-observation', 1, 1, ?, 0)",
+            (_DEFAULT_EXECUTION_PROFILE_ID, "12" * 32),
+        )
+    _insert_venue_owner(
+        connection,
+        owner_external="late-owner",
+        effect_id=1,
+    )
+
+    assert connection.execute(
+        "SELECT unresolved_effect_count FROM acquisition_generation_current"
+        " WHERE acquisition_generation_id = ?",
+        ("12" * 32,),
+    ).fetchone() == (1,)
+    assert connection.execute(
+        "SELECT integrity_state, currentness_head_ordinal,"
+        " controller_version_ordinal FROM symbol_controller"
+    ).fetchone() == ("UNRESOLVED_VENUE_QUARANTINED", 3, 4)
+    with pytest.raises(sqlite3.IntegrityError, match="current controller head"):
+        _insert_claim(connection, claim_id=2, effect_id=2)
+
+    for closure_id, closure_kind in (
+        (10, "TERMINAL_LEG"),
+        (11, "ACCEPTANCE_CLOSED"),
+    ):
+        with pytest.raises(sqlite3.IntegrityError, match="invalidation evidence"):
+            connection.execute(
+                "INSERT INTO closure_chain VALUES (?, 1, 'late-owner', 1, 1, ?, NULL)",
+                (closure_id, closure_kind),
+            )
+
+    acceptance_set_id = int(
+        connection.execute(
+            "SELECT acceptance_set_id FROM acceptance_set WHERE effect_id = 1"
+        ).fetchone()[0]
+    )
+    connection.execute(
+        "INSERT INTO acceptance_evidence (evidence_id, acceptance_set_id,"
+        " effect_id, evidence_kind, proof_kind, evidence_digest, evidence_ordinal,"
+        " contradiction_owner_external, contradiction_observation_external)"
+        " VALUES (99, ?, 1, 'INVALIDATION', NULL, ?, 2, 'late-owner',"
+        " 'observation-late-owner')",
+        (acceptance_set_id, "a6" * 32),
+    )
+    assert connection.execute(
+        "SELECT disposition FROM venue_effect WHERE effect_id = 1"
+    ).fetchone() == ("INVALIDATED",)
+    assert connection.execute(
+        "SELECT closure_kind FROM closure_chain"
+        " WHERE effect_id = 1 AND owner_external = 'late-owner'"
+    ).fetchone() == ("INVALIDATED_TERMINAL",)
+    assert connection.execute(
+        "SELECT unresolved_effect_count FROM acquisition_generation_current"
+        " WHERE acquisition_generation_id = ?",
+        ("12" * 32,),
+    ).fetchone() == (1,)
 
 
 def test_normal_effect_and_claim_require_current_normal_protection(

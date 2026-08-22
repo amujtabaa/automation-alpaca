@@ -29,6 +29,7 @@ roots, cross-root predecessors, branches, or out-of-order revisions); exact
 effect-to-owner-to-closure bindings; canonical effect ownership of
 OPEN|CLOSED|INVALIDATED with claim-before-CLOSED and terminal freeze;
 append-only claims, owners, closures, facts, and acceptance evidence;
+database-authenticated late-owner quarantine after apparent closure;
 gap-free, branch-free, same-owner closure ordinals; version-coupled current
 proof for checkpoint, controller, root economics, and protection authority;
 and one current market cursor per stream-generation/source-profile binding.
@@ -680,6 +681,8 @@ CREATE TABLE venue_identity_owner (
     effect_id INTEGER NOT NULL,
     root_fill_key_id INTEGER,
     owner_generation_id TEXT NOT NULL,
+    admitted_after_effect_closed INTEGER NOT NULL
+        CHECK (admitted_after_effect_closed IN (0, 1)),
     PRIMARY KEY (execution_profile_id, owner_external),
     UNIQUE (scope_id, owner_external, effect_id),
     UNIQUE (effect_id, owner_external, observation_external),
@@ -708,7 +711,8 @@ CREATE TABLE venue_identity_owner (
 
 CREATE INDEX ix_venue_identity_owner_effect
     ON venue_identity_owner (
-        effect_id, scope_id, execution_profile_id, owner_external
+        effect_id, admitted_after_effect_closed, scope_id,
+        execution_profile_id, owner_external
     );
 
 CREATE INDEX ix_venue_effect_generation_disposition
@@ -1161,6 +1165,31 @@ CREATE TRIGGER trg_venue_owner_no_conflict_replace
         )
 BEGIN
     SELECT RAISE (ABORT, 'venue owner identity is already retained');
+END;
+
+CREATE TRIGGER trg_venue_owner_requires_exact_admission_phase
+    BEFORE INSERT ON venue_identity_owner
+    FOR EACH ROW
+    WHEN NOT EXISTS (
+            SELECT 1
+              FROM venue_effect AS effect
+             WHERE effect.effect_id = NEW.effect_id
+               AND (
+                    (
+                        effect.disposition = 'OPEN'
+                        AND NEW.admitted_after_effect_closed = 0
+                    )
+                    OR (
+                        effect.disposition = 'CLOSED'
+                        AND NEW.admitted_after_effect_closed = 1
+                    )
+               )
+        )
+BEGIN
+    SELECT RAISE (
+        ABORT,
+        'venue owner admission phase must match exact canonical effect state'
+    );
 END;
 
 CREATE TRIGGER trg_acquisition_root_route_no_conflict_replace
@@ -1719,7 +1748,15 @@ CREATE TRIGGER trg_acquisition_generation_current_exact
              WHERE effect.acquisition_generation_id =
                     NEW.acquisition_generation_id
                AND effect.scope_id = NEW.scope_id
-               AND effect.disposition <> 'CLOSED'
+               AND (
+                    effect.disposition <> 'CLOSED'
+                    OR EXISTS (
+                        SELECT 1
+                          FROM venue_identity_owner AS owner
+                         WHERE owner.effect_id = effect.effect_id
+                           AND owner.admitted_after_effect_closed = 1
+                    )
+               )
         )
       OR NEW.active_protection_count <> (
             SELECT COUNT(*)
@@ -1994,7 +2031,15 @@ CREATE TRIGGER trg_symbol_controller_integrity_exact_insert
                     SELECT 1
                       FROM venue_effect AS effect
                      WHERE effect.scope_id = NEW.scope_id
-                       AND effect.disposition = 'INVALIDATED'
+                       AND (
+                            effect.disposition = 'INVALIDATED'
+                            OR EXISTS (
+                                SELECT 1
+                                  FROM venue_identity_owner AS owner
+                                 WHERE owner.effect_id = effect.effect_id
+                                   AND owner.admitted_after_effect_closed = 1
+                            )
+                       )
                 )
                 THEN 'UNRESOLVED_VENUE_QUARANTINED'
             ELSE 'CONSISTENT'
@@ -2031,7 +2076,15 @@ CREATE TRIGGER trg_symbol_controller_integrity_sticky_update
                     SELECT 1
                       FROM venue_effect AS effect
                      WHERE effect.scope_id = NEW.scope_id
-                       AND effect.disposition = 'INVALIDATED'
+                       AND (
+                            effect.disposition = 'INVALIDATED'
+                            OR EXISTS (
+                                SELECT 1
+                                  FROM venue_identity_owner AS owner
+                                 WHERE owner.effect_id = effect.effect_id
+                                   AND owner.admitted_after_effect_closed = 1
+                            )
+                       )
                 )
                 THEN 'UNRESOLVED_VENUE_QUARANTINED'
             WHEN OLD.integrity_state = 'MIXED_GENERATION_RECOVERY'
@@ -2738,7 +2791,15 @@ BEGIN
              WHERE effect.acquisition_generation_id =
                     NEW.acquisition_generation_id
                AND effect.scope_id = NEW.scope_id
-               AND effect.disposition <> 'CLOSED'
+               AND (
+                    effect.disposition <> 'CLOSED'
+                    OR EXISTS (
+                        SELECT 1
+                          FROM venue_identity_owner AS owner
+                         WHERE owner.effect_id = effect.effect_id
+                           AND owner.admitted_after_effect_closed = 1
+                    )
+               )
        )
      WHERE acquisition_generation_id = NEW.acquisition_generation_id
        AND scope_id = NEW.scope_id;
@@ -2756,7 +2817,15 @@ BEGIN
              WHERE effect.acquisition_generation_id =
                     NEW.acquisition_generation_id
                AND effect.scope_id = NEW.scope_id
-               AND effect.disposition <> 'CLOSED'
+               AND (
+                    effect.disposition <> 'CLOSED'
+                    OR EXISTS (
+                        SELECT 1
+                          FROM venue_identity_owner AS owner
+                         WHERE owner.effect_id = effect.effect_id
+                           AND owner.admitted_after_effect_closed = 1
+                    )
+               )
        )
      WHERE acquisition_generation_id = NEW.acquisition_generation_id
        AND scope_id = NEW.scope_id;
@@ -2945,6 +3014,60 @@ CREATE TRIGGER trg_venue_effect_no_delete
     BEFORE DELETE ON venue_effect
 BEGIN
     SELECT RAISE (ABORT, 'venue_effect rows are retained');
+END;
+
+CREATE TRIGGER trg_venue_identity_owner_late_admission_quarantines
+    AFTER INSERT ON venue_identity_owner
+    FOR EACH ROW
+    WHEN NEW.admitted_after_effect_closed = 1
+BEGIN
+    UPDATE acquisition_generation_current
+       SET unresolved_effect_count = (
+            SELECT COUNT(*)
+              FROM venue_effect AS effect
+             WHERE effect.acquisition_generation_id =
+                    NEW.owner_generation_id
+               AND effect.scope_id = NEW.scope_id
+               AND (
+                    effect.disposition <> 'CLOSED'
+                    OR EXISTS (
+                        SELECT 1
+                          FROM venue_identity_owner AS owner
+                         WHERE owner.effect_id = effect.effect_id
+                           AND owner.admitted_after_effect_closed = 1
+                    )
+               )
+       )
+     WHERE acquisition_generation_id = NEW.owner_generation_id
+       AND scope_id = NEW.scope_id;
+
+    UPDATE symbol_controller
+       SET integrity_state = CASE
+            WHEN aggregate_quantity < 0
+                THEN 'NEGATIVE_POSITION_QUARANTINED'
+            WHEN EXISTS (
+                    SELECT 1
+                      FROM root_fill AS root
+                     WHERE root.scope_id = symbol_controller.scope_id
+                       AND root.current_fact_id IS NOT NULL
+                       AND NOT EXISTS (
+                            SELECT 1
+                              FROM acquisition_root_route AS route
+                             WHERE route.root_fill_key_id =
+                                    root.root_fill_key_id
+                               AND route.scope_id = root.scope_id
+                               AND route.application_generation_id =
+                                    root.application_generation_id
+                               AND route.execution_profile_id =
+                                    root.execution_profile_id
+                        )
+                )
+                THEN 'UNMATCHED_LINEAGE_QUARANTINED'
+            ELSE 'UNRESOLVED_VENUE_QUARANTINED'
+        END,
+           currentness_head_ordinal = currentness_head_ordinal + 1,
+           controller_version_ordinal = controller_version_ordinal + 1
+     WHERE scope_id = NEW.scope_id;
 END;
 
 CREATE TRIGGER trg_venue_identity_owner_no_update
@@ -3224,6 +3347,25 @@ BEGIN
              WHERE predecessor.closure_id = NEW.predecessor_closure_id
                AND predecessor.ordinal = NEW.ordinal - 1
         );
+END;
+
+CREATE TRIGGER trg_closure_chain_late_owner_requires_invalidation
+    BEFORE INSERT ON closure_chain
+    FOR EACH ROW
+    WHEN NEW.closure_kind <> 'INVALIDATED_TERMINAL'
+     AND EXISTS (
+            SELECT 1
+              FROM venue_identity_owner AS owner
+             WHERE owner.scope_id = NEW.scope_id
+               AND owner.owner_external = NEW.owner_external
+               AND owner.effect_id = NEW.effect_id
+               AND owner.admitted_after_effect_closed = 1
+        )
+BEGIN
+    SELECT RAISE (
+        ABORT,
+        'post-closure venue owner requires exact invalidation evidence'
+    );
 END;
 
 CREATE TRIGGER trg_closure_chain_matches_effect_authority
@@ -3530,7 +3672,7 @@ END;
 """
 
 _SCHEMA_CATALOG_SHA256 = (
-    "c2cbf42b61ec6ca6928dc63e5165584f525356a64878907574ab93c975478d56"
+    "510dd56f88ab2fcd88895c2713d7525f65448a711b90433fb232fe2ba079ac4f"
 )
 
 
