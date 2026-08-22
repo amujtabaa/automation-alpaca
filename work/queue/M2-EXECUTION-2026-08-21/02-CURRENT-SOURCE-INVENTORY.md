@@ -1,14 +1,9 @@
 # M2-I1 current-source, member, and typed-route inventory
 
-Status: **REGENERATED AT IMPLEMENTATION START — SOURCE HEAD `abcefca` — NO DRIFT**
+Status: **STATIC INVENTORY — SOURCE HEAD `177ea5f` — REGENERATE AT IMPLEMENTATION START**
 
 ## Exact heads
 
-- Implementation-start head:
-  `codex/m2-i1-durable-codec-r1@abcefca80d1a16ae86f7982d27ba6212a9504bfa`, tree
-  `e52f5e6345049388db1544a164ae99f30e057724` (the exact merged documentation-only
-  preparation baseline `master` head; recorded in
-  `04-I1-ACTIVATION-CHECKPOINT.md`).
 - Accepted source head: `master@177ea5fcd959b9e7d7d5a3172070f90f89ece963`.
 - Accepted source tree: `99338a7832509645f17ed4f51c511e7dffb6c41f`.
 - Ratified preparation branch before this packet:
@@ -16,10 +11,9 @@ Status: **REGENERATED AT IMPLEMENTATION START — SOURCE HEAD `abcefca` — NO D
 - `master...163ebf7` changes no `app/**` or `tests/**`; the execution source bytes therefore remain the
   accepted-source bytes below.
 
-The implementation-start checkpoint regenerated this inventory from the exact merged
-preparation `master` head before the first RED test: all twelve SHA-256 values below were
-recomputed at `abcefca` and match exactly. No source drift; no c9 application hash or old
-WO-0159-0163 inventory was reused.
+The implementation-start checkpoint must regenerate this inventory from the exact merged
+preparation `master` head before the first RED test. Any source drift requires a recorded
+reconciliation; no c9 application hash or old WO-0159-0163 inventory may be reused.
 
 ## Hash-bound source surfaces
 

@@ -7,105 +7,75 @@ are re-derived by the owning constructors on decode. The codec is pure: no
 I/O, clock, randomness, side effects, reducer routes, or dependencies beyond
 the deterministic standard library.
 
-Canonical rules (v1, ``contract_version="1"``):
+Canonical rules (v1, contract version ``"1"``):
 
 - Integer fields are base-10 ASCII text with an optional leading ``-`` only
   where the owning value permits negatives; ``+``, leading zeros, negative
   zero, and non-ASCII digits are refused.
 - ``Decimal`` persists its exact ``(sign, digits, exponent)`` tuple;
-  ``Fraction`` persists its reduced numerator and positive denominator. Float
-  conversion never occurs.
+  ``Fraction`` persists its reduced numerator and positive denominator —
+  unreduced or noncanonical-zero ratios are refused, never silently
+  normalized. Float conversion never occurs.
 - Composite atoms hold exact ordered typed child atoms. Unknown versions or
   tags and missing, extra, reordered, duplicate, malformed, wrong-type,
   non-NFC, blank, or control-bearing fields are refused without repair.
+
+The public surface is exactly ``DurableAtom``, ``encode_m1_value``, and
+``decode_m1_value``; every other name in this module is implementation-
+private.
 """
 
-from __future__ import annotations
+from __future__ import annotations as _annotations
 
-import unicodedata
-from dataclasses import dataclass
-from decimal import Decimal
-from fractions import Fraction
-from typing import Any, Callable, TypeVar
+import unicodedata as _unicodedata
+from dataclasses import dataclass as _dataclass
+from decimal import Decimal as _Decimal
+from fractions import Fraction as _Fraction
+from typing import Any as _Any
+from typing import Callable as _Callable
+from typing import TypeVar as _TypeVar
 
-from .identity import (
-    AccountId,
-    ActorId,
-    AcquisitionGenerationId,
-    AcquisitionMandateId,
-    ApplicationGenerationId,
-    AuthorityInputId,
-    BrokerId,
-    ClaimOccurrenceId,
-    ClientOrderId,
-    ClosureId,
-    EffectId,
-    EmergencyGrantId,
-    EmergencyRecoveryCompatibilityId,
-    EnvironmentId,
-    EvidenceReference,
-    ExecutionFactKey,
-    ManualFlattenId,
-    MandateId,
-    MarketDataSourceId,
-    MarketOccurrenceId,
-    MarketStreamGenerationId,
-    OrderId,
-    QueryClaimId,
-    RequestOccurrenceId,
-    RootFillId,
-    RootFillKey,
-    SessionId,
-    SourceEventId,
-    SymbolId,
-    VenueInputId,
-    VenueLegKey,
-    VenueObservationId,
-)
-from .values import (
-    ExactBasis,
-    PriceScale,
-    PriceUnits,
-    Quantity,
-    ReportedPrice,
-    TickMetadata,
-)
+from . import identity as _identity
+from . import values as _values
 
 
-CONTRACT_VERSION = "1"
+_CONTRACT_VERSION = "1"
 
 _DIGIT_CHARACTERS = "0123456789"
 
 _IDENTITY_CLASSES: tuple[tuple[str, type], ...] = (
-    ("broker_id", BrokerId),
-    ("environment_id", EnvironmentId),
-    ("account_id", AccountId),
-    ("symbol_id", SymbolId),
-    ("order_id", OrderId),
-    ("root_fill_id", RootFillId),
-    ("source_event_id", SourceEventId),
-    ("application_generation_id", ApplicationGenerationId),
-    ("effect_id", EffectId),
-    ("request_occurrence_id", RequestOccurrenceId),
-    ("client_order_id", ClientOrderId),
-    ("claim_occurrence_id", ClaimOccurrenceId),
-    ("closure_id", ClosureId),
-    ("venue_input_id", VenueInputId),
-    ("venue_observation_id", VenueObservationId),
-    ("actor_id", ActorId),
-    ("evidence_reference", EvidenceReference),
-    ("mandate_id", MandateId),
-    ("acquisition_mandate_id", AcquisitionMandateId),
-    ("emergency_recovery_compatibility_id", EmergencyRecoveryCompatibilityId),
-    ("market_data_source_id", MarketDataSourceId),
-    ("market_occurrence_id", MarketOccurrenceId),
-    ("market_stream_generation_id", MarketStreamGenerationId),
-    ("acquisition_generation_id", AcquisitionGenerationId),
-    ("authority_input_id", AuthorityInputId),
-    ("query_claim_id", QueryClaimId),
-    ("session_id", SessionId),
-    ("emergency_grant_id", EmergencyGrantId),
-    ("manual_flatten_id", ManualFlattenId),
+    ("broker_id", _identity.BrokerId),
+    ("environment_id", _identity.EnvironmentId),
+    ("account_id", _identity.AccountId),
+    ("symbol_id", _identity.SymbolId),
+    ("order_id", _identity.OrderId),
+    ("root_fill_id", _identity.RootFillId),
+    ("source_event_id", _identity.SourceEventId),
+    ("application_generation_id", _identity.ApplicationGenerationId),
+    ("effect_id", _identity.EffectId),
+    ("request_occurrence_id", _identity.RequestOccurrenceId),
+    ("client_order_id", _identity.ClientOrderId),
+    ("claim_occurrence_id", _identity.ClaimOccurrenceId),
+    ("closure_id", _identity.ClosureId),
+    ("venue_input_id", _identity.VenueInputId),
+    ("venue_observation_id", _identity.VenueObservationId),
+    ("actor_id", _identity.ActorId),
+    ("evidence_reference", _identity.EvidenceReference),
+    ("mandate_id", _identity.MandateId),
+    ("acquisition_mandate_id", _identity.AcquisitionMandateId),
+    (
+        "emergency_recovery_compatibility_id",
+        _identity.EmergencyRecoveryCompatibilityId,
+    ),
+    ("market_data_source_id", _identity.MarketDataSourceId),
+    ("market_occurrence_id", _identity.MarketOccurrenceId),
+    ("market_stream_generation_id", _identity.MarketStreamGenerationId),
+    ("acquisition_generation_id", _identity.AcquisitionGenerationId),
+    ("authority_input_id", _identity.AuthorityInputId),
+    ("query_claim_id", _identity.QueryClaimId),
+    ("session_id", _identity.SessionId),
+    ("emergency_grant_id", _identity.EmergencyGrantId),
+    ("manual_flatten_id", _identity.ManualFlattenId),
 )
 
 _IDENTITY_CLASS_BY_TYPE: dict[type, str] = {
@@ -113,44 +83,44 @@ _IDENTITY_CLASS_BY_TYPE: dict[type, str] = {
 }
 
 _OwningValue = (
-    Quantity
-    | PriceUnits
-    | PriceScale
-    | TickMetadata
-    | ReportedPrice
-    | ExactBasis
-    | BrokerId
-    | EnvironmentId
-    | AccountId
-    | SymbolId
-    | OrderId
-    | RootFillId
-    | SourceEventId
-    | ApplicationGenerationId
-    | EffectId
-    | RequestOccurrenceId
-    | ClientOrderId
-    | ClaimOccurrenceId
-    | ClosureId
-    | VenueInputId
-    | VenueObservationId
-    | ActorId
-    | EvidenceReference
-    | MandateId
-    | AcquisitionMandateId
-    | EmergencyRecoveryCompatibilityId
-    | MarketDataSourceId
-    | MarketOccurrenceId
-    | MarketStreamGenerationId
-    | AcquisitionGenerationId
-    | AuthorityInputId
-    | QueryClaimId
-    | SessionId
-    | EmergencyGrantId
-    | ManualFlattenId
-    | ExecutionFactKey
-    | RootFillKey
-    | VenueLegKey
+    _values.Quantity
+    | _values.PriceUnits
+    | _values.PriceScale
+    | _values.TickMetadata
+    | _values.ReportedPrice
+    | _values.ExactBasis
+    | _identity.BrokerId
+    | _identity.EnvironmentId
+    | _identity.AccountId
+    | _identity.SymbolId
+    | _identity.OrderId
+    | _identity.RootFillId
+    | _identity.SourceEventId
+    | _identity.ApplicationGenerationId
+    | _identity.EffectId
+    | _identity.RequestOccurrenceId
+    | _identity.ClientOrderId
+    | _identity.ClaimOccurrenceId
+    | _identity.ClosureId
+    | _identity.VenueInputId
+    | _identity.VenueObservationId
+    | _identity.ActorId
+    | _identity.EvidenceReference
+    | _identity.MandateId
+    | _identity.AcquisitionMandateId
+    | _identity.EmergencyRecoveryCompatibilityId
+    | _identity.MarketDataSourceId
+    | _identity.MarketOccurrenceId
+    | _identity.MarketStreamGenerationId
+    | _identity.AcquisitionGenerationId
+    | _identity.AuthorityInputId
+    | _identity.QueryClaimId
+    | _identity.SessionId
+    | _identity.EmergencyGrantId
+    | _identity.ManualFlattenId
+    | _identity.ExecutionFactKey
+    | _identity.RootFillKey
+    | _identity.VenueLegKey
 )
 
 _FIELD_SPECS: dict[str, tuple[tuple[str, str], ...]] = {
@@ -192,8 +162,10 @@ _FIELD_SPECS: dict[str, tuple[tuple[str, str], ...]] = {
 for _identity_tag, _identity_class in _IDENTITY_CLASSES:
     _FIELD_SPECS[_identity_tag] = (("text", "identity"),)
 
+__all__ = ("DurableAtom", "decode_m1_value", "encode_m1_value")
 
-@dataclass(frozen=True, slots=True)
+
+@_dataclass(frozen=True, slots=True)
 class DurableAtom:
     """One immutable versioned durable atom with ordered typed fields."""
 
@@ -230,7 +202,15 @@ def _is_canonical_identity_text(value: str) -> bool:
         code_point = ord(character)
         if code_point < 0x20 or code_point == 0x7F:
             return False
-    return unicodedata.normalize("NFC", value) == value
+    return _unicodedata.normalize("NFC", value) == value
+
+
+def _is_reduced_ratio(numerator: int, denominator: int) -> bool:
+    left = abs(numerator)
+    right = denominator
+    while right:
+        left, right = right, left % right
+    return left == 1
 
 
 def _validate_leaf_text(kind: str, value: str) -> None:
@@ -268,7 +248,7 @@ def _validate_leaf_text(kind: str, value: str) -> None:
 def _validate_atom(atom: DurableAtom) -> None:
     if type(atom.contract_version) is not str:
         raise TypeError("contract version must be text")
-    if atom.contract_version != CONTRACT_VERSION:
+    if atom.contract_version != _CONTRACT_VERSION:
         raise ValueError("unknown durable contract version")
     if type(atom.type_tag) is not str:
         raise TypeError("type tag must be text")
@@ -290,6 +270,14 @@ def _validate_atom(atom: DurableAtom) -> None:
             if field.type_tag != detail:
                 raise ValueError("child atom tag does not match its ordered position")
             _validate_atom(field)
+    if atom.type_tag == "_fraction":
+        numerator = int(_leaf_text(atom, 0))
+        denominator = int(_leaf_text(atom, 1))
+        if not _is_reduced_ratio(numerator, denominator):
+            raise ValueError(
+                "fraction components must be reduced to relatively prime "
+                "numerator and positive denominator"
+            )
 
 
 def _leaf_text(atom: DurableAtom, index: int) -> str:
@@ -307,43 +295,43 @@ def _child_atom(atom: DurableAtom, index: int) -> DurableAtom:
 
 
 def _encode_integer_atom(type_tag: str, value: int) -> DurableAtom:
-    return DurableAtom(CONTRACT_VERSION, type_tag, (str(value),))
+    return DurableAtom(_CONTRACT_VERSION, type_tag, (str(value),))
 
 
-def _encode_decimal_leaf(value: Decimal) -> DurableAtom:
+def _encode_decimal_leaf(value: _Decimal) -> DurableAtom:
     sign, digits, exponent = value.as_tuple()
     digit_text = "".join(str(digit) for digit in digits)
     return DurableAtom(
-        CONTRACT_VERSION,
+        _CONTRACT_VERSION,
         "_decimal",
         (str(sign), digit_text, str(exponent)),
     )
 
 
-def _encode_fraction_leaf(value: Fraction) -> DurableAtom:
+def _encode_fraction_leaf(value: _Fraction) -> DurableAtom:
     numerator, denominator = value.as_integer_ratio()
     return DurableAtom(
-        CONTRACT_VERSION, "_fraction", (str(numerator), str(denominator))
+        _CONTRACT_VERSION, "_fraction", (str(numerator), str(denominator))
     )
 
 
-def _encode_quantity(value: Quantity) -> DurableAtom:
+def _encode_quantity(value: _values.Quantity) -> DurableAtom:
     return _encode_integer_atom("quantity", value.value)
 
 
-def _encode_price_units(value: PriceUnits) -> DurableAtom:
+def _encode_price_units(value: _values.PriceUnits) -> DurableAtom:
     return _encode_integer_atom("price_units", value.value)
 
 
-def _encode_price_scale(value: PriceScale) -> DurableAtom:
+def _encode_price_scale(value: _values.PriceScale) -> DurableAtom:
     return DurableAtom(
-        CONTRACT_VERSION, "price_scale", (_encode_decimal_leaf(value.value),)
+        _CONTRACT_VERSION, "price_scale", (_encode_decimal_leaf(value.value),)
     )
 
 
-def _encode_tick_metadata(value: TickMetadata) -> DurableAtom:
+def _encode_tick_metadata(value: _values.TickMetadata) -> DurableAtom:
     return DurableAtom(
-        CONTRACT_VERSION,
+        _CONTRACT_VERSION,
         "tick_metadata",
         (
             _encode_price_units(value.tick_units),
@@ -352,9 +340,9 @@ def _encode_tick_metadata(value: TickMetadata) -> DurableAtom:
     )
 
 
-def _encode_reported_price(value: ReportedPrice) -> DurableAtom:
+def _encode_reported_price(value: _values.ReportedPrice) -> DurableAtom:
     return DurableAtom(
-        CONTRACT_VERSION,
+        _CONTRACT_VERSION,
         "reported_price",
         (
             _encode_price_units(value.units),
@@ -364,27 +352,27 @@ def _encode_reported_price(value: ReportedPrice) -> DurableAtom:
     )
 
 
-def _encode_exact_basis(value: ExactBasis) -> DurableAtom:
+def _encode_exact_basis(value: _values.ExactBasis) -> DurableAtom:
     return DurableAtom(
-        CONTRACT_VERSION,
+        _CONTRACT_VERSION,
         "exact_basis",
         (_encode_fraction_leaf(value.value),),
     )
 
 
-def _encode_identity(value: Any) -> DurableAtom:
+def _encode_identity(value: _Any) -> DurableAtom:
     type_tag = _IDENTITY_CLASS_BY_TYPE.get(type(value))
     if type_tag is None:
         raise TypeError("value is not an M1 identity")
     text = value.value
     if type(text) is not str:
         raise TypeError("identity value must be text")
-    return DurableAtom(CONTRACT_VERSION, type_tag, (text,))
+    return DurableAtom(_CONTRACT_VERSION, type_tag, (text,))
 
 
-def _encode_execution_fact_key(value: ExecutionFactKey) -> DurableAtom:
+def _encode_execution_fact_key(value: _identity.ExecutionFactKey) -> DurableAtom:
     return DurableAtom(
-        CONTRACT_VERSION,
+        _CONTRACT_VERSION,
         "execution_fact_key",
         (
             _encode_identity(value.broker),
@@ -395,9 +383,9 @@ def _encode_execution_fact_key(value: ExecutionFactKey) -> DurableAtom:
     )
 
 
-def _encode_root_fill_key(value: RootFillKey) -> DurableAtom:
+def _encode_root_fill_key(value: _identity.RootFillKey) -> DurableAtom:
     return DurableAtom(
-        CONTRACT_VERSION,
+        _CONTRACT_VERSION,
         "root_fill_key",
         (
             _encode_identity(value.broker),
@@ -408,9 +396,9 @@ def _encode_root_fill_key(value: RootFillKey) -> DurableAtom:
     )
 
 
-def _encode_venue_leg_key(value: VenueLegKey) -> DurableAtom:
+def _encode_venue_leg_key(value: _identity.VenueLegKey) -> DurableAtom:
     return DurableAtom(
-        CONTRACT_VERSION,
+        _CONTRACT_VERSION,
         "venue_leg_key",
         (
             _encode_identity(value.broker),
@@ -421,22 +409,22 @@ def _encode_venue_leg_key(value: VenueLegKey) -> DurableAtom:
     )
 
 
-_ENCODER_BY_TYPE: dict[type, Callable[[Any], DurableAtom]] = {
-    Quantity: _encode_quantity,
-    PriceUnits: _encode_price_units,
-    PriceScale: _encode_price_scale,
-    TickMetadata: _encode_tick_metadata,
-    ReportedPrice: _encode_reported_price,
-    ExactBasis: _encode_exact_basis,
-    ExecutionFactKey: _encode_execution_fact_key,
-    RootFillKey: _encode_root_fill_key,
-    VenueLegKey: _encode_venue_leg_key,
+_ENCODER_BY_TYPE: dict[type, _Callable[[_Any], DurableAtom]] = {
+    _values.Quantity: _encode_quantity,
+    _values.PriceUnits: _encode_price_units,
+    _values.PriceScale: _encode_price_scale,
+    _values.TickMetadata: _encode_tick_metadata,
+    _values.ReportedPrice: _encode_reported_price,
+    _values.ExactBasis: _encode_exact_basis,
+    _identity.ExecutionFactKey: _encode_execution_fact_key,
+    _identity.RootFillKey: _encode_root_fill_key,
+    _identity.VenueLegKey: _encode_venue_leg_key,
 }
 for _identity_class in _IDENTITY_CLASS_BY_TYPE:
     _ENCODER_BY_TYPE[_identity_class] = _encode_identity
 
 
-_IDENTITY_CONSTRUCTOR_BY_TAG: dict[str, Callable[[str], Any]] = {
+_IDENTITY_CONSTRUCTOR_BY_TAG: dict[str, _Callable[[str], _Any]] = {
     tag: identity_class for tag, identity_class in _IDENTITY_CLASSES
 }
 
@@ -453,15 +441,15 @@ def encode_m1_value(value: _OwningValue) -> DurableAtom:
     return handler(value)
 
 
-def _decode_decimal_leaf(decimal_atom: DurableAtom) -> Decimal:
+def _decode_decimal_leaf(decimal_atom: DurableAtom) -> _Decimal:
     sign = int(_leaf_text(decimal_atom, 0))
     digit_text = _leaf_text(decimal_atom, 1)
     digits = tuple(int(character) for character in digit_text)
     exponent = int(_leaf_text(decimal_atom, 2))
-    return Decimal((sign, digits, exponent))
+    return _Decimal((sign, digits, exponent))
 
 
-_DecodedType = TypeVar("_DecodedType")
+_DecodedType = _TypeVar("_DecodedType")
 
 
 def _decode_owned(
@@ -482,51 +470,53 @@ def decode_m1_value(atom: DurableAtom) -> _OwningValue:
     _validate_atom(atom)
     type_tag = atom.type_tag
     if type_tag == "quantity":
-        return Quantity(int(_leaf_text(atom, 0)))
+        return _values.Quantity(int(_leaf_text(atom, 0)))
     if type_tag == "price_units":
-        return PriceUnits(int(_leaf_text(atom, 0)))
+        return _values.PriceUnits(int(_leaf_text(atom, 0)))
     if type_tag == "price_scale":
-        return PriceScale(_decode_decimal_leaf(_child_atom(atom, 0)))
+        return _values.PriceScale(_decode_decimal_leaf(_child_atom(atom, 0)))
     if type_tag == "tick_metadata":
-        return TickMetadata(
-            tick_units=_decode_owned(_child_atom(atom, 0), PriceUnits),
-            scale=_decode_owned(_child_atom(atom, 1), PriceScale),
+        return _values.TickMetadata(
+            tick_units=_decode_owned(_child_atom(atom, 0), _values.PriceUnits),
+            scale=_decode_owned(_child_atom(atom, 1), _values.PriceScale),
         )
     if type_tag == "reported_price":
-        return ReportedPrice(
-            units=_decode_owned(_child_atom(atom, 0), PriceUnits),
-            scale=_decode_owned(_child_atom(atom, 1), PriceScale),
-            tick=_decode_owned(_child_atom(atom, 2), TickMetadata),
+        return _values.ReportedPrice(
+            units=_decode_owned(_child_atom(atom, 0), _values.PriceUnits),
+            scale=_decode_owned(_child_atom(atom, 1), _values.PriceScale),
+            tick=_decode_owned(_child_atom(atom, 2), _values.TickMetadata),
         )
     if type_tag == "exact_basis":
         fraction_atom = _child_atom(atom, 0)
-        return ExactBasis(
-            Fraction(
+        return _values.ExactBasis(
+            _Fraction(
                 int(_leaf_text(fraction_atom, 0)),
                 int(_leaf_text(fraction_atom, 1)),
             )
         )
     if type_tag == "execution_fact_key":
-        return ExecutionFactKey(
-            broker=_decode_owned(_child_atom(atom, 0), BrokerId),
-            environment=_decode_owned(_child_atom(atom, 1), EnvironmentId),
-            account=_decode_owned(_child_atom(atom, 2), AccountId),
-            source_event_id=_decode_owned(_child_atom(atom, 3), SourceEventId),
+        return _identity.ExecutionFactKey(
+            broker=_decode_owned(_child_atom(atom, 0), _identity.BrokerId),
+            environment=_decode_owned(_child_atom(atom, 1), _identity.EnvironmentId),
+            account=_decode_owned(_child_atom(atom, 2), _identity.AccountId),
+            source_event_id=_decode_owned(
+                _child_atom(atom, 3), _identity.SourceEventId
+            ),
         )
     if type_tag == "root_fill_key":
-        return RootFillKey(
-            broker=_decode_owned(_child_atom(atom, 0), BrokerId),
-            environment=_decode_owned(_child_atom(atom, 1), EnvironmentId),
-            account=_decode_owned(_child_atom(atom, 2), AccountId),
-            root_fill_id=_decode_owned(_child_atom(atom, 3), RootFillId),
+        return _identity.RootFillKey(
+            broker=_decode_owned(_child_atom(atom, 0), _identity.BrokerId),
+            environment=_decode_owned(_child_atom(atom, 1), _identity.EnvironmentId),
+            account=_decode_owned(_child_atom(atom, 2), _identity.AccountId),
+            root_fill_id=_decode_owned(_child_atom(atom, 3), _identity.RootFillId),
         )
     if type_tag == "venue_leg_key":
-        return VenueLegKey(
-            broker=_decode_owned(_child_atom(atom, 0), BrokerId),
-            environment=_decode_owned(_child_atom(atom, 1), EnvironmentId),
-            account=_decode_owned(_child_atom(atom, 2), AccountId),
-            order_id=_decode_owned(_child_atom(atom, 3), OrderId),
+        return _identity.VenueLegKey(
+            broker=_decode_owned(_child_atom(atom, 0), _identity.BrokerId),
+            environment=_decode_owned(_child_atom(atom, 1), _identity.EnvironmentId),
+            account=_decode_owned(_child_atom(atom, 2), _identity.AccountId),
+            order_id=_decode_owned(_child_atom(atom, 3), _identity.OrderId),
         )
     constructor = _IDENTITY_CONSTRUCTOR_BY_TAG[type_tag]
-    decoded: Any = constructor(_leaf_text(atom, 0))
+    decoded: _Any = constructor(_leaf_text(atom, 0))
     return decoded

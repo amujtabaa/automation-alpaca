@@ -14,6 +14,7 @@ from fractions import Fraction
 
 import pytest
 
+import app.execution_core.durable_codec as durable_codec_module
 from app.execution_core.durable_codec import (
     DurableAtom,
     decode_m1_value,
@@ -589,6 +590,7 @@ def test_price_scale_owner_refuses_structurally_valid_negative_zero() -> None:
         ("1", "٢"),
         ("", "2"),
         ("1", "2", "3"),
+        ("2", "4"),
     ],
 )
 def test_fraction_atom_refuses_noncanonical_ratio_components(
@@ -607,6 +609,66 @@ def test_zero_denominator_is_refused_before_fraction_construction() -> None:
         decode_m1_value(
             DurableAtom(CONTRACT_VERSION, "exact_basis", (zero_denominator,))
         )
+
+
+@pytest.mark.parametrize(
+    "components",
+    [
+        ("2", "4"),
+        ("6", "4"),
+        ("-2", "4"),
+        ("4", "2"),
+        ("-4", "2"),
+        ("22", "11"),
+        ("-10", "4"),
+        ("5", "5"),
+        ("-3", "6"),
+        ("0", "5"),
+        ("0", "7"),
+    ],
+)
+def test_unreduced_fraction_components_are_refused_without_repair(
+    components: tuple[str, str],
+) -> None:
+    with pytest.raises(ValueError):
+        DurableAtom(CONTRACT_VERSION, "_fraction", components)
+    forged_basis = _forge(
+        CONTRACT_VERSION,
+        "exact_basis",
+        (_forge(CONTRACT_VERSION, "_fraction", components),),
+    )
+    with pytest.raises(ValueError):
+        decode_m1_value(forged_basis)
+
+
+@pytest.mark.parametrize(
+    "components",
+    [("0", "1"), ("1", "1"), ("2", "3"), ("22", "7")],
+)
+def test_reduced_fraction_components_are_accepted_and_round_trip(
+    components: tuple[str, str],
+) -> None:
+    fraction_atom = DurableAtom(CONTRACT_VERSION, "_fraction", components)
+
+    decoded = decode_m1_value(
+        DurableAtom(CONTRACT_VERSION, "exact_basis", (fraction_atom,))
+    )
+
+    assert decoded.value.numerator == int(components[0])
+    assert decoded.value.denominator == int(components[1])
+
+
+def test_exact_export_surface_is_exactly_the_frozen_public_api() -> None:
+    assert durable_codec_module.__all__ == (
+        "DurableAtom",
+        "decode_m1_value",
+        "encode_m1_value",
+    )
+    public_names = {
+        name for name in vars(durable_codec_module) if not name.startswith("_")
+    }
+
+    assert public_names == set(durable_codec_module.__all__)
 
 
 # ---------------------------------------------------------------------------

@@ -22,18 +22,24 @@ pure: no credentials, identifiers at rest, network, database, clock,
 randomness, or side effects. Provider account identifiers exist only as
 transient arguments of ``broker_account_identity_sha256`` and are never
 retained on any object.
+
+The public surface is exactly ``ExecutionConnectionProfile``,
+``MarketDataSourceProfile``, ``broker_account_identity_sha256``,
+``execution_profile_preimage``, and ``market_source_profile_preimage``;
+every other name in this module is implementation-private.
 """
 
-from __future__ import annotations
+from __future__ import annotations as _annotations
 
-import unicodedata
-from dataclasses import dataclass, field
-from hashlib import sha256
+import unicodedata as _unicodedata
+from dataclasses import dataclass as _dataclass
+from dataclasses import field as _field
+from hashlib import sha256 as _sha256
 
 
-EXECUTION_CONNECTION_PROFILE_DOMAIN = "execution-connection-profile/v1"
-MARKET_DATA_SOURCE_PROFILE_DOMAIN = "market-data-source-profile/v1"
-BROKER_ACCOUNT_IDENTITY_DOMAIN = "broker-account-identity/v1"
+_EXECUTION_CONNECTION_PROFILE_DOMAIN = "execution-connection-profile/v1"
+_MARKET_DATA_SOURCE_PROFILE_DOMAIN = "market-data-source-profile/v1"
+_BROKER_ACCOUNT_IDENTITY_DOMAIN = "broker-account-identity/v1"
 
 _DOMAIN_LENGTH_BYTES = 4
 _PART_LENGTH_BYTES = 8
@@ -91,7 +97,7 @@ def _is_canonical_text(value: str) -> bool:
         code_point = ord(character)
         if code_point < 0x20 or code_point == 0x7F:
             return False
-    return unicodedata.normalize("NFC", value) == value
+    return _unicodedata.normalize("NFC", value) == value
 
 
 def _is_dns_label(label: str) -> bool:
@@ -155,7 +161,7 @@ def _text_part(value: str) -> bytes:
     return value.encode("utf-8")
 
 
-@dataclass(frozen=True, slots=True)
+@_dataclass(frozen=True, slots=True)
 class ExecutionConnectionProfile:
     """The one immutable selected execution connection of a generation."""
 
@@ -171,7 +177,7 @@ class ExecutionConnectionProfile:
     adapter_contract_version: str
     capability_profile_sha256: str
     deployment_identity: str
-    profile_commitment_sha256: str = field(init=False)
+    profile_commitment_sha256: str = _field(init=False)
 
     def __post_init__(self) -> None:
         _require(
@@ -241,13 +247,13 @@ class ExecutionConnectionProfile:
             ),
             "deployment_identity must be 64 lowercase hexadecimal characters",
         )
-        payload = execution_payload(self)
+        payload = _execution_payload(self)
         object.__setattr__(
-            self, "profile_commitment_sha256", sha256(payload).hexdigest()
+            self, "profile_commitment_sha256", _sha256(payload).hexdigest()
         )
 
 
-@dataclass(frozen=True, slots=True)
+@_dataclass(frozen=True, slots=True)
 class MarketDataSourceProfile:
     """The separate immutable market-data provenance contract."""
 
@@ -258,7 +264,7 @@ class MarketDataSourceProfile:
     entitlement_class: str
     normalization_contract_version: str
     data_capability_profile_sha256: str
-    source_profile_commitment_sha256: str = field(init=False)
+    source_profile_commitment_sha256: str = _field(init=False)
 
     def __post_init__(self) -> None:
         _require(
@@ -306,19 +312,19 @@ class MarketDataSourceProfile:
             "data_capability_profile_sha256 must be 64 lowercase hexadecimal "
             "characters",
         )
-        payload = market_source_payload(self)
+        payload = _market_source_payload(self)
         object.__setattr__(
             self,
             "source_profile_commitment_sha256",
-            sha256(payload).hexdigest(),
+            _sha256(payload).hexdigest(),
         )
 
 
-def execution_payload(profile_without_digest: ExecutionConnectionProfile) -> bytes:
+def _execution_payload(profile_without_digest: ExecutionConnectionProfile) -> bytes:
     """Exact v1 preimage bytes; the commitment itself is excluded."""
 
     return _frame_payload(
-        EXECUTION_CONNECTION_PROFILE_DOMAIN,
+        _EXECUTION_CONNECTION_PROFILE_DOMAIN,
         (
             _opaque_part(profile_without_digest.connection_profile_id),
             _text_part(profile_without_digest.application_generation),
@@ -345,16 +351,16 @@ def execution_profile_preimage(
         raise TypeError(
             "execution_profile_preimage requires an ExecutionConnectionProfile"
         )
-    return execution_payload(profile_without_digest)
+    return _execution_payload(profile_without_digest)
 
 
-def market_source_payload(
+def _market_source_payload(
     profile_without_digest: MarketDataSourceProfile,
 ) -> bytes:
     """Exact v1 preimage bytes; the commitment itself is excluded."""
 
     return _frame_payload(
-        MARKET_DATA_SOURCE_PROFILE_DOMAIN,
+        _MARKET_DATA_SOURCE_PROFILE_DOMAIN,
         (
             _opaque_part(profile_without_digest.market_source_profile_id),
             _text_part(profile_without_digest.provider),
@@ -376,7 +382,7 @@ def market_source_profile_preimage(
         raise TypeError(
             "market_source_profile_preimage requires a MarketDataSourceProfile"
         )
-    return market_source_payload(profile_without_digest)
+    return _market_source_payload(profile_without_digest)
 
 
 def broker_account_identity_sha256(
@@ -410,7 +416,7 @@ def broker_account_identity_sha256(
         "control characters",
     )
     payload = _frame_payload(
-        BROKER_ACCOUNT_IDENTITY_DOMAIN,
+        _BROKER_ACCOUNT_IDENTITY_DOMAIN,
         (
             _text_part(broker_provider),
             _text_part(environment_class),
@@ -418,4 +424,13 @@ def broker_account_identity_sha256(
             _text_part(identifier),
         ),
     )
-    return sha256(payload).hexdigest()
+    return _sha256(payload).hexdigest()
+
+
+__all__ = (
+    "ExecutionConnectionProfile",
+    "MarketDataSourceProfile",
+    "broker_account_identity_sha256",
+    "execution_profile_preimage",
+    "market_source_profile_preimage",
+)

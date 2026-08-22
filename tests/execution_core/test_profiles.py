@@ -15,6 +15,7 @@ from hashlib import sha256
 
 import pytest
 
+import app.execution_core.profiles as profiles_module
 from app.execution_core.profiles import (
     ExecutionConnectionProfile,
     MarketDataSourceProfile,
@@ -803,3 +804,16 @@ def test_provider_account_identifier_never_appears_in_representation() -> None:
 
     for value in (repr(execution), repr(market), str(execution)):
         assert ACCOUNT_IDENTIFIER not in value
+
+
+def test_exact_export_surface_is_exactly_the_frozen_public_api() -> None:
+    assert profiles_module.__all__ == (
+        "ExecutionConnectionProfile",
+        "MarketDataSourceProfile",
+        "broker_account_identity_sha256",
+        "execution_profile_preimage",
+        "market_source_profile_preimage",
+    )
+    public_names = {name for name in vars(profiles_module) if not name.startswith("_")}
+
+    assert public_names == set(profiles_module.__all__)

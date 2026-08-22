@@ -88,3 +88,48 @@ Only WO-0165 is activated. No SQL/DDL, database creation/access, migration,
 runtime composition, credentials, broker/network calls, orders, promotion,
 M2-I2+ work, or merge to `master` is authorized. Queued work orders remain
 read-only inputs.
+
+---
+
+# REV-0070 remediation record (append-only)
+
+Status: **P1 REMEDIATION APPLIED FOR WO-0165 — AWAITING FRESH REVIEW**
+
+Recorded at: 2026-08-21
+
+REV-0070 (Codex, GPT-5) returned ACCEPT-WITH-CHANGES with P0=0, P1=3, P2=0
+against candidate 35721bf5a980639a18ab12e0383f9f382716ed28. This section records
+the implementation seat's remediation of exactly those three findings; it does
+not amend any reviewed evidence above.
+
+## P1-3 resolution recorded here
+
+Per the finding, `work/queue/M2-EXECUTION-2026-08-21/02-CURRENT-SOURCE-INVENTORY.md`
+was restored byte-for-byte from the accepted base commit
+abcefca80d1a16ae86f7982d27ba6212a9504bfa (restored blob
+3ce9e519282837a5dda43b10e4213e3649500d23, identical to the base blob). The
+regeneration evidence that had been written into that frozen preparation file
+remains fully preserved in this checkpoint instead:
+
+- Implementation-start head/branch/tree and manifest identity: table above.
+- All twelve re-hashed source surfaces matching exactly: list above.
+- New-surface absence proof at start: list above.
+
+The earlier edit of the WO-0165 frontmatter `base_sha` field is unchanged; it
+was not a finding and the work order itself names that recording duty.
+
+## Remediation scope
+
+1. P1-1: `_fraction` atoms now require reduced relatively-prime numerator and
+   positive denominator on every construction and forged decode path, with the
+   canonical zero form fixed as numerator `0` over denominator `1`
+   (`app/execution_core/durable_codec.py`).
+2. P1-2: both new modules expose only their frozen WO-0165 API names via
+   explicit `__all__`; all implementation constants, payload builders, domain
+   strings, and import aliases are underscore-private
+   (`app/execution_core/durable_codec.py`,
+   `app/execution_core/profiles.py`), with exact-export tests added.
+3. P1-3: as recorded above.
+
+No other reviewed surface was changed. Fresh review is requested for the new
+candidate head.
