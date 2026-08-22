@@ -220,6 +220,20 @@ CREATE UNIQUE INDEX uq_one_live_acquisition_per_scope
     ON acquisition_generation (scope_id)
     WHERE status = 'LIVE';
 
+CREATE TABLE acquisition_generation_current (
+    acquisition_generation_id TEXT PRIMARY KEY,
+    scope_id INTEGER NOT NULL,
+    current_economics_head_ordinal INTEGER NOT NULL
+        CHECK (current_economics_head_ordinal >= 0),
+    unresolved_effect_count INTEGER NOT NULL
+        CHECK (unresolved_effect_count >= 0),
+    active_protection_count INTEGER NOT NULL
+        CHECK (active_protection_count IN (0, 1)),
+    UNIQUE (acquisition_generation_id, scope_id),
+    FOREIGN KEY (acquisition_generation_id, scope_id)
+        REFERENCES acquisition_generation (acquisition_generation_id, scope_id)
+);
+
 CREATE TABLE kernel_checkpoint (
     application_generation_id TEXT PRIMARY KEY
         REFERENCES application_generation (application_generation_id),
@@ -242,6 +256,7 @@ CREATE TABLE symbol_controller (
                 'CONSISTENT',
                 'NEGATIVE_POSITION_QUARANTINED',
                 'UNMATCHED_LINEAGE_QUARANTINED',
+                'UNRESOLVED_VENUE_QUARANTINED',
                 'MIXED_GENERATION_RECOVERY'
             )
         ),
@@ -517,6 +532,8 @@ CREATE TABLE venue_effect (
         ),
     expected_controller_head_ordinal INTEGER NOT NULL
         CHECK (expected_controller_head_ordinal >= 0),
+    expected_protection_version_ordinal INTEGER NOT NULL
+        CHECK (expected_protection_version_ordinal >= 1),
     authority_class TEXT NOT NULL
         CHECK (authority_class IN ('NORMAL', 'HARD_BAIL')),
     request_occurrence_external TEXT NOT NULL
@@ -674,7 +691,6 @@ CREATE TABLE venue_identity_owner (
         effect_id, owner_external, observation_external, root_fill_key_id,
         scope_id, execution_profile_id, owner_generation_id
     ),
-    UNIQUE (effect_id, scope_id, execution_profile_id),
     FOREIGN KEY (
         effect_id, scope_id, execution_profile_id, owner_generation_id
     ) REFERENCES venue_effect (
@@ -694,6 +710,9 @@ CREATE INDEX ix_venue_identity_owner_effect
     ON venue_identity_owner (
         effect_id, scope_id, execution_profile_id, owner_external
     );
+
+CREATE INDEX ix_venue_effect_generation_disposition
+    ON venue_effect (acquisition_generation_id, disposition, effect_id);
 
 CREATE TABLE acquisition_root_route (
     root_fill_key_id INTEGER PRIMARY KEY,
@@ -729,6 +748,11 @@ CREATE TABLE acquisition_root_route (
 CREATE INDEX ix_acquisition_root_route_owner
     ON acquisition_root_route (
         effect_id, owner_external, observation_external,
+        acquisition_generation_id, root_fill_key_id
+    );
+
+CREATE INDEX ix_acquisition_root_route_generation
+    ON acquisition_root_route (
         acquisition_generation_id, root_fill_key_id
     );
 
@@ -939,6 +963,9 @@ CREATE TABLE protection_authority (
     )
 );
 
+CREATE INDEX ix_protection_authority_active_generation
+    ON protection_authority (active_acquisition_generation_id, scope_id);
+
 CREATE TRIGGER trg_schema_meta_immutable_update
     BEFORE UPDATE ON schema_meta
 BEGIN
@@ -1146,6 +1173,28 @@ CREATE TRIGGER trg_acquisition_root_route_no_conflict_replace
         )
 BEGIN
     SELECT RAISE (ABORT, 'acquisition root route is already retained');
+END;
+
+CREATE TRIGGER trg_acquisition_root_route_advances_generation_head
+    AFTER INSERT ON acquisition_root_route
+    FOR EACH ROW
+BEGIN
+    UPDATE acquisition_generation_current
+       SET current_economics_head_ordinal = COALESCE(
+            (
+                SELECT MAX(root.economics_head_ordinal)
+                  FROM acquisition_root_route AS route
+                  JOIN root_fill AS root
+                    ON root.root_fill_key_id = route.root_fill_key_id
+                   AND root.scope_id = route.scope_id
+                 WHERE route.acquisition_generation_id =
+                        NEW.acquisition_generation_id
+                   AND route.scope_id = NEW.scope_id
+            ),
+            0
+       )
+     WHERE acquisition_generation_id = NEW.acquisition_generation_id
+       AND scope_id = NEW.scope_id;
 END;
 
 CREATE TRIGGER trg_dispatch_claim_no_conflict_replace
@@ -1567,6 +1616,27 @@ BEGIN
     );
 END;
 
+CREATE TRIGGER trg_acquisition_generation_retire_requires_closed_authority
+    BEFORE UPDATE OF status ON acquisition_generation
+    FOR EACH ROW
+    WHEN OLD.status = 'LIVE'
+     AND NEW.status = 'RETIRED_UNSERVING'
+     AND NOT EXISTS (
+            SELECT 1
+              FROM acquisition_generation_current AS current
+             WHERE current.acquisition_generation_id =
+                    OLD.acquisition_generation_id
+               AND current.scope_id = OLD.scope_id
+               AND current.unresolved_effect_count = 0
+               AND current.active_protection_count = 0
+        )
+BEGIN
+    SELECT RAISE (
+        ABORT,
+        'acquisition generation retirement requires closed effects and non-serving protection'
+    );
+END;
+
 CREATE TRIGGER trg_acquisition_generation_predecessor_valid
     BEFORE INSERT ON acquisition_generation
     FOR EACH ROW
@@ -1580,6 +1650,10 @@ BEGIN
     WHERE NOT EXISTS (
             SELECT 1
               FROM acquisition_generation AS predecessor
+              JOIN acquisition_generation_current AS current
+                ON current.acquisition_generation_id =
+                    predecessor.acquisition_generation_id
+               AND current.scope_id = predecessor.scope_id
              WHERE predecessor.acquisition_generation_id =
                    NEW.predecessor_generation_id
                AND predecessor.scope_id = NEW.scope_id
@@ -1587,7 +1661,87 @@ BEGIN
                AND predecessor.status = 'RETIRED_UNSERVING'
                AND predecessor.emergency_compatibility_sha256 =
                     NEW.emergency_compatibility_sha256
+               AND current.unresolved_effect_count = 0
+               AND current.active_protection_count = 0
         );
+END;
+
+CREATE TRIGGER trg_acquisition_generation_initializes_current
+    AFTER INSERT ON acquisition_generation
+    FOR EACH ROW
+BEGIN
+    INSERT INTO acquisition_generation_current (
+        acquisition_generation_id, scope_id,
+        current_economics_head_ordinal,
+        unresolved_effect_count, active_protection_count
+    ) VALUES (
+        NEW.acquisition_generation_id, NEW.scope_id, 0, 0, 0
+    );
+END;
+
+CREATE TRIGGER trg_acquisition_generation_current_no_conflict_replace
+    BEFORE INSERT ON acquisition_generation_current
+    FOR EACH ROW
+    WHEN EXISTS (
+            SELECT 1
+              FROM acquisition_generation_current AS retained
+             WHERE retained.acquisition_generation_id =
+                    NEW.acquisition_generation_id
+        )
+BEGIN
+    SELECT RAISE (
+        ABORT,
+        'acquisition generation current proof is already retained'
+    );
+END;
+
+CREATE TRIGGER trg_acquisition_generation_current_exact
+    BEFORE UPDATE ON acquisition_generation_current
+    FOR EACH ROW
+    WHEN NEW.acquisition_generation_id IS NOT OLD.acquisition_generation_id
+      OR NEW.scope_id IS NOT OLD.scope_id
+      OR NEW.current_economics_head_ordinal <> COALESCE(
+            (
+                SELECT MAX(root.economics_head_ordinal)
+                  FROM acquisition_root_route AS route
+                  JOIN root_fill AS root
+                    ON root.root_fill_key_id = route.root_fill_key_id
+                   AND root.scope_id = route.scope_id
+                 WHERE route.acquisition_generation_id =
+                        NEW.acquisition_generation_id
+                   AND route.scope_id = NEW.scope_id
+            ),
+            0
+        )
+      OR NEW.unresolved_effect_count <> (
+            SELECT COUNT(*)
+              FROM venue_effect AS effect
+             WHERE effect.acquisition_generation_id =
+                    NEW.acquisition_generation_id
+               AND effect.scope_id = NEW.scope_id
+               AND effect.disposition <> 'CLOSED'
+        )
+      OR NEW.active_protection_count <> (
+            SELECT COUNT(*)
+              FROM protection_authority AS protection
+             WHERE protection.active_acquisition_generation_id =
+                    NEW.acquisition_generation_id
+               AND protection.scope_id = NEW.scope_id
+        )
+BEGIN
+    SELECT RAISE (
+        ABORT,
+        'acquisition generation current proof must match direct authority'
+    );
+END;
+
+CREATE TRIGGER trg_acquisition_generation_current_no_delete
+    BEFORE DELETE ON acquisition_generation_current
+BEGIN
+    SELECT RAISE (
+        ABORT,
+        'acquisition_generation_current rows are retained'
+    );
 END;
 
 CREATE TRIGGER trg_acquisition_generation_no_delete
@@ -1708,11 +1862,23 @@ CREATE TRIGGER trg_symbol_controller_generation_rebind_requires_flat_consistent
             OR NEW.aggregate_quantity <> 0
             OR OLD.integrity_state <> 'CONSISTENT'
             OR NEW.integrity_state <> 'CONSISTENT'
+            OR (
+                OLD.live_acquisition_generation_id IS NOT NULL
+                AND NOT EXISTS (
+                    SELECT 1
+                      FROM acquisition_generation_current AS current
+                     WHERE current.acquisition_generation_id =
+                            OLD.live_acquisition_generation_id
+                       AND current.scope_id = OLD.scope_id
+                       AND current.unresolved_effect_count = 0
+                       AND current.active_protection_count = 0
+                )
+            )
         )
 BEGIN
     SELECT RAISE (
         ABORT,
-        'acquisition generation rebind requires a flat consistent controller'
+        'acquisition generation rebind requires flat consistent closed authority'
     );
 END;
 
@@ -1804,6 +1970,8 @@ CREATE TRIGGER trg_symbol_controller_integrity_exact_insert
     BEFORE INSERT ON symbol_controller
     FOR EACH ROW
     WHEN NEW.integrity_state <> CASE
+            WHEN NEW.aggregate_quantity < 0
+                THEN 'NEGATIVE_POSITION_QUARANTINED'
             WHEN EXISTS (
                     SELECT 1
                       FROM root_fill AS root
@@ -1822,8 +1990,13 @@ CREATE TRIGGER trg_symbol_controller_integrity_exact_insert
                         )
                 )
                 THEN 'UNMATCHED_LINEAGE_QUARANTINED'
-            WHEN NEW.aggregate_quantity < 0
-                THEN 'NEGATIVE_POSITION_QUARANTINED'
+            WHEN EXISTS (
+                    SELECT 1
+                      FROM venue_effect AS effect
+                     WHERE effect.scope_id = NEW.scope_id
+                       AND effect.disposition = 'INVALIDATED'
+                )
+                THEN 'UNRESOLVED_VENUE_QUARANTINED'
             ELSE 'CONSISTENT'
         END
 BEGIN
@@ -1836,6 +2009,31 @@ CREATE TRIGGER trg_symbol_controller_integrity_sticky_update
     WHEN NEW.integrity_state <> CASE
             WHEN NEW.aggregate_quantity < 0
                 THEN 'NEGATIVE_POSITION_QUARANTINED'
+            WHEN EXISTS (
+                    SELECT 1
+                      FROM root_fill AS root
+                     WHERE root.scope_id = NEW.scope_id
+                       AND root.current_fact_id IS NOT NULL
+                       AND NOT EXISTS (
+                            SELECT 1
+                              FROM acquisition_root_route AS route
+                             WHERE route.root_fill_key_id =
+                                    root.root_fill_key_id
+                               AND route.scope_id = root.scope_id
+                               AND route.application_generation_id =
+                                    root.application_generation_id
+                               AND route.execution_profile_id =
+                                    root.execution_profile_id
+                        )
+                )
+                THEN 'UNMATCHED_LINEAGE_QUARANTINED'
+            WHEN EXISTS (
+                    SELECT 1
+                      FROM venue_effect AS effect
+                     WHERE effect.scope_id = NEW.scope_id
+                       AND effect.disposition = 'INVALIDATED'
+                )
+                THEN 'UNRESOLVED_VENUE_QUARANTINED'
             WHEN OLD.integrity_state = 'MIXED_GENERATION_RECOVERY'
              AND NEW.aggregate_quantity = 0
              AND EXISTS (
@@ -1900,24 +2098,6 @@ CREATE TRIGGER trg_symbol_controller_integrity_sticky_update
                        AND generation.status = 'RETIRED_UNSERVING'
                 )
                 THEN 'MIXED_GENERATION_RECOVERY'
-            WHEN EXISTS (
-                    SELECT 1
-                      FROM root_fill AS root
-                     WHERE root.scope_id = NEW.scope_id
-                       AND root.current_fact_id IS NOT NULL
-                       AND NOT EXISTS (
-                            SELECT 1
-                              FROM acquisition_root_route AS route
-                             WHERE route.root_fill_key_id =
-                                    root.root_fill_key_id
-                               AND route.scope_id = root.scope_id
-                               AND route.application_generation_id =
-                                    root.application_generation_id
-                               AND route.execution_profile_id =
-                                    root.execution_profile_id
-                        )
-                )
-                THEN 'UNMATCHED_LINEAGE_QUARANTINED'
             ELSE 'CONSISTENT'
         END
 BEGIN
@@ -2211,6 +2391,31 @@ BEGIN
                         0
                     ) < 0
                     THEN 'NEGATIVE_POSITION_QUARANTINED'
+                WHEN EXISTS (
+                        SELECT 1
+                          FROM root_fill AS root
+                         WHERE root.scope_id = NEW.scope_id
+                           AND root.current_fact_id IS NOT NULL
+                           AND NOT EXISTS (
+                                SELECT 1
+                                  FROM acquisition_root_route AS route
+                                 WHERE route.root_fill_key_id =
+                                        root.root_fill_key_id
+                                   AND route.scope_id = root.scope_id
+                                   AND route.application_generation_id =
+                                        root.application_generation_id
+                                   AND route.execution_profile_id =
+                                        root.execution_profile_id
+                            )
+                    )
+                    THEN 'UNMATCHED_LINEAGE_QUARANTINED'
+                WHEN EXISTS (
+                        SELECT 1
+                          FROM venue_effect AS effect
+                         WHERE effect.scope_id = NEW.scope_id
+                           AND effect.disposition = 'INVALIDATED'
+                    )
+                    THEN 'UNRESOLVED_VENUE_QUARANTINED'
                 WHEN integrity_state = 'MIXED_GENERATION_RECOVERY'
                  AND COALESCE(
                         (
@@ -2266,18 +2471,6 @@ BEGIN
                     THEN 'CONSISTENT'
                 WHEN integrity_state <> 'CONSISTENT'
                     THEN integrity_state
-                WHEN NOT EXISTS (
-                        SELECT 1
-                          FROM acquisition_root_route AS route
-                         WHERE route.root_fill_key_id =
-                                NEW.root_fill_key_id
-                           AND route.scope_id = NEW.scope_id
-                           AND route.application_generation_id =
-                                NEW.application_generation_id
-                           AND route.execution_profile_id =
-                                NEW.execution_profile_id
-                    )
-                    THEN 'UNMATCHED_LINEAGE_QUARANTINED'
                 WHEN EXISTS (
                         SELECT 1
                           FROM acquisition_root_route AS route
@@ -2392,6 +2585,27 @@ BEGIN
                 ELSE 1
             END
      WHERE scope_id = NEW.scope_id;
+
+    UPDATE acquisition_generation_current
+       SET current_economics_head_ordinal = (
+            SELECT MAX(root.economics_head_ordinal)
+              FROM acquisition_root_route AS route
+              JOIN root_fill AS root
+                ON root.root_fill_key_id = route.root_fill_key_id
+               AND root.scope_id = route.scope_id
+             WHERE route.acquisition_generation_id =
+                    acquisition_generation_current.acquisition_generation_id
+               AND route.scope_id =
+                    acquisition_generation_current.scope_id
+       )
+     WHERE EXISTS (
+            SELECT 1
+              FROM acquisition_root_route AS route
+             WHERE route.root_fill_key_id = NEW.root_fill_key_id
+               AND route.scope_id = NEW.scope_id
+               AND route.acquisition_generation_id =
+                    acquisition_generation_current.acquisition_generation_id
+       );
 END;
 
 CREATE TRIGGER trg_execution_fact_head_first_fill_only
@@ -2468,6 +2682,22 @@ CREATE TRIGGER trg_venue_effect_requires_current_controller
                     (
                         controller.integrity_state = 'CONSISTENT'
                         AND NEW.authority_class = 'NORMAL'
+                        AND EXISTS (
+                            SELECT 1
+                              FROM protection_authority AS protection
+                             WHERE protection.scope_id = NEW.scope_id
+                               AND protection.authority_class = 'NORMAL'
+                               AND protection.active_stream_generation_id
+                                    IS NOT NULL
+                               AND protection.expected_controller_head_ordinal =
+                                    NEW.expected_controller_head_ordinal
+                               AND protection.version_ordinal =
+                                    NEW.expected_protection_version_ordinal
+                               AND protection.active_acquisition_generation_id =
+                                    NEW.acquisition_generation_id
+                               AND protection.active_generation_mandate_commitment_sha256 =
+                                    NEW.generation_mandate_commitment_sha256
+                        )
                     )
                     OR (
                         controller.integrity_state =
@@ -2482,6 +2712,8 @@ CREATE TRIGGER trg_venue_effect_requires_current_controller
                                AND protection.authority_class = 'HARD_BAIL'
                                AND protection.expected_controller_head_ordinal =
                                     NEW.expected_controller_head_ordinal
+                               AND protection.version_ordinal =
+                                    NEW.expected_protection_version_ordinal
                                AND protection.active_acquisition_generation_id =
                                     NEW.acquisition_generation_id
                         )
@@ -2493,6 +2725,41 @@ BEGIN
         ABORT,
         'venue effect requires the exact current controller head'
     );
+END;
+
+CREATE TRIGGER trg_venue_effect_updates_generation_current_on_insert
+    AFTER INSERT ON venue_effect
+    FOR EACH ROW
+BEGIN
+    UPDATE acquisition_generation_current
+       SET unresolved_effect_count = (
+            SELECT COUNT(*)
+              FROM venue_effect AS effect
+             WHERE effect.acquisition_generation_id =
+                    NEW.acquisition_generation_id
+               AND effect.scope_id = NEW.scope_id
+               AND effect.disposition <> 'CLOSED'
+       )
+     WHERE acquisition_generation_id = NEW.acquisition_generation_id
+       AND scope_id = NEW.scope_id;
+END;
+
+CREATE TRIGGER trg_venue_effect_updates_generation_current_on_disposition
+    AFTER UPDATE OF disposition ON venue_effect
+    FOR EACH ROW
+    WHEN NEW.disposition IS NOT OLD.disposition
+BEGIN
+    UPDATE acquisition_generation_current
+       SET unresolved_effect_count = (
+            SELECT COUNT(*)
+              FROM venue_effect AS effect
+             WHERE effect.acquisition_generation_id =
+                    NEW.acquisition_generation_id
+               AND effect.scope_id = NEW.scope_id
+               AND effect.disposition <> 'CLOSED'
+       )
+     WHERE acquisition_generation_id = NEW.acquisition_generation_id
+       AND scope_id = NEW.scope_id;
 END;
 
 CREATE TRIGGER trg_venue_effect_acceptance_transition
@@ -2573,6 +2840,7 @@ CREATE TRIGGER trg_venue_effect_identity_immutable
         application_generation_id, execution_profile_id,
         acquisition_generation_id, generation_mandate_commitment_sha256,
         expected_controller_head_ordinal, authority_class,
+        expected_protection_version_ordinal,
         request_occurrence_external, mandate_external, effect_kind,
         client_order_external, target_order_external, side, quantity,
         economic_scope, created_ordinal ON venue_effect
@@ -2587,6 +2855,8 @@ CREATE TRIGGER trg_venue_effect_identity_immutable
             IS NOT OLD.generation_mandate_commitment_sha256
       OR NEW.expected_controller_head_ordinal
             IS NOT OLD.expected_controller_head_ordinal
+      OR NEW.expected_protection_version_ordinal
+            IS NOT OLD.expected_protection_version_ordinal
       OR NEW.authority_class IS NOT OLD.authority_class
       OR NEW.request_occurrence_external IS NOT OLD.request_occurrence_external
       OR NEW.mandate_external IS NOT OLD.mandate_external
@@ -2735,6 +3005,22 @@ CREATE TRIGGER trg_dispatch_claim_requires_current_controller
                     (
                         controller.integrity_state = 'CONSISTENT'
                         AND effect.authority_class = 'NORMAL'
+                        AND EXISTS (
+                            SELECT 1
+                              FROM protection_authority AS protection
+                             WHERE protection.scope_id = effect.scope_id
+                               AND protection.authority_class = 'NORMAL'
+                               AND protection.active_stream_generation_id
+                                    IS NOT NULL
+                               AND protection.expected_controller_head_ordinal =
+                                    effect.expected_controller_head_ordinal
+                               AND protection.version_ordinal =
+                                    effect.expected_protection_version_ordinal
+                               AND protection.active_acquisition_generation_id =
+                                    effect.acquisition_generation_id
+                               AND protection.active_generation_mandate_commitment_sha256 =
+                                    effect.generation_mandate_commitment_sha256
+                        )
                     )
                     OR (
                         controller.integrity_state =
@@ -2749,6 +3035,8 @@ CREATE TRIGGER trg_dispatch_claim_requires_current_controller
                                AND protection.authority_class = 'HARD_BAIL'
                                AND protection.expected_controller_head_ordinal =
                                     effect.expected_controller_head_ordinal
+                               AND protection.version_ordinal =
+                                    effect.expected_protection_version_ordinal
                                AND protection.active_acquisition_generation_id =
                                     effect.acquisition_generation_id
                         )
@@ -2843,6 +3131,38 @@ BEGIN
        SET disposition = 'INVALIDATED'
      WHERE effect_id = NEW.effect_id
        AND disposition = 'CLOSED';
+
+    UPDATE symbol_controller
+       SET integrity_state = CASE
+            WHEN aggregate_quantity < 0
+                THEN 'NEGATIVE_POSITION_QUARANTINED'
+            WHEN EXISTS (
+                    SELECT 1
+                      FROM root_fill AS root
+                     WHERE root.scope_id = symbol_controller.scope_id
+                       AND root.current_fact_id IS NOT NULL
+                       AND NOT EXISTS (
+                            SELECT 1
+                              FROM acquisition_root_route AS route
+                             WHERE route.root_fill_key_id =
+                                    root.root_fill_key_id
+                               AND route.scope_id = root.scope_id
+                               AND route.application_generation_id =
+                                    root.application_generation_id
+                               AND route.execution_profile_id =
+                                    root.execution_profile_id
+                        )
+                )
+                THEN 'UNMATCHED_LINEAGE_QUARANTINED'
+            ELSE 'UNRESOLVED_VENUE_QUARANTINED'
+        END,
+           currentness_head_ordinal = currentness_head_ordinal + 1,
+           controller_version_ordinal = controller_version_ordinal + 1
+     WHERE scope_id = (
+            SELECT effect.scope_id
+              FROM venue_effect AS effect
+             WHERE effect.effect_id = NEW.effect_id
+        );
 
     INSERT INTO closure_chain (
         closure_id, scope_id, owner_external, ordinal, effect_id,
@@ -3096,6 +3416,46 @@ BEGIN
     );
 END;
 
+CREATE TRIGGER trg_protection_authority_updates_generation_current_on_insert
+    AFTER INSERT ON protection_authority
+    FOR EACH ROW
+    WHEN NEW.active_acquisition_generation_id IS NOT NULL
+BEGIN
+    UPDATE acquisition_generation_current
+       SET active_protection_count = (
+            SELECT COUNT(*)
+              FROM protection_authority AS protection
+             WHERE protection.active_acquisition_generation_id =
+                    NEW.active_acquisition_generation_id
+               AND protection.scope_id = NEW.scope_id
+       )
+     WHERE acquisition_generation_id =
+            NEW.active_acquisition_generation_id
+       AND scope_id = NEW.scope_id;
+END;
+
+CREATE TRIGGER trg_protection_authority_updates_generation_current_on_update
+    AFTER UPDATE OF active_acquisition_generation_id ON protection_authority
+    FOR EACH ROW
+    WHEN NEW.active_acquisition_generation_id
+            IS NOT OLD.active_acquisition_generation_id
+BEGIN
+    UPDATE acquisition_generation_current
+       SET active_protection_count = (
+            SELECT COUNT(*)
+              FROM protection_authority AS protection
+             WHERE protection.active_acquisition_generation_id =
+                    acquisition_generation_current.acquisition_generation_id
+               AND protection.scope_id =
+                    acquisition_generation_current.scope_id
+       )
+     WHERE scope_id = NEW.scope_id
+       AND acquisition_generation_id IN (
+            OLD.active_acquisition_generation_id,
+            NEW.active_acquisition_generation_id
+       );
+END;
+
 CREATE TRIGGER trg_market_stream_authority_no_update
     BEFORE UPDATE ON market_stream_authority
 BEGIN
@@ -3170,7 +3530,7 @@ END;
 """
 
 _SCHEMA_CATALOG_SHA256 = (
-    "65dfedd48abfb25faf1ae1e758bccbb2738330370d1acc9df16b480add09c000"
+    "c2cbf42b61ec6ca6928dc63e5165584f525356a64878907574ab93c975478d56"
 )
 
 

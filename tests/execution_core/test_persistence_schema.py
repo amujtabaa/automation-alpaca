@@ -30,7 +30,7 @@ from app.execution_core.persistence.schema import (
 
 
 _GATE_DIGEST: str | None = (
-    "e279eae170bf6ee572c2b67b3e67ce862739a2a4768ede54383e590e86a61609"
+    "a798137e8d9b062abec70317167242a6afd68732654258e912c49e1317f2bd16"
 )
 
 _OPEN_CONNECTIONS: list[sqlite3.Connection] = []
@@ -239,6 +239,7 @@ def _seed_scope_with_live_generation(connection: sqlite3.Connection) -> int:
 
 def _retire_first_and_insert_live_successor(connection: sqlite3.Connection) -> str:
     successor_id = "34" * 32
+    _close_generation_authority(connection, generation_id="12" * 32)
     connection.execute(
         "UPDATE acquisition_generation SET status = 'RETIRED_UNSERVING'"
         " WHERE acquisition_generation_id = ?",
@@ -460,9 +461,11 @@ def _insert_open_effect(
     acquisition_generation_id: str = "12" * 32,
     generation_mandate_commitment_sha256: str = "9a" * 32,
     expected_controller_head_ordinal: int | None = None,
+    expected_protection_version_ordinal: int | None = None,
     authority_class: str = "NORMAL",
     side: str = "BUY",
     quantity: int = 10,
+    ensure_protection: bool = True,
 ) -> int:
     del root_id
     controller_row = connection.execute(
@@ -493,18 +496,38 @@ def _insert_open_effect(
         if expected_controller_head_ordinal is None
         else expected_controller_head_ordinal
     )
+    if authority_class == "NORMAL" and ensure_protection:
+        _ensure_normal_protection(
+            connection,
+            seed=effect_id,
+            scope_id=scope_id,
+            application_generation_id=application_generation_id,
+            acquisition_generation_id=acquisition_generation_id,
+            generation_mandate_commitment_sha256=(generation_mandate_commitment_sha256),
+            expected_controller_head_ordinal=stored_head,
+        )
+    protection_row = connection.execute(
+        "SELECT version_ordinal FROM protection_authority WHERE scope_id = ?",
+        (scope_id,),
+    ).fetchone()
+    stored_protection_version = (
+        (1 if protection_row is None else int(protection_row[0]))
+        if expected_protection_version_ordinal is None
+        else expected_protection_version_ordinal
+    )
     connection.execute(
         """
         INSERT INTO venue_effect (
             effect_id, effect_external, scope_id, application_generation_id,
             execution_profile_id, acquisition_generation_id,
             generation_mandate_commitment_sha256,
-            expected_controller_head_ordinal, authority_class,
+            expected_controller_head_ordinal,
+            expected_protection_version_ordinal, authority_class,
             request_occurrence_external, mandate_external, effect_kind,
             client_order_external, target_order_external, side, quantity,
             economic_scope, lifecycle_state, disposition, created_ordinal
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'SUBMIT', ?, NULL, ?, ?,
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'SUBMIT', ?, NULL, ?, ?,
                 x'01', 'REQUESTED', 'OPEN', ?)
         """,
         (
@@ -516,6 +539,7 @@ def _insert_open_effect(
             acquisition_generation_id,
             generation_mandate_commitment_sha256,
             stored_head,
+            stored_protection_version,
             authority_class,
             f"request-{effect_id}",
             f"mandate-{effect_id}",
@@ -627,6 +651,13 @@ def _ensure_acquisition_root_route(
             owner_external,
             observation_external,
         ),
+    )
+    _insert_claim(
+        connection,
+        claim_id=effect_id,
+        effect_id=effect_id,
+        claim_ordinal=effect_id,
+        execution_profile_id=str(execution_profile_id),
     )
 
 
@@ -789,6 +820,231 @@ def _insert_protection_authority(
         ),
     )
     return scope_id
+
+
+def _ensure_normal_protection(
+    connection: sqlite3.Connection,
+    *,
+    seed: int,
+    scope_id: int,
+    application_generation_id: str,
+    acquisition_generation_id: str,
+    generation_mandate_commitment_sha256: str,
+    expected_controller_head_ordinal: int,
+) -> None:
+    source_row = connection.execute(
+        "SELECT application.selected_market_source_profile_id"
+        " FROM acquisition_scope AS scope"
+        " JOIN application_generation AS application"
+        " ON application.application_generation_id ="
+        " scope.application_generation_id"
+        " WHERE scope.scope_id = ?",
+        (scope_id,),
+    ).fetchone()
+    assert source_row is not None
+    source_profile_id = str(source_row[0])
+    stream_row = connection.execute(
+        "SELECT stream_generation_id, session_external, sequence_mode"
+        " FROM market_stream_authority"
+        " WHERE scope_id = ? AND acquisition_generation_id = ?"
+        " AND generation_mandate_commitment_sha256 = ?"
+        " ORDER BY stream_generation_id LIMIT 1",
+        (
+            scope_id,
+            acquisition_generation_id,
+            generation_mandate_commitment_sha256,
+        ),
+    ).fetchone()
+    if stream_row is None:
+        stream_generation_id = "de" * 24 + f"{seed:016x}"
+        session_external = f"auto-session-{scope_id}-{seed}"
+        sequence_mode = "SEQUENCED"
+        _insert_market_stream(
+            connection,
+            stream_generation_id=stream_generation_id,
+            scope_id=scope_id,
+            application_generation_id=application_generation_id,
+            acquisition_generation_id=acquisition_generation_id,
+            generation_mandate_commitment_sha256=(generation_mandate_commitment_sha256),
+            source_profile_id=source_profile_id,
+            session_external=session_external,
+            sequence_mode=sequence_mode,
+        )
+    else:
+        stream_generation_id = str(stream_row[0])
+        session_external = str(stream_row[1])
+        sequence_mode = str(stream_row[2])
+
+    protection_row = connection.execute(
+        "SELECT authority_class, active_acquisition_generation_id,"
+        " expected_controller_head_ordinal, version_ordinal"
+        " FROM protection_authority WHERE scope_id = ?",
+        (scope_id,),
+    ).fetchone()
+    state_commitment = "cf" * 24 + f"{seed:016x}"
+    if protection_row is None:
+        _insert_protection_authority(
+            connection,
+            scope_id=scope_id,
+            stream_generation_id=stream_generation_id,
+            acquisition_generation_id=acquisition_generation_id,
+            generation_mandate_commitment_sha256=(generation_mandate_commitment_sha256),
+            source_profile_id=source_profile_id,
+            session_external=session_external,
+            sequence_mode=sequence_mode,
+            expected_controller_head_ordinal=expected_controller_head_ordinal,
+            state_commitment_sha256=state_commitment,
+            version_ordinal=1,
+        )
+        return
+    if protection_row[:3] == (
+        "NORMAL",
+        acquisition_generation_id,
+        expected_controller_head_ordinal,
+    ):
+        return
+    connection.execute(
+        "UPDATE protection_authority"
+        " SET authority_class = 'NORMAL', active_stream_generation_id = ?,"
+        " active_acquisition_generation_id = ?,"
+        " active_generation_mandate_commitment_sha256 = ?,"
+        " active_source_profile_id = ?, active_session_external = ?,"
+        " active_sequence_mode = ?, expected_controller_head_ordinal = ?,"
+        " state_commitment_sha256 = ?, version_ordinal = ?"
+        " WHERE scope_id = ?",
+        (
+            stream_generation_id,
+            acquisition_generation_id,
+            generation_mandate_commitment_sha256,
+            source_profile_id,
+            session_external,
+            sequence_mode,
+            expected_controller_head_ordinal,
+            state_commitment,
+            int(protection_row[3]) + 1,
+            scope_id,
+        ),
+    )
+
+
+def _close_generation_authority(
+    connection: sqlite3.Connection,
+    *,
+    generation_id: str,
+    scope_id: int = 1,
+) -> None:
+    effects = connection.execute(
+        "SELECT effect_id, lifecycle_state FROM venue_effect"
+        " WHERE acquisition_generation_id = ? AND scope_id = ?"
+        " AND disposition <> 'CLOSED' ORDER BY effect_id",
+        (generation_id, scope_id),
+    ).fetchall()
+    for effect_id_raw, lifecycle_state_raw in effects:
+        effect_id = int(effect_id_raw)
+        lifecycle_state = str(lifecycle_state_raw)
+        claim_row = connection.execute(
+            "SELECT claim_id FROM dispatch_claim WHERE effect_id = ?",
+            (effect_id,),
+        ).fetchone()
+        if claim_row is None:
+            assert lifecycle_state == "REQUESTED"
+            connection.execute(
+                "UPDATE venue_effect"
+                " SET lifecycle_state = 'CANCELED_BEFORE_DISPATCH'"
+                " WHERE effect_id = ?",
+                (effect_id,),
+            )
+            proof_kind = "NEVER_DISPATCHED"
+            claim_id: int | None = None
+        else:
+            proof_kind = "CONTRACT_COMPLETE_RESPONSE"
+            claim_id = int(claim_row[0])
+        acceptance_row = connection.execute(
+            "SELECT acceptance_set_id FROM acceptance_set WHERE effect_id = ?",
+            (effect_id,),
+        ).fetchone()
+        if acceptance_row is None:
+            acceptance_set_id = int(
+                connection.execute(
+                    "SELECT COALESCE(MAX(acceptance_set_id), 0) + 1 FROM acceptance_set"
+                ).fetchone()[0]
+            )
+            connection.execute(
+                "INSERT INTO acceptance_set VALUES (?, ?)",
+                (acceptance_set_id, effect_id),
+            )
+        else:
+            acceptance_set_id = int(acceptance_row[0])
+        evidence_id = int(
+            connection.execute(
+                "SELECT COALESCE(MAX(evidence_id), 0) + 1 FROM acceptance_evidence"
+            ).fetchone()[0]
+        )
+        evidence_ordinal = int(
+            connection.execute(
+                "SELECT COALESCE(MAX(evidence_ordinal), 0) + 1 FROM acceptance_evidence"
+            ).fetchone()[0]
+        )
+        evidence_digest = f"{evidence_id:064x}"
+        connection.execute(
+            "INSERT INTO acceptance_evidence ("
+            " evidence_id, acceptance_set_id, effect_id, evidence_kind,"
+            " proof_kind, evidence_digest, evidence_ordinal"
+            ") VALUES (?, ?, ?, 'CLOSURE_PROOF', ?, ?, ?)",
+            (
+                evidence_id,
+                acceptance_set_id,
+                effect_id,
+                proof_kind,
+                evidence_digest,
+                evidence_ordinal,
+            ),
+        )
+        connection.execute(
+            "UPDATE venue_effect SET disposition = 'CLOSED',"
+            " closure_proof_kind = ?, closure_proof_digest = ?,"
+            " closure_proof_evidence_id = ?, closure_proof_claim_id = ?"
+            " WHERE effect_id = ?",
+            (
+                proof_kind,
+                evidence_digest,
+                evidence_id,
+                claim_id,
+                effect_id,
+            ),
+        )
+
+    protection_row = connection.execute(
+        "SELECT expected_controller_head_ordinal, version_ordinal"
+        " FROM protection_authority WHERE scope_id = ?"
+        " AND active_acquisition_generation_id = ?",
+        (scope_id, generation_id),
+    ).fetchone()
+    if protection_row is None:
+        return
+    controller_row = connection.execute(
+        "SELECT currentness_head_ordinal FROM symbol_controller WHERE scope_id = ?",
+        (scope_id,),
+    ).fetchone()
+    assert controller_row is not None
+    next_version = int(protection_row[1]) + 1
+    state_commitment = "ce" * 24 + f"{next_version:016x}"
+    connection.execute(
+        "UPDATE protection_authority SET authority_class = 'NORMAL',"
+        " active_stream_generation_id = NULL,"
+        " active_acquisition_generation_id = NULL,"
+        " active_generation_mandate_commitment_sha256 = NULL,"
+        " active_source_profile_id = NULL, active_session_external = NULL,"
+        " active_sequence_mode = NULL, expected_controller_head_ordinal = ?,"
+        " state_commitment_sha256 = ?, version_ordinal = ?"
+        " WHERE scope_id = ?",
+        (
+            int(controller_row[0]),
+            state_commitment,
+            next_version,
+            scope_id,
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1340,11 +1596,6 @@ def test_insert_or_replace_cannot_bypass_immutable_authority(
     _insert_fill(connection, fact_id=1, root_id=1, event="evt-1")
     _insert_open_effect(connection, 1)
     _insert_claim(connection, claim_id=1, effect_id=1)
-    _insert_protection_authority(
-        connection,
-        state_commitment_sha256="64" * 32,
-        version_ordinal=1,
-    )
 
     statements = (
         ("INSERT OR REPLACE INTO execution_fact_head VALUES (1, 1, 1)", ()),
@@ -1360,6 +1611,12 @@ def test_insert_or_replace_cannot_bypass_immutable_authority(
         (
             "INSERT OR REPLACE INTO acquisition_generation"
             " SELECT * FROM acquisition_generation"
+            " WHERE acquisition_generation_id = ?",
+            ("12" * 32,),
+        ),
+        (
+            "INSERT OR REPLACE INTO acquisition_generation_current"
+            " SELECT * FROM acquisition_generation_current"
             " WHERE acquisition_generation_id = ?",
             ("12" * 32,),
         ),
@@ -1546,7 +1803,7 @@ def test_unmatched_broker_truth_is_retained_but_cannot_serve(
         " FROM symbol_controller"
     ).fetchone() == (10, "UNMATCHED_LINEAGE_QUARANTINED", 1)
     with pytest.raises(sqlite3.IntegrityError, match="current controller head"):
-        _insert_open_effect(connection, 1)
+        _insert_open_effect(connection, 1, ensure_protection=False)
     with pytest.raises(sqlite3.IntegrityError, match="controller authority"):
         _insert_protection_authority(
             connection,
@@ -1617,18 +1874,29 @@ def test_requested_effect_is_rootless_and_preserves_complete_scope(
     _seed_scope_with_live_generation(connection)
     _insert_controller(connection)
 
+    _ensure_normal_protection(
+        connection,
+        seed=1,
+        scope_id=1,
+        application_generation_id=_DEFAULT_GENERATION_ID,
+        acquisition_generation_id="12" * 32,
+        generation_mandate_commitment_sha256="9a" * 32,
+        expected_controller_head_ordinal=0,
+    )
+
     connection.execute(
         """
         INSERT INTO venue_effect (
             effect_id, effect_external, scope_id, application_generation_id,
             execution_profile_id, acquisition_generation_id,
             generation_mandate_commitment_sha256,
-            expected_controller_head_ordinal, authority_class,
+            expected_controller_head_ordinal,
+            expected_protection_version_ordinal, authority_class,
             request_occurrence_external, mandate_external, effect_kind,
             client_order_external, target_order_external, side, quantity,
             economic_scope, lifecycle_state, disposition, created_ordinal
         ) VALUES (
-            1, 'effect-1', 1, ?, ?, ?, ?, 0, 'NORMAL',
+            1, 'effect-1', 1, ?, ?, ?, ?, 0, 1, 'NORMAL',
             'request-1', 'mandate-1',
             'SUBMIT', 'client-1', NULL, 'BUY', 10, x'0102',
             'REQUESTED', 'OPEN', 1
@@ -1726,7 +1994,9 @@ def test_effect_creation_and_dispatch_claim_require_current_controller_head(
 
     with pytest.raises(sqlite3.IntegrityError, match="current controller head"):
         _insert_claim(connection, claim_id=1, effect_id=1)
-    assert connection.execute("SELECT count(*) FROM dispatch_claim").fetchone() == (0,)
+    assert connection.execute(
+        "SELECT count(*) FROM dispatch_claim WHERE effect_id = 1"
+    ).fetchone() == (0,)
     assert connection.execute(
         "SELECT lifecycle_state FROM venue_effect WHERE effect_id = 1"
     ).fetchone() == ("REQUESTED",)
@@ -1736,6 +2006,7 @@ def test_effect_creation_and_dispatch_claim_require_current_controller_head(
             connection,
             2,
             expected_controller_head_ordinal=0,
+            ensure_protection=False,
         )
 
     _insert_open_effect(connection, 3, expected_controller_head_ordinal=1)
@@ -1801,7 +2072,6 @@ def test_nonflat_protection_stream_cannot_be_transferred(tmp_path: object) -> No
         (generation_id, _DEFAULT_EXECUTION_PROFILE_ID, "12" * 32, "9b" * 32),
     )
     _insert_root(connection)
-    _insert_fill(connection, fact_id=1, root_id=1, event="positive-fill")
     for stream_id in ("81" * 32, "82" * 32):
         _insert_market_stream(
             connection,
@@ -1814,10 +2084,12 @@ def test_nonflat_protection_stream_cannot_be_transferred(tmp_path: object) -> No
         state_commitment_sha256="93" * 32,
         version_ordinal=1,
     )
+    _insert_fill(connection, fact_id=1, root_id=1, event="positive-fill")
 
     with pytest.raises(sqlite3.IntegrityError, match="nonflat"):
         connection.execute(
             "UPDATE protection_authority SET active_stream_generation_id = ?,"
+            " expected_controller_head_ordinal = 1,"
             " state_commitment_sha256 = ?, version_ordinal = 2 WHERE scope_id = 1",
             ("82" * 32, "94" * 32),
         )
@@ -1891,12 +2163,13 @@ def test_quarantined_controller_refuses_new_protection_authority(
     with pytest.raises(sqlite3.IntegrityError, match="current controller head"):
         _insert_claim(connection, claim_id=1, effect_id=1)
     with pytest.raises(sqlite3.IntegrityError, match="current controller head"):
-        _insert_open_effect(connection, 2)
+        _insert_open_effect(connection, 2, ensure_protection=False)
     with pytest.raises(sqlite3.IntegrityError, match="controller authority"):
-        _insert_protection_authority(
-            connection,
-            state_commitment_sha256="95" * 32,
-            version_ordinal=1,
+        connection.execute(
+            "UPDATE protection_authority"
+            " SET expected_controller_head_ordinal = 1,"
+            " state_commitment_sha256 = ?, version_ordinal = 2",
+            ("95" * 32,),
         )
 
 
@@ -1953,6 +2226,7 @@ def test_retired_fact_enters_mixed_recovery_and_only_hard_bail_may_serve(
     _insert_controller(connection)
     _insert_root(connection)
     _ensure_acquisition_root_route(connection, root_id=1)
+    _close_generation_authority(connection, generation_id="12" * 32)
     connection.execute(
         "UPDATE symbol_controller"
         " SET live_acquisition_generation_id = NULL,"
@@ -1972,19 +2246,20 @@ def test_retired_fact_enters_mixed_recovery_and_only_hard_bail_may_serve(
         acquisition_generation_id=successor_id,
         generation_mandate_commitment_sha256="9c" * 32,
     )
+    _ensure_normal_protection(
+        connection,
+        seed=2,
+        scope_id=1,
+        application_generation_id=_DEFAULT_GENERATION_ID,
+        acquisition_generation_id=successor_id,
+        generation_mandate_commitment_sha256="9c" * 32,
+        expected_controller_head_ordinal=2,
+    )
     _insert_open_effect(
         connection,
         2,
         acquisition_generation_id=successor_id,
         generation_mandate_commitment_sha256="9c" * 32,
-    )
-    _insert_protection_authority(
-        connection,
-        stream_generation_id=successor_stream_id,
-        acquisition_generation_id=successor_id,
-        generation_mandate_commitment_sha256="9c" * 32,
-        state_commitment_sha256="a1" * 32,
-        version_ordinal=1,
     )
 
     _insert_fill(
@@ -2004,6 +2279,7 @@ def test_retired_fact_enters_mixed_recovery_and_only_hard_bail_may_serve(
             3,
             acquisition_generation_id=successor_id,
             generation_mandate_commitment_sha256="9c" * 32,
+            ensure_protection=False,
         )
     with pytest.raises(sqlite3.IntegrityError, match="current controller head"):
         _insert_claim(connection, claim_id=1, effect_id=2)
@@ -2011,7 +2287,7 @@ def test_retired_fact_enters_mixed_recovery_and_only_hard_bail_may_serve(
         connection.execute(
             "UPDATE protection_authority"
             " SET expected_controller_head_ordinal = 3,"
-            " state_commitment_sha256 = ?, version_ordinal = 2",
+            " state_commitment_sha256 = ?, version_ordinal = 4",
             ("a2" * 32,),
         )
 
@@ -2029,7 +2305,7 @@ def test_retired_fact_enters_mixed_recovery_and_only_hard_bail_may_serve(
         "UPDATE protection_authority"
         " SET authority_class = 'HARD_BAIL',"
         " expected_controller_head_ordinal = 3,"
-        " state_commitment_sha256 = ?, version_ordinal = 2",
+        " state_commitment_sha256 = ?, version_ordinal = 4",
         ("a3" * 32,),
     )
     with pytest.raises(sqlite3.IntegrityError, match="current controller head"):
@@ -2100,6 +2376,7 @@ def test_retired_fact_enters_mixed_recovery_and_only_hard_bail_may_serve(
         "SELECT aggregate_quantity, integrity_state, currentness_head_ordinal,"
         " controller_version_ordinal FROM symbol_controller"
     ).fetchone() == (0, "CONSISTENT", 4, 5)
+    _close_generation_authority(connection, generation_id=successor_id)
     connection.execute(
         "UPDATE symbol_controller"
         " SET live_acquisition_generation_id = NULL,"
@@ -2119,6 +2396,7 @@ def test_negative_quarantine_overrides_retired_lineage_mixed_recovery(
     _ensure_acquisition_root_route(connection, root_id=1)
     _ensure_acquisition_root_route(connection, root_id=2)
     _ensure_acquisition_root_route(connection, root_id=3)
+    _close_generation_authority(connection, generation_id="12" * 32)
     connection.execute(
         "UPDATE symbol_controller"
         " SET live_acquisition_generation_id = NULL,"
@@ -2157,11 +2435,12 @@ def test_negative_quarantine_overrides_retired_lineage_mixed_recovery(
     ).fetchone() == (-10, "NEGATIVE_POSITION_QUARANTINED", 5)
 
     with pytest.raises(sqlite3.IntegrityError, match="controller authority"):
-        _insert_protection_authority(
-            connection,
-            authority_class="HARD_BAIL",
-            state_commitment_sha256="a4" * 32,
-            version_ordinal=1,
+        connection.execute(
+            "UPDATE protection_authority"
+            " SET authority_class = 'HARD_BAIL',"
+            " expected_controller_head_ordinal = 5,"
+            " state_commitment_sha256 = ?, version_ordinal = 2",
+            ("a4" * 32,),
         )
     with pytest.raises(sqlite3.IntegrityError, match="current controller head"):
         _insert_open_effect(
@@ -2195,6 +2474,7 @@ def test_retired_exact_noop_revision_does_not_stale_live_generation_authority(
         " controller_version_ordinal FROM symbol_controller"
     ).fetchone() == (0, "CONSISTENT", 2, 3)
 
+    _close_generation_authority(connection, generation_id="12" * 32)
     connection.execute(
         "UPDATE symbol_controller"
         " SET live_acquisition_generation_id = NULL,"
@@ -2240,12 +2520,241 @@ def test_nonflat_controller_cannot_unbind_or_replace_its_live_generation(
     _insert_root(connection)
     _insert_fill(connection, fact_id=1, root_id=1, event="positive-live-fill")
 
-    with pytest.raises(sqlite3.IntegrityError, match="flat consistent controller"):
+    with pytest.raises(
+        sqlite3.IntegrityError, match="flat consistent closed authority"
+    ):
         connection.execute(
             "UPDATE symbol_controller"
             " SET live_acquisition_generation_id = NULL,"
             " currentness_head_ordinal = 2, controller_version_ordinal = 3"
         )
+
+
+def test_unresolved_generation_authority_blocks_serial_successor_until_closed(
+    tmp_path: object,
+) -> None:
+    connection = _installed_connection(tmp_path)
+    _seed_scope_with_live_generation(connection)
+    _insert_controller(connection)
+    _insert_root(connection)
+    _insert_open_effect(connection, 1)
+    _insert_venue_owner(
+        connection,
+        owner_external="old-owner",
+        effect_id=1,
+    )
+    _insert_claim(connection, claim_id=1, effect_id=1)
+    assert connection.execute(
+        "SELECT unresolved_effect_count, active_protection_count"
+        " FROM acquisition_generation_current"
+        " WHERE acquisition_generation_id = ?",
+        ("12" * 32,),
+    ).fetchone() == (1, 1)
+
+    with pytest.raises(sqlite3.IntegrityError, match="closed authority"):
+        connection.execute(
+            "UPDATE symbol_controller"
+            " SET live_acquisition_generation_id = NULL,"
+            " currentness_head_ordinal = 1, controller_version_ordinal = 2"
+        )
+    with pytest.raises(sqlite3.IntegrityError, match="closed effects"):
+        connection.execute(
+            "UPDATE acquisition_generation SET status = 'RETIRED_UNSERVING'"
+            " WHERE acquisition_generation_id = ?",
+            ("12" * 32,),
+        )
+
+    _close_generation_authority(connection, generation_id="12" * 32)
+    assert connection.execute(
+        "SELECT unresolved_effect_count, active_protection_count"
+        " FROM acquisition_generation_current"
+        " WHERE acquisition_generation_id = ?",
+        ("12" * 32,),
+    ).fetchone() == (0, 0)
+    connection.execute(
+        "UPDATE symbol_controller"
+        " SET live_acquisition_generation_id = NULL,"
+        " currentness_head_ordinal = 1, controller_version_ordinal = 2"
+    )
+    successor_id = _retire_first_and_insert_live_successor(connection)
+    connection.execute(
+        "UPDATE symbol_controller"
+        " SET live_acquisition_generation_id = ?,"
+        " currentness_head_ordinal = 2, controller_version_ordinal = 3",
+        (successor_id,),
+    )
+    _insert_open_effect(
+        connection,
+        2,
+        acquisition_generation_id=successor_id,
+        generation_mandate_commitment_sha256="9c" * 32,
+    )
+    old_acceptance_set_id = int(
+        connection.execute(
+            "SELECT acceptance_set_id FROM acceptance_set WHERE effect_id = 1"
+        ).fetchone()[0]
+    )
+    connection.execute(
+        "INSERT INTO acceptance_evidence (evidence_id, acceptance_set_id,"
+        " effect_id, evidence_kind, proof_kind, evidence_digest, evidence_ordinal,"
+        " contradiction_owner_external, contradiction_observation_external)"
+        " VALUES (99, ?, 1, 'INVALIDATION', NULL, ?, 2, ?, ?)",
+        (
+            old_acceptance_set_id,
+            "a6" * 32,
+            "old-owner",
+            "observation-old-owner",
+        ),
+    )
+    assert connection.execute(
+        "SELECT integrity_state, currentness_head_ordinal FROM symbol_controller"
+    ).fetchone() == ("UNRESOLVED_VENUE_QUARANTINED", 3)
+    assert connection.execute(
+        "SELECT unresolved_effect_count FROM acquisition_generation_current"
+        " WHERE acquisition_generation_id = ?",
+        ("12" * 32,),
+    ).fetchone() == (1,)
+    with pytest.raises(sqlite3.IntegrityError, match="current controller head"):
+        _insert_claim(connection, claim_id=2, effect_id=2)
+
+
+def test_normal_effect_and_claim_require_current_normal_protection(
+    tmp_path: object,
+) -> None:
+    connection = _installed_connection(tmp_path)
+    _seed_scope_with_live_generation(connection)
+    _insert_controller(connection)
+
+    with pytest.raises(sqlite3.IntegrityError, match="current controller head"):
+        _insert_open_effect(connection, 1, ensure_protection=False)
+
+    _insert_open_effect(connection, 2)
+    connection.execute(
+        "UPDATE protection_authority SET state_commitment_sha256 = ?,"
+        " version_ordinal = 2",
+        ("a5" * 32,),
+    )
+    with pytest.raises(sqlite3.IntegrityError, match="current controller head"):
+        _insert_claim(connection, claim_id=1, effect_id=2)
+
+    _insert_open_effect(connection, 3)
+    connection.execute(
+        "UPDATE protection_authority SET active_stream_generation_id = NULL,"
+        " active_acquisition_generation_id = NULL,"
+        " active_generation_mandate_commitment_sha256 = NULL,"
+        " active_source_profile_id = NULL, active_session_external = NULL,"
+        " active_sequence_mode = NULL, state_commitment_sha256 = ?,"
+        " version_ordinal = 3",
+        ("a7" * 32,),
+    )
+    with pytest.raises(sqlite3.IntegrityError, match="current controller head"):
+        _insert_claim(connection, claim_id=2, effect_id=3)
+
+
+def test_one_effect_retains_multiple_concrete_acceptance_owners(
+    tmp_path: object,
+) -> None:
+    connection = _installed_connection(tmp_path)
+    _seed_scope_with_live_generation(connection)
+    _insert_controller(connection)
+    _insert_root(connection)
+    _insert_open_effect(connection, 1)
+    _insert_venue_owner(connection, owner_external="owner-1", effect_id=1)
+    _insert_venue_owner(connection, owner_external="owner-2", effect_id=1)
+    connection.execute(
+        "INSERT INTO closure_chain VALUES (1, 1, 'owner-1', 1, 1, 'TERMINAL_LEG', NULL)"
+    )
+    connection.execute(
+        "INSERT INTO closure_chain VALUES (2, 1, 'owner-2', 1, 1, 'TERMINAL_LEG', NULL)"
+    )
+    assert connection.execute(
+        "SELECT owner_external FROM venue_identity_owner"
+        " WHERE effect_id = 1 ORDER BY owner_external"
+    ).fetchall() == [("owner-1",), ("owner-2",)]
+
+
+def test_initial_negative_aggregate_outranks_missing_lineage(
+    tmp_path: object,
+) -> None:
+    connection = _installed_connection(tmp_path)
+    _seed_scope_with_live_generation(connection)
+    _insert_root(connection)
+    _insert_fill(
+        connection,
+        fact_id=1,
+        root_id=1,
+        event="pre-controller-negative",
+        side="SELL",
+        ensure_route=False,
+    )
+    _insert_controller(
+        connection,
+        aggregate_quantity=-10,
+        integrity_state="NEGATIVE_POSITION_QUARANTINED",
+    )
+    assert connection.execute(
+        "SELECT aggregate_quantity, integrity_state FROM symbol_controller"
+    ).fetchone() == (-10, "NEGATIVE_POSITION_QUARANTINED")
+
+
+def test_unmatched_lineage_prevents_mixed_recovery_flat_release(
+    tmp_path: object,
+) -> None:
+    connection = _installed_connection(tmp_path)
+    _seed_scope_with_live_generation(connection)
+    _insert_controller(connection)
+    _insert_root(connection)
+    _ensure_acquisition_root_route(connection, root_id=1)
+    _close_generation_authority(connection, generation_id="12" * 32)
+    connection.execute(
+        "UPDATE symbol_controller"
+        " SET live_acquisition_generation_id = NULL,"
+        " currentness_head_ordinal = 1, controller_version_ordinal = 2"
+    )
+    successor_id = _retire_first_and_insert_live_successor(connection)
+    connection.execute(
+        "UPDATE symbol_controller"
+        " SET live_acquisition_generation_id = ?,"
+        " currentness_head_ordinal = 2, controller_version_ordinal = 3",
+        (successor_id,),
+    )
+    _insert_root(
+        connection,
+        key_id=2,
+        external="unmatched-live-buy",
+        owner_generation_id=successor_id,
+    )
+    for key_id in (3, 4):
+        _insert_root(
+            connection,
+            key_id=key_id,
+            external=f"routed-live-sell-{key_id}",
+            owner_generation_id=successor_id,
+        )
+        _ensure_acquisition_root_route(connection, root_id=key_id)
+
+    _insert_fill(connection, fact_id=1, root_id=1, event="late-retired-buy")
+    _insert_fill(
+        connection,
+        fact_id=2,
+        root_id=2,
+        event="unmatched-live-buy",
+        ensure_route=False,
+    )
+    for fact_id, root_id in ((3, 3), (4, 4)):
+        _insert_fill(
+            connection,
+            fact_id=fact_id,
+            root_id=root_id,
+            event=f"routed-live-sell-{root_id}",
+            side="SELL",
+            ensure_route=False,
+        )
+    assert connection.execute(
+        "SELECT aggregate_quantity, integrity_state FROM symbol_controller"
+    ).fetchone() == (0, "UNMATCHED_LINEAGE_QUARANTINED")
+    with pytest.raises(sqlite3.IntegrityError, match="current controller head"):
+        _insert_open_effect(connection, 5, ensure_protection=False)
 
 
 def test_protection_versions_are_scope_local(tmp_path: object) -> None:
@@ -2553,6 +3062,7 @@ def test_effect_schema_carries_lifecycle_and_bound_closure_proof(
     }
     assert {
         "expected_controller_head_ordinal",
+        "expected_protection_version_ordinal",
         "authority_class",
         "lifecycle_state",
         "closure_proof_kind",
@@ -2567,6 +3077,15 @@ def test_effect_must_start_open(tmp_path: object) -> None:
     _seed_scope_with_live_generation(connection)
     _insert_controller(connection)
     _insert_root(connection)
+    _ensure_normal_protection(
+        connection,
+        seed=10,
+        scope_id=1,
+        application_generation_id=_DEFAULT_GENERATION_ID,
+        acquisition_generation_id="12" * 32,
+        generation_mandate_commitment_sha256="9a" * 32,
+        expected_controller_head_ordinal=0,
+    )
 
     with pytest.raises(sqlite3.IntegrityError, match="starts OPEN"):
         connection.execute(
@@ -2576,12 +3095,13 @@ def test_effect_must_start_open(tmp_path: object) -> None:
                 application_generation_id, execution_profile_id,
                 acquisition_generation_id,
                 generation_mandate_commitment_sha256,
-                expected_controller_head_ordinal, authority_class,
+                expected_controller_head_ordinal,
+                expected_protection_version_ordinal, authority_class,
                 request_occurrence_external, mandate_external, effect_kind,
                 client_order_external, target_order_external, side, quantity,
                 economic_scope, lifecycle_state, disposition, created_ordinal
             )
-            VALUES (10, 'effect-10', 1, ?, ?, ?, ?, 0, 'NORMAL',
+            VALUES (10, 'effect-10', 1, ?, ?, ?, ?, 0, 1, 'NORMAL',
                     'request-10', 'mandate-10', 'SUBMIT', 'client-10', NULL,
                     'BUY', 10, x'01', 'REQUESTED', 'CLOSED', 10)
             """,
@@ -2725,10 +3245,11 @@ def test_current_proof_payloads_require_fresh_heads_or_versions(
         ),
     )
     _insert_fill(connection, fact_id=1, root_id=1, event="evt-head")
-    _insert_protection_authority(
-        connection,
-        state_commitment_sha256="65" * 32,
-        version_ordinal=1,
+    connection.execute(
+        "UPDATE protection_authority"
+        " SET expected_controller_head_ordinal = 1,"
+        " state_commitment_sha256 = ?, version_ordinal = 2",
+        ("65" * 32,),
     )
 
     # Exact no-op writes do not manufacture a new version requirement.
@@ -2794,7 +3315,7 @@ def test_current_proof_payloads_require_fresh_heads_or_versions(
     connection.execute(
         "UPDATE protection_authority"
         " SET expected_controller_head_ordinal = 2,"
-        " state_commitment_sha256 = ?, version_ordinal = 2",
+        " state_commitment_sha256 = ?, version_ordinal = 3",
         ("66" * 32,),
     )
 
@@ -2869,6 +3390,11 @@ def test_close_requires_committed_claim_and_terminal_freezes(
             "UPDATE venue_effect SET disposition = 'OPEN' WHERE effect_id = 1"
         )
 
+    _insert_claim(connection, claim_id=4, effect_id=3)
+    assert connection.execute(
+        "SELECT lifecycle_state FROM venue_effect WHERE effect_id = 3"
+    ).fetchone() == ("DISPATCH_CLAIMED",)
+
     # Accepted authority (EC-2 / acceptance_set machine): CLOSED advances
     # only to INVALIDATED, which is then fully terminal.
     with pytest.raises(sqlite3.IntegrityError, match="acceptance transition"):
@@ -2891,7 +3417,7 @@ def test_close_requires_committed_claim_and_terminal_freezes(
             "UPDATE venue_effect SET disposition = 'CLOSED' WHERE effect_id = 1"
         )
 
-    with pytest.raises(sqlite3.IntegrityError, match="OPEN REQUESTED"):
+    with pytest.raises(sqlite3.IntegrityError):
         _insert_claim(connection, claim_id=2, effect_id=1)
 
     # NEVER_DISPATCHED is the exact locally-canceled, no-claim closure route.
@@ -2922,13 +3448,9 @@ def test_close_requires_committed_claim_and_terminal_freezes(
         """,
         ("72" * 32,),
     )
-    with pytest.raises(sqlite3.IntegrityError, match="OPEN REQUESTED"):
+    with pytest.raises(sqlite3.IntegrityError):
         _insert_claim(connection, claim_id=3, effect_id=2)
 
-    _insert_claim(connection, claim_id=4, effect_id=3)
-    assert connection.execute(
-        "SELECT lifecycle_state FROM venue_effect WHERE effect_id = 3"
-    ).fetchone() == ("DISPATCH_CLAIMED",)
     connection.execute(
         "INSERT INTO acceptance_set (acceptance_set_id, effect_id) VALUES (3, 3)"
     )
@@ -3070,11 +3592,18 @@ def test_direct_head_lookups_use_indexes_not_scans(tmp_path: object) -> None:
         fixed_cursor_ordinal=20,
         published_head_ordinal=50,
     )
-    _insert_protection_authority(
-        connection,
-        stream_generation_id=stream_id,
-        state_commitment_sha256="86" * 32,
-        version_ordinal=1,
+    connection.execute(
+        "UPDATE protection_authority"
+        " SET state_commitment_sha256 = ?, version_ordinal ="
+        " version_ordinal + 1",
+        ("86" * 32,),
+    )
+    protection_stream_id = str(
+        connection.execute(
+            "SELECT active_stream_generation_id FROM protection_authority"
+            " WHERE scope_id = ?",
+            (scope_id,),
+        ).fetchone()[0]
     )
 
     query_manifest = (
@@ -3097,6 +3626,14 @@ def test_direct_head_lookups_use_indexes_not_scans(tmp_path: object) -> None:
             " WHERE scope_id = ? AND status = 'LIVE'",
             (scope_id,),
             ("12" * 32,),
+        ),
+        (
+            "generation-current",
+            "SELECT current_economics_head_ordinal, unresolved_effect_count,"
+            " active_protection_count FROM acquisition_generation_current"
+            " WHERE acquisition_generation_id = ?",
+            ("12" * 32,),
+            (50, 2, 1),
         ),
         (
             "root-route",
@@ -3149,7 +3686,7 @@ def test_direct_head_lookups_use_indexes_not_scans(tmp_path: object) -> None:
             "SELECT active_stream_generation_id FROM protection_authority"
             " WHERE scope_id = ?",
             (scope_id,),
-            (stream_id,),
+            (protection_stream_id,),
         ),
         (
             "market-cursor",
@@ -3601,6 +4138,7 @@ def test_venue_effect_cannot_reference_generation_of_another_scope(
             execution_profile_id="67" * 32,
             acquisition_generation_id="12" * 32,
             generation_mandate_commitment_sha256="9a" * 32,
+            ensure_protection=False,
         )
 
 
