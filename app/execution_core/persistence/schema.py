@@ -241,7 +241,8 @@ CREATE TABLE symbol_controller (
             integrity_state IN (
                 'CONSISTENT',
                 'NEGATIVE_POSITION_QUARANTINED',
-                'UNMATCHED_LINEAGE_QUARANTINED'
+                'UNMATCHED_LINEAGE_QUARANTINED',
+                'MIXED_GENERATION_RECOVERY'
             )
         ),
     currentness_head_ordinal INTEGER NOT NULL CHECK (currentness_head_ordinal >= 0),
@@ -516,6 +517,8 @@ CREATE TABLE venue_effect (
         ),
     expected_controller_head_ordinal INTEGER NOT NULL
         CHECK (expected_controller_head_ordinal >= 0),
+    authority_class TEXT NOT NULL
+        CHECK (authority_class IN ('NORMAL', 'HARD_BAIL')),
     request_occurrence_external TEXT NOT NULL
         CHECK (length(request_occurrence_external) >= 1),
     mandate_external TEXT NOT NULL CHECK (length(mandate_external) >= 1),
@@ -591,6 +594,14 @@ CREATE TABLE venue_effect (
         )
     ),
     CHECK (
+        authority_class = 'NORMAL'
+        OR (
+            authority_class = 'HARD_BAIL'
+            AND effect_kind = 'SUBMIT'
+            AND side = 'SELL'
+        )
+    ),
+    CHECK (
         (
             disposition = 'OPEN'
             AND closure_proof_kind IS NULL
@@ -639,6 +650,10 @@ CREATE TABLE venue_effect (
 
 CREATE INDEX ix_venue_effect_scope_state ON venue_effect (scope_id, disposition, effect_id);
 
+CREATE UNIQUE INDEX uq_one_hard_bail_effect_per_controller_head
+    ON venue_effect (scope_id, expected_controller_head_ordinal)
+    WHERE authority_class = 'HARD_BAIL';
+
 CREATE TABLE venue_identity_owner (
     scope_id INTEGER NOT NULL REFERENCES acquisition_scope (scope_id),
     execution_profile_id TEXT NOT NULL,
@@ -654,6 +669,10 @@ CREATE TABLE venue_identity_owner (
     UNIQUE (
         effect_id, owner_external, observation_external, scope_id,
         execution_profile_id, owner_generation_id
+    ),
+    UNIQUE (
+        effect_id, owner_external, observation_external, root_fill_key_id,
+        scope_id, execution_profile_id, owner_generation_id
     ),
     UNIQUE (effect_id, scope_id, execution_profile_id),
     FOREIGN KEY (
@@ -699,11 +718,11 @@ CREATE TABLE acquisition_root_route (
         execution_profile_id, owner_generation_id
     ),
     FOREIGN KEY (
-        effect_id, owner_external, observation_external, scope_id,
-        execution_profile_id, acquisition_generation_id
+        effect_id, owner_external, observation_external, root_fill_key_id,
+        scope_id, execution_profile_id, acquisition_generation_id
     ) REFERENCES venue_identity_owner (
-        effect_id, owner_external, observation_external, scope_id,
-        execution_profile_id, owner_generation_id
+        effect_id, owner_external, observation_external, root_fill_key_id,
+        scope_id, execution_profile_id, owner_generation_id
     )
 );
 
@@ -878,6 +897,8 @@ CREATE TABLE market_cursor (
 
 CREATE TABLE protection_authority (
     scope_id INTEGER PRIMARY KEY REFERENCES acquisition_scope (scope_id),
+    authority_class TEXT NOT NULL
+        CHECK (authority_class IN ('NORMAL', 'HARD_BAIL')),
     active_stream_generation_id TEXT,
     active_acquisition_generation_id TEXT,
     active_generation_mandate_commitment_sha256 TEXT,
@@ -1673,6 +1694,24 @@ BEGIN
     );
 END;
 
+CREATE TRIGGER trg_symbol_controller_generation_rebind_requires_flat_consistent
+    BEFORE UPDATE OF live_acquisition_generation_id ON symbol_controller
+    FOR EACH ROW
+    WHEN NEW.live_acquisition_generation_id
+            IS NOT OLD.live_acquisition_generation_id
+     AND (
+            OLD.aggregate_quantity <> 0
+            OR NEW.aggregate_quantity <> 0
+            OR OLD.integrity_state <> 'CONSISTENT'
+            OR NEW.integrity_state <> 'CONSISTENT'
+        )
+BEGIN
+    SELECT RAISE (
+        ABORT,
+        'acquisition generation rebind requires a flat consistent controller'
+    );
+END;
+
 CREATE TRIGGER trg_symbol_controller_versioned_replace
     BEFORE UPDATE ON symbol_controller
     FOR EACH ROW
@@ -1793,6 +1832,22 @@ CREATE TRIGGER trg_symbol_controller_integrity_sticky_update
     WHEN NEW.integrity_state <> CASE
             WHEN OLD.integrity_state <> 'CONSISTENT'
                 THEN OLD.integrity_state
+            WHEN NEW.integrity_state = 'MIXED_GENERATION_RECOVERY'
+             AND EXISTS (
+                    SELECT 1
+                      FROM root_fill AS root
+                      JOIN acquisition_root_route AS route
+                        ON route.root_fill_key_id = root.root_fill_key_id
+                       AND route.scope_id = root.scope_id
+                      JOIN acquisition_generation AS generation
+                        ON generation.acquisition_generation_id =
+                            route.acquisition_generation_id
+                       AND generation.scope_id = route.scope_id
+                     WHERE root.scope_id = NEW.scope_id
+                       AND root.current_fact_id IS NOT NULL
+                       AND generation.status = 'RETIRED_UNSERVING'
+                )
+                THEN 'MIXED_GENERATION_RECOVERY'
             WHEN EXISTS (
                     SELECT 1
                       FROM root_fill AS root
@@ -2105,6 +2160,49 @@ BEGIN
                                 NEW.execution_profile_id
                     )
                     THEN 'UNMATCHED_LINEAGE_QUARANTINED'
+                WHEN EXISTS (
+                        SELECT 1
+                          FROM acquisition_root_route AS route
+                          JOIN acquisition_generation AS generation
+                            ON generation.acquisition_generation_id =
+                                route.acquisition_generation_id
+                           AND generation.scope_id = route.scope_id
+                         WHERE route.root_fill_key_id =
+                                NEW.root_fill_key_id
+                           AND generation.status = 'RETIRED_UNSERVING'
+                    )
+                 AND (
+                        NEW.predecessor_fact_id IS NULL
+                        OR EXISTS (
+                            SELECT 1
+                              FROM execution_fact AS predecessor
+                             WHERE predecessor.fact_id =
+                                    NEW.predecessor_fact_id
+                               AND (
+                                    predecessor.side IS NOT NEW.side
+                                    OR predecessor.quantity IS NOT NEW.quantity
+                                    OR predecessor.price_present
+                                        IS NOT NEW.price_present
+                                    OR predecessor.price_units
+                                        IS NOT NEW.price_units
+                                    OR predecessor.scale_sign
+                                        IS NOT NEW.scale_sign
+                                    OR predecessor.scale_digits
+                                        IS NOT NEW.scale_digits
+                                    OR predecessor.scale_exponent
+                                        IS NOT NEW.scale_exponent
+                                    OR predecessor.tick_units
+                                        IS NOT NEW.tick_units
+                                    OR predecessor.tick_scale_sign
+                                        IS NOT NEW.tick_scale_sign
+                                    OR predecessor.tick_scale_digits
+                                        IS NOT NEW.tick_scale_digits
+                                    OR predecessor.tick_scale_exponent
+                                        IS NOT NEW.tick_scale_exponent
+                                )
+                        )
+                    )
+                    THEN 'MIXED_GENERATION_RECOVERY'
                 WHEN COALESCE(
                         (
                             SELECT SUM(
@@ -2197,7 +2295,17 @@ CREATE TRIGGER trg_venue_effect_requires_current_controller
                     NEW.acquisition_generation_id
                AND controller.currentness_head_ordinal =
                     NEW.expected_controller_head_ordinal
-               AND controller.integrity_state = 'CONSISTENT'
+               AND (
+                    (
+                        controller.integrity_state = 'CONSISTENT'
+                        AND NEW.authority_class = 'NORMAL'
+                    )
+                    OR (
+                        controller.integrity_state =
+                            'MIXED_GENERATION_RECOVERY'
+                        AND NEW.authority_class = 'HARD_BAIL'
+                    )
+               )
         )
 BEGIN
     SELECT RAISE (
@@ -2283,7 +2391,7 @@ CREATE TRIGGER trg_venue_effect_identity_immutable
     BEFORE UPDATE OF effect_id, effect_external, scope_id,
         application_generation_id, execution_profile_id,
         acquisition_generation_id, generation_mandate_commitment_sha256,
-        expected_controller_head_ordinal,
+        expected_controller_head_ordinal, authority_class,
         request_occurrence_external, mandate_external, effect_kind,
         client_order_external, target_order_external, side, quantity,
         economic_scope, created_ordinal ON venue_effect
@@ -2298,6 +2406,7 @@ CREATE TRIGGER trg_venue_effect_identity_immutable
             IS NOT OLD.generation_mandate_commitment_sha256
       OR NEW.expected_controller_head_ordinal
             IS NOT OLD.expected_controller_head_ordinal
+      OR NEW.authority_class IS NOT OLD.authority_class
       OR NEW.request_occurrence_external IS NOT OLD.request_occurrence_external
       OR NEW.mandate_external IS NOT OLD.mandate_external
       OR NEW.effect_kind IS NOT OLD.effect_kind
@@ -2441,7 +2550,17 @@ CREATE TRIGGER trg_dispatch_claim_requires_current_controller
                     effect.acquisition_generation_id
                AND controller.currentness_head_ordinal =
                     effect.expected_controller_head_ordinal
-               AND controller.integrity_state = 'CONSISTENT'
+               AND (
+                    (
+                        controller.integrity_state = 'CONSISTENT'
+                        AND effect.authority_class = 'NORMAL'
+                    )
+                    OR (
+                        controller.integrity_state =
+                            'MIXED_GENERATION_RECOVERY'
+                        AND effect.authority_class = 'HARD_BAIL'
+                    )
+               )
              WHERE effect.effect_id = NEW.effect_id
                AND effect.execution_profile_id = NEW.execution_profile_id
         )
@@ -2637,7 +2756,8 @@ CREATE TRIGGER trg_protection_authority_version_monotonic
     WHEN NEW.version_ordinal < OLD.version_ordinal
       OR (
             (
-                NEW.active_stream_generation_id
+                NEW.authority_class IS NOT OLD.authority_class
+                OR NEW.active_stream_generation_id
                     IS NOT OLD.active_stream_generation_id
                 OR NEW.active_acquisition_generation_id
                     IS NOT OLD.active_acquisition_generation_id
@@ -2704,7 +2824,17 @@ CREATE TRIGGER trg_protection_authority_requires_consistent_controller
             SELECT 1
              FROM symbol_controller AS controller
              WHERE controller.scope_id = NEW.scope_id
-               AND controller.integrity_state = 'CONSISTENT'
+               AND (
+                    (
+                        controller.integrity_state = 'CONSISTENT'
+                        AND NEW.authority_class = 'NORMAL'
+                    )
+                    OR (
+                        controller.integrity_state =
+                            'MIXED_GENERATION_RECOVERY'
+                        AND NEW.authority_class = 'HARD_BAIL'
+                    )
+               )
                AND controller.currentness_head_ordinal =
                     NEW.expected_controller_head_ordinal
                AND (
@@ -2716,7 +2846,7 @@ CREATE TRIGGER trg_protection_authority_requires_consistent_controller
 BEGIN
     SELECT RAISE (
         ABORT,
-        'protection authority requires a consistent controller'
+        'protection authority requires matching current controller authority'
     );
 END;
 
@@ -2727,7 +2857,17 @@ CREATE TRIGGER trg_protection_authority_update_requires_current_controller
             SELECT 1
               FROM symbol_controller AS controller
              WHERE controller.scope_id = NEW.scope_id
-               AND controller.integrity_state = 'CONSISTENT'
+               AND (
+                    (
+                        controller.integrity_state = 'CONSISTENT'
+                        AND NEW.authority_class = 'NORMAL'
+                    )
+                    OR (
+                        controller.integrity_state =
+                            'MIXED_GENERATION_RECOVERY'
+                        AND NEW.authority_class = 'HARD_BAIL'
+                    )
+               )
                AND controller.currentness_head_ordinal =
                     NEW.expected_controller_head_ordinal
                AND (
@@ -2739,7 +2879,7 @@ CREATE TRIGGER trg_protection_authority_update_requires_current_controller
 BEGIN
     SELECT RAISE (
         ABORT,
-        'protection update requires exact current consistent controller'
+        'protection update requires matching current controller authority'
     );
 END;
 
@@ -2817,7 +2957,7 @@ END;
 """
 
 _SCHEMA_CATALOG_SHA256 = (
-    "5dc150333a89ff369956ad16c364b1bcbb7d15e93e71860236ebeaebcbac309f"
+    "88b9dc1cbe4771f689f8d308802c2786b5e283910acfba70b7d341a1973113da"
 )
 
 
