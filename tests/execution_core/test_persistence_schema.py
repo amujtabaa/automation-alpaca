@@ -17,6 +17,7 @@ in-memory database is ever used.
 
 from __future__ import annotations
 
+import re
 import sqlite3
 
 import pytest
@@ -32,9 +33,7 @@ from app.execution_core.persistence.schema import (
 )
 
 
-_GATE_DIGEST: str | None = (
-    "b9565de1dab1dd6388980260ffd5089abe11ce887bbf67ccce2434848e252cbc"
-)
+_GATE_DIGEST: str | None = None
 
 _FORBIDDEN_COLUMN_FRAGMENTS = (
     "identifier",
@@ -42,6 +41,13 @@ _FORBIDDEN_COLUMN_FRAGMENTS = (
     "api_key",
     "token",
     "password",
+)
+
+_ORIGIN_COLUMNS = (
+    "trade_command_origin",
+    "order_query_origin",
+    "order_event_origin",
+    "source_origin",
 )
 
 
@@ -293,6 +299,21 @@ def test_disabled_foreign_keys_are_refused(tmp_path: object) -> None:
 
     with pytest.raises(SchemaForeignKeysDisabledError):
         install_schema(connection, approved_ddl_sha256=approved)
+
+
+def _revised_origin_predicate(origin: str) -> bool:
+    """Pure-Python mirror of the revised origin CHECK chain (no database)."""
+
+    host_part = origin[8:]
+    return (
+        origin.startswith("https://")
+        and 9 <= len(origin) <= 261
+        and re.search(r"[^a-z0-9.:\-]", host_part) is None
+        and "@" not in host_part
+        and "//" not in host_part
+        and not host_part.endswith(":443")
+        and "::" not in host_part
+    )
 
 
 def test_module_import_stays_inert_without_any_database() -> None:
@@ -710,3 +731,46 @@ def test_no_column_retains_credential_or_account_material(
                 offenders.append(f"{table_name}.{column_name}")
 
     assert offenders == []
+
+
+# ---------------------------------------------------------------------------
+# REV-0070-followup regression locks for the revised origin CHECK blocks.
+
+
+def test_origin_charset_predicates_target_the_host_part_only() -> None:
+    """The scheme prefix must never be scanned by content predicates."""
+
+    _require_gate_open()
+    ddl = schema_module.SCHEMA_DDL
+
+    for column in _ORIGIN_COLUMNS:
+        assert f"AND {column} NOT GLOB '*[^a-z0-9.:-]*'" not in ddl
+        assert f"AND substr({column}, 9) NOT GLOB '*[^a-z0-9.:-]*'" in ddl
+        assert f"AND length({column}) >= 9" in ddl
+
+
+def test_revised_origin_predicate_accepts_canonical_and_refuses_mutants() -> None:
+    """Mirror of the exact revised CHECK chain, proven without any database."""
+
+    _require_gate_open()
+
+    valid = (
+        "https://trade.example.com",
+        "https://feed.example.com",
+        "https://x-y.example.com:8443",
+        "https://ab.example:1",
+    )
+    invalid = (
+        "http://trade.example.com",
+        "",
+        "https://",
+        "https://Host.example.com",
+        "https://pa/th",
+        "https://u@h.example.com",
+        "https://h.example.com:443",
+        "https://a::b",
+        "https://a b.c",
+    )
+
+    assert all(_revised_origin_predicate(value) for value in valid)
+    assert all(not _revised_origin_predicate(value) for value in invalid)

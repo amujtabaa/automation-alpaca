@@ -67,8 +67,9 @@ CREATE TABLE execution_connection_profile (
     trade_command_origin TEXT NOT NULL
         CHECK (
             trade_command_origin LIKE 'https://%'
+            AND length(trade_command_origin) >= 9
             AND length(trade_command_origin) <= 261
-            AND trade_command_origin NOT GLOB '*[^a-z0-9.:-]*'
+            AND substr(trade_command_origin, 9) NOT GLOB '*[^a-z0-9.:-]*'
             AND trade_command_origin NOT LIKE '%@%'
             AND substr(trade_command_origin, 9) NOT LIKE '%//%'
             AND trade_command_origin NOT LIKE '%:443'
@@ -77,8 +78,9 @@ CREATE TABLE execution_connection_profile (
     order_query_origin TEXT NOT NULL
         CHECK (
             order_query_origin LIKE 'https://%'
+            AND length(order_query_origin) >= 9
             AND length(order_query_origin) <= 261
-            AND order_query_origin NOT GLOB '*[^a-z0-9.:-]*'
+            AND substr(order_query_origin, 9) NOT GLOB '*[^a-z0-9.:-]*'
             AND order_query_origin NOT LIKE '%@%'
             AND substr(order_query_origin, 9) NOT LIKE '%//%'
             AND order_query_origin NOT LIKE '%:443'
@@ -87,8 +89,9 @@ CREATE TABLE execution_connection_profile (
     order_event_origin TEXT NOT NULL
         CHECK (
             order_event_origin LIKE 'https://%'
+            AND length(order_event_origin) >= 9
             AND length(order_event_origin) <= 261
-            AND order_event_origin NOT GLOB '*[^a-z0-9.:-]*'
+            AND substr(order_event_origin, 9) NOT GLOB '*[^a-z0-9.:-]*'
             AND order_event_origin NOT LIKE '%@%'
             AND substr(order_event_origin, 9) NOT LIKE '%//%'
             AND order_event_origin NOT LIKE '%:443'
@@ -126,8 +129,9 @@ CREATE TABLE market_data_source_profile (
     source_origin TEXT NOT NULL
         CHECK (
             source_origin LIKE 'https://%'
+            AND length(source_origin) >= 9
             AND length(source_origin) <= 261
-            AND source_origin NOT GLOB '*[^a-z0-9.:-]*'
+            AND substr(source_origin, 9) NOT GLOB '*[^a-z0-9.:-]*'
             AND source_origin NOT LIKE '%@%'
             AND substr(source_origin, 9) NOT LIKE '%//%'
             AND source_origin NOT LIKE '%:443'
