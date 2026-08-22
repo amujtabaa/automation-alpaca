@@ -1,18 +1,18 @@
 ---
 type: Work Order
 title: M2-I3 narrow SQLite repository hydration
-status: READY
+status: ACTIVE
 work_order_id: WO-0167
 wave: M2-I3
 model_tier: strong
 risk: high
 disposition: []
-owner: unassigned local coding LLM; Codex checkpoint governor
+owner: Ox Alpha implementation seat; Codex checkpoint governor
 created: 2026-08-21
 predecessor: WO-0166 exact accepted head
-branch: TO_ASSIGN_ON_ACTIVATION
-review_id: TO_ASSIGN_ON_ACTIVATION
-execution_authority: NOT_ACTIVE; requires accepted M2-I2 and separate activation.
+branch: codex/m2-i3-sqlite-repository-hydration-r1
+review_id: REV-0072
+execution_authority: Ameen Mujtabaa activated WO-0167 (Codex task, 2026-08-21). SQLite access only via explicit connections to fresh pytest tmp_path file databases. Excluded: in-memory SQLite, configured/existing databases, migration, credentials, broker/network calls by application code or tests, orders, runtime composition, M2-I4+ implementation, promotion, PR, merge to master, rebase, force-push, branch deletion, history rewrite.
 ---
 
 # Work Order: M2-I3 narrow SQLite repository hydration
@@ -125,3 +125,21 @@ Activation appends one exact review path and reconciles paths against the accept
 
 Completion requires intended RED, round-trip/rejection/directness mutants, focused/static/full-
 governance evidence, independent P0=0/P1=0 acceptance, exact publication, and an M2-I4 handoff.
+
+
+## Activation checkpoint (2026-08-21)
+
+| Item | Exact value |
+| --- | --- |
+| Base commit | `0a7b5ae324c34be488da24478f95e2658a1bb894` |
+| Base tree | `9e76edce54a661b5685f5837a53371ae5e1d858b` |
+| Branch | `codex/m2-i3-sqlite-repository-hydration-r1` created directly from base |
+| Review | `REV-0072` reserved |
+| Worktree | Clean at activation; exact identities verified before branch creation |
+| Accepted predecessor | WO-0166 closeout `0a7b5ae`; REV-0071 ACCEPT P0=0/P1=0/P2=0 |
+| Cross-checks | schema.py `3052838c...`, durable_codec.py `6a014ed4...`, profiles.py `515e7990...` all verified at base |
+
+Database authority for this order: explicit connections to fresh file-backed
+temporary databases created by tests under pytest `tmp_path`, with
+`PRAGMA foreign_keys=ON` and `PRAGMA recursive_triggers=ON`, installing only
+the unchanged accepted schema through the accepted installer and digest.
