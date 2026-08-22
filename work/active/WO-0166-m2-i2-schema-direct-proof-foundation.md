@@ -103,6 +103,49 @@ effect state with immutable closure proof; and controller/generation compatibili
 coupling. Tests include both refusal mutants and positive/no-op controls so an over-restrictive
 repair cannot pass unnoticed.
 
+### Fresh adversarial RED and root redesign
+
+Three fresh adversarial agents independently reviewed the first Codex checkpoint
+`b284beaa627f3a150148f007ea21b3764c651509`. Their combined P0/P1 findings reproduced authority
+gaps in root/controller economics, profile/generation ownership, fact shape, effect closure proof,
+successor compatibility, market-stream binding, query-plan coverage, installer atomicity, and
+`INSERT OR REPLACE` behavior. Seven isolated negative controls were added and all seven failed
+against that checkpoint before the redesign.
+
+The remediation replaced those surfaces rather than adding fixture-specific exceptions:
+
+- root and controller economics now derive automatically from the exact immutable current fact
+  head; callers cannot supply an unauthenticated economic total;
+- scopes select immutable application/execution profile coordinates, complete fact variants retain
+  their typed authority fields, and successor generations require the exact retired compatible
+  predecessor;
+- effect closure requires exact immutable claim/evidence/proof coordinates, a dispatch claim
+  automatically advances the effect state, and claimed-or-later states cannot be caller-minted;
+- market cursor and protection authority bind to one exact stream/source/session/mode route;
+- canonical origin/version triggers, direct-query indexes, and replacement-bypass mutants make the
+  constraints failure-capable; and
+- installation takes an immediate write lock, checks emptiness under that lock, executes each DDL
+  statement atomically, and rolls back completely on an injected interruption. The production
+  module remains dependency-neutral and imports no `sqlite3` capability.
+
+### DONE evidence — final pre-review candidate
+
+The final standing-approved DDL is exactly `72,373` UTF-8 bytes with SHA-256
+`46d486a01c9c2b93cd39024c7376df39a23e78ccf3f0d17b6239aa00b8423a66`; the test gate contains
+that same digest. Fresh checks on CPython 3.12 completed as follows:
+
+- `python -m pytest -q tests/execution_core/test_persistence_schema.py`: 50 passed;
+- `python -m pytest -q tests/execution_core/test_import_boundary.py`: 32 passed;
+- `python -m pytest -q tests/execution_core`: 1,658 passed;
+- `ruff check` and `ruff format --check` on both changed Python paths: clean;
+- `mypy app`: success across 91 source files;
+- `lint-imports`: six contracts kept, zero broken; and
+- `git diff --check`: clean.
+
+Every database opened by the schema tests was a fresh file under pytest `tmp_path`; no in-memory or
+configured database, migration, runtime composition, credential, broker/network call, order,
+promotion, or merge was performed. Fresh exact-commit review remains the next gate before closeout.
+
 ## Functional requirements
 
 - FR-1: The schema MUST bind one immutable application generation to one selected execution profile and a

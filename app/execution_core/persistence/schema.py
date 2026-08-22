@@ -4,7 +4,7 @@ This module is the exact M2-I2 schema-definition candidate. Importing it
 performs no work: it contains only string constants, exception types, a
 structural connection protocol, and pure functions. It imports neither
 ``sqlite3`` nor any I/O, clock, randomness, network, credential, or runtime
-surface, discovers no database path, and never opens or inspects any
+surface that opens a connection, discovers no database path, and never opens or inspects any
 database by itself. ``install_schema`` acts only on an explicitly supplied
 empty SQLite connection and refuses to act unless:
 
@@ -12,8 +12,9 @@ empty SQLite connection and refuses to act unless:
    DDL bytes (EC-4: any byte drift returns to the human gate);
 2. the supplied connection targets an empty database (zero ``sqlite_master``
    rows — EC-3: non-empty target refused before execution); and
-3. ``PRAGMA foreign_keys`` verifiably reports ``1`` on that connection
-   (EC-3: disabled foreign keys refused before execution).
+3. ``PRAGMA foreign_keys`` and ``PRAGMA recursive_triggers`` verifiably report
+   ``1`` on that connection (EC-3: disabled relational enforcement refused
+   before execution).
 
 The schema enforces, database-natively: immutable generation/profile
 bindings with exactly one selected profile pair per application generation;
@@ -48,6 +49,8 @@ CREATE TABLE schema_meta (
 CREATE TABLE execution_connection_profile (
     connection_profile_id TEXT PRIMARY KEY
         CHECK (length(connection_profile_id) = 64 AND connection_profile_id NOT GLOB '*[^0-9a-f]*'),
+    application_generation TEXT NOT NULL
+        CHECK (length(application_generation) BETWEEN 1 AND 256),
     broker_provider TEXT NOT NULL
         CHECK (
             length(broker_provider) BETWEEN 1 AND 32
@@ -112,7 +115,8 @@ CREATE TABLE execution_connection_profile (
     deployment_identity TEXT NOT NULL
         CHECK (length(deployment_identity) = 64 AND deployment_identity NOT GLOB '*[^0-9a-f]*'),
     profile_commitment_sha256 TEXT NOT NULL UNIQUE
-        CHECK (length(profile_commitment_sha256) = 64 AND profile_commitment_sha256 NOT GLOB '*[^0-9a-f]*')
+        CHECK (length(profile_commitment_sha256) = 64 AND profile_commitment_sha256 NOT GLOB '*[^0-9a-f]*'),
+    UNIQUE (connection_profile_id, application_generation)
 );
 
 CREATE TABLE market_data_source_profile (
@@ -160,23 +164,31 @@ CREATE TABLE market_data_source_profile (
 
 CREATE TABLE application_generation (
     application_generation_id TEXT PRIMARY KEY
-        CHECK (length(application_generation_id) = 64 AND application_generation_id NOT GLOB '*[^0-9a-f]*'),
-    selected_execution_profile_id TEXT NOT NULL
-        REFERENCES execution_connection_profile (connection_profile_id),
+        CHECK (length(application_generation_id) BETWEEN 1 AND 256),
+    selected_execution_profile_id TEXT NOT NULL UNIQUE,
     selected_market_source_profile_id TEXT NOT NULL
         REFERENCES market_data_source_profile (market_source_profile_id),
-    activation_ordinal INTEGER NOT NULL UNIQUE CHECK (activation_ordinal >= 1)
+    activation_ordinal INTEGER NOT NULL UNIQUE CHECK (activation_ordinal >= 1),
+    UNIQUE (application_generation_id, selected_execution_profile_id),
+    UNIQUE (application_generation_id, selected_market_source_profile_id),
+    FOREIGN KEY (selected_execution_profile_id, application_generation_id)
+        REFERENCES execution_connection_profile (
+            connection_profile_id, application_generation
+        )
 );
 
 CREATE TABLE acquisition_scope (
     scope_id INTEGER PRIMARY KEY,
-    application_generation_id TEXT NOT NULL
-        REFERENCES application_generation (application_generation_id),
-    broker_text TEXT NOT NULL CHECK (length(broker_text) >= 1),
-    environment_text TEXT NOT NULL CHECK (length(environment_text) >= 1),
-    account_text TEXT NOT NULL CHECK (length(account_text) >= 1),
+    application_generation_id TEXT NOT NULL,
+    execution_profile_id TEXT NOT NULL,
     symbol_text TEXT NOT NULL CHECK (length(symbol_text) >= 1),
-    UNIQUE (application_generation_id, broker_text, environment_text, account_text, symbol_text)
+    UNIQUE (application_generation_id, execution_profile_id, symbol_text),
+    UNIQUE (scope_id, application_generation_id),
+    UNIQUE (scope_id, application_generation_id, execution_profile_id),
+    FOREIGN KEY (application_generation_id, execution_profile_id)
+        REFERENCES application_generation (
+            application_generation_id, selected_execution_profile_id
+        )
 );
 
 CREATE TABLE acquisition_generation (
@@ -210,27 +222,133 @@ CREATE TABLE kernel_checkpoint (
 );
 
 CREATE TABLE symbol_controller (
-    scope_id INTEGER PRIMARY KEY REFERENCES acquisition_scope (scope_id),
+    scope_id INTEGER PRIMARY KEY,
+    application_generation_id TEXT NOT NULL,
+    execution_profile_id TEXT NOT NULL,
     live_acquisition_generation_id TEXT,
 
     aggregate_quantity INTEGER NOT NULL CHECK (aggregate_quantity >= 0),
-    basis_numerator INTEGER NOT NULL CHECK (basis_numerator >= 0),
-    basis_denominator INTEGER NOT NULL CHECK (basis_denominator >= 1),
     currentness_head_ordinal INTEGER NOT NULL CHECK (currentness_head_ordinal >= 0),
-    controller_version_ordinal INTEGER NOT NULL UNIQUE CHECK (controller_version_ordinal >= 1),
+    controller_version_ordinal INTEGER NOT NULL CHECK (controller_version_ordinal >= 1),
     emergency_compatibility_sha256 TEXT NOT NULL
         CHECK (length(emergency_compatibility_sha256) = 64 AND emergency_compatibility_sha256 NOT GLOB '*[^0-9a-f]*'),
+    UNIQUE (scope_id, controller_version_ordinal),
+    UNIQUE (scope_id, application_generation_id, execution_profile_id),
+    FOREIGN KEY (scope_id, application_generation_id, execution_profile_id)
+        REFERENCES acquisition_scope (
+            scope_id, application_generation_id, execution_profile_id
+        ),
     FOREIGN KEY (live_acquisition_generation_id, scope_id)
         REFERENCES acquisition_generation (acquisition_generation_id, scope_id)
 );
 
 CREATE TABLE root_fill (
     root_fill_key_id INTEGER PRIMARY KEY,
-    scope_id INTEGER NOT NULL REFERENCES acquisition_scope (scope_id),
+    scope_id INTEGER NOT NULL,
+    application_generation_id TEXT NOT NULL,
+    execution_profile_id TEXT NOT NULL,
     owner_generation_id TEXT NOT NULL,
 
     root_fill_external TEXT NOT NULL CHECK (length(root_fill_external) >= 1),
-    current_quantity INTEGER NOT NULL CHECK (current_quantity >= 0),
+    current_fact_id INTEGER,
+    current_kind TEXT CHECK (current_kind IN ('FILL', 'TRADE_CORRECT', 'TRADE_BUST')),
+    current_authority TEXT
+        CHECK (current_authority IN ('BROKER_AUTHORITATIVE', 'HUMAN_ATTESTED')),
+    current_side TEXT CHECK (current_side IN ('BUY', 'SELL')),
+    current_quantity INTEGER CHECK (current_quantity >= 0),
+    price_present INTEGER CHECK (price_present IN (0, 1)),
+    price_units INTEGER,
+    scale_sign INTEGER CHECK (scale_sign IN (0, 1)),
+    scale_digits TEXT,
+    scale_exponent INTEGER,
+    tick_units INTEGER,
+    tick_scale_sign INTEGER CHECK (tick_scale_sign IN (0, 1)),
+    tick_scale_digits TEXT,
+    tick_scale_exponent INTEGER,
+    economics_head_ordinal INTEGER NOT NULL CHECK (economics_head_ordinal >= 0),
+    UNIQUE (execution_profile_id, root_fill_external),
+    UNIQUE (root_fill_key_id, scope_id),
+    UNIQUE (root_fill_key_id, scope_id, owner_generation_id),
+    UNIQUE (
+        root_fill_key_id, scope_id, application_generation_id,
+        execution_profile_id
+    ),
+    UNIQUE (
+        root_fill_key_id, scope_id, application_generation_id,
+        execution_profile_id, owner_generation_id
+    ),
+    CHECK (
+        (
+            current_fact_id IS NULL
+            AND current_kind IS NULL
+            AND current_authority IS NULL
+            AND current_side IS NULL
+            AND current_quantity IS NULL
+            AND price_present IS NULL
+            AND price_units IS NULL
+            AND scale_sign IS NULL
+            AND scale_digits IS NULL
+            AND scale_exponent IS NULL
+            AND tick_units IS NULL
+            AND tick_scale_sign IS NULL
+            AND tick_scale_digits IS NULL
+            AND tick_scale_exponent IS NULL
+            AND economics_head_ordinal = 0
+        )
+        OR
+        (
+            current_fact_id IS NOT NULL
+            AND current_kind IS NOT NULL
+            AND current_authority IS NOT NULL
+            AND current_side IS NOT NULL
+            AND current_quantity IS NOT NULL
+            AND price_present IS NOT NULL
+            AND price_units IS NOT NULL
+            AND scale_sign IS NOT NULL
+            AND scale_digits IS NOT NULL
+            AND scale_exponent IS NOT NULL
+            AND tick_units IS NOT NULL
+            AND tick_scale_sign IS NOT NULL
+            AND tick_scale_digits IS NOT NULL
+            AND tick_scale_exponent IS NOT NULL
+            AND economics_head_ordinal >= 1
+        )
+    ),
+    FOREIGN KEY (scope_id, application_generation_id, execution_profile_id)
+        REFERENCES acquisition_scope (
+            scope_id, application_generation_id, execution_profile_id
+        ),
+    FOREIGN KEY (owner_generation_id, scope_id)
+        REFERENCES acquisition_generation (acquisition_generation_id, scope_id),
+    FOREIGN KEY (
+        root_fill_key_id, current_fact_id, economics_head_ordinal,
+        current_kind, current_authority, current_side, current_quantity,
+        price_present, price_units, scale_sign, scale_digits, scale_exponent,
+        tick_units, tick_scale_sign, tick_scale_digits, tick_scale_exponent
+    ) REFERENCES execution_fact (
+        root_fill_key_id, fact_id, fact_ordinal,
+        kind, authority, side, quantity,
+        price_present, price_units, scale_sign, scale_digits, scale_exponent,
+        tick_units, tick_scale_sign, tick_scale_digits, tick_scale_exponent
+    )
+);
+
+CREATE INDEX ix_root_fill_owner ON root_fill (owner_generation_id, root_fill_key_id);
+
+CREATE TABLE execution_fact (
+    fact_id INTEGER PRIMARY KEY,
+    scope_id INTEGER NOT NULL,
+    application_generation_id TEXT NOT NULL,
+    execution_profile_id TEXT NOT NULL,
+    root_fill_key_id INTEGER NOT NULL,
+    source_event_id TEXT NOT NULL CHECK (length(source_event_id) >= 1),
+    order_external TEXT NOT NULL CHECK (length(order_external) >= 1),
+    side TEXT NOT NULL CHECK (side IN ('BUY', 'SELL')),
+    kind TEXT NOT NULL CHECK (kind IN ('FILL', 'TRADE_CORRECT', 'TRADE_BUST')),
+    authority TEXT NOT NULL
+        CHECK (authority IN ('BROKER_AUTHORITATIVE', 'HUMAN_ATTESTED')),
+    quantity INTEGER NOT NULL CHECK (quantity >= 0),
+    price_present INTEGER NOT NULL CHECK (price_present IN (0, 1)),
     price_units INTEGER NOT NULL,
     scale_sign INTEGER NOT NULL CHECK (scale_sign IN (0, 1)),
     scale_digits TEXT NOT NULL
@@ -240,50 +358,98 @@ CREATE TABLE root_fill (
             AND (scale_digits = '0' OR substr(scale_digits, 1, 1) <> '0')
         ),
     scale_exponent INTEGER NOT NULL,
-    economics_head_ordinal INTEGER NOT NULL CHECK (economics_head_ordinal >= 0),
-    UNIQUE (scope_id, root_fill_external),
-    UNIQUE (root_fill_key_id, scope_id),
-    UNIQUE (root_fill_key_id, scope_id, owner_generation_id),
-    FOREIGN KEY (owner_generation_id, scope_id)
-        REFERENCES acquisition_generation (acquisition_generation_id, scope_id)
-);
-
-CREATE INDEX ix_root_fill_owner ON root_fill (owner_generation_id, root_fill_key_id);
-
-CREATE TABLE execution_fact (
-    fact_id INTEGER PRIMARY KEY,
-    scope_id INTEGER NOT NULL REFERENCES acquisition_scope (scope_id),
-    application_generation_id TEXT NOT NULL
-        REFERENCES application_generation (application_generation_id),
-    broker_text TEXT NOT NULL CHECK (length(broker_text) >= 1),
-    environment_text TEXT NOT NULL CHECK (length(environment_text) >= 1),
-    account_text TEXT NOT NULL CHECK (length(account_text) >= 1),
-    root_fill_key_id INTEGER NOT NULL,
-    source_event_id TEXT NOT NULL CHECK (length(source_event_id) >= 1),
-    kind TEXT NOT NULL CHECK (kind IN ('FILL', 'TRADE_CORRECT', 'TRADE_BUST')),
-    quantity INTEGER NOT NULL CHECK (quantity >= 0),
-    price_units INTEGER,
-    scale_sign INTEGER CHECK (scale_sign IN (0, 1)),
-    scale_digits TEXT
+    tick_units INTEGER NOT NULL,
+    tick_scale_sign INTEGER NOT NULL CHECK (tick_scale_sign IN (0, 1)),
+    tick_scale_digits TEXT NOT NULL
         CHECK (
-            scale_digits IS NULL
-            OR (
-                scale_digits <> ''
-                AND scale_digits NOT GLOB '*[^0-9]*'
-                AND (scale_digits = '0' OR substr(scale_digits, 1, 1) <> '0')
+            tick_scale_digits <> ''
+            AND tick_scale_digits NOT GLOB '*[^0-9]*'
+            AND (
+                tick_scale_digits = '0'
+                OR substr(tick_scale_digits, 1, 1) <> '0'
             )
         ),
-    scale_exponent INTEGER,
+    tick_scale_exponent INTEGER NOT NULL,
+    request_occurrence_external TEXT,
+    claim_occurrence_external TEXT,
+    prior_cumulative_quantity INTEGER CHECK (prior_cumulative_quantity >= 0),
+    resulting_cumulative_quantity INTEGER CHECK (resulting_cumulative_quantity >= 0),
+    actor_external TEXT,
+    reason_text TEXT,
+    evidence_reference_external TEXT,
     predecessor_fact_id INTEGER,
     fact_ordinal INTEGER NOT NULL UNIQUE CHECK (fact_ordinal >= 1),
     CHECK ((kind = 'FILL') = (predecessor_fact_id IS NULL)),
     CHECK (predecessor_fact_id IS NULL OR predecessor_fact_id <> fact_id),
-    CHECK ((price_units IS NULL) = (scale_sign IS NULL)),
-    CHECK ((scale_sign IS NULL) = (scale_digits IS NULL)),
-    CHECK ((scale_digits IS NULL) = (scale_exponent IS NULL)),
-    CHECK (kind <> 'FILL' OR quantity > 0),
-    FOREIGN KEY (root_fill_key_id, scope_id)
-        REFERENCES root_fill (root_fill_key_id, scope_id),
+    CHECK (
+        (
+            price_present = 0
+            AND price_units = 0
+            AND scale_sign = 0
+            AND scale_digits = '0'
+            AND scale_exponent = 0
+            AND tick_units = 0
+            AND tick_scale_sign = 0
+            AND tick_scale_digits = '0'
+            AND tick_scale_exponent = 0
+        )
+        OR
+        (
+            price_present = 1
+            AND price_units > 0
+            AND scale_sign = 0
+            AND scale_digits <> '0'
+            AND tick_units > 0
+            AND tick_scale_sign = 0
+            AND tick_scale_digits <> '0'
+        )
+    ),
+    CHECK (
+        (kind IN ('FILL', 'TRADE_CORRECT') AND quantity > 0 AND price_present = 1)
+        OR (kind = 'TRADE_BUST' AND quantity = 0)
+    ),
+    CHECK (kind = 'FILL' OR authority = 'BROKER_AUTHORITATIVE'),
+    CHECK (
+        (authority = 'BROKER_AUTHORITATIVE')
+        = (
+            request_occurrence_external IS NULL
+            AND claim_occurrence_external IS NULL
+            AND prior_cumulative_quantity IS NULL
+            AND resulting_cumulative_quantity IS NULL
+            AND actor_external IS NULL
+            AND reason_text IS NULL
+            AND evidence_reference_external IS NULL
+        )
+    ),
+    CHECK (
+        authority <> 'HUMAN_ATTESTED'
+        OR (
+            kind = 'FILL'
+            AND request_occurrence_external IS NOT NULL
+            AND length(request_occurrence_external) >= 1
+            AND claim_occurrence_external IS NOT NULL
+            AND length(claim_occurrence_external) >= 1
+            AND prior_cumulative_quantity IS NOT NULL
+            AND resulting_cumulative_quantity IS NOT NULL
+            AND actor_external IS NOT NULL
+            AND length(actor_external) >= 1
+            AND reason_text IS NOT NULL
+            AND length(reason_text) >= 1
+            AND evidence_reference_external IS NOT NULL
+            AND length(evidence_reference_external) >= 1
+        )
+    ),
+    FOREIGN KEY (scope_id, application_generation_id, execution_profile_id)
+        REFERENCES acquisition_scope (
+            scope_id, application_generation_id, execution_profile_id
+        ),
+    FOREIGN KEY (
+        root_fill_key_id, scope_id, application_generation_id,
+        execution_profile_id
+    ) REFERENCES root_fill (
+        root_fill_key_id, scope_id, application_generation_id,
+        execution_profile_id
+    ),
     FOREIGN KEY (root_fill_key_id, predecessor_fact_id)
         REFERENCES execution_fact (root_fill_key_id, fact_id)
 );
@@ -291,13 +457,17 @@ CREATE TABLE execution_fact (
 CREATE UNIQUE INDEX uq_execution_fact_root_fact ON execution_fact (root_fill_key_id, fact_id);
 CREATE UNIQUE INDEX uq_execution_fact_root_fact_ordinal
     ON execution_fact (root_fill_key_id, fact_id, fact_ordinal);
+CREATE UNIQUE INDEX uq_execution_fact_exact_current_economics ON execution_fact (
+    root_fill_key_id, fact_id, fact_ordinal,
+    kind, authority, side, quantity,
+    price_present, price_units, scale_sign, scale_digits, scale_exponent,
+    tick_units, tick_scale_sign, tick_scale_digits, tick_scale_exponent
+);
 CREATE UNIQUE INDEX uq_execution_fact_one_fill_per_root
     ON execution_fact (root_fill_key_id)
     WHERE kind = 'FILL';
 CREATE UNIQUE INDEX uq_execution_fact_m1_key ON execution_fact (
-    broker_text,
-    environment_text,
-    account_text,
+    execution_profile_id,
     source_event_id
 );
 CREATE INDEX ix_execution_fact_root_head ON execution_fact (root_fill_key_id, fact_ordinal DESC);
@@ -313,17 +483,90 @@ CREATE TABLE execution_fact_head (
 
 CREATE TABLE venue_effect (
     effect_id INTEGER PRIMARY KEY,
-    scope_id INTEGER NOT NULL REFERENCES acquisition_scope (scope_id),
+    scope_id INTEGER NOT NULL,
+    application_generation_id TEXT NOT NULL,
+    execution_profile_id TEXT NOT NULL,
     root_fill_key_id INTEGER NOT NULL,
 
     order_external TEXT NOT NULL CHECK (length(order_external) >= 1),
+    lifecycle_state TEXT NOT NULL
+        CHECK (
+            lifecycle_state IN (
+                'REQUESTED', 'CANCELED_BEFORE_DISPATCH', 'DISPATCH_CLAIMED',
+                'ACKNOWLEDGED', 'REJECTED', 'OUTCOME_UNKNOWN',
+                'NEEDS_REVIEW', 'OPERATOR_RECONCILED'
+            )
+        ),
     disposition TEXT NOT NULL CHECK (disposition IN ('OPEN', 'CLOSED', 'INVALIDATED')),
+    closure_proof_kind TEXT
+        CHECK (
+            closure_proof_kind IS NULL
+            OR closure_proof_kind IN (
+                'NEVER_DISPATCHED',
+                'CONTRACT_COMPLETE_RESPONSE',
+                'COVERED_RECONCILIATION'
+            )
+        ),
+    closure_proof_digest TEXT
+        CHECK (
+            closure_proof_digest IS NULL
+            OR (
+                length(closure_proof_digest) = 64
+                AND closure_proof_digest NOT GLOB '*[^0-9a-f]*'
+            )
+        ),
+    closure_proof_evidence_id INTEGER,
+    closure_proof_claim_id INTEGER,
     created_ordinal INTEGER NOT NULL UNIQUE CHECK (created_ordinal >= 1),
-    UNIQUE (scope_id, order_external),
+    UNIQUE (execution_profile_id, order_external),
     UNIQUE (effect_id, scope_id),
     UNIQUE (effect_id, scope_id, root_fill_key_id),
-    FOREIGN KEY (root_fill_key_id, scope_id)
-        REFERENCES root_fill (root_fill_key_id, scope_id)
+    UNIQUE (
+        effect_id, scope_id, application_generation_id,
+        execution_profile_id, root_fill_key_id
+    ),
+    CHECK (
+        (
+            disposition = 'OPEN'
+            AND closure_proof_kind IS NULL
+            AND closure_proof_digest IS NULL
+            AND closure_proof_evidence_id IS NULL
+            AND closure_proof_claim_id IS NULL
+        )
+        OR
+        (
+            disposition IN ('CLOSED', 'INVALIDATED')
+            AND closure_proof_kind IS NOT NULL
+            AND closure_proof_digest IS NOT NULL
+            AND closure_proof_evidence_id IS NOT NULL
+            AND (
+                (
+                    closure_proof_kind = 'NEVER_DISPATCHED'
+                    AND closure_proof_claim_id IS NULL
+                )
+                OR
+                (
+                    closure_proof_kind <> 'NEVER_DISPATCHED'
+                    AND closure_proof_claim_id IS NOT NULL
+                )
+            )
+        )
+    ),
+    FOREIGN KEY (
+        root_fill_key_id, scope_id, application_generation_id,
+        execution_profile_id
+    ) REFERENCES root_fill (
+        root_fill_key_id, scope_id, application_generation_id,
+        execution_profile_id
+    ),
+    FOREIGN KEY (effect_id, closure_proof_claim_id)
+        REFERENCES dispatch_claim (effect_id, claim_id),
+    FOREIGN KEY (
+        closure_proof_evidence_id, effect_id,
+        closure_proof_digest, closure_proof_kind
+    ) REFERENCES acceptance_evidence (
+        evidence_id, effect_id, evidence_digest, proof_kind
+    )
 );
 
 CREATE INDEX ix_venue_effect_scope_state ON venue_effect (scope_id, disposition, effect_id);
@@ -347,37 +590,42 @@ CREATE INDEX ix_venue_identity_owner_effect
 
 CREATE TABLE dispatch_claim (
     claim_id INTEGER PRIMARY KEY,
-    effect_id INTEGER NOT NULL REFERENCES venue_effect (effect_id),
+    effect_id INTEGER NOT NULL UNIQUE REFERENCES venue_effect (effect_id),
     claim_ordinal INTEGER NOT NULL UNIQUE CHECK (claim_ordinal >= 1),
-    resolved_kind TEXT CHECK (resolved_kind IN ('DISPATCHED', 'TIMEOUT_QUARANTINE')),
+    UNIQUE (effect_id, claim_id),
     UNIQUE (effect_id, claim_ordinal)
 );
 
-CREATE UNIQUE INDEX uq_one_open_claim_per_effect
-    ON dispatch_claim (effect_id)
-    WHERE resolved_kind IS NULL;
-
-CREATE TABLE effect_closure_proof (
-    effect_id INTEGER PRIMARY KEY REFERENCES venue_effect (effect_id),
-    proof_kind TEXT NOT NULL
-        CHECK (proof_kind IN ('CLAIMED_TERMINAL', 'ADAPTER_COMPLETE', 'TARGETED_QUERY_COMPLETE', 'NEVER_DISPATCHED')),
-    proof_digest TEXT NOT NULL
-        CHECK (length(proof_digest) = 64 AND proof_digest NOT GLOB '*[^0-9a-f]*')
-);
+CREATE INDEX ix_dispatch_claim_effect ON dispatch_claim (effect_id, claim_id);
 
 CREATE TABLE acceptance_set (
     acceptance_set_id INTEGER PRIMARY KEY,
-    effect_id INTEGER NOT NULL UNIQUE REFERENCES venue_effect (effect_id)
+    effect_id INTEGER NOT NULL UNIQUE REFERENCES venue_effect (effect_id),
+    UNIQUE (acceptance_set_id, effect_id)
 );
 
 CREATE TABLE acceptance_evidence (
     evidence_id INTEGER PRIMARY KEY,
-    acceptance_set_id INTEGER NOT NULL REFERENCES acceptance_set (acceptance_set_id),
+    acceptance_set_id INTEGER NOT NULL,
+    effect_id INTEGER NOT NULL,
     evidence_kind TEXT NOT NULL
         CHECK (evidence_kind IN ('OBSERVATION', 'CLOSURE_PROOF', 'INVALIDATION', 'RECONCILIATION_NOTE')),
+    proof_kind TEXT
+        CHECK (
+            proof_kind IS NULL
+            OR proof_kind IN (
+                'NEVER_DISPATCHED',
+                'CONTRACT_COMPLETE_RESPONSE',
+                'COVERED_RECONCILIATION'
+            )
+        ),
     evidence_digest TEXT NOT NULL
         CHECK (length(evidence_digest) = 64 AND evidence_digest NOT GLOB '*[^0-9a-f]*'),
-    evidence_ordinal INTEGER NOT NULL UNIQUE CHECK (evidence_ordinal >= 1)
+    evidence_ordinal INTEGER NOT NULL UNIQUE CHECK (evidence_ordinal >= 1),
+    UNIQUE (evidence_id, effect_id, evidence_digest, proof_kind),
+    CHECK ((evidence_kind = 'CLOSURE_PROOF') = (proof_kind IS NOT NULL)),
+    FOREIGN KEY (acceptance_set_id, effect_id)
+        REFERENCES acceptance_set (acceptance_set_id, effect_id)
 );
 
 CREATE INDEX ix_acceptance_evidence_set ON acceptance_evidence (acceptance_set_id, evidence_ordinal DESC);
@@ -409,29 +657,74 @@ CREATE UNIQUE INDEX uq_closure_single_root
 
 CREATE INDEX ix_closure_chain_head ON closure_chain (scope_id, owner_external, ordinal DESC);
 
-CREATE TABLE protection_authority (
-    scope_id INTEGER PRIMARY KEY REFERENCES acquisition_scope (scope_id),
-    active_stream_generation_id TEXT
-        CHECK (
-            active_stream_generation_id IS NULL
-            OR (
-                length(active_stream_generation_id) = 64
-                AND active_stream_generation_id NOT GLOB '*[^0-9a-f]*'
-            )
-        ),
-    state_commitment_sha256 TEXT NOT NULL
-        CHECK (length(state_commitment_sha256) = 64 AND state_commitment_sha256 NOT GLOB '*[^0-9a-f]*'),
-    version_ordinal INTEGER NOT NULL UNIQUE CHECK (version_ordinal >= 1)
+CREATE TABLE market_stream_authority (
+    stream_generation_id TEXT NOT NULL
+        CHECK (length(stream_generation_id) = 64 AND stream_generation_id NOT GLOB '*[^0-9a-f]*'),
+    scope_id INTEGER NOT NULL,
+    application_generation_id TEXT NOT NULL,
+    source_profile_id TEXT NOT NULL,
+    session_external TEXT NOT NULL CHECK (length(session_external) >= 1),
+    sequence_mode TEXT NOT NULL CHECK (sequence_mode IN ('SEQUENCED', 'SOURCE_TIME')),
+    PRIMARY KEY (stream_generation_id),
+    UNIQUE (
+        stream_generation_id, scope_id, application_generation_id,
+        source_profile_id, session_external, sequence_mode
+    ),
+    UNIQUE (
+        stream_generation_id, scope_id, source_profile_id,
+        session_external, sequence_mode
+    ),
+    FOREIGN KEY (scope_id, application_generation_id)
+        REFERENCES acquisition_scope (scope_id, application_generation_id),
+    FOREIGN KEY (application_generation_id, source_profile_id)
+        REFERENCES application_generation (
+            application_generation_id, selected_market_source_profile_id
+        )
 );
 
 CREATE TABLE market_cursor (
-    stream_generation_id TEXT NOT NULL
-        CHECK (length(stream_generation_id) = 64 AND stream_generation_id NOT GLOB '*[^0-9a-f]*'),
-    source_profile_id TEXT NOT NULL
-        REFERENCES market_data_source_profile (market_source_profile_id),
+    stream_generation_id TEXT PRIMARY KEY,
+    scope_id INTEGER NOT NULL,
+    application_generation_id TEXT NOT NULL,
+    source_profile_id TEXT NOT NULL,
+    session_external TEXT NOT NULL,
+    sequence_mode TEXT NOT NULL,
     fixed_cursor_ordinal INTEGER NOT NULL CHECK (fixed_cursor_ordinal >= 0),
     published_head_ordinal INTEGER NOT NULL CHECK (published_head_ordinal >= 0),
-    PRIMARY KEY (stream_generation_id, source_profile_id)
+    CHECK (fixed_cursor_ordinal <= published_head_ordinal),
+    FOREIGN KEY (
+        stream_generation_id, scope_id, application_generation_id,
+        source_profile_id, session_external, sequence_mode
+    ) REFERENCES market_stream_authority (
+        stream_generation_id, scope_id, application_generation_id,
+        source_profile_id, session_external, sequence_mode
+    )
+);
+
+CREATE TABLE protection_authority (
+    scope_id INTEGER PRIMARY KEY REFERENCES acquisition_scope (scope_id),
+    active_stream_generation_id TEXT,
+    active_source_profile_id TEXT,
+    active_session_external TEXT,
+    active_sequence_mode TEXT,
+    state_commitment_sha256 TEXT NOT NULL
+        CHECK (length(state_commitment_sha256) = 64 AND state_commitment_sha256 NOT GLOB '*[^0-9a-f]*'),
+    version_ordinal INTEGER NOT NULL UNIQUE CHECK (version_ordinal >= 1),
+    CHECK (
+        (active_stream_generation_id IS NULL)
+        = (active_source_profile_id IS NULL)
+        AND (active_stream_generation_id IS NULL)
+        = (active_session_external IS NULL)
+        AND (active_stream_generation_id IS NULL)
+        = (active_sequence_mode IS NULL)
+    ),
+    FOREIGN KEY (
+        active_stream_generation_id, scope_id, active_source_profile_id,
+        active_session_external, active_sequence_mode
+    ) REFERENCES market_stream_authority (
+        stream_generation_id, scope_id, source_profile_id,
+        session_external, sequence_mode
+    )
 );
 
 CREATE TRIGGER trg_schema_meta_immutable_update
@@ -444,6 +737,245 @@ CREATE TRIGGER trg_schema_meta_immutable_delete
     BEFORE DELETE ON schema_meta
 BEGIN
     SELECT RAISE (ABORT, 'schema_meta is immutable');
+END;
+
+CREATE TRIGGER trg_execution_profile_canonical_insert
+    BEFORE INSERT ON execution_connection_profile
+    FOR EACH ROW
+    WHEN EXISTS (
+        WITH RECURSIVE
+        origins(value) AS (
+            VALUES
+                (NEW.trade_command_origin),
+                (NEW.order_query_origin),
+                (NEW.order_event_origin)
+        ),
+        rests(value, rest) AS (
+            SELECT value, substr(value, 9) FROM origins
+        ),
+        parsed(value, rest, host, port, colon_count) AS (
+            SELECT
+                value,
+                rest,
+                CASE
+                    WHEN instr(rest, ':') = 0 THEN rest
+                    ELSE substr(rest, 1, instr(rest, ':') - 1)
+                END,
+                CASE
+                    WHEN instr(rest, ':') = 0 THEN NULL
+                    ELSE substr(rest, instr(rest, ':') + 1)
+                END,
+                length(rest) - length(replace(rest, ':', ''))
+              FROM rests
+        ),
+        labels(value, host, port, colon_count, label, tail) AS (
+            SELECT
+                value,
+                host,
+                port,
+                colon_count,
+                CASE
+                    WHEN instr(host, '.') = 0 THEN host
+                    ELSE substr(host, 1, instr(host, '.') - 1)
+                END,
+                CASE
+                    WHEN instr(host, '.') = 0 THEN ''
+                    ELSE substr(host, instr(host, '.') + 1)
+                END
+              FROM parsed
+            UNION ALL
+            SELECT
+                value,
+                host,
+                port,
+                colon_count,
+                CASE
+                    WHEN instr(tail, '.') = 0 THEN tail
+                    ELSE substr(tail, 1, instr(tail, '.') - 1)
+                END,
+                CASE
+                    WHEN instr(tail, '.') = 0 THEN ''
+                    ELSE substr(tail, instr(tail, '.') + 1)
+                END
+              FROM labels
+             WHERE tail <> ''
+        )
+        SELECT 1
+          FROM labels
+         WHERE value NOT GLOB 'https://*'
+            OR length(host) NOT BETWEEN 1 AND 253
+            OR substr(host, -1, 1) NOT GLOB '[a-z0-9]'
+            OR colon_count > 1
+            OR length(label) NOT BETWEEN 1 AND 63
+            OR substr(label, 1, 1) NOT GLOB '[a-z]'
+            OR substr(label, -1, 1) NOT GLOB '[a-z0-9]'
+            OR label GLOB '*[^a-z0-9-]*'
+            OR (
+                port IS NOT NULL
+                AND (
+                    port = ''
+                    OR port GLOB '*[^0-9]*'
+                    OR (length(port) > 1 AND substr(port, 1, 1) = '0')
+                    OR CAST(port AS INTEGER) NOT BETWEEN 1 AND 65535
+                    OR CAST(port AS INTEGER) = 443
+                )
+            )
+    )
+BEGIN
+    SELECT RAISE (ABORT, 'execution profile origin is noncanonical');
+END;
+
+CREATE TRIGGER trg_execution_profile_version_canonical_insert
+    BEFORE INSERT ON execution_connection_profile
+    FOR EACH ROW
+    WHEN EXISTS (
+        WITH
+        versions(value) AS (VALUES (NEW.adapter_contract_version)),
+        first(value, first_dot) AS (
+            SELECT value, instr(value, '.') FROM versions
+        ),
+        parts(major, minor, patch) AS (
+            SELECT
+                substr(value, 1, first_dot - 1),
+                substr(
+                    substr(value, first_dot + 1),
+                    1,
+                    instr(substr(value, first_dot + 1), '.') - 1
+                ),
+                substr(
+                    substr(value, first_dot + 1),
+                    instr(substr(value, first_dot + 1), '.') + 1
+                )
+              FROM first
+        )
+        SELECT 1
+          FROM parts
+         WHERE major = '' OR minor = '' OR patch = ''
+            OR major GLOB '*[^0-9]*'
+            OR minor GLOB '*[^0-9]*'
+            OR patch GLOB '*[^0-9]*'
+            OR patch LIKE '%.%'
+            OR (length(major) > 1 AND substr(major, 1, 1) = '0')
+            OR (length(minor) > 1 AND substr(minor, 1, 1) = '0')
+            OR (length(patch) > 1 AND substr(patch, 1, 1) = '0')
+    )
+BEGIN
+    SELECT RAISE (ABORT, 'execution profile version is noncanonical');
+END;
+
+CREATE TRIGGER trg_market_profile_canonical_insert
+    BEFORE INSERT ON market_data_source_profile
+    FOR EACH ROW
+    WHEN EXISTS (
+        WITH RECURSIVE
+        parsed(value, host, port, colon_count) AS (
+            SELECT
+                NEW.source_origin,
+                CASE
+                    WHEN instr(substr(NEW.source_origin, 9), ':') = 0
+                        THEN substr(NEW.source_origin, 9)
+                    ELSE substr(
+                        substr(NEW.source_origin, 9),
+                        1,
+                        instr(substr(NEW.source_origin, 9), ':') - 1
+                    )
+                END,
+                CASE
+                    WHEN instr(substr(NEW.source_origin, 9), ':') = 0 THEN NULL
+                    ELSE substr(
+                        substr(NEW.source_origin, 9),
+                        instr(substr(NEW.source_origin, 9), ':') + 1
+                    )
+                END,
+                length(substr(NEW.source_origin, 9))
+                    - length(replace(substr(NEW.source_origin, 9), ':', ''))
+        ),
+        labels(value, host, port, colon_count, label, tail) AS (
+            SELECT
+                value,
+                host,
+                port,
+                colon_count,
+                CASE
+                    WHEN instr(host, '.') = 0 THEN host
+                    ELSE substr(host, 1, instr(host, '.') - 1)
+                END,
+                CASE
+                    WHEN instr(host, '.') = 0 THEN ''
+                    ELSE substr(host, instr(host, '.') + 1)
+                END
+              FROM parsed
+            UNION ALL
+            SELECT
+                value,
+                host,
+                port,
+                colon_count,
+                CASE
+                    WHEN instr(tail, '.') = 0 THEN tail
+                    ELSE substr(tail, 1, instr(tail, '.') - 1)
+                END,
+                CASE
+                    WHEN instr(tail, '.') = 0 THEN ''
+                    ELSE substr(tail, instr(tail, '.') + 1)
+                END
+              FROM labels
+             WHERE tail <> ''
+        )
+        SELECT 1
+          FROM labels
+         WHERE value NOT GLOB 'https://*'
+            OR length(host) NOT BETWEEN 1 AND 253
+            OR substr(host, -1, 1) NOT GLOB '[a-z0-9]'
+            OR colon_count > 1
+            OR length(label) NOT BETWEEN 1 AND 63
+            OR substr(label, 1, 1) NOT GLOB '[a-z]'
+            OR substr(label, -1, 1) NOT GLOB '[a-z0-9]'
+            OR label GLOB '*[^a-z0-9-]*'
+            OR (
+                port IS NOT NULL
+                AND (
+                    port = ''
+                    OR port GLOB '*[^0-9]*'
+                    OR (length(port) > 1 AND substr(port, 1, 1) = '0')
+                    OR CAST(port AS INTEGER) NOT BETWEEN 1 AND 65535
+                    OR CAST(port AS INTEGER) = 443
+                )
+            )
+    )
+    OR EXISTS (
+        WITH
+        version(value) AS (VALUES (NEW.normalization_contract_version)),
+        first(value, first_dot) AS (
+            SELECT value, instr(value, '.') FROM version
+        ),
+        parts(major, minor, patch) AS (
+            SELECT
+                substr(value, 1, first_dot - 1),
+                substr(
+                    substr(value, first_dot + 1),
+                    1,
+                    instr(substr(value, first_dot + 1), '.') - 1
+                ),
+                substr(
+                    substr(value, first_dot + 1),
+                    instr(substr(value, first_dot + 1), '.') + 1
+                )
+              FROM first
+        )
+        SELECT 1
+          FROM parts
+         WHERE major = '' OR minor = '' OR patch = ''
+            OR major GLOB '*[^0-9]*'
+            OR minor GLOB '*[^0-9]*'
+            OR patch GLOB '*[^0-9]*'
+            OR patch LIKE '%.%'
+            OR (length(major) > 1 AND substr(major, 1, 1) = '0')
+            OR (length(minor) > 1 AND substr(minor, 1, 1) = '0')
+            OR (length(patch) > 1 AND substr(patch, 1, 1) = '0')
+    )
+BEGIN
+    SELECT RAISE (ABORT, 'market profile origin or version is noncanonical');
 END;
 
 CREATE TRIGGER trg_execution_profile_no_update
@@ -546,8 +1078,8 @@ CREATE TRIGGER trg_acquisition_generation_predecessor_valid
 BEGIN
     SELECT RAISE (
         ABORT,
-        'acquisition predecessor must be the immediate prior ordinal of '
-            || 'the same scope'
+        'acquisition predecessor must be retired and compatibility-equal '
+            || 'at the immediate prior ordinal of the same scope'
     )
     WHERE NOT EXISTS (
             SELECT 1
@@ -556,6 +1088,9 @@ BEGIN
                    NEW.predecessor_generation_id
                AND predecessor.scope_id = NEW.scope_id
                AND predecessor.successor_ordinal = NEW.successor_ordinal - 1
+               AND predecessor.status = 'RETIRED_UNSERVING'
+               AND predecessor.emergency_compatibility_sha256 =
+                    NEW.emergency_compatibility_sha256
         );
 END;
 
@@ -612,9 +1147,12 @@ BEGIN
 END;
 
 CREATE TRIGGER trg_symbol_controller_identity_immutable
-    BEFORE UPDATE OF scope_id, emergency_compatibility_sha256 ON symbol_controller
+    BEFORE UPDATE OF scope_id, application_generation_id, execution_profile_id,
+        emergency_compatibility_sha256 ON symbol_controller
     FOR EACH ROW
     WHEN NEW.scope_id IS NOT OLD.scope_id
+      OR NEW.application_generation_id IS NOT OLD.application_generation_id
+      OR NEW.execution_profile_id IS NOT OLD.execution_profile_id
       OR NEW.emergency_compatibility_sha256
             IS NOT OLD.emergency_compatibility_sha256
 BEGIN
@@ -673,8 +1211,6 @@ CREATE TRIGGER trg_symbol_controller_versioned_replace
                 NEW.live_acquisition_generation_id
                     IS NOT OLD.live_acquisition_generation_id
                 OR NEW.aggregate_quantity IS NOT OLD.aggregate_quantity
-                OR NEW.basis_numerator IS NOT OLD.basis_numerator
-                OR NEW.basis_denominator IS NOT OLD.basis_denominator
                 OR NEW.currentness_head_ordinal
                     IS NOT OLD.currentness_head_ordinal
             )
@@ -686,19 +1222,65 @@ BEGIN
 END;
 
 CREATE TRIGGER trg_symbol_controller_payload_advances_head
-    BEFORE UPDATE OF live_acquisition_generation_id, aggregate_quantity,
-        basis_numerator, basis_denominator ON symbol_controller
+    BEFORE UPDATE OF live_acquisition_generation_id, aggregate_quantity
+        ON symbol_controller
     FOR EACH ROW
     WHEN (
             NEW.live_acquisition_generation_id
                 IS NOT OLD.live_acquisition_generation_id
             OR NEW.aggregate_quantity IS NOT OLD.aggregate_quantity
-            OR NEW.basis_numerator IS NOT OLD.basis_numerator
-            OR NEW.basis_denominator IS NOT OLD.basis_denominator
         )
       AND NEW.currentness_head_ordinal <= OLD.currentness_head_ordinal
 BEGIN
     SELECT RAISE (ABORT, 'symbol controller head must advance');
+END;
+
+CREATE TRIGGER trg_symbol_controller_aggregate_exact_insert
+    BEFORE INSERT ON symbol_controller
+    FOR EACH ROW
+    WHEN NEW.aggregate_quantity <> COALESCE(
+            (
+                SELECT SUM(
+                    CASE root.current_side
+                        WHEN 'BUY' THEN root.current_quantity
+                        ELSE -root.current_quantity
+                    END
+                )
+                  FROM root_fill AS root
+                 WHERE root.scope_id = NEW.scope_id
+                   AND root.current_fact_id IS NOT NULL
+            ),
+            0
+        )
+BEGIN
+    SELECT RAISE (
+        ABORT,
+        'symbol controller aggregate must equal canonical root economics'
+    );
+END;
+
+CREATE TRIGGER trg_symbol_controller_aggregate_exact_update
+    BEFORE UPDATE OF aggregate_quantity ON symbol_controller
+    FOR EACH ROW
+    WHEN NEW.aggregate_quantity <> COALESCE(
+            (
+                SELECT SUM(
+                    CASE root.current_side
+                        WHEN 'BUY' THEN root.current_quantity
+                        ELSE -root.current_quantity
+                    END
+                )
+                  FROM root_fill AS root
+                 WHERE root.scope_id = NEW.scope_id
+                   AND root.current_fact_id IS NOT NULL
+            ),
+            0
+        )
+BEGIN
+    SELECT RAISE (
+        ABORT,
+        'symbol controller aggregate must equal canonical root economics'
+    );
 END;
 
 CREATE TRIGGER trg_symbol_controller_no_delete
@@ -708,11 +1290,13 @@ BEGIN
 END;
 
 CREATE TRIGGER trg_root_fill_identity_immutable
-    BEFORE UPDATE OF root_fill_key_id, scope_id, owner_generation_id,
-        root_fill_external ON root_fill
+    BEFORE UPDATE OF root_fill_key_id, scope_id, application_generation_id,
+        execution_profile_id, owner_generation_id, root_fill_external ON root_fill
     FOR EACH ROW
     WHEN NEW.root_fill_key_id IS NOT OLD.root_fill_key_id
       OR NEW.scope_id IS NOT OLD.scope_id
+      OR NEW.application_generation_id IS NOT OLD.application_generation_id
+      OR NEW.execution_profile_id IS NOT OLD.execution_profile_id
       OR NEW.owner_generation_id IS NOT OLD.owner_generation_id
       OR NEW.root_fill_external IS NOT OLD.root_fill_external
 BEGIN
@@ -720,18 +1304,15 @@ BEGIN
 END;
 
 CREATE TRIGGER trg_root_fill_economics_monotonic
-    BEFORE UPDATE OF current_quantity, price_units, scale_sign, scale_digits,
-        scale_exponent, economics_head_ordinal ON root_fill
+    BEFORE UPDATE OF current_fact_id, current_kind, current_authority,
+        current_side, current_quantity, price_present, price_units,
+        scale_sign, scale_digits, scale_exponent, tick_units,
+        tick_scale_sign, tick_scale_digits, tick_scale_exponent,
+        economics_head_ordinal ON root_fill
     FOR EACH ROW
     WHEN NEW.economics_head_ordinal < OLD.economics_head_ordinal
       OR (
-            (
-                NEW.current_quantity IS NOT OLD.current_quantity
-                OR NEW.price_units IS NOT OLD.price_units
-                OR NEW.scale_sign IS NOT OLD.scale_sign
-                OR NEW.scale_digits IS NOT OLD.scale_digits
-                OR NEW.scale_exponent IS NOT OLD.scale_exponent
-            )
+            NEW.current_fact_id IS NOT OLD.current_fact_id
             AND NEW.economics_head_ordinal <= OLD.economics_head_ordinal
         )
 BEGIN
@@ -745,27 +1326,57 @@ BEGIN
 END;
 
 CREATE TRIGGER trg_root_fill_head_is_authenticated
-    BEFORE UPDATE OF current_quantity, price_units, scale_sign, scale_digits,
-        scale_exponent, economics_head_ordinal ON root_fill
+    BEFORE UPDATE OF current_fact_id, current_kind, current_authority,
+        current_side, current_quantity, price_present, price_units,
+        scale_sign, scale_digits, scale_exponent, tick_units,
+        tick_scale_sign, tick_scale_digits, tick_scale_exponent,
+        economics_head_ordinal ON root_fill
     FOR EACH ROW
     WHEN (
-            NEW.current_quantity IS NOT OLD.current_quantity
+            NEW.current_fact_id IS NOT OLD.current_fact_id
+            OR NEW.current_kind IS NOT OLD.current_kind
+            OR NEW.current_authority IS NOT OLD.current_authority
+            OR NEW.current_side IS NOT OLD.current_side
+            OR NEW.current_quantity IS NOT OLD.current_quantity
+            OR NEW.price_present IS NOT OLD.price_present
             OR NEW.price_units IS NOT OLD.price_units
             OR NEW.scale_sign IS NOT OLD.scale_sign
             OR NEW.scale_digits IS NOT OLD.scale_digits
             OR NEW.scale_exponent IS NOT OLD.scale_exponent
+            OR NEW.tick_units IS NOT OLD.tick_units
+            OR NEW.tick_scale_sign IS NOT OLD.tick_scale_sign
+            OR NEW.tick_scale_digits IS NOT OLD.tick_scale_digits
+            OR NEW.tick_scale_exponent IS NOT OLD.tick_scale_exponent
             OR NEW.economics_head_ordinal IS NOT OLD.economics_head_ordinal
         )
      AND NOT EXISTS (
             SELECT 1
               FROM execution_fact_head AS head
+              JOIN execution_fact AS fact
+                ON fact.root_fill_key_id = head.root_fill_key_id
+               AND fact.fact_id = head.fact_id
+               AND fact.fact_ordinal = head.fact_ordinal
              WHERE head.root_fill_key_id = NEW.root_fill_key_id
-               AND head.fact_ordinal = NEW.economics_head_ordinal
+               AND fact.fact_id = NEW.current_fact_id
+               AND fact.fact_ordinal = NEW.economics_head_ordinal
+               AND fact.kind = NEW.current_kind
+               AND fact.authority = NEW.current_authority
+               AND fact.side = NEW.current_side
+               AND fact.quantity = NEW.current_quantity
+               AND fact.price_present = NEW.price_present
+               AND fact.price_units = NEW.price_units
+               AND fact.scale_sign = NEW.scale_sign
+               AND fact.scale_digits = NEW.scale_digits
+               AND fact.scale_exponent = NEW.scale_exponent
+               AND fact.tick_units = NEW.tick_units
+               AND fact.tick_scale_sign = NEW.tick_scale_sign
+               AND fact.tick_scale_digits = NEW.tick_scale_digits
+               AND fact.tick_scale_exponent = NEW.tick_scale_exponent
         )
 BEGIN
     SELECT RAISE (
         ABORT,
-        'root_fill economics head must reference the current execution fact head'
+        'root_fill economics must equal the exact current execution fact'
     );
 END;
 
@@ -779,15 +1390,31 @@ CREATE TRIGGER trg_execution_fact_scope_coordinates
                AND (
                     scope.application_generation_id
                     <> NEW.application_generation_id
-                 OR scope.broker_text <> NEW.broker_text
-                 OR scope.environment_text <> NEW.environment_text
-                 OR scope.account_text <> NEW.account_text
+                 OR scope.execution_profile_id <> NEW.execution_profile_id
                 )
         )
 BEGIN
     SELECT RAISE (
         ABORT,
-        'execution_fact coordinates must equal their scope coordinates'
+        'execution_fact profile coordinates must equal their scope coordinates'
+    );
+END;
+
+CREATE TRIGGER trg_execution_fact_predecessor_exists_inside_root
+    BEFORE INSERT ON execution_fact
+    FOR EACH ROW
+    WHEN NEW.predecessor_fact_id IS NOT NULL
+     AND NEW.predecessor_fact_id <> NEW.fact_id
+     AND NOT EXISTS (
+            SELECT 1
+              FROM execution_fact AS predecessor
+             WHERE predecessor.fact_id = NEW.predecessor_fact_id
+               AND predecessor.root_fill_key_id = NEW.root_fill_key_id
+        )
+BEGIN
+    SELECT RAISE (
+        ABORT,
+        'execution fact predecessor must exist inside the same root'
     );
 END;
 
@@ -857,6 +1484,43 @@ BEGIN
      WHERE NEW.predecessor_fact_id IS NOT NULL
        AND root_fill_key_id = NEW.root_fill_key_id
        AND fact_id = NEW.predecessor_fact_id;
+
+    UPDATE root_fill
+       SET current_fact_id = NEW.fact_id,
+           current_kind = NEW.kind,
+           current_authority = NEW.authority,
+           current_side = NEW.side,
+           current_quantity = NEW.quantity,
+           price_present = NEW.price_present,
+           price_units = NEW.price_units,
+           scale_sign = NEW.scale_sign,
+           scale_digits = NEW.scale_digits,
+           scale_exponent = NEW.scale_exponent,
+           tick_units = NEW.tick_units,
+           tick_scale_sign = NEW.tick_scale_sign,
+           tick_scale_digits = NEW.tick_scale_digits,
+           tick_scale_exponent = NEW.tick_scale_exponent,
+           economics_head_ordinal = NEW.fact_ordinal
+     WHERE root_fill_key_id = NEW.root_fill_key_id;
+
+    UPDATE symbol_controller
+       SET aggregate_quantity = COALESCE(
+                (
+                    SELECT SUM(
+                        CASE root.current_side
+                            WHEN 'BUY' THEN root.current_quantity
+                            ELSE -root.current_quantity
+                        END
+                    )
+                      FROM root_fill AS root
+                     WHERE root.scope_id = NEW.scope_id
+                       AND root.current_fact_id IS NOT NULL
+                ),
+                0
+            ),
+           currentness_head_ordinal = currentness_head_ordinal + 1,
+           controller_version_ordinal = controller_version_ordinal + 1
+     WHERE scope_id = NEW.scope_id;
 END;
 
 CREATE TRIGGER trg_execution_fact_head_first_fill_only
@@ -901,20 +1565,92 @@ BEGIN
     SELECT RAISE (ABORT, 'execution_fact_head rows are retained');
 END;
 
-CREATE TRIGGER trg_venue_effect_terminal_freeze
+CREATE TRIGGER trg_venue_effect_starts_open
+    BEFORE INSERT ON venue_effect
+    FOR EACH ROW
+    WHEN NEW.lifecycle_state <> 'REQUESTED'
+      OR NEW.disposition <> 'OPEN'
+      OR NEW.closure_proof_kind IS NOT NULL
+      OR NEW.closure_proof_digest IS NOT NULL
+      OR NEW.closure_proof_evidence_id IS NOT NULL
+      OR NEW.closure_proof_claim_id IS NOT NULL
+BEGIN
+    SELECT RAISE (ABORT, 'venue_effect starts OPEN and REQUESTED without proof');
+END;
+
+CREATE TRIGGER trg_venue_effect_acceptance_transition
     BEFORE UPDATE OF disposition ON venue_effect
     FOR EACH ROW
-    WHEN OLD.disposition <> 'OPEN' AND NEW.disposition <> 'INVALIDATED'
+    WHEN NOT (
+        NEW.disposition = OLD.disposition
+        OR (OLD.disposition = 'OPEN' AND NEW.disposition = 'CLOSED')
+        OR (OLD.disposition = 'CLOSED' AND NEW.disposition = 'INVALIDATED')
+    )
 BEGIN
-    SELECT RAISE (ABORT, 'venue_effect disposition may not leave a terminal state');
+    SELECT RAISE (ABORT, 'venue_effect acceptance transition is invalid');
+END;
+
+CREATE TRIGGER trg_venue_effect_lifecycle_transition
+    BEFORE UPDATE OF lifecycle_state ON venue_effect
+    FOR EACH ROW
+    WHEN NOT (
+        NEW.lifecycle_state = OLD.lifecycle_state
+        OR (
+            OLD.lifecycle_state = 'REQUESTED'
+            AND NEW.lifecycle_state IN (
+                'CANCELED_BEFORE_DISPATCH', 'DISPATCH_CLAIMED'
+            )
+        )
+        OR (
+            OLD.lifecycle_state = 'DISPATCH_CLAIMED'
+            AND NEW.lifecycle_state IN (
+                'ACKNOWLEDGED', 'REJECTED', 'OUTCOME_UNKNOWN'
+            )
+        )
+        OR (
+            OLD.lifecycle_state = 'OUTCOME_UNKNOWN'
+            AND NEW.lifecycle_state IN (
+                'ACKNOWLEDGED', 'REJECTED', 'NEEDS_REVIEW'
+            )
+        )
+        OR (
+            OLD.lifecycle_state = 'NEEDS_REVIEW'
+            AND NEW.lifecycle_state = 'OPERATOR_RECONCILED'
+        )
+        OR (
+            OLD.lifecycle_state = 'OPERATOR_RECONCILED'
+            AND NEW.lifecycle_state = 'NEEDS_REVIEW'
+        )
+    )
+BEGIN
+    SELECT RAISE (ABORT, 'venue_effect lifecycle transition is invalid');
+END;
+
+CREATE TRIGGER trg_venue_effect_claimed_state_requires_claim
+    BEFORE UPDATE OF lifecycle_state ON venue_effect
+    FOR EACH ROW
+    WHEN NEW.lifecycle_state IN (
+            'DISPATCH_CLAIMED', 'ACKNOWLEDGED', 'REJECTED',
+            'OUTCOME_UNKNOWN', 'NEEDS_REVIEW', 'OPERATOR_RECONCILED'
+        )
+     AND NOT EXISTS (
+            SELECT 1
+              FROM dispatch_claim AS claim
+             WHERE claim.effect_id = NEW.effect_id
+        )
+BEGIN
+    SELECT RAISE (ABORT, 'claimed-or-later lifecycle requires immutable claim');
 END;
 
 CREATE TRIGGER trg_venue_effect_identity_immutable
-    BEFORE UPDATE OF effect_id, scope_id, root_fill_key_id, order_external,
+    BEFORE UPDATE OF effect_id, scope_id, application_generation_id,
+        execution_profile_id, root_fill_key_id, order_external,
         created_ordinal ON venue_effect
     FOR EACH ROW
     WHEN NEW.effect_id IS NOT OLD.effect_id
       OR NEW.scope_id IS NOT OLD.scope_id
+      OR NEW.application_generation_id IS NOT OLD.application_generation_id
+      OR NEW.execution_profile_id IS NOT OLD.execution_profile_id
       OR NEW.root_fill_key_id IS NOT OLD.root_fill_key_id
       OR NEW.order_external IS NOT OLD.order_external
       OR NEW.created_ordinal IS NOT OLD.created_ordinal
@@ -923,44 +1659,73 @@ BEGIN
 END;
 
 CREATE TRIGGER trg_venue_effect_close_requires_proof
-    BEFORE UPDATE OF disposition ON venue_effect
+    BEFORE UPDATE OF disposition, closure_proof_kind, closure_proof_digest,
+        closure_proof_evidence_id, closure_proof_claim_id ON venue_effect
     FOR EACH ROW
     WHEN NEW.disposition = 'CLOSED'
      AND OLD.disposition <> 'CLOSED'
      AND (
-            NOT EXISTS (
+            NEW.closure_proof_kind IS NULL
+            OR NEW.closure_proof_digest IS NULL
+            OR NEW.closure_proof_evidence_id IS NULL
+            OR NOT EXISTS (
                 SELECT 1
-                  FROM effect_closure_proof AS proof
-                 WHERE proof.effect_id = NEW.effect_id
+                  FROM acceptance_evidence AS evidence
+                 WHERE evidence.evidence_id = NEW.closure_proof_evidence_id
+                   AND evidence.effect_id = NEW.effect_id
+                   AND evidence.evidence_kind = 'CLOSURE_PROOF'
+                   AND evidence.proof_kind = NEW.closure_proof_kind
+                   AND evidence.evidence_digest = NEW.closure_proof_digest
             )
-            OR EXISTS (
-                SELECT 1
-                  FROM effect_closure_proof AS proof
-                 WHERE proof.effect_id = NEW.effect_id
-                   AND proof.proof_kind = 'NEVER_DISPATCHED'
-                   AND EXISTS (
+            OR (
+                NEW.closure_proof_kind = 'NEVER_DISPATCHED'
+                AND (
+                    NEW.lifecycle_state <> 'CANCELED_BEFORE_DISPATCH'
+                    OR NEW.closure_proof_claim_id IS NOT NULL
+                    OR EXISTS (
                         SELECT 1
                           FROM dispatch_claim AS claim
                          WHERE claim.effect_id = NEW.effect_id
-                   )
+                    )
+                )
             )
-            OR EXISTS (
-                SELECT 1
-                  FROM effect_closure_proof AS proof
-                 WHERE proof.effect_id = NEW.effect_id
-                   AND proof.proof_kind <> 'NEVER_DISPATCHED'
-                   AND NOT EXISTS (
+            OR (
+                NEW.closure_proof_kind <> 'NEVER_DISPATCHED'
+                AND (
+                    NEW.lifecycle_state IN (
+                        'REQUESTED', 'CANCELED_BEFORE_DISPATCH'
+                    )
+                    OR NEW.closure_proof_claim_id IS NULL
+                    OR NOT EXISTS (
                         SELECT 1
                           FROM dispatch_claim AS claim
                          WHERE claim.effect_id = NEW.effect_id
-                   )
+                           AND claim.claim_id = NEW.closure_proof_claim_id
+                    )
+                )
             )
         )
 BEGIN
     SELECT RAISE (
         ABORT,
-        'venue_effect CLOSED requires compatible immutable closure proof'
+        'venue_effect CLOSED requires exact proof; NEVER_DISPATCHED requires '
+            || 'CANCELED_BEFORE_DISPATCH and no claim'
     );
+END;
+
+CREATE TRIGGER trg_venue_effect_proof_immutable
+    BEFORE UPDATE OF closure_proof_kind, closure_proof_digest,
+        closure_proof_evidence_id, closure_proof_claim_id ON venue_effect
+    FOR EACH ROW
+    WHEN OLD.closure_proof_kind IS NOT NULL
+     AND (
+            NEW.closure_proof_kind IS NOT OLD.closure_proof_kind
+            OR NEW.closure_proof_digest IS NOT OLD.closure_proof_digest
+            OR NEW.closure_proof_evidence_id IS NOT OLD.closure_proof_evidence_id
+            OR NEW.closure_proof_claim_id IS NOT OLD.closure_proof_claim_id
+        )
+BEGIN
+    SELECT RAISE (ABORT, 'venue_effect closure proof is immutable');
 END;
 
 CREATE TRIGGER trg_venue_effect_no_delete
@@ -981,30 +1746,6 @@ BEGIN
     SELECT RAISE (ABORT, 'venue identity owner rows are retained');
 END;
 
-CREATE TRIGGER trg_dispatch_claim_resolution_once
-    BEFORE UPDATE OF resolved_kind ON dispatch_claim
-    FOR EACH ROW
-    WHEN OLD.resolved_kind IS NOT NULL OR NEW.resolved_kind IS NULL
-BEGIN
-    SELECT RAISE (ABORT, 'dispatch_claim resolves at most once');
-END;
-
-CREATE TRIGGER trg_dispatch_claim_refuses_never_dispatched_proof
-    BEFORE INSERT ON dispatch_claim
-    FOR EACH ROW
-    WHEN EXISTS (
-            SELECT 1
-              FROM effect_closure_proof AS proof
-             WHERE proof.effect_id = NEW.effect_id
-               AND proof.proof_kind = 'NEVER_DISPATCHED'
-        )
-BEGIN
-    SELECT RAISE (
-        ABORT,
-        'dispatch claim contradicts NEVER_DISPATCHED closure proof'
-    );
-END;
-
 CREATE TRIGGER trg_dispatch_claim_requires_open_effect
     BEFORE INSERT ON dispatch_claim
     FOR EACH ROW
@@ -1013,49 +1754,31 @@ CREATE TRIGGER trg_dispatch_claim_requires_open_effect
               FROM venue_effect AS effect
              WHERE effect.effect_id = NEW.effect_id
                AND effect.disposition = 'OPEN'
+               AND effect.lifecycle_state = 'REQUESTED'
         )
 BEGIN
-    SELECT RAISE (ABORT, 'dispatch claim requires an OPEN venue effect');
+    SELECT RAISE (ABORT, 'dispatch claim requires an OPEN REQUESTED venue effect');
 END;
 
-CREATE TRIGGER trg_dispatch_claim_append_only_columns
-    BEFORE UPDATE OF claim_id, effect_id, claim_ordinal ON dispatch_claim
+CREATE TRIGGER trg_dispatch_claim_advances_effect_state
+    AFTER INSERT ON dispatch_claim
+    FOR EACH ROW
 BEGIN
-    SELECT RAISE (ABORT, 'dispatch_claim binding columns are immutable');
+    UPDATE venue_effect
+       SET lifecycle_state = 'DISPATCH_CLAIMED'
+     WHERE effect_id = NEW.effect_id;
+END;
+
+CREATE TRIGGER trg_dispatch_claim_no_update
+    BEFORE UPDATE ON dispatch_claim
+BEGIN
+    SELECT RAISE (ABORT, 'dispatch_claim rows are immutable');
 END;
 
 CREATE TRIGGER trg_dispatch_claim_no_delete
     BEFORE DELETE ON dispatch_claim
 BEGIN
     SELECT RAISE (ABORT, 'dispatch_claim rows are append-only');
-END;
-
-CREATE TRIGGER trg_effect_closure_proof_never_dispatched
-    BEFORE INSERT ON effect_closure_proof
-    FOR EACH ROW
-    WHEN NEW.proof_kind = 'NEVER_DISPATCHED'
-     AND EXISTS (
-            SELECT 1
-              FROM dispatch_claim AS claim
-             WHERE claim.effect_id = NEW.effect_id
-        )
-BEGIN
-    SELECT RAISE (
-        ABORT,
-        'NEVER_DISPATCHED proof is impossible after a dispatch claim'
-    );
-END;
-
-CREATE TRIGGER trg_effect_closure_proof_no_update
-    BEFORE UPDATE ON effect_closure_proof
-BEGIN
-    SELECT RAISE (ABORT, 'effect_closure_proof rows are immutable');
-END;
-
-CREATE TRIGGER trg_effect_closure_proof_no_delete
-    BEFORE DELETE ON effect_closure_proof
-BEGIN
-    SELECT RAISE (ABORT, 'effect_closure_proof rows are retained');
 END;
 
 CREATE TRIGGER trg_acceptance_set_binding_immutable
@@ -1079,10 +1802,11 @@ CREATE TRIGGER trg_acceptance_evidence_late_gate
     WHEN EXISTS (
             SELECT 1
               FROM acceptance_set AS accepted
-              JOIN venue_effect AS effect
+             JOIN venue_effect AS effect
                 ON effect.effect_id = accepted.effect_id
              WHERE accepted.acceptance_set_id = NEW.acceptance_set_id
-               AND effect.disposition = 'CLOSED'
+               AND effect.effect_id = NEW.effect_id
+               AND effect.disposition IN ('CLOSED', 'INVALIDATED')
         )
      AND NEW.evidence_kind <> 'INVALIDATION'
 BEGIN
@@ -1115,6 +1839,31 @@ BEGIN
         );
 END;
 
+CREATE TRIGGER trg_closure_chain_matches_effect_authority
+    BEFORE INSERT ON closure_chain
+    FOR EACH ROW
+    WHEN (
+            NEW.closure_kind = 'ACCEPTANCE_CLOSED'
+            AND NOT EXISTS (
+                SELECT 1
+                  FROM venue_effect AS effect
+                 WHERE effect.effect_id = NEW.effect_id
+                   AND effect.disposition IN ('CLOSED', 'INVALIDATED')
+            )
+        )
+       OR (
+            NEW.closure_kind = 'INVALIDATED_TERMINAL'
+            AND NOT EXISTS (
+                SELECT 1
+                  FROM venue_effect AS effect
+                 WHERE effect.effect_id = NEW.effect_id
+                   AND effect.disposition = 'INVALIDATED'
+            )
+        )
+BEGIN
+    SELECT RAISE (ABORT, 'closure kind must match canonical effect authority');
+END;
+
 CREATE TRIGGER trg_closure_chain_append_only_update
     BEFORE UPDATE ON closure_chain
 BEGIN
@@ -1135,6 +1884,12 @@ CREATE TRIGGER trg_protection_authority_version_monotonic
             (
                 NEW.active_stream_generation_id
                     IS NOT OLD.active_stream_generation_id
+                OR NEW.active_source_profile_id
+                    IS NOT OLD.active_source_profile_id
+                OR NEW.active_session_external
+                    IS NOT OLD.active_session_external
+                OR NEW.active_sequence_mode
+                    IS NOT OLD.active_sequence_mode
                 OR NEW.state_commitment_sha256
                     IS NOT OLD.state_commitment_sha256
             )
@@ -1142,6 +1897,18 @@ CREATE TRIGGER trg_protection_authority_version_monotonic
         )
 BEGIN
     SELECT RAISE (ABORT, 'protection version must advance');
+END;
+
+CREATE TRIGGER trg_market_stream_authority_no_update
+    BEFORE UPDATE ON market_stream_authority
+BEGIN
+    SELECT RAISE (ABORT, 'market_stream_authority rows are immutable');
+END;
+
+CREATE TRIGGER trg_market_stream_authority_no_delete
+    BEFORE DELETE ON market_stream_authority
+BEGIN
+    SELECT RAISE (ABORT, 'market_stream_authority rows are retained');
 END;
 
 CREATE TRIGGER trg_protection_authority_identity_immutable
@@ -1168,10 +1935,16 @@ BEGIN
 END;
 
 CREATE TRIGGER trg_market_cursor_identity_immutable
-    BEFORE UPDATE OF stream_generation_id, source_profile_id ON market_cursor
+    BEFORE UPDATE OF stream_generation_id, scope_id,
+        application_generation_id, source_profile_id,
+        session_external, sequence_mode ON market_cursor
     FOR EACH ROW
     WHEN NEW.stream_generation_id IS NOT OLD.stream_generation_id
+      OR NEW.scope_id IS NOT OLD.scope_id
+      OR NEW.application_generation_id IS NOT OLD.application_generation_id
       OR NEW.source_profile_id IS NOT OLD.source_profile_id
+      OR NEW.session_external IS NOT OLD.session_external
+      OR NEW.sequence_mode IS NOT OLD.sequence_mode
 BEGIN
     SELECT RAISE (ABORT, 'market_cursor identity is immutable');
 END;
@@ -1207,10 +1980,6 @@ class SQLiteConnectionProtocol(_Protocol):
         self, sql: str, parameters: _Sequence[_Any] = ()
     ) -> _Any: ...  # pragma: no cover - structural protocol
 
-    def executescript(
-        self, sql: str
-    ) -> _Any: ...  # pragma: no cover - structural protocol
-
 
 def schema_ddl() -> str:
     """Return the exact proposed schema bytes."""
@@ -1222,6 +1991,35 @@ def schema_ddl_digest() -> str:
     """Return the lowercase SHA-256 of the exact UTF-8 DDL bytes."""
 
     return _sha256(SCHEMA_DDL.encode("utf-8")).hexdigest()
+
+
+def _ddl_statements() -> tuple[str, ...]:
+    """Split fixed DDL without importing or acquiring a database capability.
+
+    The checked-in DDL emits one ordinary statement at each semicolon-terminated
+    line. Trigger bodies are the sole exception: their internal statements are
+    retained until the top-level, unindented ``END;`` terminator. Installation
+    tests execute every returned statement against SQLite, so unsupported DDL
+    formatting fails at the bounded proof boundary.
+    """
+
+    statements: list[str] = []
+    pending: list[str] = []
+    is_trigger = False
+    for line in SCHEMA_DDL.splitlines():
+        if not pending and not line.strip():
+            continue
+        if not pending:
+            is_trigger = line.startswith("CREATE TRIGGER ")
+        pending.append(line)
+        complete = line == "END;" if is_trigger else line.rstrip().endswith(";")
+        if complete:
+            statements.append("\n".join(pending).strip())
+            pending = []
+            is_trigger = False
+    if pending:
+        raise RuntimeError("SCHEMA_DDL ended with an incomplete SQLite statement")
+    return tuple(statements)
 
 
 def install_schema(
@@ -1242,21 +2040,34 @@ def install_schema(
             "approved_ddl_sha256 does not match the exact schema bytes; "
             "returning to the human gate"
         )
-    master_row = connection.execute("SELECT count(*) FROM sqlite_master").fetchone()
-    if master_row is None or int(master_row[0]) != 0:
-        raise SchemaTargetNotEmptyError(
-            "schema installer requires an explicitly supplied empty database"
-        )
     foreign_keys_row = connection.execute("PRAGMA foreign_keys").fetchone()
     if foreign_keys_row is None or int(foreign_keys_row[0]) != 1:
         raise SchemaForeignKeysDisabledError(
             "foreign keys must verifiably be enabled before installation"
         )
-    connection.executescript(SCHEMA_DDL)
-    connection.execute(
-        "INSERT INTO schema_meta (schema_version, approved_ddl_sha256) VALUES (?, ?)",
-        (SCHEMA_VERSION, actual_digest),
-    )
+    recursive_triggers_row = connection.execute("PRAGMA recursive_triggers").fetchone()
+    if recursive_triggers_row is None or int(recursive_triggers_row[0]) != 1:
+        raise SchemaInstallError(
+            "recursive triggers must verifiably be enabled before installation"
+        )
+
+    connection.execute("BEGIN IMMEDIATE")
+    try:
+        master_row = connection.execute("SELECT count(*) FROM sqlite_master").fetchone()
+        if master_row is None or int(master_row[0]) != 0:
+            raise SchemaTargetNotEmptyError(
+                "schema installer requires an explicitly supplied empty database"
+            )
+        for statement in _ddl_statements():
+            connection.execute(statement)
+        connection.execute(
+            "INSERT INTO schema_meta (schema_version, approved_ddl_sha256) VALUES (?, ?)",
+            (SCHEMA_VERSION, actual_digest),
+        )
+        connection.execute("COMMIT")
+    except BaseException:
+        connection.execute("ROLLBACK")
+        raise
     return SCHEMA_VERSION
 
 

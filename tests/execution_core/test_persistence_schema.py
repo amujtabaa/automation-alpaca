@@ -21,6 +21,7 @@ from app.execution_core.persistence.schema import (
     SCHEMA_VERSION,
     SchemaDigestMismatchError,
     SchemaForeignKeysDisabledError,
+    SchemaInstallError,
     SchemaTargetNotEmptyError,
     install_schema,
     schema_ddl_digest,
@@ -28,7 +29,7 @@ from app.execution_core.persistence.schema import (
 
 
 _GATE_DIGEST: str | None = (
-    "2cd0fea0b60d4ecf6779e258a7b4ce6af08e1137e06edac66806076bbbeea520"
+    "46d486a01c9c2b93cd39024c7376df39a23e78ccf3f0d17b6239aa00b8423a66"
 )
 
 _OPEN_CONNECTIONS: list[sqlite3.Connection] = []
@@ -58,15 +59,8 @@ _ORIGIN_COLUMNS = (
 )
 
 _DEFAULT_GENERATION_ID = "ab" * 32
-_SCOPE_BROKER_TEXT = "alpaca"
-_SCOPE_ENVIRONMENT_TEXT = "paper"
-_SCOPE_ACCOUNT_TEXT = "account-1"
-_FACT_COORDS = (
-    _DEFAULT_GENERATION_ID,
-    _SCOPE_BROKER_TEXT,
-    _SCOPE_ENVIRONMENT_TEXT,
-    _SCOPE_ACCOUNT_TEXT,
-)
+_DEFAULT_EXECUTION_PROFILE_ID = "cd" * 32
+_DEFAULT_MARKET_SOURCE_PROFILE_ID = "ef" * 32
 
 
 def _require_gate_open() -> str:
@@ -88,6 +82,7 @@ def _connection(tmp_path: object) -> sqlite3.Connection:
     _require_gate_open()
     connection = sqlite3.connect(tmp_path / "m2-i2-gate.db")  # type: ignore[arg-type]
     connection.execute("PRAGMA foreign_keys = ON")
+    connection.execute("PRAGMA recursive_triggers = ON")
     _OPEN_CONNECTIONS.append(connection)
     return connection
 
@@ -102,21 +97,30 @@ def _insert_profiles_and_generation(connection: sqlite3.Connection) -> str:
     connection.execute(
         """
         INSERT INTO execution_connection_profile (
-            connection_profile_id, broker_provider, environment_class,
+            connection_profile_id, application_generation,
+            broker_provider, environment_class,
             account_identity, trade_command_origin, order_query_origin,
             order_event_origin, credential_handle_fingerprint,
             adapter_contract_version, capability_profile_sha256,
             deployment_identity, profile_commitment_sha256
         )
         VALUES (
-            ?, 'ALPACA', 'PAPER', ?,
+            ?, ?, 'ALPACA', 'PAPER', ?,
             'https://trade.example.com',
             'https://query.example.com',
             'https://stream.example.com',
             ?, '1.2.3', ?, ?, ?
         )
         """,
-        ("cd" * 32, "aa" * 32, "bb" * 32, "cc" * 32, "dd" * 32, "ee" * 32),
+        (
+            _DEFAULT_EXECUTION_PROFILE_ID,
+            _DEFAULT_GENERATION_ID,
+            "aa" * 32,
+            "bb" * 32,
+            "cc" * 32,
+            "dd" * 32,
+            "ee" * 32,
+        ),
     )
     connection.execute(
         """
@@ -140,9 +144,70 @@ def _insert_profiles_and_generation(connection: sqlite3.Connection) -> str:
         )
         VALUES (?, ?, ?, 1)
         """,
-        ("ab" * 32, "cd" * 32, "ef" * 32),
+        (
+            _DEFAULT_GENERATION_ID,
+            _DEFAULT_EXECUTION_PROFILE_ID,
+            _DEFAULT_MARKET_SOURCE_PROFILE_ID,
+        ),
     )
     return "ab" * 32
+
+
+def _insert_second_profiles_and_generation(connection: sqlite3.Connection) -> str:
+    generation_id = "56" * 32
+    execution_profile_id = "67" * 32
+    market_profile_id = "78" * 32
+    connection.execute(
+        """
+        INSERT INTO execution_connection_profile (
+            connection_profile_id, application_generation,
+            broker_provider, environment_class, account_identity,
+            trade_command_origin, order_query_origin, order_event_origin,
+            credential_handle_fingerprint, adapter_contract_version,
+            capability_profile_sha256, deployment_identity,
+            profile_commitment_sha256
+        )
+        VALUES (?, ?, 'ALPACA', 'PAPER', ?,
+                'https://trade-two.example.com',
+                'https://query-two.example.com',
+                'https://stream-two.example.com',
+                ?, '1.2.3', ?, ?, ?)
+        """,
+        (
+            execution_profile_id,
+            generation_id,
+            "11" * 32,
+            "22" * 32,
+            "33" * 32,
+            "44" * 32,
+            "55" * 32,
+        ),
+    )
+    connection.execute(
+        """
+        INSERT INTO market_data_source_profile (
+            market_source_profile_id, provider, environment_or_feed,
+            source_origin, entitlement_class,
+            normalization_contract_version,
+            data_capability_profile_sha256,
+            source_profile_commitment_sha256
+        )
+        VALUES (?, 'ALPACA', 'sip-feed', 'https://feed-two.example.com',
+                'SIP', '0.1.0', ?, ?)
+        """,
+        (market_profile_id, "66" * 32, "77" * 32),
+    )
+    connection.execute(
+        """
+        INSERT INTO application_generation (
+            application_generation_id, selected_execution_profile_id,
+            selected_market_source_profile_id, activation_ordinal
+        )
+        VALUES (?, ?, ?, 2)
+        """,
+        (generation_id, execution_profile_id, market_profile_id),
+    )
+    return generation_id
 
 
 def _seed_scope_with_live_generation(connection: sqlite3.Connection) -> int:
@@ -150,12 +215,12 @@ def _seed_scope_with_live_generation(connection: sqlite3.Connection) -> int:
     connection.execute(
         """
         INSERT INTO acquisition_scope (
-            scope_id, application_generation_id, broker_text,
-            environment_text, account_text, symbol_text
+            scope_id, application_generation_id,
+            execution_profile_id, symbol_text
         )
-        VALUES (1, ?, 'alpaca', 'paper', 'account-1', 'AAPL')
+        VALUES (1, ?, ?, 'AAPL')
         """,
-        (generation_id,),
+        (generation_id, _DEFAULT_EXECUTION_PROFILE_ID),
     )
     connection.execute(
         """
@@ -177,18 +242,27 @@ def _insert_root(
     key_id: int = 1,
     scope_id: int = 1,
     external: str = "root-fill-A",
+    application_generation_id: str = _DEFAULT_GENERATION_ID,
+    execution_profile_id: str = _DEFAULT_EXECUTION_PROFILE_ID,
+    owner_generation_id: str = "12" * 32,
 ) -> int:
     connection.execute(
         """
         INSERT INTO root_fill (
-            root_fill_key_id, scope_id, owner_generation_id,
-            root_fill_external, current_quantity, price_units,
-            scale_sign, scale_digits, scale_exponent,
-            economics_head_ordinal
+            root_fill_key_id, scope_id, application_generation_id,
+            execution_profile_id, owner_generation_id,
+            root_fill_external, economics_head_ordinal
         )
-        VALUES (?, ?, ?, ?, 100, 10000, 0, '1', -2, 0)
+        VALUES (?, ?, ?, ?, ?, ?, 0)
         """,
-        (key_id, scope_id, "12" * 32, external),
+        (
+            key_id,
+            scope_id,
+            application_generation_id,
+            execution_profile_id,
+            owner_generation_id,
+            external,
+        ),
     )
     return key_id
 
@@ -201,23 +275,33 @@ def _insert_fill(
     event: str,
     scope_id: int = 1,
     generation_id: str = _DEFAULT_GENERATION_ID,
+    execution_profile_id: str = _DEFAULT_EXECUTION_PROFILE_ID,
 ) -> int:
     connection.execute(
         """
         INSERT INTO execution_fact (
             fact_id, scope_id, application_generation_id,
-            broker_text, environment_text, account_text,
-            root_fill_key_id, source_event_id, kind,
-            quantity, price_units, scale_sign, scale_digits,
-            scale_exponent, predecessor_fact_id, fact_ordinal
+            execution_profile_id, root_fill_key_id, source_event_id,
+            order_external, side, kind, authority, quantity,
+            price_present, price_units, scale_sign, scale_digits,
+            scale_exponent, tick_units, tick_scale_sign,
+            tick_scale_digits, tick_scale_exponent,
+            predecessor_fact_id, fact_ordinal
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'FILL', 10, 10000, 0, '1', -2,
-                NULL, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'BUY', 'FILL',
+                'BROKER_AUTHORITATIVE', 10,
+                1, 10000, 0, '1', -2, 1, 0, '1', -2, NULL, ?)
         """,
-        (fact_id, scope_id)
-        + (generation_id,)
-        + _FACT_COORDS[1:]
-        + (root_id, event, fact_id),
+        (
+            fact_id,
+            scope_id,
+            generation_id,
+            execution_profile_id,
+            root_id,
+            event,
+            f"order-{root_id}",
+            fact_id,
+        ),
     )
     return fact_id
 
@@ -231,21 +315,35 @@ def _insert_revision(
     predecessor_fact_id: int,
     kind: str = "TRADE_CORRECT",
     scope_id: int = 1,
+    fact_ordinal: int | None = None,
 ) -> int:
+    stored_ordinal = fact_id if fact_ordinal is None else fact_ordinal
     connection.execute(
         """
         INSERT INTO execution_fact (
             fact_id, scope_id, application_generation_id,
-            broker_text, environment_text, account_text,
-            root_fill_key_id, source_event_id, kind,
-            quantity, price_units, scale_sign, scale_digits,
-            scale_exponent, predecessor_fact_id, fact_ordinal
+            execution_profile_id, root_fill_key_id, source_event_id,
+            order_external, side, kind, authority, quantity,
+            price_present, price_units, scale_sign, scale_digits,
+            scale_exponent, tick_units, tick_scale_sign,
+            tick_scale_digits, tick_scale_exponent,
+            predecessor_fact_id, fact_ordinal
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 7, 10100, 0, '1', -2, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'BUY', ?, 'BROKER_AUTHORITATIVE', 7,
+                1, 10100, 0, '1', -2, 1, 0, '1', -2, ?, ?)
         """,
-        (fact_id, scope_id)
-        + _FACT_COORDS
-        + (root_id, event, kind, predecessor_fact_id, fact_id),
+        (
+            fact_id,
+            scope_id,
+            _DEFAULT_GENERATION_ID,
+            _DEFAULT_EXECUTION_PROFILE_ID,
+            root_id,
+            event,
+            f"order-{root_id}",
+            kind,
+            predecessor_fact_id,
+            stored_ordinal,
+        ),
     )
     return fact_id
 
@@ -263,31 +361,59 @@ def _insert_bust(
         """
         INSERT INTO execution_fact (
             fact_id, scope_id, application_generation_id,
-            broker_text, environment_text, account_text,
-            root_fill_key_id, source_event_id, kind,
-            quantity, price_units, scale_sign, scale_digits,
-            scale_exponent, predecessor_fact_id, fact_ordinal
+            execution_profile_id, root_fill_key_id, source_event_id,
+            order_external, side, kind, authority, quantity,
+            price_present, price_units, scale_sign, scale_digits,
+            scale_exponent, tick_units, tick_scale_sign,
+            tick_scale_digits, tick_scale_exponent,
+            predecessor_fact_id, fact_ordinal
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'TRADE_BUST', 0, NULL, NULL, NULL,
-                NULL, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'BUY', 'TRADE_BUST',
+                'BROKER_AUTHORITATIVE', 0,
+                0, 0, 0, '0', 0, 0, 0, '0', 0, ?, ?)
         """,
-        (fact_id, scope_id)
-        + _FACT_COORDS
-        + (root_id, event, predecessor_fact_id, fact_id),
+        (
+            fact_id,
+            scope_id,
+            _DEFAULT_GENERATION_ID,
+            _DEFAULT_EXECUTION_PROFILE_ID,
+            root_id,
+            event,
+            f"order-{root_id}",
+            predecessor_fact_id,
+            fact_id,
+        ),
     )
     return fact_id
 
 
-def _insert_open_effect(connection: sqlite3.Connection, effect_id: int) -> int:
+def _insert_open_effect(
+    connection: sqlite3.Connection,
+    effect_id: int,
+    *,
+    root_id: int = 1,
+    scope_id: int = 1,
+    application_generation_id: str = _DEFAULT_GENERATION_ID,
+    execution_profile_id: str = _DEFAULT_EXECUTION_PROFILE_ID,
+) -> int:
     connection.execute(
         """
         INSERT INTO venue_effect (
-            effect_id, scope_id, root_fill_key_id, order_external,
-            disposition, created_ordinal
+            effect_id, scope_id, application_generation_id,
+            execution_profile_id, root_fill_key_id, order_external,
+            lifecycle_state, disposition, created_ordinal
         )
-        VALUES (?, 1, 1, ?, 'OPEN', ?)
+        VALUES (?, ?, ?, ?, ?, ?, 'REQUESTED', 'OPEN', ?)
         """,
-        (effect_id, f"order-{effect_id}", effect_id),
+        (
+            effect_id,
+            scope_id,
+            application_generation_id,
+            execution_profile_id,
+            root_id,
+            f"order-{effect_id}",
+            effect_id,
+        ),
     )
     return effect_id
 
@@ -356,6 +482,42 @@ def test_disabled_foreign_keys_are_refused(tmp_path: object) -> None:
 
     with pytest.raises(SchemaForeignKeysDisabledError):
         install_schema(connection, approved_ddl_sha256=approved)
+
+
+def test_disabled_recursive_triggers_are_refused_before_ddl(tmp_path: object) -> None:
+    connection = sqlite3.connect(tmp_path / "recursive-disabled.db")
+    connection.execute("PRAGMA foreign_keys = ON")
+    connection.execute("PRAGMA recursive_triggers = OFF")
+    _OPEN_CONNECTIONS.append(connection)
+
+    with pytest.raises(SchemaInstallError, match="recursive triggers"):
+        install_schema(connection, approved_ddl_sha256=_require_gate_open())
+
+    assert connection.execute("SELECT count(*) FROM sqlite_master").fetchone() == (0,)
+
+
+def test_install_failure_rolls_back_all_ddl_and_remains_retryable(
+    tmp_path: object,
+) -> None:
+    connection = _connection(tmp_path)
+
+    class _FailingConnection:
+        def execute(self, sql: str, parameters: tuple[object, ...] = ()) -> object:
+            if sql.startswith("CREATE TABLE venue_effect"):
+                raise RuntimeError("injected DDL interruption")
+            return connection.execute(sql, parameters)
+
+    with pytest.raises(RuntimeError, match="injected DDL interruption"):
+        install_schema(
+            _FailingConnection(),
+            approved_ddl_sha256=_require_gate_open(),
+        )
+
+    assert connection.execute("SELECT count(*) FROM sqlite_master").fetchone() == (0,)
+    assert (
+        install_schema(connection, approved_ddl_sha256=_require_gate_open())
+        == SCHEMA_VERSION
+    )
 
 
 def test_module_import_stays_inert_without_any_database() -> None:
@@ -436,49 +598,72 @@ def test_retiring_then_reopening_is_the_only_status_path(tmp_path: object) -> No
 def test_cross_scope_or_cross_profile_event_reuse_is_rejected(
     tmp_path: object,
 ) -> None:
-    """The exact M1 ExecutionFactKey dedupes across scopes and symbols."""
+    """Source events dedupe inside one profile and remain profile-scoped."""
 
     connection = _installed_connection(tmp_path)
     generation_a = _insert_profiles_and_generation(connection)
-    connection.execute(
-        "INSERT INTO application_generation VALUES (?, ?, ?, 2)",
-        ("56" * 32, "cd" * 32, "ef" * 32),
-    )
+    generation_b = _insert_second_profiles_and_generation(connection)
     connection.execute(
         """
-        INSERT INTO acquisition_scope VALUES
-        (1, ?, 'alpaca', 'paper', 'account-1', 'AAPL'),
-        (2, ?, 'alpaca', 'paper', 'account-1', 'MSFT')
+        INSERT INTO acquisition_scope (
+            scope_id, application_generation_id, execution_profile_id,
+            symbol_text
+        ) VALUES
+        (1, ?, ?, 'AAPL'),
+        (2, ?, ?, 'MSFT'),
+        (3, ?, ?, 'AAPL')
         """,
-        (generation_a, "56" * 32),
+        (
+            generation_a,
+            _DEFAULT_EXECUTION_PROFILE_ID,
+            generation_a,
+            _DEFAULT_EXECUTION_PROFILE_ID,
+            generation_b,
+            "67" * 32,
+        ),
     )
     connection.execute(
         """
         INSERT INTO acquisition_generation VALUES
         (?, 1, 'LIVE', 1, NULL, ?, ?),
-        (?, 2, 'LIVE', 1, NULL, ?, ?)
+        (?, 2, 'LIVE', 1, NULL, ?, ?),
+        (?, 3, 'LIVE', 1, NULL, ?, ?)
         """,
-        ("12" * 32, "9a" * 32, "9b" * 32, "34" * 32, "8a" * 32, "8b" * 32),
+        (
+            "12" * 32,
+            "9a" * 32,
+            "9b" * 32,
+            "34" * 32,
+            "8a" * 32,
+            "8b" * 32,
+            "45" * 32,
+            "7a" * 32,
+            "7b" * 32,
+        ),
     )
-    connection.execute(
-        """
-        INSERT INTO root_fill (
-            root_fill_key_id, scope_id, owner_generation_id,
-            root_fill_external, current_quantity, price_units,
-            scale_sign, scale_digits, scale_exponent, economics_head_ordinal
-        )
-        VALUES
-        (1, 1, ?, 'r-A', 10, 10000, 0, '1', -2, 0),
-        (2, 2, ?, 'r-B', 10, 10000, 0, '1', -2, 0)
-        """,
-        ("12" * 32, "34" * 32),
+    _insert_root(connection, key_id=1, scope_id=1, external="r-A")
+    _insert_root(
+        connection,
+        key_id=2,
+        scope_id=2,
+        external="r-B",
+        owner_generation_id="34" * 32,
+    )
+    _insert_root(
+        connection,
+        key_id=3,
+        scope_id=3,
+        external="r-C",
+        application_generation_id=generation_b,
+        execution_profile_id="67" * 32,
+        owner_generation_id="45" * 32,
     )
 
     stored = _insert_fill(connection, fact_id=1, root_id=1, event="evt-1", scope_id=1)
     assert stored == 1
 
-    # Mutant: the identical ExecutionFactKey under the second scope. Only the
-    # four-column M1-key uniqueness can refuse this insert.
+    # Same selected profile, different symbol scope: one source event remains
+    # one execution fact and is rejected.
     with pytest.raises(sqlite3.IntegrityError):
         _insert_fill(
             connection,
@@ -486,18 +671,20 @@ def test_cross_scope_or_cross_profile_event_reuse_is_rejected(
             root_id=2,
             event="evt-1",
             scope_id=2,
-            generation_id="56" * 32,
+            generation_id=generation_a,
         )
 
-    # Positive control: a distinct event on the second scope is accepted.
+    # The same provider text under a distinct immutable profile is a distinct
+    # profile-scoped external identity and is accepted.
     assert (
         _insert_fill(
             connection,
             fact_id=3,
-            root_id=2,
-            event="evt-2",
-            scope_id=2,
-            generation_id="56" * 32,
+            root_id=3,
+            event="evt-1",
+            scope_id=3,
+            generation_id=generation_b,
+            execution_profile_id="67" * 32,
         )
         == 3
     )
@@ -510,21 +697,25 @@ def test_fact_coordinates_must_equal_their_scope_coordinates(
 
     connection = _installed_connection(tmp_path)
     _seed_scope_with_live_generation(connection)
+    _insert_root(connection)
 
-    with pytest.raises(sqlite3.IntegrityError, match="scope coordinates"):
+    with pytest.raises(sqlite3.IntegrityError, match="profile coordinates"):
         connection.execute(
             """
             INSERT INTO execution_fact (
                 fact_id, scope_id, application_generation_id,
-                broker_text, environment_text, account_text,
-                root_fill_key_id, source_event_id, kind,
-                quantity, price_units, scale_sign, scale_digits,
-                scale_exponent, predecessor_fact_id, fact_ordinal
+                execution_profile_id, root_fill_key_id, source_event_id,
+                order_external, side, kind, authority, quantity,
+                price_present, price_units, scale_sign, scale_digits,
+                scale_exponent, tick_units, tick_scale_sign,
+                tick_scale_digits, tick_scale_exponent,
+                predecessor_fact_id, fact_ordinal
             )
-            VALUES (?, 1, ?, ?, 'paper', 'account-1', 1, 'evt-x',
-                    'FILL', 10, 10000, 0, '1', -2, NULL, 1)
+            VALUES (?, 1, ?, ?, 1, 'evt-x', 'order-1', 'BUY', 'FILL',
+                    'BROKER_AUTHORITATIVE', 10,
+                    1, 10000, 0, '1', -2, 1, 0, '1', -2, NULL, 1)
             """,
-            (1, "ab" * 32, "other-broker"),
+            (1, _DEFAULT_GENERATION_ID, "67" * 32),
         )
 
 
@@ -540,20 +731,14 @@ def test_revision_predecessor_must_exist_inside_same_root(
 
     # Missing-parent mutant: the root exists and every coordinate matches, so
     # only the composite lineage foreign key can reject predecessor id 999.
-    with pytest.raises(sqlite3.IntegrityError, match="FOREIGN KEY"):
-        connection.execute(
-            """
-            INSERT INTO execution_fact (
-                fact_id, scope_id, application_generation_id,
-                broker_text, environment_text, account_text,
-                root_fill_key_id, source_event_id, kind,
-                quantity, price_units, scale_sign, scale_digits,
-                scale_exponent, predecessor_fact_id, fact_ordinal
-            )
-            VALUES (9, ?, ?, ?, ?, ?, ?, 'evt-x', 'TRADE_CORRECT',
-                    7, 10100, 0, '1', -2, 999, 9)
-            """,
-            (scope_id, "ab" * 32, "alpaca", "paper", "account-1", root_a),
+    with pytest.raises(sqlite3.IntegrityError, match="exist inside the same root"):
+        _insert_revision(
+            connection,
+            fact_id=9,
+            root_id=root_a,
+            event="evt-x",
+            predecessor_fact_id=999,
+            scope_id=scope_id,
         )
 
     # Cross-root mutant: predecessor exists but belongs to another root.
@@ -561,7 +746,7 @@ def test_revision_predecessor_must_exist_inside_same_root(
     _insert_fill(
         connection, fact_id=2, root_id=root_b, event="evt-2", scope_id=scope_id
     )
-    with pytest.raises(sqlite3.IntegrityError, match="FOREIGN KEY"):
+    with pytest.raises(sqlite3.IntegrityError, match="exist inside the same root"):
         _insert_bust(
             connection,
             fact_id=3,
@@ -598,36 +783,25 @@ def test_revision_predecessor_must_exist_inside_same_root(
     # Out-of-order mutant: predecessor 4 is the current head, but ordinal 3
     # would move the root's fact order backwards. The ordinal is globally free.
     with pytest.raises(sqlite3.IntegrityError, match="strictly advance"):
-        connection.execute(
-            """
-            INSERT INTO execution_fact (
-                fact_id, scope_id, application_generation_id,
-                broker_text, environment_text, account_text,
-                root_fill_key_id, source_event_id, kind,
-                quantity, price_units, scale_sign, scale_digits,
-                scale_exponent, predecessor_fact_id, fact_ordinal
-            )
-            VALUES (6, ?, ?, ?, ?, ?, ?, 'evt-6', 'TRADE_CORRECT',
-                    7, 10100, 0, '1', -2, 4, 3)
-            """,
-            (scope_id,) + _FACT_COORDS + (root_a,),
+        _insert_revision(
+            connection,
+            fact_id=6,
+            root_id=root_a,
+            event="evt-6",
+            predecessor_fact_id=4,
+            scope_id=scope_id,
+            fact_ordinal=3,
         )
 
     # A same-row predecessor must not satisfy SQLite's self-referential FK.
     with pytest.raises(sqlite3.IntegrityError, match="predecessor_fact_id"):
-        connection.execute(
-            """
-            INSERT INTO execution_fact (
-                fact_id, scope_id, application_generation_id,
-                broker_text, environment_text, account_text,
-                root_fill_key_id, source_event_id, kind,
-                quantity, price_units, scale_sign, scale_digits,
-                scale_exponent, predecessor_fact_id, fact_ordinal
-            )
-            VALUES (8, ?, ?, ?, ?, ?, ?, 'evt-8', 'TRADE_CORRECT',
-                    7, 10100, 0, '1', -2, 8, 8)
-            """,
-            (scope_id,) + _FACT_COORDS + (root_a,),
+        _insert_revision(
+            connection,
+            fact_id=8,
+            root_id=root_a,
+            event="evt-8",
+            predecessor_fact_id=8,
+            scope_id=scope_id,
         )
 
     # A root has exactly one canonical FILL fact.
@@ -649,6 +823,7 @@ def test_closure_chain_rejects_gap_branch_and_cross_owner(
     def _fresh(name: str) -> tuple[sqlite3.Connection, int]:
         connection = sqlite3.connect(tmp_path / name)
         connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute("PRAGMA recursive_triggers = ON")
         _OPEN_CONNECTIONS.append(connection)
         install_schema(connection, approved_ddl_sha256=_require_gate_open())
         scope_id = _seed_scope_with_live_generation(connection)
@@ -688,7 +863,7 @@ def test_closure_chain_rejects_gap_branch_and_cross_owner(
                 closure_id, scope_id, owner_external, ordinal, effect_id,
                 closure_kind, predecessor_closure_id
             )
-            VALUES (?, ?, ?, ?, ?, 'ACCEPTANCE_CLOSED', ?)
+            VALUES (?, ?, ?, ?, ?, 'TERMINAL_LEG', ?)
             """,
             (closure_id, scope_id, owner, ordinal, effect_id, predecessor),
         )
@@ -759,6 +934,46 @@ def test_immutable_rows_refuse_update_and_delete(tmp_path: object) -> None:
             connection.execute(statement, parameters)
 
 
+def test_insert_or_replace_cannot_bypass_immutable_authority(
+    tmp_path: object,
+) -> None:
+    connection = _installed_connection(tmp_path)
+    _seed_scope_with_live_generation(connection)
+    _insert_root(connection)
+    _insert_fill(connection, fact_id=1, root_id=1, event="evt-1")
+    _insert_open_effect(connection, 1)
+    connection.execute("INSERT INTO dispatch_claim VALUES (1, 1, 1)")
+    connection.execute(
+        """
+        INSERT INTO protection_authority (
+            scope_id, active_stream_generation_id,
+            active_source_profile_id, active_session_external,
+            active_sequence_mode, state_commitment_sha256, version_ordinal
+        ) VALUES (1, NULL, NULL, NULL, NULL, ?, 1)
+        """,
+        ("64" * 32,),
+    )
+
+    statements = (
+        ("INSERT OR REPLACE INTO execution_fact_head VALUES (1, 1, 1)", ()),
+        ("INSERT OR REPLACE INTO dispatch_claim VALUES (1, 1, 1)", ()),
+        (
+            "INSERT OR REPLACE INTO protection_authority"
+            " SELECT * FROM protection_authority WHERE scope_id = 1",
+            (),
+        ),
+        (
+            "INSERT OR REPLACE INTO acquisition_generation"
+            " SELECT * FROM acquisition_generation"
+            " WHERE acquisition_generation_id = ?",
+            ("12" * 32,),
+        ),
+    )
+    for statement, parameters in statements:
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(statement, parameters)
+
+
 def test_retirement_cannot_rewrite_acquisition_generation_binding(
     tmp_path: object,
 ) -> None:
@@ -790,9 +1005,7 @@ def test_venue_effect_and_acceptance_bindings_are_immutable(
     _insert_root(connection, key_id=1, external="root-A")
     _insert_root(connection, key_id=2, external="root-B")
     _insert_open_effect(connection, 1)
-    connection.execute(
-        "INSERT INTO venue_effect VALUES (2, 1, 2, 'order-2', 'OPEN', 2)"
-    )
+    _insert_open_effect(connection, 2, root_id=2)
     connection.execute("INSERT INTO acceptance_set VALUES (1, 1)")
 
     with pytest.raises(sqlite3.IntegrityError, match="identity is immutable"):
@@ -801,10 +1014,6 @@ def test_venue_effect_and_acceptance_bindings_are_immutable(
             " SET root_fill_key_id = 2, disposition = 'INVALIDATED'"
             " WHERE effect_id = 1"
         )
-    connection.execute(
-        "UPDATE venue_effect SET disposition = 'INVALIDATED' WHERE effect_id = 1"
-    )
-
     with pytest.raises(sqlite3.IntegrityError, match="binding is immutable"):
         connection.execute(
             "UPDATE acceptance_set SET effect_id = 2 WHERE acceptance_set_id = 1"
@@ -819,9 +1028,7 @@ def test_venue_owner_is_immutable_and_closure_binding_is_exact(
     _insert_root(connection, key_id=1, external="root-A")
     _insert_root(connection, key_id=2, external="root-B")
     _insert_open_effect(connection, 1)
-    connection.execute(
-        "INSERT INTO venue_effect VALUES (2, 1, 2, 'order-2', 'OPEN', 2)"
-    )
+    _insert_open_effect(connection, 2, root_id=2)
     _insert_venue_owner(connection, owner_external="owner-A", effect_id=1)
     _insert_venue_owner(connection, owner_external="owner-B", effect_id=2, root_id=2)
 
@@ -848,6 +1055,298 @@ def test_venue_owner_is_immutable_and_closure_binding_is_exact(
         )
 
 
+# ---------------------------------------------------------------------------
+# Codex fresh-review RED controls.  Each control isolates one authority gap
+# reproduced against checkpoint b284beaa before the replacement mechanism.
+
+
+def test_current_root_economics_must_equal_the_authenticated_fact(
+    tmp_path: object,
+) -> None:
+    connection = _installed_connection(tmp_path)
+    scope_id = _seed_scope_with_live_generation(connection)
+    root_id = _insert_root(connection, scope_id=scope_id)
+    _insert_fill(connection, fact_id=1, root_id=root_id, event="evt-1")
+    _insert_revision(
+        connection,
+        fact_id=2,
+        root_id=root_id,
+        event="evt-2",
+        predecessor_fact_id=1,
+    )
+
+    with pytest.raises(sqlite3.IntegrityError, match="exact current execution fact"):
+        connection.execute(
+            """
+            UPDATE root_fill
+               SET current_quantity = 99,
+                   price_units = 777,
+                   economics_head_ordinal = 2
+             WHERE root_fill_key_id = ?
+            """,
+            (root_id,),
+        )
+
+
+def test_execution_profile_is_generation_owned_and_scope_retains_no_raw_account(
+    tmp_path: object,
+) -> None:
+    connection = _installed_connection(tmp_path)
+    _insert_profiles_and_generation(connection)
+
+    profile_columns = {
+        str(row[1])
+        for row in connection.execute("PRAGMA table_info(execution_connection_profile)")
+    }
+    assert "application_generation" in profile_columns
+
+    scope_columns = {
+        str(row[1])
+        for row in connection.execute("PRAGMA table_info(acquisition_scope)")
+    }
+    fact_columns = {
+        str(row[1]) for row in connection.execute("PRAGMA table_info(execution_fact)")
+    }
+    assert "execution_profile_id" in scope_columns
+    assert "execution_profile_id" in fact_columns
+    assert "account_text" not in scope_columns | fact_columns
+
+    with pytest.raises(sqlite3.IntegrityError):
+        connection.execute(
+            """
+            INSERT INTO application_generation (
+                application_generation_id, selected_execution_profile_id,
+                selected_market_source_profile_id, activation_ordinal
+            )
+            VALUES ('replacement-generation', ?, ?, 2)
+            """,
+            ("cd" * 32, "ef" * 32),
+        )
+
+
+def test_execution_fact_schema_preserves_complete_typed_fact_coordinates(
+    tmp_path: object,
+) -> None:
+    connection = _installed_connection(tmp_path)
+    columns = {
+        str(row[1]) for row in connection.execute("PRAGMA table_info(execution_fact)")
+    }
+    assert {
+        "execution_profile_id",
+        "order_external",
+        "side",
+        "authority",
+        "price_present",
+        "tick_units",
+        "tick_scale_sign",
+        "tick_scale_digits",
+        "tick_scale_exponent",
+        "request_occurrence_external",
+        "claim_occurrence_external",
+        "prior_cumulative_quantity",
+        "resulting_cumulative_quantity",
+        "actor_external",
+        "reason_text",
+        "evidence_reference_external",
+    } <= columns
+
+
+def test_execution_fact_shapes_round_trip_and_refuse_kind_economics_collision(
+    tmp_path: object,
+) -> None:
+    connection = _installed_connection(tmp_path)
+    _seed_scope_with_live_generation(connection)
+    _insert_root(connection, key_id=1, external="broker-root")
+    _insert_fill(connection, fact_id=1, root_id=1, event="broker-fill")
+
+    with pytest.raises(sqlite3.IntegrityError):
+        _insert_revision(
+            connection,
+            fact_id=2,
+            root_id=1,
+            event="invalid-bust",
+            predecessor_fact_id=1,
+            kind="TRADE_BUST",
+        )
+
+    _insert_root(connection, key_id=2, external="human-root")
+    connection.execute(
+        """
+        INSERT INTO execution_fact (
+            fact_id, scope_id, application_generation_id,
+            execution_profile_id, root_fill_key_id, source_event_id,
+            order_external, side, kind, authority, quantity,
+            price_present, price_units, scale_sign, scale_digits,
+            scale_exponent, tick_units, tick_scale_sign,
+            tick_scale_digits, tick_scale_exponent,
+            request_occurrence_external, claim_occurrence_external,
+            prior_cumulative_quantity, resulting_cumulative_quantity,
+            actor_external, reason_text, evidence_reference_external,
+            predecessor_fact_id, fact_ordinal
+        ) VALUES (
+            3, 1, ?, ?, 2, 'human-fill', 'order-2', 'BUY', 'FILL',
+            'HUMAN_ATTESTED', 5,
+            1, 2500, 0, '1', -2, 1, 0, '1', -2,
+            'request-1', 'claim-1', 0, 5,
+            'operator-1', 'broker outage reconciliation', 'evidence-1',
+            NULL, 3
+        )
+        """,
+        (_DEFAULT_GENERATION_ID, _DEFAULT_EXECUTION_PROFILE_ID),
+    )
+    stored = connection.execute(
+        """
+        SELECT order_external, side, authority, quantity,
+               price_units, tick_units, request_occurrence_external,
+               claim_occurrence_external, prior_cumulative_quantity,
+               resulting_cumulative_quantity, actor_external,
+               reason_text, evidence_reference_external
+          FROM execution_fact
+         WHERE fact_id = 3
+        """
+    ).fetchone()
+    assert stored == (
+        "order-2",
+        "BUY",
+        "HUMAN_ATTESTED",
+        5,
+        2500,
+        1,
+        "request-1",
+        "claim-1",
+        0,
+        5,
+        "operator-1",
+        "broker outage reconciliation",
+        "evidence-1",
+    )
+
+
+def test_effect_schema_carries_lifecycle_and_bound_closure_proof(
+    tmp_path: object,
+) -> None:
+    connection = _installed_connection(tmp_path)
+    columns = {
+        str(row[1]) for row in connection.execute("PRAGMA table_info(venue_effect)")
+    }
+    assert {
+        "lifecycle_state",
+        "closure_proof_kind",
+        "closure_proof_digest",
+        "closure_proof_evidence_id",
+        "closure_proof_claim_id",
+    } <= columns
+
+
+def test_effect_must_start_open(tmp_path: object) -> None:
+    connection = _installed_connection(tmp_path)
+    _seed_scope_with_live_generation(connection)
+    _insert_root(connection)
+
+    with pytest.raises(sqlite3.IntegrityError, match="starts OPEN"):
+        connection.execute(
+            """
+            INSERT INTO venue_effect (
+                effect_id, scope_id, application_generation_id,
+                execution_profile_id, root_fill_key_id, order_external,
+                lifecycle_state, disposition, created_ordinal
+            )
+            VALUES (10, 1, ?, ?, 1, 'order-10',
+                    'REQUESTED', 'CLOSED', 10)
+            """,
+            (_DEFAULT_GENERATION_ID, _DEFAULT_EXECUTION_PROFILE_ID),
+        )
+
+
+def test_successor_generation_requires_retired_compatible_predecessor(
+    tmp_path: object,
+) -> None:
+    connection = _installed_connection(tmp_path)
+    scope_id = _seed_scope_with_live_generation(connection)
+    connection.execute(
+        "UPDATE acquisition_generation SET status = 'RETIRED_UNSERVING' "
+        "WHERE acquisition_generation_id = ?",
+        ("12" * 32,),
+    )
+
+    with pytest.raises(sqlite3.IntegrityError, match="retired and compatibility-equal"):
+        connection.execute(
+            """
+            INSERT INTO acquisition_generation (
+                acquisition_generation_id, scope_id, status,
+                successor_ordinal, predecessor_generation_id,
+                mandate_commitment_sha256, emergency_compatibility_sha256
+            )
+            VALUES (?, ?, 'LIVE', 2, ?, ?, ?)
+            """,
+            ("34" * 32, scope_id, "12" * 32, "9c" * 32, "9d" * 32),
+        )
+
+
+def test_market_stream_route_is_exact_scope_session_and_source_profile(
+    tmp_path: object,
+) -> None:
+    connection = _installed_connection(tmp_path)
+    columns = {
+        str(row[1])
+        for row in connection.execute("PRAGMA table_info(market_stream_authority)")
+    }
+    assert {
+        "stream_generation_id",
+        "scope_id",
+        "application_generation_id",
+        "source_profile_id",
+        "session_external",
+        "sequence_mode",
+    } <= columns
+
+    _seed_scope_with_live_generation(connection)
+    stream_id = "81" * 32
+    connection.execute(
+        """
+        INSERT INTO market_stream_authority (
+            stream_generation_id, scope_id, application_generation_id,
+            source_profile_id, session_external, sequence_mode
+        ) VALUES (?, 1, ?, ?, 'session-1', 'SEQUENCED')
+        """,
+        (stream_id, _DEFAULT_GENERATION_ID, _DEFAULT_MARKET_SOURCE_PROFILE_ID),
+    )
+    connection.execute(
+        """
+        INSERT INTO market_cursor (
+            stream_generation_id, scope_id, application_generation_id,
+            source_profile_id, session_external, sequence_mode,
+            fixed_cursor_ordinal, published_head_ordinal
+        ) VALUES (?, 1, ?, ?, 'session-1', 'SEQUENCED', 4, 5)
+        """,
+        (stream_id, _DEFAULT_GENERATION_ID, _DEFAULT_MARKET_SOURCE_PROFILE_ID),
+    )
+    connection.execute(
+        """
+        INSERT INTO protection_authority (
+            scope_id, active_stream_generation_id,
+            active_source_profile_id, active_session_external,
+            active_sequence_mode, state_commitment_sha256, version_ordinal
+        ) VALUES (1, ?, ?, 'session-1', 'SEQUENCED', ?, 1)
+        """,
+        (stream_id, _DEFAULT_MARKET_SOURCE_PROFILE_ID, "82" * 32),
+    )
+
+    with pytest.raises(sqlite3.IntegrityError, match="FOREIGN KEY"):
+        connection.execute(
+            "UPDATE protection_authority"
+            " SET active_stream_generation_id = ?, version_ordinal = 2"
+            " WHERE scope_id = 1",
+            ("83" * 32,),
+        )
+    with pytest.raises(sqlite3.IntegrityError):
+        connection.execute(
+            "UPDATE market_cursor SET fixed_cursor_ordinal = 6"
+            " WHERE stream_generation_id = ?",
+            (stream_id,),
+        )
+
+
 def test_monotonic_heads_refuse_regression(tmp_path: object) -> None:
     connection = _installed_connection(tmp_path)
     generation_id = _insert_profiles_and_generation(connection)
@@ -862,8 +1361,11 @@ def test_monotonic_heads_refuse_regression(tmp_path: object) -> None:
         (generation_id, "77" * 32),
     )
 
-    with pytest.raises(sqlite3.IntegrityError):
-        connection.execute("UPDATE kernel_checkpoint SET currentness_head_ordinal = 4")
+    with pytest.raises(sqlite3.IntegrityError, match="head may only advance"):
+        connection.execute(
+            "UPDATE kernel_checkpoint SET currentness_head_ordinal = 4,"
+            " checkpoint_version_ordinal = 2"
+        )
     connection.execute(
         "UPDATE kernel_checkpoint"
         " SET currentness_head_ordinal = 6, checkpoint_version_ordinal = 2"
@@ -874,31 +1376,38 @@ def test_current_proof_payloads_require_fresh_heads_or_versions(
     tmp_path: object,
 ) -> None:
     connection = _installed_connection(tmp_path)
-    generation_id = _insert_profiles_and_generation(connection)
-    connection.execute(
-        "INSERT INTO acquisition_scope VALUES"
-        " (1, ?, 'alpaca', 'paper', 'account-1', 'AAPL')",
-        (generation_id,),
-    )
-    connection.execute(
-        "INSERT INTO acquisition_generation VALUES (?, 1, 'LIVE', 1, NULL, ?, ?)",
-        ("12" * 32, "9a" * 32, "9b" * 32),
-    )
+    generation_id = _DEFAULT_GENERATION_ID
+    _seed_scope_with_live_generation(connection)
     connection.execute(
         "INSERT INTO kernel_checkpoint VALUES (?, 5, ?, 1)",
         (generation_id, "77" * 32),
     )
-    connection.execute(
-        "INSERT INTO symbol_controller VALUES (1, ?, 0, 0, 1, 5, 1, ?)",
-        ("12" * 32, "9b" * 32),
-    )
     _insert_root(connection)
+    connection.execute(
+        """
+        INSERT INTO symbol_controller (
+            scope_id, application_generation_id, execution_profile_id,
+            live_acquisition_generation_id, aggregate_quantity,
+            currentness_head_ordinal, controller_version_ordinal,
+            emergency_compatibility_sha256
+        ) VALUES (1, ?, ?, ?, 0, 0, 1, ?)
+        """,
+        (
+            generation_id,
+            _DEFAULT_EXECUTION_PROFILE_ID,
+            "12" * 32,
+            "9b" * 32,
+        ),
+    )
     _insert_fill(connection, fact_id=1, root_id=1, event="evt-head")
     connection.execute(
-        "UPDATE root_fill SET economics_head_ordinal = 1 WHERE root_fill_key_id = 1"
-    )
-    connection.execute(
-        "INSERT INTO protection_authority VALUES (1, NULL, ?, 1)",
+        """
+        INSERT INTO protection_authority (
+            scope_id, active_stream_generation_id,
+            active_source_profile_id, active_session_external,
+            active_sequence_mode, state_commitment_sha256, version_ordinal
+        ) VALUES (1, NULL, NULL, NULL, NULL, ?, 1)
+        """,
         ("65" * 32,),
     )
 
@@ -921,12 +1430,15 @@ def test_current_proof_payloads_require_fresh_heads_or_versions(
             ("78" * 32,),
         )
 
-    with pytest.raises(sqlite3.IntegrityError, match="controller head must advance"):
+    with pytest.raises(sqlite3.IntegrityError, match="canonical root economics"):
         connection.execute(
-            "UPDATE symbol_controller SET aggregate_quantity = 1 WHERE scope_id = 1"
+            "UPDATE symbol_controller SET aggregate_quantity = 99,"
+            " currentness_head_ordinal = currentness_head_ordinal + 1,"
+            " controller_version_ordinal = controller_version_ordinal + 1"
+            " WHERE scope_id = 1"
         )
 
-    with pytest.raises(sqlite3.IntegrityError, match="economics head must advance"):
+    with pytest.raises(sqlite3.IntegrityError, match="exact current execution fact"):
         connection.execute(
             "UPDATE root_fill SET current_quantity = 99 WHERE root_fill_key_id = 1"
         )
@@ -945,11 +1457,6 @@ def test_current_proof_payloads_require_fresh_heads_or_versions(
         " checkpoint_version_ordinal = 2",
         ("78" * 32,),
     )
-    connection.execute(
-        "UPDATE symbol_controller"
-        " SET aggregate_quantity = 1, currentness_head_ordinal = 6,"
-        " controller_version_ordinal = 2 WHERE scope_id = 1"
-    )
     _insert_revision(
         connection,
         fact_id=2,
@@ -957,11 +1464,13 @@ def test_current_proof_payloads_require_fresh_heads_or_versions(
         event="evt-head-2",
         predecessor_fact_id=1,
     )
-    connection.execute(
-        "UPDATE root_fill"
-        " SET current_quantity = 99, economics_head_ordinal = 2"
+    assert connection.execute(
+        "SELECT current_quantity, economics_head_ordinal FROM root_fill"
         " WHERE root_fill_key_id = 1"
-    )
+    ).fetchone() == (7, 2)
+    assert connection.execute(
+        "SELECT aggregate_quantity FROM symbol_controller WHERE scope_id = 1"
+    ).fetchone() == (7,)
     connection.execute(
         "UPDATE protection_authority"
         " SET state_commitment_sha256 = ?, version_ordinal = 2",
@@ -986,37 +1495,58 @@ def test_close_requires_committed_claim_and_terminal_freezes(
     _insert_open_effect(connection, 2)
     _insert_open_effect(connection, 3)
 
-    with pytest.raises(sqlite3.IntegrityError, match="closure proof"):
+    with pytest.raises(sqlite3.IntegrityError, match="exact proof"):
         connection.execute(
             "UPDATE venue_effect SET disposition = 'CLOSED' WHERE effect_id = 1"
         )
 
+    with pytest.raises(sqlite3.IntegrityError, match="requires immutable claim"):
+        connection.execute(
+            "UPDATE venue_effect SET lifecycle_state = 'DISPATCH_CLAIMED'"
+            " WHERE effect_id = 1"
+        )
+
     connection.execute(
-        """
-        INSERT INTO dispatch_claim (claim_id, effect_id, claim_ordinal, resolved_kind)
-        VALUES (1, 1, 1, NULL)
-        """
+        "INSERT INTO dispatch_claim (claim_id, effect_id, claim_ordinal)"
+        " VALUES (1, 1, 1)"
     )
+    assert connection.execute(
+        "SELECT lifecycle_state FROM venue_effect WHERE effect_id = 1"
+    ).fetchone() == ("DISPATCH_CLAIMED",)
     with pytest.raises(sqlite3.IntegrityError):
         connection.execute(
-            """
-            INSERT INTO dispatch_claim (claim_id, effect_id, claim_ordinal, resolved_kind)
-            VALUES (2, 1, 2, NULL)
-            """
+            "INSERT INTO dispatch_claim (claim_id, effect_id, claim_ordinal)"
+            " VALUES (2, 1, 2)"
         )
-    connection.execute(
-        "UPDATE dispatch_claim SET resolved_kind = 'DISPATCHED' WHERE claim_id = 1"
-    )
     with pytest.raises(sqlite3.IntegrityError):
         connection.execute(
-            "UPDATE dispatch_claim SET resolved_kind = NULL WHERE claim_id = 1"
+            "UPDATE dispatch_claim SET claim_ordinal = 9 WHERE claim_id = 1"
         )
+
     connection.execute(
-        "INSERT INTO effect_closure_proof VALUES (1, 'CLAIMED_TERMINAL', ?)",
+        "INSERT INTO acceptance_set (acceptance_set_id, effect_id) VALUES (1, 1)"
+    )
+    connection.execute(
+        """
+        INSERT INTO acceptance_evidence (
+            evidence_id, acceptance_set_id, effect_id, evidence_kind,
+            proof_kind, evidence_digest, evidence_ordinal
+        ) VALUES (1, 1, 1, 'CLOSURE_PROOF',
+                  'CONTRACT_COMPLETE_RESPONSE', ?, 1)
+        """,
         ("71" * 32,),
     )
     connection.execute(
-        "UPDATE venue_effect SET disposition = 'CLOSED' WHERE effect_id = 1"
+        """
+        UPDATE venue_effect
+           SET disposition = 'CLOSED',
+               closure_proof_kind = 'CONTRACT_COMPLETE_RESPONSE',
+               closure_proof_digest = ?,
+               closure_proof_evidence_id = 1,
+               closure_proof_claim_id = 1
+         WHERE effect_id = 1
+        """,
+        ("71" * 32,),
     )
     with pytest.raises(sqlite3.IntegrityError):
         connection.execute(
@@ -1037,30 +1567,69 @@ def test_close_requires_committed_claim_and_terminal_freezes(
             "UPDATE venue_effect SET disposition = 'CLOSED' WHERE effect_id = 1"
         )
 
-    with pytest.raises(sqlite3.IntegrityError, match="OPEN venue effect"):
+    with pytest.raises(sqlite3.IntegrityError, match="OPEN REQUESTED"):
         connection.execute(
-            """
-            INSERT INTO dispatch_claim (claim_id, effect_id, claim_ordinal, resolved_kind)
-            VALUES (2, 1, 2, NULL)
-            """
+            "INSERT INTO dispatch_claim (claim_id, effect_id, claim_ordinal)"
+            " VALUES (2, 1, 2)"
         )
 
-    # NEVER_DISPATCHED is the exact no-claim closure route. The proof blocks
-    # any later claim, and a prior claim blocks manufacture of that proof.
+    # NEVER_DISPATCHED is the exact locally-canceled, no-claim closure route.
     connection.execute(
-        "INSERT INTO effect_closure_proof VALUES (2, 'NEVER_DISPATCHED', ?)",
+        "UPDATE venue_effect SET lifecycle_state = 'CANCELED_BEFORE_DISPATCH'"
+        " WHERE effect_id = 2"
+    )
+    connection.execute(
+        "INSERT INTO acceptance_set (acceptance_set_id, effect_id) VALUES (2, 2)"
+    )
+    connection.execute(
+        """
+        INSERT INTO acceptance_evidence (
+            evidence_id, acceptance_set_id, effect_id, evidence_kind,
+            proof_kind, evidence_digest, evidence_ordinal
+        ) VALUES (2, 2, 2, 'CLOSURE_PROOF', 'NEVER_DISPATCHED', ?, 2)
+        """,
         ("72" * 32,),
     )
-    with pytest.raises(sqlite3.IntegrityError, match="NEVER_DISPATCHED"):
-        connection.execute("INSERT INTO dispatch_claim VALUES (3, 2, 3, NULL)")
     connection.execute(
-        "UPDATE venue_effect SET disposition = 'CLOSED' WHERE effect_id = 2"
+        """
+        UPDATE venue_effect
+           SET disposition = 'CLOSED',
+               closure_proof_kind = 'NEVER_DISPATCHED',
+               closure_proof_digest = ?,
+               closure_proof_evidence_id = 2
+         WHERE effect_id = 2
+        """,
+        ("72" * 32,),
     )
+    with pytest.raises(sqlite3.IntegrityError, match="OPEN REQUESTED"):
+        connection.execute("INSERT INTO dispatch_claim VALUES (3, 2, 3)")
 
-    connection.execute("INSERT INTO dispatch_claim VALUES (4, 3, 4, NULL)")
-    with pytest.raises(sqlite3.IntegrityError, match="NEVER_DISPATCHED"):
+    connection.execute("INSERT INTO dispatch_claim VALUES (4, 3, 4)")
+    assert connection.execute(
+        "SELECT lifecycle_state FROM venue_effect WHERE effect_id = 3"
+    ).fetchone() == ("DISPATCH_CLAIMED",)
+    connection.execute(
+        "INSERT INTO acceptance_set (acceptance_set_id, effect_id) VALUES (3, 3)"
+    )
+    connection.execute(
+        """
+        INSERT INTO acceptance_evidence (
+            evidence_id, acceptance_set_id, effect_id, evidence_kind,
+            proof_kind, evidence_digest, evidence_ordinal
+        ) VALUES (3, 3, 3, 'CLOSURE_PROOF', 'NEVER_DISPATCHED', ?, 3)
+        """,
+        ("73" * 32,),
+    )
+    with pytest.raises(sqlite3.IntegrityError, match="CANCELED_BEFORE_DISPATCH"):
         connection.execute(
-            "INSERT INTO effect_closure_proof VALUES (3, 'NEVER_DISPATCHED', ?)",
+            """
+            UPDATE venue_effect
+               SET disposition = 'CLOSED',
+                   closure_proof_kind = 'NEVER_DISPATCHED',
+                   closure_proof_digest = ?,
+                   closure_proof_evidence_id = 3
+             WHERE effect_id = 3
+            """,
             ("73" * 32,),
         )
 
@@ -1077,37 +1646,62 @@ def test_acceptance_state_machine_gates_late_evidence(
     )
     connection.execute(
         "INSERT INTO acceptance_evidence (evidence_id, acceptance_set_id,"
-        " evidence_kind, evidence_digest, evidence_ordinal)"
-        " VALUES (1, 1, 'OBSERVATION', ?, 1)",
+        " effect_id, evidence_kind, proof_kind, evidence_digest, evidence_ordinal)"
+        " VALUES (1, 1, 1, 'OBSERVATION', NULL, ?, 1)",
         ("88" * 32,),
     )
     connection.execute(
-        """
-        INSERT INTO dispatch_claim (claim_id, effect_id, claim_ordinal, resolved_kind)
-        VALUES (1, 1, 1, 'DISPATCHED')
-        """
+        "INSERT INTO dispatch_claim (claim_id, effect_id, claim_ordinal)"
+        " VALUES (1, 1, 1)"
     )
+    assert connection.execute(
+        "SELECT lifecycle_state FROM venue_effect WHERE effect_id = 1"
+    ).fetchone() == ("DISPATCH_CLAIMED",)
     connection.execute(
-        "INSERT INTO effect_closure_proof VALUES (1, 'ADAPTER_COMPLETE', ?)",
+        """
+        INSERT INTO acceptance_evidence (
+            evidence_id, acceptance_set_id, effect_id, evidence_kind,
+            proof_kind, evidence_digest, evidence_ordinal
+        ) VALUES (2, 1, 1, 'CLOSURE_PROOF',
+                  'CONTRACT_COMPLETE_RESPONSE', ?, 2)
+        """,
         ("74" * 32,),
     )
-    connection.execute("UPDATE venue_effect SET disposition = 'CLOSED'")
+    connection.execute(
+        """
+        UPDATE venue_effect
+           SET disposition = 'CLOSED',
+               closure_proof_kind = 'CONTRACT_COMPLETE_RESPONSE',
+               closure_proof_digest = ?,
+               closure_proof_evidence_id = 2,
+               closure_proof_claim_id = 1
+         WHERE effect_id = 1
+        """,
+        ("74" * 32,),
+    )
 
     # EC-2: after CLOSED, only invalidation evidence may append.
     with pytest.raises(sqlite3.IntegrityError):
         connection.execute(
             "INSERT INTO acceptance_evidence (evidence_id, acceptance_set_id,"
-            " evidence_kind, evidence_digest, evidence_ordinal)"
-            " VALUES (2, 1, 'OBSERVATION', ?, 2)",
+            " effect_id, evidence_kind, proof_kind, evidence_digest, evidence_ordinal)"
+            " VALUES (3, 1, 1, 'OBSERVATION', NULL, ?, 3)",
             ("89" * 32,),
         )
     connection.execute(
         "INSERT INTO acceptance_evidence (evidence_id, acceptance_set_id,"
-        " evidence_kind, evidence_digest, evidence_ordinal)"
-        " VALUES (3, 1, 'INVALIDATION', ?, 3)",
+        " effect_id, evidence_kind, proof_kind, evidence_digest, evidence_ordinal)"
+        " VALUES (4, 1, 1, 'INVALIDATION', NULL, ?, 4)",
         ("90" * 32,),
     )
     connection.execute("UPDATE venue_effect SET disposition = 'INVALIDATED'")
+    with pytest.raises(sqlite3.IntegrityError):
+        connection.execute(
+            "INSERT INTO acceptance_evidence (evidence_id, acceptance_set_id,"
+            " effect_id, evidence_kind, proof_kind, evidence_digest, evidence_ordinal)"
+            " VALUES (5, 1, 1, 'OBSERVATION', NULL, ?, 5)",
+            ("91" * 32,),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1133,22 +1727,131 @@ def test_direct_head_lookups_use_indexes_not_scans(tmp_path: object) -> None:
         )
         predecessor = index
 
-    head_plan = connection.execute(
-        """
-        EXPLAIN QUERY PLAN SELECT fact_id FROM execution_fact_head
-        WHERE root_fill_key_id = ?
-        """,
-        (root_id,),
-    ).fetchall()
-    head_text = " ".join(str(row[-1]) for row in head_plan)
-    assert "INTEGER PRIMARY KEY" in head_text
-    assert "SCAN execution_fact" not in head_text
+    connection.execute(
+        "INSERT INTO kernel_checkpoint VALUES (?, 50, ?, 1)",
+        (_DEFAULT_GENERATION_ID, "75" * 32),
+    )
+    connection.execute(
+        "INSERT INTO symbol_controller VALUES (1, ?, ?, ?, 7, 0, 1, ?)",
+        (
+            _DEFAULT_GENERATION_ID,
+            _DEFAULT_EXECUTION_PROFILE_ID,
+            "12" * 32,
+            "9b" * 32,
+        ),
+    )
+    _insert_open_effect(connection, 1)
+    _insert_venue_owner(connection, owner_external="owner-1", effect_id=1)
+    connection.execute("INSERT INTO acceptance_set VALUES (1, 1)")
+    connection.execute("INSERT INTO dispatch_claim VALUES (1, 1, 1)")
+    connection.execute(
+        "INSERT INTO closure_chain VALUES (1, 1, 'owner-1', 1, 1, 'TERMINAL_LEG', NULL)"
+    )
+    stream_id = "85" * 32
+    connection.execute(
+        "INSERT INTO market_stream_authority VALUES"
+        " (?, 1, ?, ?, 'session-1', 'SEQUENCED')",
+        (stream_id, _DEFAULT_GENERATION_ID, _DEFAULT_MARKET_SOURCE_PROFILE_ID),
+    )
+    connection.execute(
+        "INSERT INTO market_cursor VALUES"
+        " (?, 1, ?, ?, 'session-1', 'SEQUENCED', 20, 50)",
+        (stream_id, _DEFAULT_GENERATION_ID, _DEFAULT_MARKET_SOURCE_PROFILE_ID),
+    )
+    connection.execute(
+        "INSERT INTO protection_authority VALUES"
+        " (1, ?, ?, 'session-1', 'SEQUENCED', ?, 1)",
+        (stream_id, _DEFAULT_MARKET_SOURCE_PROFILE_ID, "86" * 32),
+    )
+
+    query_manifest = (
+        (
+            "checkpoint",
+            "SELECT checkpoint_sha256 FROM kernel_checkpoint"
+            " WHERE application_generation_id = ?",
+            (_DEFAULT_GENERATION_ID,),
+            ("75" * 32,),
+        ),
+        (
+            "controller",
+            "SELECT aggregate_quantity FROM symbol_controller WHERE scope_id = ?",
+            (scope_id,),
+            (7,),
+        ),
+        (
+            "live-generation",
+            "SELECT acquisition_generation_id FROM acquisition_generation"
+            " WHERE scope_id = ? AND status = 'LIVE'",
+            (scope_id,),
+            ("12" * 32,),
+        ),
+        (
+            "root-route",
+            "SELECT root_fill_key_id FROM root_fill"
+            " WHERE execution_profile_id = ? AND root_fill_external = ?",
+            (_DEFAULT_EXECUTION_PROFILE_ID, "root-fill-A"),
+            (root_id,),
+        ),
+        (
+            "fact-head",
+            "SELECT fact_id FROM execution_fact_head WHERE root_fill_key_id = ?",
+            (root_id,),
+            (50,),
+        ),
+        (
+            "owner",
+            "SELECT effect_id FROM venue_identity_owner"
+            " WHERE scope_id = ? AND owner_external = ?",
+            (scope_id, "owner-1"),
+            (1,),
+        ),
+        (
+            "acceptance",
+            "SELECT acceptance_set_id FROM acceptance_set WHERE effect_id = ?",
+            (1,),
+            (1,),
+        ),
+        (
+            "claim",
+            "SELECT claim_id FROM dispatch_claim WHERE effect_id = ?",
+            (1,),
+            (1,),
+        ),
+        (
+            "closure-head",
+            "SELECT closure_id FROM closure_chain"
+            " WHERE scope_id = ? AND owner_external = ?"
+            " ORDER BY ordinal DESC LIMIT 1",
+            (scope_id, "owner-1"),
+            (1,),
+        ),
+        (
+            "protection",
+            "SELECT active_stream_generation_id FROM protection_authority"
+            " WHERE scope_id = ?",
+            (scope_id,),
+            (stream_id,),
+        ),
+        (
+            "market-cursor",
+            "SELECT fixed_cursor_ordinal FROM market_cursor"
+            " WHERE stream_generation_id = ?",
+            (stream_id,),
+            (20,),
+        ),
+    )
+    for label, query, parameters, expected in query_manifest:
+        plan_rows = connection.execute(
+            f"EXPLAIN QUERY PLAN {query}", parameters
+        ).fetchall()
+        plan_text = " ".join(str(row[-1]) for row in plan_rows)
+        assert "SEARCH" in plan_text, (label, plan_text)
+        assert "SCAN" not in plan_text, (label, plan_text)
+        assert connection.execute(query, parameters).fetchone() == expected
 
     open_plan = connection.execute(
-        """
-        EXPLAIN QUERY PLAN SELECT effect_id FROM venue_effect
-        WHERE scope_id = ? AND disposition = 'OPEN'
-        """,
+        "EXPLAIN QUERY PLAN SELECT effect_id FROM venue_effect"
+        " WHERE scope_id = ? AND disposition = 'OPEN'",
         (scope_id,),
     ).fetchall()
     open_text = " ".join(str(row[-1]) for row in open_plan)
@@ -1199,19 +1902,21 @@ def _insert_profile_with_event_origin(
     connection.execute(
         """
         INSERT INTO execution_connection_profile (
-            connection_profile_id, broker_provider, environment_class,
+            connection_profile_id, application_generation,
+            broker_provider, environment_class,
             account_identity, trade_command_origin, order_query_origin,
             order_event_origin, credential_handle_fingerprint,
             adapter_contract_version, capability_profile_sha256,
             deployment_identity, profile_commitment_sha256
         )
-        VALUES (?, 'ALPACA', 'PAPER', ?,
+        VALUES (?, ?, 'ALPACA', 'PAPER', ?,
                 'https://trade.example.com',
                 'https://query.example.com',
                 ?, ?, '1.2.3', ?, ?, ?)
         """,
         (
             profile_id,
+            f"generation-{profile_id[:8]}",
             "aa" * 32,
             order_event_origin,
             "bb" * 32,
@@ -1241,6 +1946,12 @@ def test_sqlite_origin_checks_accept_canonical_and_refuse_every_mutant(
         "space": "https://stream.example.com path",
         "second-double-slash": "https://stream.example.com//x",
         "empty-origin": "",
+        "leading-hyphen": "https://-bad.example.com",
+        "empty-label": "https://a..b",
+        "leading-zero-port": "https://stream.example.com:01",
+        "oversized-port": "https://stream.example.com:65536",
+        "ipv4": "https://127.0.0.1",
+        "trailing-dot": "https://stream.example.com.",
     }
 
     accepted_profile = "cd" * 32
@@ -1272,7 +1983,8 @@ def _insert_profile_with_origin_override(
     value: str,
 ) -> None:
     columns = (
-        "connection_profile_id, broker_provider, environment_class,"
+        "connection_profile_id, application_generation,"
+        " broker_provider, environment_class,"
         " account_identity, trade_command_origin, order_query_origin,"
         " order_event_origin, credential_handle_fingerprint,"
         " adapter_contract_version, capability_profile_sha256,"
@@ -1285,6 +1997,7 @@ def _insert_profile_with_origin_override(
     }
     values = {
         "connection_profile_id": profile_id,
+        "application_generation": f"generation-{profile_id[:8]}",
         "broker_provider": "ALPACA",
         "environment_class": "PAPER",
         "account_identity": "aa" * 32,
@@ -1298,7 +2011,13 @@ def _insert_profile_with_origin_override(
     values["order_query_origin"] = canonical["order_query_origin"]
     values["order_event_origin"] = canonical["order_event_origin"]
 
-    if column == "source_origin":
+    if column in {"source_origin", "normalization_contract_version"}:
+        source_origin = "https://feed.example.com"
+        normalization_version = "0.1.0"
+        if column == "source_origin":
+            source_origin = value
+        else:
+            normalization_version = value
         connection.execute(
             """
             INSERT INTO market_data_source_profile (
@@ -1308,11 +2027,12 @@ def _insert_profile_with_origin_override(
                 data_capability_profile_sha256,
                 source_profile_commitment_sha256
             )
-            VALUES (?, 'ALPACA', 'iex-feed', ?, 'IEX', '0.1.0', ?, ?)
+            VALUES (?, 'ALPACA', 'iex-feed', ?, 'IEX', ?, ?, ?)
             """,
             (
                 profile_id,
-                value,
+                source_origin,
+                normalization_version,
                 "ff" * 32,
                 ("b7" * 15 + profile_id[:2] + "c8" * 16),
             ),
@@ -1323,11 +2043,12 @@ def _insert_profile_with_origin_override(
 
     connection.execute(
         f"INSERT INTO execution_connection_profile ({columns}) VALUES"
-        " (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        " (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         tuple(
             values[name]
             for name in (
                 "connection_profile_id",
+                "application_generation",
                 "broker_provider",
                 "environment_class",
                 "account_identity",
@@ -1370,6 +2091,31 @@ def test_sqlite_rejects_uppercase_scheme_on_every_origin_column(
         )
 
 
+@pytest.mark.parametrize(
+    ("column", "value"),
+    [
+        ("adapter_contract_version", "01.2.3"),
+        ("adapter_contract_version", "1.2.3.4"),
+        ("adapter_contract_version", "1..3"),
+        ("normalization_contract_version", "00.1.0"),
+        ("normalization_contract_version", "0.1.0.1"),
+    ],
+)
+def test_sqlite_refuses_noncanonical_profile_versions(
+    tmp_path: object,
+    column: str,
+    value: str,
+) -> None:
+    connection = _installed_connection(tmp_path)
+    with pytest.raises(sqlite3.IntegrityError, match="version"):
+        _insert_profile_with_origin_override(
+            connection,
+            profile_id=(value.encode().hex() + "ab" * 32)[:64],
+            column=column,
+            value=value,
+        )
+
+
 # ---------------------------------------------------------------------------
 # FR-3 / FR-4 / FR-6 same-scope relational bindings: database-level negative
 # controls proving cross-scope substitutions are structurally refused.
@@ -1379,17 +2125,22 @@ def _seed_two_scopes(connection: sqlite3.Connection) -> None:
     """Two deployment generations, two scopes, one live acquisition gen each."""
 
     generation_a = _insert_profiles_and_generation(connection)
-    connection.execute(
-        "INSERT INTO application_generation VALUES (?, ?, ?, 2)",
-        ("56" * 32, "cd" * 32, "ef" * 32),
-    )
+    generation_b = _insert_second_profiles_and_generation(connection)
     connection.execute(
         """
-        INSERT INTO acquisition_scope VALUES
-        (1, ?, 'alpaca', 'paper', 'account-1', 'AAPL'),
-        (2, ?, 'alpaca', 'paper', 'account-1', 'MSFT')
+        INSERT INTO acquisition_scope (
+            scope_id, application_generation_id, execution_profile_id,
+            symbol_text
+        ) VALUES
+        (1, ?, ?, 'AAPL'),
+        (2, ?, ?, 'MSFT')
         """,
-        (generation_a, "56" * 32),
+        (
+            generation_a,
+            _DEFAULT_EXECUTION_PROFILE_ID,
+            generation_b,
+            "67" * 32,
+        ),
     )
     connection.execute(
         """
@@ -1408,21 +2159,26 @@ def test_controller_cannot_bind_generation_from_another_scope(
     _seed_two_scopes(connection)
 
     stored = connection.execute(
-        "INSERT INTO symbol_controller VALUES (1, ?, 0, 0, 1, 0, 1, ?)",
-        ("12" * 32, "9b" * 32),
+        "INSERT INTO symbol_controller VALUES (1, ?, ?, ?, 0, 0, 1, ?)",
+        (
+            _DEFAULT_GENERATION_ID,
+            _DEFAULT_EXECUTION_PROFILE_ID,
+            "12" * 32,
+            "9b" * 32,
+        ),
     ).rowcount
     assert stored == 1
 
     with pytest.raises(sqlite3.IntegrityError, match="live generation"):
         connection.execute(
-            "INSERT INTO symbol_controller VALUES (2, ?, 0, 0, 1, 0, 2, ?)",
-            ("12" * 32, "9b" * 32),
+            "INSERT INTO symbol_controller VALUES (2, ?, ?, ?, 0, 0, 1, ?)",
+            ("56" * 32, "67" * 32, "12" * 32, "9b" * 32),
         )
 
     with pytest.raises(sqlite3.IntegrityError, match="compatible"):
         connection.execute(
-            "INSERT INTO symbol_controller VALUES (2, ?, 0, 0, 1, 0, 2, ?)",
-            ("34" * 32, "9b" * 32),
+            "INSERT INTO symbol_controller VALUES (2, ?, ?, ?, 0, 0, 1, ?)",
+            ("56" * 32, "67" * 32, "34" * 32, "9b" * 32),
         )
 
     with pytest.raises(sqlite3.IntegrityError, match="remains LIVE"):
@@ -1451,16 +2207,17 @@ def test_root_fill_cannot_be_owned_by_generation_of_another_scope(
     connection = _installed_connection(tmp_path)
     _seed_two_scopes(connection)
 
-    stored = connection.execute(
-        "INSERT INTO root_fill VALUES (1, 1, ?, 'r-A', 10, 10000, 0, '1', -2, 0)",
-        ("12" * 32,),
-    ).rowcount
-    assert stored == 1
+    assert _insert_root(connection, key_id=1, scope_id=1, external="r-A") == 1
 
     with pytest.raises(sqlite3.IntegrityError, match="FOREIGN KEY"):
-        connection.execute(
-            "INSERT INTO root_fill VALUES (2, 2, ?, 'r-B', 10, 10000, 0, '1', -2, 0)",
-            ("12" * 32,),
+        _insert_root(
+            connection,
+            key_id=2,
+            scope_id=2,
+            external="r-B",
+            application_generation_id="56" * 32,
+            execution_profile_id="67" * 32,
+            owner_generation_id="12" * 32,
         )
 
 
@@ -1469,27 +2226,19 @@ def test_execution_fact_cannot_reference_root_of_another_scope(
 ) -> None:
     connection = _installed_connection(tmp_path)
     _seed_two_scopes(connection)
-    connection.execute(
-        "INSERT INTO root_fill VALUES (1, 1, ?, 'r-A', 10, 10000, 0, '1', -2, 0)",
-        ("12" * 32,),
-    )
+    _insert_root(connection, key_id=1, scope_id=1, external="r-A")
 
     # Run the cross-scope mutant before the canonical FILL exists so the
     # exact root/scope foreign key, not one-FILL-per-root uniqueness, owns it.
     with pytest.raises(sqlite3.IntegrityError, match="FOREIGN KEY"):
-        connection.execute(
-            """
-            INSERT INTO execution_fact (
-                fact_id, scope_id, application_generation_id,
-                broker_text, environment_text, account_text,
-                root_fill_key_id, source_event_id, kind,
-                quantity, price_units, scale_sign, scale_digits,
-                scale_exponent, predecessor_fact_id, fact_ordinal
-            )
-            VALUES (2, 2, ?, 'alpaca', 'paper', 'account-1',
-                    1, 'evt-x', 'FILL', 5, 10000, 0, '1', -2, NULL, 2)
-            """,
-            ("56" * 32,),
+        _insert_fill(
+            connection,
+            fact_id=2,
+            root_id=1,
+            event="evt-x",
+            scope_id=2,
+            generation_id="56" * 32,
+            execution_profile_id="67" * 32,
         )
 
     # Positive control: same-scope root reference is accepted.
@@ -1511,19 +2260,18 @@ def test_venue_effect_cannot_reference_root_of_another_scope(
 ) -> None:
     connection = _installed_connection(tmp_path)
     _seed_two_scopes(connection)
-    connection.execute(
-        "INSERT INTO root_fill VALUES (1, 1, ?, 'r-A', 10, 10000, 0, '1', -2, 0)",
-        ("12" * 32,),
-    )
+    _insert_root(connection, key_id=1, scope_id=1, external="r-A")
 
-    stored = connection.execute(
-        "INSERT INTO venue_effect VALUES (1, 1, 1, 'o-1', 'OPEN', 1)"
-    ).rowcount
-    assert stored == 1
+    assert _insert_open_effect(connection, 1) == 1
 
     with pytest.raises(sqlite3.IntegrityError, match="FOREIGN KEY"):
-        connection.execute(
-            "INSERT INTO venue_effect VALUES (2, 2, 1, 'o-2', 'OPEN', 2)"
+        _insert_open_effect(
+            connection,
+            2,
+            root_id=1,
+            scope_id=2,
+            application_generation_id="56" * 32,
+            execution_profile_id="67" * 32,
         )
 
 
@@ -1584,19 +2332,19 @@ def test_acquisition_predecessor_must_be_same_scope_and_immediate(
     connection.execute(
         "INSERT INTO acquisition_generation VALUES"
         " (?, 1, 'RETIRED_UNSERVING', 2, ?, ?, ?)",
-        ("bb" * 32, "12" * 32, "7c" * 32, "7d" * 32),
+        ("bb" * 32, "12" * 32, "7c" * 32, "9b" * 32),
     )
     with pytest.raises(sqlite3.IntegrityError, match="immediate prior"):
         connection.execute(
             "INSERT INTO acquisition_generation VALUES"
             " (?, 1, 'RETIRED_UNSERVING', 4, ?, ?, ?)",
-            ("cc" * 32, "12" * 32, "7e" * 32, "7f" * 32),
+            ("cc" * 32, "12" * 32, "7e" * 32, "9b" * 32),
         )
 
     # Positive control: the immediate same-scope successor is accepted and
     # may hold LIVE authority once its predecessor retired.
     stored = connection.execute(
         "INSERT INTO acquisition_generation VALUES (?, 1, 'LIVE', 3, ?, ?, ?)",
-        ("dd" * 32, "bb" * 32, "6a" * 32, "6b" * 32),
+        ("dd" * 32, "bb" * 32, "6a" * 32, "9b" * 32),
     ).rowcount
     assert stored == 1
