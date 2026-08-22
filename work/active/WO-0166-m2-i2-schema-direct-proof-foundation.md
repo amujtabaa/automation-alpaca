@@ -146,6 +146,32 @@ Every database opened by the schema tests was a fresh file under pytest `tmp_pat
 configured database, migration, runtime composition, credential, broker/network call, order,
 promotion, or merge was performed. Fresh exact-commit review remains the next gate before closeout.
 
+### First review verdict and second RED
+
+Three fresh adversarial seats returned `BLOCK` on exact commit
+`28c2c43deaaa5721c58c1a30d17d149486167de0` with five P0 and three P1 findings. The preserved
+review result is `work/review/REV-0071/result.md`. Ten isolated second-round controls failed against
+that candidate before repair: revision order/side drift, negative broker-truth rollback, root-bound
+incomplete effects, non-atomic invalidation, cross-scope owner reuse, nonflat protection transfer,
+default-connection `INSERT OR REPLACE`, aggregate query scan, and unaccounted global sequence gaps.
+
+### Second root remediation candidate
+
+Codex corrected those authority surfaces at their relational roots. Revisions now preserve exact
+broker-authoritative predecessor scope; signed negative broker truth is retained while a sticky
+controller integrity state quarantines serving; requested effects are rootless and carry complete
+immutable M1 scope; invalidation names an exact immutable owner/observation and atomically advances
+the canonical effect; owner identity is profile-global; stream, cursor, and protection authority
+retain exact acquisition-generation/mandate routes; nonflat protection transfer is refused; and
+conflicting inserts are blocked even after reopening with default recursive-trigger behavior.
+
+The replacement candidate is commit `dbd2a086fe861047e5df49cdd65a4ded33c7f758`, tree
+`c82dc44bae00aa3df5932991ef38a3839b91f85d`, with `SCHEMA_DDL` exactly `93,860` UTF-8 bytes and
+SHA-256 `8bfbfaa30302d3c6be3266b02e3bc19bc6b3c72484fbd9a324aba0561e912ed0`. Fresh evidence at that
+identity: 60 focused schema tests and all 1,668 collected `tests/execution_core` tests passed on
+CPython 3.12.13; Ruff, formatting, mypy over 91 source files, six import contracts, scope, and
+whitespace checks passed. `request-addendum.md` opens the required fresh re-review.
+
 ## Functional requirements
 
 - FR-1: The schema MUST bind one immutable application generation to one selected execution profile and a
