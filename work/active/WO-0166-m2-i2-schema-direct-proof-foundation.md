@@ -245,6 +245,32 @@ the catalog fingerprint also matched on CPython 3.14.5 / SQLite 3.50.4; Ruff, fo
 91 source files, six import contracts, scope, and whitespace checks passed. `request-final-02.md`
 opens the next exact-commit review.
 
+### Final review 02 verdict and Codex root repair
+
+The review of `fead0234c4428678c673b9a6e34e632116030281` returned combined `BLOCK`, P0=2,
+P1=2. `result-round5.md` preserves four live-reproduced defects: negative retired facts could
+retain HARD_BAIL SELL authority; HARD_BAIL was not bound to exact protection or bounded by current
+long quantity; retired exact no-op revisions staled valid successor work; and valid fact-driven
+flat recovery could not release the mixed fence.
+
+Codex corrected the semantic roots. Negative aggregate now outranks mixed recovery. HARD_BAIL
+requires exact current protection/live-generation authority and a positive SELL quantity no larger
+than the aggregate long position at effect creation and claim. Exact retired no-op revisions still
+advance immutable fact/root lineage but not controller currentness. Mixed recovery releases only
+at exact flat after a non-no-op fact routed to the current live generation, while retired/no-op
+facts cannot relax the fence.
+
+The replacement source/test candidate is commit
+`9841bae870c462b36ec92d0dd588701d5c7125f6`, tree
+`7e34a0d14e405a75d25befd9af137fb17049f461`, with `SCHEMA_DDL` exactly `122,873`
+UTF-8 bytes and SHA-256 `e279eae170bf6ee572c2b67b3e67ce862739a2a4768ede54383e590e86a61609`.
+Its installed-catalog fingerprint is
+`65dfedd48abfb25faf1ae1e758bccbb2738330370d1acc9df16b480add09c000`. Fresh evidence:
+75 schema tests and all 1,683 collected `tests/execution_core` tests passed on CPython 3.12.13;
+the catalog identity matched on CPython 3.14.5 / SQLite 3.50.4; Ruff, formatting, mypy over 91
+source files, 32 import-boundary tests, six import contracts, scope, ledger, and whitespace checks
+passed. `request-final-03.md` opens fresh exact-commit review.
+
 ## Functional requirements
 
 - FR-1: The schema MUST bind one immutable application generation to one selected execution profile and a
