@@ -33,8 +33,19 @@ from app.execution_core.persistence.schema import (
 
 
 _GATE_DIGEST: str | None = (
-    "b49ab05a33ccff4265e780d0b6d89a862475ddd279287d5ffcb959bcace4c1c6"
+    "f34a72ea85f4b5c7483510fd3f83a135a78a488b8e7c20f5972cbf2a8b83abb9"
 )
+
+_OPEN_CONNECTIONS: list[sqlite3.Connection] = []
+
+
+@pytest.fixture(autouse=True)
+def _close_tracked_connections():
+    """Close every tracked temporary database before teardown ends."""
+    yield
+    while _OPEN_CONNECTIONS:
+        _OPEN_CONNECTIONS.pop().close()
+
 
 _FORBIDDEN_COLUMN_FRAGMENTS = (
     "identifier",
@@ -82,6 +93,7 @@ def _connection(tmp_path: object) -> sqlite3.Connection:
     _require_gate_open()
     connection = sqlite3.connect(tmp_path / "m2-i2-gate.db")  # type: ignore[arg-type]
     connection.execute("PRAGMA foreign_keys = ON")
+    _OPEN_CONNECTIONS.append(connection)
     return connection
 
 
@@ -509,19 +521,22 @@ def test_revision_predecessor_must_exist_inside_same_root(
         connection, fact_id=1, root_id=root_a, event="evt-1", scope_id=scope_id
     )
 
-    # Gap mutant: declared predecessor id does not exist.
-    with pytest.raises(sqlite3.IntegrityError):
+    # Gap mutant: declared predecessor id does not exist. Attribution:
+    # the composite lineage foreign key, not any CHECK or trigger.
+    with pytest.raises(sqlite3.IntegrityError, match="FOREIGN KEY"):
         connection.execute(
             """
             INSERT INTO execution_fact (
-                fact_id, scope_id, root_fill_key_id, source_event_id, kind,
+                fact_id, scope_id, application_generation_id,
+                broker_text, environment_text, account_text,
+                root_fill_key_id, source_event_id, kind,
                 quantity, price_units, scale_sign, scale_digits,
                 scale_exponent, predecessor_fact_id, fact_ordinal
             )
-            VALUES (9, ?, ?, 'evt-x', 'TRADE_CORRECT', 7, 10100, 0, '1',
-                    -2, 999, 9)
+            VALUES (9, ?, ?, ?, ?, ?, 999, 'evt-x', 'TRADE_CORRECT',
+                    7, 10100, 0, '1', -2, 999, 9)
             """,
-            (scope_id, root_a),
+            (scope_id, "ab" * 32, "alpaca", "paper", "account-1"),
         )
 
     # Cross-root mutant: predecessor exists but belongs to another root.
@@ -529,7 +544,7 @@ def test_revision_predecessor_must_exist_inside_same_root(
     _insert_fill(
         connection, fact_id=2, root_id=root_b, event="evt-2", scope_id=scope_id
     )
-    with pytest.raises(sqlite3.IntegrityError):
+    with pytest.raises(sqlite3.IntegrityError, match="FOREIGN KEY"):
         _insert_bust(
             connection,
             fact_id=3,
@@ -559,6 +574,7 @@ def test_closure_chain_rejects_gap_branch_and_cross_owner(
     def _fresh(name: str) -> tuple[sqlite3.Connection, int]:
         connection = sqlite3.connect(tmp_path / name)
         connection.execute("PRAGMA foreign_keys = ON")
+        _OPEN_CONNECTIONS.append(connection)
         install_schema(connection, approved_ddl_sha256=_require_gate_open())
         scope_id = _seed_scope_with_live_generation(connection)
         _insert_root(connection, scope_id=scope_id)
@@ -611,11 +627,19 @@ def test_closure_chain_rejects_gap_branch_and_cross_owner(
     with pytest.raises(sqlite3.IntegrityError, match="gap-free"):
         _append(gapped, 2, gap_scope, "owner-A", 3, 2, 1)
 
-    # Branch mutant: a second successor of the same immediate predecessor.
+    # Branch mutant: a second ordinal-2 successor of the same ordinal-1
+    # predecessor. The no-gap rule passes it; only the single-successor
+    # constraint can refuse it.
     branched, branch_scope = _fresh("branch.db")
     _append(branched, 2, branch_scope, "owner-A", 2, 2, 1)
+    with pytest.raises(sqlite3.IntegrityError, match="predecessor_closure_id"):
+        _append(branched, 3, branch_scope, "owner-A", 2, 3, 1)
+
+    # Second root mutant: a second predecessorless row for the same owner is
+    # refused by the single-root constraint.
+    rooted, root_scope = _fresh("root.db")
     with pytest.raises(sqlite3.IntegrityError):
-        _append(branched, 3, branch_scope, "owner-A", 3, 3, 1)
+        _append(rooted, 9, root_scope, "owner-A", 1, 3, None)
 
     # Cross-owner mutant: predecessor belongs to another owner string; the
     # composite foreign key cannot resolve it within this owner's chain.
@@ -935,3 +959,312 @@ def test_sqlite_origin_checks_accept_canonical_and_refuse_every_mutant(
         "SELECT count(*) FROM execution_connection_profile"
     ).fetchone()
     assert remaining is not None and remaining[0] == 1
+
+
+def _insert_profile_with_origin_override(
+    connection: sqlite3.Connection,
+    *,
+    profile_id: str,
+    column: str,
+    value: str,
+) -> None:
+    columns = (
+        "connection_profile_id, broker_provider, environment_class,"
+        " account_identity, trade_command_origin, order_query_origin,"
+        " order_event_origin, credential_handle_fingerprint,"
+        " adapter_contract_version, capability_profile_sha256,"
+        " deployment_identity, profile_commitment_sha256"
+    )
+    canonical = {
+        "trade_command_origin": "https://trade.example.com",
+        "order_query_origin": "https://query.example.com",
+        "order_event_origin": "https://stream.example.com",
+    }
+    values = {
+        "connection_profile_id": profile_id,
+        "broker_provider": "ALPACA",
+        "environment_class": "PAPER",
+        "account_identity": "aa" * 32,
+        "credential_handle_fingerprint": "bb" * 32,
+        "adapter_contract_version": "1.2.3",
+        "capability_profile_sha256": "cc" * 32,
+        "deployment_identity": "dd" * 32,
+        "profile_commitment_sha256": ("f0" * 15 + profile_id[:2] + "ee" * 16),
+    }
+    values["trade_command_origin"] = canonical["trade_command_origin"]
+    values["order_query_origin"] = canonical["order_query_origin"]
+    values["order_event_origin"] = canonical["order_event_origin"]
+
+    if column == "source_origin":
+        connection.execute(
+            """
+            INSERT INTO market_data_source_profile (
+                market_source_profile_id, provider, environment_or_feed,
+                source_origin, entitlement_class,
+                normalization_contract_version,
+                data_capability_profile_sha256,
+                source_profile_commitment_sha256
+            )
+            VALUES (?, 'ALPACA', 'iex-feed', ?, 'IEX', '0.1.0', ?, ?)
+            """,
+            (
+                profile_id,
+                value,
+                "ff" * 32,
+                ("b7" * 15 + profile_id[:2] + "c8" * 16),
+            ),
+        )
+        return
+
+    values[column] = value
+
+    connection.execute(
+        f"INSERT INTO execution_connection_profile ({columns}) VALUES"
+        " (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        tuple(
+            values[name]
+            for name in (
+                "connection_profile_id",
+                "broker_provider",
+                "environment_class",
+                "account_identity",
+                "trade_command_origin",
+                "order_query_origin",
+                "order_event_origin",
+                "credential_handle_fingerprint",
+                "adapter_contract_version",
+                "capability_profile_sha256",
+                "deployment_identity",
+                "profile_commitment_sha256",
+            )
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    "column",
+    [
+        "trade_command_origin",
+        "order_query_origin",
+        "order_event_origin",
+        "source_origin",
+    ],
+)
+def test_sqlite_rejects_uppercase_scheme_on_every_origin_column(
+    tmp_path: object,
+    column: str,
+) -> None:
+    """LIKE folds ASCII case; the GLOB anchor must not."""
+
+    connection = _installed_connection(tmp_path)
+
+    with pytest.raises(sqlite3.IntegrityError):
+        _insert_profile_with_origin_override(
+            connection,
+            profile_id="97" * 32,
+            column=column,
+            value="HTTPS://stream.example.com",
+        )
+
+
+# ---------------------------------------------------------------------------
+# FR-3 / FR-4 / FR-6 same-scope relational bindings: database-level negative
+# controls proving cross-scope substitutions are structurally refused.
+
+
+def _seed_two_scopes(connection: sqlite3.Connection) -> None:
+    """Two deployment generations, two scopes, one live acquisition gen each."""
+
+    generation_a = _insert_profiles_and_generation(connection)
+    connection.execute(
+        "INSERT INTO application_generation VALUES (?, ?, ?, 2)",
+        ("56" * 32, "cd" * 32, "ef" * 32),
+    )
+    connection.execute(
+        """
+        INSERT INTO acquisition_scope VALUES
+        (1, ?, 'alpaca', 'paper', 'account-1', 'AAPL'),
+        (2, ?, 'alpaca', 'paper', 'account-1', 'MSFT')
+        """,
+        (generation_a, "56" * 32),
+    )
+    connection.execute(
+        """
+        INSERT INTO acquisition_generation VALUES
+        (?, 1, 'LIVE', 1, NULL, ?, ?),
+        (?, 2, 'LIVE', 1, NULL, ?, ?)
+        """,
+        ("12" * 32, "9a" * 32, "9b" * 32, "34" * 32, "8a" * 32, "8b" * 32),
+    )
+
+
+def test_controller_cannot_bind_generation_from_another_scope(
+    tmp_path: object,
+) -> None:
+    connection = _installed_connection(tmp_path)
+    _seed_two_scopes(connection)
+
+    stored = connection.execute(
+        "INSERT INTO symbol_controller VALUES (1, ?, 0, 0, 1, 0, 1)",
+        ("12" * 32,),
+    ).rowcount
+    assert stored == 1
+
+    with pytest.raises(sqlite3.IntegrityError, match="FOREIGN KEY"):
+        connection.execute(
+            "INSERT INTO symbol_controller VALUES (2, ?, 0, 0, 1, 0, 2)",
+            ("12" * 32,),
+        )
+
+
+def test_root_fill_cannot_be_owned_by_generation_of_another_scope(
+    tmp_path: object,
+) -> None:
+    connection = _installed_connection(tmp_path)
+    _seed_two_scopes(connection)
+
+    stored = connection.execute(
+        "INSERT INTO root_fill VALUES (1, 1, ?, 'r-A', 10, 10000, 0, '1', -2, 0)",
+        ("12" * 32,),
+    ).rowcount
+    assert stored == 1
+
+    with pytest.raises(sqlite3.IntegrityError, match="FOREIGN KEY"):
+        connection.execute(
+            "INSERT INTO root_fill VALUES (2, 2, ?, 'r-B', 10, 10000, 0, '1', -2, 0)",
+            ("12" * 32,),
+        )
+
+
+def test_execution_fact_cannot_reference_root_of_another_scope(
+    tmp_path: object,
+) -> None:
+    connection = _installed_connection(tmp_path)
+    _seed_two_scopes(connection)
+    connection.execute(
+        "INSERT INTO root_fill VALUES (1, 1, ?, 'r-A', 10, 10000, 0, '1', -2, 0)",
+        ("12" * 32,),
+    )
+
+    # Positive control: same-scope root reference is accepted.
+    assert (
+        _insert_fill(
+            connection,
+            fact_id=1,
+            root_id=1,
+            event="evt-ok",
+            scope_id=1,
+            generation_id="ab" * 32,
+        )
+        == 1
+    )
+
+    with pytest.raises(sqlite3.IntegrityError, match="FOREIGN KEY"):
+        connection.execute(
+            """
+            INSERT INTO execution_fact (
+                fact_id, scope_id, application_generation_id,
+                broker_text, environment_text, account_text,
+                root_fill_key_id, source_event_id, kind,
+                quantity, price_units, scale_sign, scale_digits,
+                scale_exponent, predecessor_fact_id, fact_ordinal
+            )
+            VALUES (2, 2, ?, 'alpaca', 'paper', 'account-1',
+                    1, 'evt-x', 'FILL', 5, 10000, 0, '1', -2, NULL, 2)
+            """,
+            ("56" * 32,),
+        )
+
+
+def test_venue_effect_cannot_reference_root_of_another_scope(
+    tmp_path: object,
+) -> None:
+    connection = _installed_connection(tmp_path)
+    _seed_two_scopes(connection)
+    connection.execute(
+        "INSERT INTO root_fill VALUES (1, 1, ?, 'r-A', 10, 10000, 0, '1', -2, 0)",
+        ("12" * 32,),
+    )
+
+    stored = connection.execute(
+        "INSERT INTO venue_effect VALUES (1, 1, 1, 'o-1', 'OPEN', 1)"
+    ).rowcount
+    assert stored == 1
+
+    with pytest.raises(sqlite3.IntegrityError, match="FOREIGN KEY"):
+        connection.execute(
+            "INSERT INTO venue_effect VALUES (2, 2, 1, 'o-2', 'OPEN', 2)"
+        )
+
+
+def test_closure_cannot_reference_effect_of_another_scope_or_owner(
+    tmp_path: object,
+) -> None:
+    connection = _installed_connection(tmp_path)
+    _seed_two_scopes(connection)
+    _insert_root(connection)
+    _insert_open_effect(connection, 1)
+    _insert_open_effect(connection, 2)
+
+    stored = connection.execute(
+        "INSERT INTO closure_chain VALUES (1, 1, 'owner-A', 1, 1, 'TERMINAL_LEG', NULL)"
+    ).rowcount
+    assert stored == 1
+
+    # Scope substitution: closure scoped to scope 2 referencing an effect
+    # owned by scope 1.
+    with pytest.raises(sqlite3.IntegrityError, match="FOREIGN KEY"):
+        connection.execute(
+            "INSERT INTO closure_chain VALUES (2, 2, 'owner-B', 1, 1,"
+            " 'TERMINAL_LEG', NULL)"
+        )
+
+    # Owner substitution within one scope: an owner-A chain cannot absorb
+    # another owner's closure lineage either.
+    connection.execute("INSERT INTO venue_effect VALUES (3, 1, 1, 'o-3', 'OPEN', 3)")
+    with pytest.raises(sqlite3.IntegrityError):
+        connection.execute(
+            "INSERT INTO closure_chain VALUES (3, 1, 'owner-B', 1, 3,"
+            " 'TERMINAL_LEG', 1)"
+        )
+
+
+def test_acquisition_predecessor_must_be_same_scope_and_immediate(
+    tmp_path: object,
+) -> None:
+    connection = _installed_connection(tmp_path)
+    _seed_two_scopes(connection)
+
+    # Other-scope predecessor is refused outright.
+    with pytest.raises(sqlite3.IntegrityError, match="immediate prior"):
+        connection.execute(
+            "INSERT INTO acquisition_generation VALUES"
+            " (?, 2, 'RETIRED_UNSERVING', 2, ?, ?, ?)",
+            ("aa" * 32, "12" * 32, "7a" * 32, "7b" * 32),
+        )
+
+    # Non-immediate ordinal inside the same scope is refused too.
+    connection.execute(
+        "UPDATE acquisition_generation SET status = 'RETIRED_UNSERVING'"
+        " WHERE acquisition_generation_id = ?",
+        ("12" * 32,),
+    )
+    connection.execute(
+        "INSERT INTO acquisition_generation VALUES"
+        " (?, 1, 'RETIRED_UNSERVING', 2, ?, ?, ?)",
+        ("bb" * 32, "12" * 32, "7c" * 32, "7d" * 32),
+    )
+    with pytest.raises(sqlite3.IntegrityError, match="immediate prior"):
+        connection.execute(
+            "INSERT INTO acquisition_generation VALUES"
+            " (?, 1, 'RETIRED_UNSERVING', 4, ?, ?, ?)",
+            ("cc" * 32, "12" * 32, "7e" * 32, "7f" * 32),
+        )
+
+    # Positive control: the immediate same-scope successor is accepted and
+    # may hold LIVE authority once its predecessor retired.
+    stored = connection.execute(
+        "INSERT INTO acquisition_generation VALUES (?, 1, 'LIVE', 3, ?, ?, ?)",
+        ("dd" * 32, "bb" * 32, "6a" * 32, "6b" * 32),
+    ).rowcount
+    assert stored == 1

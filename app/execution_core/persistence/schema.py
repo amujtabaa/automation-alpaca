@@ -66,7 +66,7 @@ CREATE TABLE execution_connection_profile (
         CHECK (length(account_identity) = 64 AND account_identity NOT GLOB '*[^0-9a-f]*'),
     trade_command_origin TEXT NOT NULL
         CHECK (
-            trade_command_origin LIKE 'https://%'
+            trade_command_origin GLOB 'https://*'
             AND length(trade_command_origin) >= 9
             AND length(trade_command_origin) <= 261
             AND substr(trade_command_origin, 9) NOT GLOB '*[^a-z0-9.:-]*'
@@ -77,7 +77,7 @@ CREATE TABLE execution_connection_profile (
         ),
     order_query_origin TEXT NOT NULL
         CHECK (
-            order_query_origin LIKE 'https://%'
+            order_query_origin GLOB 'https://*'
             AND length(order_query_origin) >= 9
             AND length(order_query_origin) <= 261
             AND substr(order_query_origin, 9) NOT GLOB '*[^a-z0-9.:-]*'
@@ -88,7 +88,7 @@ CREATE TABLE execution_connection_profile (
         ),
     order_event_origin TEXT NOT NULL
         CHECK (
-            order_event_origin LIKE 'https://%'
+            order_event_origin GLOB 'https://*'
             AND length(order_event_origin) >= 9
             AND length(order_event_origin) <= 261
             AND substr(order_event_origin, 9) NOT GLOB '*[^a-z0-9.:-]*'
@@ -128,7 +128,7 @@ CREATE TABLE market_data_source_profile (
     environment_or_feed TEXT NOT NULL CHECK (length(environment_or_feed) >= 1),
     source_origin TEXT NOT NULL
         CHECK (
-            source_origin LIKE 'https://%'
+            source_origin GLOB 'https://*'
             AND length(source_origin) >= 9
             AND length(source_origin) <= 261
             AND substr(source_origin, 9) NOT GLOB '*[^a-z0-9.:-]*'
@@ -192,6 +192,7 @@ CREATE TABLE acquisition_generation (
     emergency_compatibility_sha256 TEXT NOT NULL
         CHECK (length(emergency_compatibility_sha256) = 64 AND emergency_compatibility_sha256 NOT GLOB '*[^0-9a-f]*'),
     UNIQUE (scope_id, successor_ordinal),
+    UNIQUE (acquisition_generation_id, scope_id),
     CHECK ((predecessor_generation_id IS NULL) = (successor_ordinal = 1))
 );
 
@@ -210,24 +211,22 @@ CREATE TABLE kernel_checkpoint (
 
 CREATE TABLE symbol_controller (
     scope_id INTEGER PRIMARY KEY REFERENCES acquisition_scope (scope_id),
-    live_acquisition_generation_id TEXT
-        REFERENCES acquisition_generation (acquisition_generation_id),
+    live_acquisition_generation_id TEXT,
+
     aggregate_quantity INTEGER NOT NULL CHECK (aggregate_quantity >= 0),
     basis_numerator INTEGER NOT NULL CHECK (basis_numerator >= 0),
     basis_denominator INTEGER NOT NULL CHECK (basis_denominator >= 1),
     currentness_head_ordinal INTEGER NOT NULL CHECK (currentness_head_ordinal >= 0),
-    controller_version_ordinal INTEGER NOT NULL UNIQUE CHECK (controller_version_ordinal >= 1)
+    controller_version_ordinal INTEGER NOT NULL UNIQUE CHECK (controller_version_ordinal >= 1),
+    FOREIGN KEY (live_acquisition_generation_id, scope_id)
+        REFERENCES acquisition_generation (acquisition_generation_id, scope_id)
 );
-
-CREATE UNIQUE INDEX uq_one_controller_per_live_generation
-    ON symbol_controller (live_acquisition_generation_id)
-    WHERE live_acquisition_generation_id IS NOT NULL;
 
 CREATE TABLE root_fill (
     root_fill_key_id INTEGER PRIMARY KEY,
     scope_id INTEGER NOT NULL REFERENCES acquisition_scope (scope_id),
-    owner_generation_id TEXT NOT NULL
-        REFERENCES acquisition_generation (acquisition_generation_id),
+    owner_generation_id TEXT NOT NULL,
+
     root_fill_external TEXT NOT NULL CHECK (length(root_fill_external) >= 1),
     current_quantity INTEGER NOT NULL CHECK (current_quantity >= 0),
     price_units INTEGER NOT NULL,
@@ -240,7 +239,10 @@ CREATE TABLE root_fill (
         ),
     scale_exponent INTEGER NOT NULL,
     economics_head_ordinal INTEGER NOT NULL CHECK (economics_head_ordinal >= 0),
-    UNIQUE (scope_id, root_fill_external)
+    UNIQUE (scope_id, root_fill_external),
+    UNIQUE (root_fill_key_id, scope_id),
+    FOREIGN KEY (owner_generation_id, scope_id)
+        REFERENCES acquisition_generation (acquisition_generation_id, scope_id)
 );
 
 CREATE INDEX ix_root_fill_owner ON root_fill (owner_generation_id, root_fill_key_id);
@@ -253,7 +255,7 @@ CREATE TABLE execution_fact (
     broker_text TEXT NOT NULL CHECK (length(broker_text) >= 1),
     environment_text TEXT NOT NULL CHECK (length(environment_text) >= 1),
     account_text TEXT NOT NULL CHECK (length(account_text) >= 1),
-    root_fill_key_id INTEGER NOT NULL REFERENCES root_fill (root_fill_key_id),
+    root_fill_key_id INTEGER NOT NULL,
     source_event_id TEXT NOT NULL CHECK (length(source_event_id) >= 1),
     kind TEXT NOT NULL CHECK (kind IN ('FILL', 'TRADE_CORRECT', 'TRADE_BUST')),
     quantity INTEGER NOT NULL CHECK (quantity >= 0),
@@ -276,6 +278,8 @@ CREATE TABLE execution_fact (
     CHECK ((scale_sign IS NULL) = (scale_digits IS NULL)),
     CHECK ((scale_digits IS NULL) = (scale_exponent IS NULL)),
     CHECK (kind <> 'FILL' OR quantity > 0),
+    FOREIGN KEY (root_fill_key_id, scope_id)
+        REFERENCES root_fill (root_fill_key_id, scope_id),
     FOREIGN KEY (root_fill_key_id, predecessor_fact_id)
         REFERENCES execution_fact (root_fill_key_id, fact_id)
 );
@@ -292,11 +296,15 @@ CREATE INDEX ix_execution_fact_root_head ON execution_fact (root_fill_key_id, fa
 CREATE TABLE venue_effect (
     effect_id INTEGER PRIMARY KEY,
     scope_id INTEGER NOT NULL REFERENCES acquisition_scope (scope_id),
-    root_fill_key_id INTEGER NOT NULL REFERENCES root_fill (root_fill_key_id),
+    root_fill_key_id INTEGER NOT NULL,
+
     order_external TEXT NOT NULL CHECK (length(order_external) >= 1),
     disposition TEXT NOT NULL CHECK (disposition IN ('OPEN', 'CLOSED', 'INVALIDATED')),
     created_ordinal INTEGER NOT NULL UNIQUE CHECK (created_ordinal >= 1),
-    UNIQUE (scope_id, order_external)
+    UNIQUE (scope_id, order_external),
+    UNIQUE (effect_id, scope_id),
+    FOREIGN KEY (root_fill_key_id, scope_id)
+        REFERENCES root_fill (root_fill_key_id, scope_id)
 );
 
 CREATE INDEX ix_venue_effect_scope_state ON venue_effect (scope_id, disposition, effect_id);
@@ -336,11 +344,13 @@ CREATE TABLE closure_chain (
     scope_id INTEGER NOT NULL REFERENCES acquisition_scope (scope_id),
     owner_external TEXT NOT NULL CHECK (length(owner_external) >= 1),
     ordinal INTEGER NOT NULL CHECK (ordinal >= 1),
-    effect_id INTEGER NOT NULL REFERENCES venue_effect (effect_id),
+    effect_id INTEGER NOT NULL,
     closure_kind TEXT NOT NULL
         CHECK (closure_kind IN ('TERMINAL_LEG', 'ACCEPTANCE_CLOSED', 'INVALIDATED_TERMINAL')),
     predecessor_closure_id INTEGER,
     UNIQUE (scope_id, owner_external, closure_id),
+    FOREIGN KEY (scope_id, effect_id)
+        REFERENCES venue_effect (scope_id, effect_id),
     FOREIGN KEY (scope_id, owner_external, predecessor_closure_id)
         REFERENCES closure_chain (scope_id, owner_external, closure_id),
     CHECK ((predecessor_closure_id IS NULL) = (ordinal = 1))
@@ -349,6 +359,10 @@ CREATE TABLE closure_chain (
 CREATE UNIQUE INDEX uq_closure_single_successor
     ON closure_chain (scope_id, owner_external, predecessor_closure_id)
     WHERE predecessor_closure_id IS NOT NULL;
+
+CREATE UNIQUE INDEX uq_closure_single_root
+    ON closure_chain (scope_id, owner_external)
+    WHERE predecessor_closure_id IS NULL;
 
 CREATE INDEX ix_closure_chain_head ON closure_chain (scope_id, owner_external, ordinal DESC);
 
@@ -447,6 +461,26 @@ CREATE TRIGGER trg_acquisition_generation_retire_only
     )
 BEGIN
     SELECT RAISE (ABORT, 'acquisition_generation may only retire in place');
+END;
+
+CREATE TRIGGER trg_acquisition_generation_predecessor_valid
+    BEFORE INSERT ON acquisition_generation
+    FOR EACH ROW
+    WHEN NEW.predecessor_generation_id IS NOT NULL
+BEGIN
+    SELECT RAISE (
+        ABORT,
+        'acquisition predecessor must be the immediate prior ordinal of '
+            || 'the same scope'
+    )
+    WHERE NOT EXISTS (
+            SELECT 1
+              FROM acquisition_generation AS predecessor
+             WHERE predecessor.acquisition_generation_id =
+                   NEW.predecessor_generation_id
+               AND predecessor.scope_id = NEW.scope_id
+               AND predecessor.successor_ordinal = NEW.successor_ordinal - 1
+        );
 END;
 
 CREATE TRIGGER trg_acquisition_generation_no_delete
