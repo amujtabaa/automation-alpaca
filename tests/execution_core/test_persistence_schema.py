@@ -1,14 +1,9 @@
-"""M2-I2 schema/direct-proof RED-test candidate (HUMAN-GATE locked).
+"""M2-I2 schema/direct-proof tests for the Codex remediation candidate.
 
-Every test in this module is gated by ``_GATE_DIGEST``. While that constant
-is ``None``, each test fails loudly at its first statement without touching
-SQLite at all: WO-0166 authorizes authoring these tests but explicitly
-prohibits executing any schema test or installer, opening or creating any
-SQLite database (file or in-memory), or executing any DDL until Ameen
-approves the exact HUMAN-GATE packet through Codex. A post-approval,
-separately authorized commit sets ``_GATE_DIGEST`` to the approved lowercase
-SHA-256, which simultaneously unlocks the suite and pins EC-4: the installer
-refuses to run against any other byte digest.
+Every test remains pinned to the exact lowercase SHA-256 in ``_GATE_DIGEST``;
+the installer refuses any byte drift. Ameen's 2026-08-22 authority amendment
+grants Codex standing approval to revise this bounded DDL and execute these
+tests against fresh temporary file databases without another hash pause.
 
 Tests construct fresh temporary file databases under pytest's ``tmp_path``
 only. No configured database path exists anywhere in this module; no
@@ -33,7 +28,7 @@ from app.execution_core.persistence.schema import (
 
 
 _GATE_DIGEST: str | None = (
-    "f34a72ea85f4b5c7483510fd3f83a135a78a488b8e7c20f5972cbf2a8b83abb9"
+    "2cd0fea0b60d4ecf6779e258a7b4ce6af08e1137e06edac66806076bbbeea520"
 )
 
 _OPEN_CONNECTIONS: list[sqlite3.Connection] = []
@@ -297,6 +292,28 @@ def _insert_open_effect(connection: sqlite3.Connection, effect_id: int) -> int:
     return effect_id
 
 
+def _insert_venue_owner(
+    connection: sqlite3.Connection,
+    *,
+    owner_external: str,
+    effect_id: int,
+    root_id: int = 1,
+    scope_id: int = 1,
+    owner_generation_id: str = "12" * 32,
+) -> str:
+    connection.execute(
+        """
+        INSERT INTO venue_identity_owner (
+            scope_id, owner_external, effect_id,
+            root_fill_key_id, owner_generation_id
+        )
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (scope_id, owner_external, effect_id, root_id, owner_generation_id),
+    )
+    return owner_external
+
+
 # ---------------------------------------------------------------------------
 # Installer contract.
 
@@ -521,8 +538,8 @@ def test_revision_predecessor_must_exist_inside_same_root(
         connection, fact_id=1, root_id=root_a, event="evt-1", scope_id=scope_id
     )
 
-    # Gap mutant: declared predecessor id does not exist. Attribution:
-    # the composite lineage foreign key, not any CHECK or trigger.
+    # Missing-parent mutant: the root exists and every coordinate matches, so
+    # only the composite lineage foreign key can reject predecessor id 999.
     with pytest.raises(sqlite3.IntegrityError, match="FOREIGN KEY"):
         connection.execute(
             """
@@ -533,10 +550,10 @@ def test_revision_predecessor_must_exist_inside_same_root(
                 quantity, price_units, scale_sign, scale_digits,
                 scale_exponent, predecessor_fact_id, fact_ordinal
             )
-            VALUES (9, ?, ?, ?, ?, ?, 999, 'evt-x', 'TRADE_CORRECT',
+            VALUES (9, ?, ?, ?, ?, ?, ?, 'evt-x', 'TRADE_CORRECT',
                     7, 10100, 0, '1', -2, 999, 9)
             """,
-            (scope_id, "ab" * 32, "alpaca", "paper", "account-1"),
+            (scope_id, "ab" * 32, "alpaca", "paper", "account-1", root_a),
         )
 
     # Cross-root mutant: predecessor exists but belongs to another root.
@@ -565,6 +582,64 @@ def test_revision_predecessor_must_exist_inside_same_root(
     )
     assert stored == 4
 
+    # Existing-parent branch mutant: predecessor 1 exists under this root but
+    # is no longer its current head after fact 4. All coordinates and ordinals
+    # are otherwise valid, so the current-predecessor rule must reject it.
+    with pytest.raises(sqlite3.IntegrityError, match="current root head"):
+        _insert_revision(
+            connection,
+            fact_id=5,
+            root_id=root_a,
+            event="evt-5",
+            predecessor_fact_id=1,
+            scope_id=scope_id,
+        )
+
+    # Out-of-order mutant: predecessor 4 is the current head, but ordinal 3
+    # would move the root's fact order backwards. The ordinal is globally free.
+    with pytest.raises(sqlite3.IntegrityError, match="strictly advance"):
+        connection.execute(
+            """
+            INSERT INTO execution_fact (
+                fact_id, scope_id, application_generation_id,
+                broker_text, environment_text, account_text,
+                root_fill_key_id, source_event_id, kind,
+                quantity, price_units, scale_sign, scale_digits,
+                scale_exponent, predecessor_fact_id, fact_ordinal
+            )
+            VALUES (6, ?, ?, ?, ?, ?, ?, 'evt-6', 'TRADE_CORRECT',
+                    7, 10100, 0, '1', -2, 4, 3)
+            """,
+            (scope_id,) + _FACT_COORDS + (root_a,),
+        )
+
+    # A same-row predecessor must not satisfy SQLite's self-referential FK.
+    with pytest.raises(sqlite3.IntegrityError, match="predecessor_fact_id"):
+        connection.execute(
+            """
+            INSERT INTO execution_fact (
+                fact_id, scope_id, application_generation_id,
+                broker_text, environment_text, account_text,
+                root_fill_key_id, source_event_id, kind,
+                quantity, price_units, scale_sign, scale_digits,
+                scale_exponent, predecessor_fact_id, fact_ordinal
+            )
+            VALUES (8, ?, ?, ?, ?, ?, ?, 'evt-8', 'TRADE_CORRECT',
+                    7, 10100, 0, '1', -2, 8, 8)
+            """,
+            (scope_id,) + _FACT_COORDS + (root_a,),
+        )
+
+    # A root has exactly one canonical FILL fact.
+    with pytest.raises(sqlite3.IntegrityError, match="root_fill_key_id"):
+        _insert_fill(
+            connection,
+            fact_id=7,
+            root_id=root_a,
+            event="evt-7",
+            scope_id=scope_id,
+        )
+
 
 def test_closure_chain_rejects_gap_branch_and_cross_owner(
     tmp_path: object,
@@ -580,6 +655,12 @@ def test_closure_chain_rejects_gap_branch_and_cross_owner(
         _insert_root(connection, scope_id=scope_id)
         for effect_id in (1, 2, 3):
             _insert_open_effect(connection, effect_id)
+        _insert_venue_owner(
+            connection, owner_external="owner-A", effect_id=1, scope_id=scope_id
+        )
+        _insert_venue_owner(
+            connection, owner_external="owner-B", effect_id=2, scope_id=scope_id
+        )
         connection.execute(
             """
             INSERT INTO closure_chain (
@@ -614,7 +695,7 @@ def test_closure_chain_rejects_gap_branch_and_cross_owner(
 
     # Positive control: the immediate same-owner continuation is accepted.
     continued, scope_id = _fresh("positive.db")
-    _append(continued, 2, scope_id, "owner-A", 2, 2, 1)
+    _append(continued, 2, scope_id, "owner-A", 2, 1, 1)
     head = continued.execute(
         "SELECT ordinal FROM closure_chain WHERE closure_id = 2"
     ).fetchone()
@@ -625,21 +706,21 @@ def test_closure_chain_rejects_gap_branch_and_cross_owner(
     # successor of row 1 exists yet - only the no-gap trigger can refuse.
     gapped, gap_scope = _fresh("gap.db")
     with pytest.raises(sqlite3.IntegrityError, match="gap-free"):
-        _append(gapped, 2, gap_scope, "owner-A", 3, 2, 1)
+        _append(gapped, 2, gap_scope, "owner-A", 3, 1, 1)
 
     # Branch mutant: a second ordinal-2 successor of the same ordinal-1
     # predecessor. The no-gap rule passes it; only the single-successor
     # constraint can refuse it.
     branched, branch_scope = _fresh("branch.db")
-    _append(branched, 2, branch_scope, "owner-A", 2, 2, 1)
+    _append(branched, 2, branch_scope, "owner-A", 2, 1, 1)
     with pytest.raises(sqlite3.IntegrityError, match="predecessor_closure_id"):
-        _append(branched, 3, branch_scope, "owner-A", 2, 3, 1)
+        _append(branched, 3, branch_scope, "owner-A", 2, 1, 1)
 
     # Second root mutant: a second predecessorless row for the same owner is
     # refused by the single-root constraint.
     rooted, root_scope = _fresh("root.db")
     with pytest.raises(sqlite3.IntegrityError):
-        _append(rooted, 9, root_scope, "owner-A", 1, 3, None)
+        _append(rooted, 9, root_scope, "owner-A", 1, 1, None)
 
     # Cross-owner mutant: predecessor belongs to another owner string; the
     # composite foreign key cannot resolve it within this owner's chain.
@@ -651,7 +732,7 @@ def test_closure_chain_rejects_gap_branch_and_cross_owner(
                 closure_id, scope_id, owner_external, ordinal, effect_id,
                 closure_kind, predecessor_closure_id
             )
-            VALUES (2, ?, 'owner-B', 2, 3, 'TERMINAL_LEG', 1)
+            VALUES (2, ?, 'owner-B', 2, 2, 'TERMINAL_LEG', 1)
             """,
             (cross_scope,),
         )
@@ -671,10 +752,100 @@ def test_immutable_rows_refuse_update_and_delete(tmp_path: object) -> None:
         ("UPDATE execution_fact SET quantity = 11 WHERE fact_id = 1", ()),
         ("DELETE FROM execution_fact", ()),
         ("DELETE FROM schema_meta", ()),
+        ("UPDATE root_fill SET root_fill_key_id = 2", ()),
         ("UPDATE root_fill SET owner_generation_id = ?", ("34" * 32,)),
     ):
         with pytest.raises(sqlite3.IntegrityError):
             connection.execute(statement, parameters)
+
+
+def test_retirement_cannot_rewrite_acquisition_generation_binding(
+    tmp_path: object,
+) -> None:
+    connection = _installed_connection(tmp_path)
+    _seed_scope_with_live_generation(connection)
+
+    with pytest.raises(sqlite3.IntegrityError, match="binding is immutable"):
+        connection.execute(
+            """
+            UPDATE acquisition_generation
+               SET status = 'RETIRED_UNSERVING',
+                   mandate_commitment_sha256 = ?
+             WHERE acquisition_generation_id = ?
+            """,
+            ("7a" * 32, "12" * 32),
+        )
+
+    stored = connection.execute(
+        "SELECT status, mandate_commitment_sha256 FROM acquisition_generation"
+    ).fetchone()
+    assert stored == ("LIVE", "9a" * 32)
+
+
+def test_venue_effect_and_acceptance_bindings_are_immutable(
+    tmp_path: object,
+) -> None:
+    connection = _installed_connection(tmp_path)
+    _seed_scope_with_live_generation(connection)
+    _insert_root(connection, key_id=1, external="root-A")
+    _insert_root(connection, key_id=2, external="root-B")
+    _insert_open_effect(connection, 1)
+    connection.execute(
+        "INSERT INTO venue_effect VALUES (2, 1, 2, 'order-2', 'OPEN', 2)"
+    )
+    connection.execute("INSERT INTO acceptance_set VALUES (1, 1)")
+
+    with pytest.raises(sqlite3.IntegrityError, match="identity is immutable"):
+        connection.execute(
+            "UPDATE venue_effect"
+            " SET root_fill_key_id = 2, disposition = 'INVALIDATED'"
+            " WHERE effect_id = 1"
+        )
+    connection.execute(
+        "UPDATE venue_effect SET disposition = 'INVALIDATED' WHERE effect_id = 1"
+    )
+
+    with pytest.raises(sqlite3.IntegrityError, match="binding is immutable"):
+        connection.execute(
+            "UPDATE acceptance_set SET effect_id = 2 WHERE acceptance_set_id = 1"
+        )
+
+
+def test_venue_owner_is_immutable_and_closure_binding_is_exact(
+    tmp_path: object,
+) -> None:
+    connection = _installed_connection(tmp_path)
+    _seed_scope_with_live_generation(connection)
+    _insert_root(connection, key_id=1, external="root-A")
+    _insert_root(connection, key_id=2, external="root-B")
+    _insert_open_effect(connection, 1)
+    connection.execute(
+        "INSERT INTO venue_effect VALUES (2, 1, 2, 'order-2', 'OPEN', 2)"
+    )
+    _insert_venue_owner(connection, owner_external="owner-A", effect_id=1)
+    _insert_venue_owner(connection, owner_external="owner-B", effect_id=2, root_id=2)
+
+    stored = connection.execute(
+        "INSERT INTO closure_chain VALUES (1, 1, 'owner-A', 1, 1, 'TERMINAL_LEG', NULL)"
+    ).rowcount
+    assert stored == 1
+
+    # owner-B exists in this scope but belongs to effect/root 2. All closure
+    # root-chain checks pass, leaving only the owner-to-effect binding to fail.
+    with pytest.raises(sqlite3.IntegrityError, match="FOREIGN KEY"):
+        connection.execute(
+            "INSERT INTO closure_chain VALUES"
+            " (2, 1, 'owner-B', 1, 1, 'TERMINAL_LEG', NULL)"
+        )
+
+    with pytest.raises(sqlite3.IntegrityError, match="owner is immutable"):
+        connection.execute(
+            """
+            UPDATE venue_identity_owner
+               SET effect_id = 2, root_fill_key_id = 2
+             WHERE scope_id = 1 AND owner_external = 'owner-A'
+            """
+        )
 
 
 def test_monotonic_heads_refuse_regression(tmp_path: object) -> None:
@@ -693,7 +864,112 @@ def test_monotonic_heads_refuse_regression(tmp_path: object) -> None:
 
     with pytest.raises(sqlite3.IntegrityError):
         connection.execute("UPDATE kernel_checkpoint SET currentness_head_ordinal = 4")
-    connection.execute("UPDATE kernel_checkpoint SET currentness_head_ordinal = 6")
+    connection.execute(
+        "UPDATE kernel_checkpoint"
+        " SET currentness_head_ordinal = 6, checkpoint_version_ordinal = 2"
+    )
+
+
+def test_current_proof_payloads_require_fresh_heads_or_versions(
+    tmp_path: object,
+) -> None:
+    connection = _installed_connection(tmp_path)
+    generation_id = _insert_profiles_and_generation(connection)
+    connection.execute(
+        "INSERT INTO acquisition_scope VALUES"
+        " (1, ?, 'alpaca', 'paper', 'account-1', 'AAPL')",
+        (generation_id,),
+    )
+    connection.execute(
+        "INSERT INTO acquisition_generation VALUES (?, 1, 'LIVE', 1, NULL, ?, ?)",
+        ("12" * 32, "9a" * 32, "9b" * 32),
+    )
+    connection.execute(
+        "INSERT INTO kernel_checkpoint VALUES (?, 5, ?, 1)",
+        (generation_id, "77" * 32),
+    )
+    connection.execute(
+        "INSERT INTO symbol_controller VALUES (1, ?, 0, 0, 1, 5, 1, ?)",
+        ("12" * 32, "9b" * 32),
+    )
+    _insert_root(connection)
+    _insert_fill(connection, fact_id=1, root_id=1, event="evt-head")
+    connection.execute(
+        "UPDATE root_fill SET economics_head_ordinal = 1 WHERE root_fill_key_id = 1"
+    )
+    connection.execute(
+        "INSERT INTO protection_authority VALUES (1, NULL, ?, 1)",
+        ("65" * 32,),
+    )
+
+    # Exact no-op writes do not manufacture a new version requirement.
+    connection.execute(
+        "UPDATE kernel_checkpoint SET checkpoint_sha256 = checkpoint_sha256"
+    )
+    connection.execute(
+        "UPDATE symbol_controller SET aggregate_quantity = aggregate_quantity"
+    )
+    connection.execute("UPDATE root_fill SET current_quantity = current_quantity")
+    connection.execute(
+        "UPDATE protection_authority"
+        " SET state_commitment_sha256 = state_commitment_sha256"
+    )
+
+    with pytest.raises(sqlite3.IntegrityError, match="checkpoint version must advance"):
+        connection.execute(
+            "UPDATE kernel_checkpoint SET checkpoint_sha256 = ?",
+            ("78" * 32,),
+        )
+
+    with pytest.raises(sqlite3.IntegrityError, match="controller head must advance"):
+        connection.execute(
+            "UPDATE symbol_controller SET aggregate_quantity = 1 WHERE scope_id = 1"
+        )
+
+    with pytest.raises(sqlite3.IntegrityError, match="economics head must advance"):
+        connection.execute(
+            "UPDATE root_fill SET current_quantity = 99 WHERE root_fill_key_id = 1"
+        )
+
+    with pytest.raises(sqlite3.IntegrityError, match="protection version must advance"):
+        connection.execute(
+            "UPDATE protection_authority SET state_commitment_sha256 = ?",
+            ("66" * 32,),
+        )
+
+    # Positive controls: every material replacement carries a fresh owning
+    # version/head and remains valid.
+    connection.execute(
+        "UPDATE kernel_checkpoint"
+        " SET checkpoint_sha256 = ?, currentness_head_ordinal = 6,"
+        " checkpoint_version_ordinal = 2",
+        ("78" * 32,),
+    )
+    connection.execute(
+        "UPDATE symbol_controller"
+        " SET aggregate_quantity = 1, currentness_head_ordinal = 6,"
+        " controller_version_ordinal = 2 WHERE scope_id = 1"
+    )
+    _insert_revision(
+        connection,
+        fact_id=2,
+        root_id=1,
+        event="evt-head-2",
+        predecessor_fact_id=1,
+    )
+    connection.execute(
+        "UPDATE root_fill"
+        " SET current_quantity = 99, economics_head_ordinal = 2"
+        " WHERE root_fill_key_id = 1"
+    )
+    connection.execute(
+        "UPDATE protection_authority"
+        " SET state_commitment_sha256 = ?, version_ordinal = 2",
+        ("66" * 32,),
+    )
+
+    with pytest.raises(sqlite3.IntegrityError, match="retained"):
+        connection.execute("DELETE FROM protection_authority WHERE scope_id = 1")
 
 
 # ---------------------------------------------------------------------------
@@ -707,8 +983,10 @@ def test_close_requires_committed_claim_and_terminal_freezes(
     _seed_scope_with_live_generation(connection)
     _insert_root(connection)
     _insert_open_effect(connection, 1)
+    _insert_open_effect(connection, 2)
+    _insert_open_effect(connection, 3)
 
-    with pytest.raises(sqlite3.IntegrityError):
+    with pytest.raises(sqlite3.IntegrityError, match="closure proof"):
         connection.execute(
             "UPDATE venue_effect SET disposition = 'CLOSED' WHERE effect_id = 1"
         )
@@ -718,6 +996,24 @@ def test_close_requires_committed_claim_and_terminal_freezes(
         INSERT INTO dispatch_claim (claim_id, effect_id, claim_ordinal, resolved_kind)
         VALUES (1, 1, 1, NULL)
         """
+    )
+    with pytest.raises(sqlite3.IntegrityError):
+        connection.execute(
+            """
+            INSERT INTO dispatch_claim (claim_id, effect_id, claim_ordinal, resolved_kind)
+            VALUES (2, 1, 2, NULL)
+            """
+        )
+    connection.execute(
+        "UPDATE dispatch_claim SET resolved_kind = 'DISPATCHED' WHERE claim_id = 1"
+    )
+    with pytest.raises(sqlite3.IntegrityError):
+        connection.execute(
+            "UPDATE dispatch_claim SET resolved_kind = NULL WHERE claim_id = 1"
+        )
+    connection.execute(
+        "INSERT INTO effect_closure_proof VALUES (1, 'CLAIMED_TERMINAL', ?)",
+        ("71" * 32,),
     )
     connection.execute(
         "UPDATE venue_effect SET disposition = 'CLOSED' WHERE effect_id = 1"
@@ -741,25 +1037,31 @@ def test_close_requires_committed_claim_and_terminal_freezes(
             "UPDATE venue_effect SET disposition = 'CLOSED' WHERE effect_id = 1"
         )
 
-    connection.execute(
-        "UPDATE dispatch_claim SET resolved_kind = 'DISPATCHED' WHERE claim_id = 1"
-    )
-    with pytest.raises(sqlite3.IntegrityError):
-        connection.execute(
-            "UPDATE dispatch_claim SET resolved_kind = NULL WHERE claim_id = 1"
-        )
-    connection.execute(
-        """
-        INSERT INTO dispatch_claim (claim_id, effect_id, claim_ordinal, resolved_kind)
-        VALUES (2, 1, 2, NULL)
-        """
-    )
-    with pytest.raises(sqlite3.IntegrityError):
+    with pytest.raises(sqlite3.IntegrityError, match="OPEN venue effect"):
         connection.execute(
             """
             INSERT INTO dispatch_claim (claim_id, effect_id, claim_ordinal, resolved_kind)
-            VALUES (3, 1, 3, NULL)
+            VALUES (2, 1, 2, NULL)
             """
+        )
+
+    # NEVER_DISPATCHED is the exact no-claim closure route. The proof blocks
+    # any later claim, and a prior claim blocks manufacture of that proof.
+    connection.execute(
+        "INSERT INTO effect_closure_proof VALUES (2, 'NEVER_DISPATCHED', ?)",
+        ("72" * 32,),
+    )
+    with pytest.raises(sqlite3.IntegrityError, match="NEVER_DISPATCHED"):
+        connection.execute("INSERT INTO dispatch_claim VALUES (3, 2, 3, NULL)")
+    connection.execute(
+        "UPDATE venue_effect SET disposition = 'CLOSED' WHERE effect_id = 2"
+    )
+
+    connection.execute("INSERT INTO dispatch_claim VALUES (4, 3, 4, NULL)")
+    with pytest.raises(sqlite3.IntegrityError, match="NEVER_DISPATCHED"):
+        connection.execute(
+            "INSERT INTO effect_closure_proof VALUES (3, 'NEVER_DISPATCHED', ?)",
+            ("73" * 32,),
         )
 
 
@@ -771,15 +1073,7 @@ def test_acceptance_state_machine_gates_late_evidence(
     _insert_root(connection)
     _insert_open_effect(connection, 1)
     connection.execute(
-        """
-        INSERT INTO dispatch_claim (claim_id, effect_id, claim_ordinal, resolved_kind)
-        VALUES (1, 1, 1, 'DISPATCHED')
-        """
-    )
-    connection.execute("UPDATE venue_effect SET disposition = 'CLOSED'")
-    connection.execute(
-        "INSERT INTO acceptance_set (acceptance_set_id, effect_id, state)"
-        " VALUES (1, 1, 'OPEN')"
+        "INSERT INTO acceptance_set (acceptance_set_id, effect_id) VALUES (1, 1)"
     )
     connection.execute(
         "INSERT INTO acceptance_evidence (evidence_id, acceptance_set_id,"
@@ -787,8 +1081,17 @@ def test_acceptance_state_machine_gates_late_evidence(
         " VALUES (1, 1, 'OBSERVATION', ?, 1)",
         ("88" * 32,),
     )
-
-    connection.execute("UPDATE acceptance_set SET state = 'CLOSED'")
+    connection.execute(
+        """
+        INSERT INTO dispatch_claim (claim_id, effect_id, claim_ordinal, resolved_kind)
+        VALUES (1, 1, 1, 'DISPATCHED')
+        """
+    )
+    connection.execute(
+        "INSERT INTO effect_closure_proof VALUES (1, 'ADAPTER_COMPLETE', ?)",
+        ("74" * 32,),
+    )
+    connection.execute("UPDATE venue_effect SET disposition = 'CLOSED'")
 
     # EC-2: after CLOSED, only invalidation evidence may append.
     with pytest.raises(sqlite3.IntegrityError):
@@ -804,7 +1107,7 @@ def test_acceptance_state_machine_gates_late_evidence(
         " VALUES (3, 1, 'INVALIDATION', ?, 3)",
         ("90" * 32,),
     )
-    connection.execute("UPDATE acceptance_set SET state = 'INVALIDATED'")
+    connection.execute("UPDATE venue_effect SET disposition = 'INVALIDATED'")
 
 
 # ---------------------------------------------------------------------------
@@ -832,14 +1135,14 @@ def test_direct_head_lookups_use_indexes_not_scans(tmp_path: object) -> None:
 
     head_plan = connection.execute(
         """
-        EXPLAIN QUERY PLAN SELECT fact_id FROM execution_fact
-        WHERE root_fill_key_id = ? ORDER BY fact_ordinal DESC LIMIT 1
+        EXPLAIN QUERY PLAN SELECT fact_id FROM execution_fact_head
+        WHERE root_fill_key_id = ?
         """,
         (root_id,),
     ).fetchall()
     head_text = " ".join(str(row[-1]) for row in head_plan)
-    assert "ix_execution_fact_root_head" in head_text
-    assert "SCAN TABLE execution_fact" not in head_text
+    assert "INTEGER PRIMARY KEY" in head_text
+    assert "SCAN execution_fact" not in head_text
 
     open_plan = connection.execute(
         """
@@ -1105,16 +1408,41 @@ def test_controller_cannot_bind_generation_from_another_scope(
     _seed_two_scopes(connection)
 
     stored = connection.execute(
-        "INSERT INTO symbol_controller VALUES (1, ?, 0, 0, 1, 0, 1)",
-        ("12" * 32,),
+        "INSERT INTO symbol_controller VALUES (1, ?, 0, 0, 1, 0, 1, ?)",
+        ("12" * 32, "9b" * 32),
     ).rowcount
     assert stored == 1
 
-    with pytest.raises(sqlite3.IntegrityError, match="FOREIGN KEY"):
+    with pytest.raises(sqlite3.IntegrityError, match="live generation"):
         connection.execute(
-            "INSERT INTO symbol_controller VALUES (2, ?, 0, 0, 1, 0, 2)",
+            "INSERT INTO symbol_controller VALUES (2, ?, 0, 0, 1, 0, 2, ?)",
+            ("12" * 32, "9b" * 32),
+        )
+
+    with pytest.raises(sqlite3.IntegrityError, match="compatible"):
+        connection.execute(
+            "INSERT INTO symbol_controller VALUES (2, ?, 0, 0, 1, 0, 2, ?)",
+            ("34" * 32, "9b" * 32),
+        )
+
+    with pytest.raises(sqlite3.IntegrityError, match="remains LIVE"):
+        connection.execute(
+            "UPDATE acquisition_generation SET status = 'RETIRED_UNSERVING'"
+            " WHERE acquisition_generation_id = ?",
             ("12" * 32,),
         )
+
+    connection.execute(
+        "UPDATE symbol_controller"
+        " SET live_acquisition_generation_id = NULL,"
+        " currentness_head_ordinal = 1, controller_version_ordinal = 2"
+        " WHERE scope_id = 1"
+    )
+    connection.execute(
+        "UPDATE acquisition_generation SET status = 'RETIRED_UNSERVING'"
+        " WHERE acquisition_generation_id = ?",
+        ("12" * 32,),
+    )
 
 
 def test_root_fill_cannot_be_owned_by_generation_of_another_scope(
@@ -1146,19 +1474,8 @@ def test_execution_fact_cannot_reference_root_of_another_scope(
         ("12" * 32,),
     )
 
-    # Positive control: same-scope root reference is accepted.
-    assert (
-        _insert_fill(
-            connection,
-            fact_id=1,
-            root_id=1,
-            event="evt-ok",
-            scope_id=1,
-            generation_id="ab" * 32,
-        )
-        == 1
-    )
-
+    # Run the cross-scope mutant before the canonical FILL exists so the
+    # exact root/scope foreign key, not one-FILL-per-root uniqueness, owns it.
     with pytest.raises(sqlite3.IntegrityError, match="FOREIGN KEY"):
         connection.execute(
             """
@@ -1174,6 +1491,19 @@ def test_execution_fact_cannot_reference_root_of_another_scope(
             """,
             ("56" * 32,),
         )
+
+    # Positive control: same-scope root reference is accepted.
+    assert (
+        _insert_fill(
+            connection,
+            fact_id=1,
+            root_id=1,
+            event="evt-ok",
+            scope_id=1,
+            generation_id="ab" * 32,
+        )
+        == 1
+    )
 
 
 def test_venue_effect_cannot_reference_root_of_another_scope(
@@ -1205,6 +1535,8 @@ def test_closure_cannot_reference_effect_of_another_scope_or_owner(
     _insert_root(connection)
     _insert_open_effect(connection, 1)
     _insert_open_effect(connection, 2)
+    _insert_venue_owner(connection, owner_external="owner-A", effect_id=1)
+    _insert_venue_owner(connection, owner_external="owner-B", effect_id=2)
 
     stored = connection.execute(
         "INSERT INTO closure_chain VALUES (1, 1, 'owner-A', 1, 1, 'TERMINAL_LEG', NULL)"
@@ -1219,13 +1551,13 @@ def test_closure_cannot_reference_effect_of_another_scope_or_owner(
             " 'TERMINAL_LEG', NULL)"
         )
 
-    # Owner substitution within one scope: an owner-A chain cannot absorb
-    # another owner's closure lineage either.
-    connection.execute("INSERT INTO venue_effect VALUES (3, 1, 1, 'o-3', 'OPEN', 3)")
-    with pytest.raises(sqlite3.IntegrityError):
+    # Owner substitution within one scope: owner-B is valid and has no closure
+    # root yet, but belongs to effect 2 rather than effect 1. Only the exact
+    # owner-to-effect foreign key can reject this otherwise valid root row.
+    with pytest.raises(sqlite3.IntegrityError, match="FOREIGN KEY"):
         connection.execute(
-            "INSERT INTO closure_chain VALUES (3, 1, 'owner-B', 1, 3,"
-            " 'TERMINAL_LEG', 1)"
+            "INSERT INTO closure_chain VALUES (3, 1, 'owner-B', 1, 1,"
+            " 'TERMINAL_LEG', NULL)"
         )
 
 

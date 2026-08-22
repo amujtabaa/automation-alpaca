@@ -7,13 +7,13 @@ wave: M2-I2
 model_tier: strong
 risk: critical
 disposition: []
-owner: Ox Alpha local coding LLM implementation seat; Codex checkpoint governor
+owner: Codex implementation and checkpoint seat; adversarial agents provide in-process review
 created: 2026-08-21
 predecessor: WO-0165 exact accepted closeout head 2e47702c926515bf587aa71de987a3fb879e4d75
 base_sha: 2e47702c926515bf587aa71de987a3fb879e4d75
-branch: codex/m2-i2-schema-direct-proof-r1
+branch: codex/m2-i2-schema-direct-proof-codex-r1
 review_id: REV-0071
-execution_authority: Ameen Mujtabaa approved the exact hash-bound M2-I2 schema candidate in the Codex task on 2026-08-21. Authority is limited to one unlock commit that sets _GATE_DIGEST to the approved SHA-256, execution of exactly the 17 schema tests against fresh pytest tmp_path file databases, RED/GREEN evidence collection, and opening REV-0071. Any byte-level DDL change returns to HUMAN-GATE.
+execution_authority: On 2026-08-22 Ameen Mujtabaa explicitly directed Codex to take over and resolve the remaining WO-0166 root defects, granted standing pre-approval for the resulting in-scope DDL revisions, and authorized Codex to execute the temporary-file proof without another exact-hash pause. Configured database access, migration, runtime work, broker or network calls, orders, promotion, and merge remain unauthorized.
 ---
 
 # Work Order: M2-I2 schema and direct-proof foundation
@@ -22,7 +22,7 @@ execution_authority: Ameen Mujtabaa approved the exact hash-bound M2-I2 schema c
 
 **Date:** 2026-08-21
 
-**Status:** Active for the exact approved DDL unlock, 17-test temporary-file proof, and REV-0071 opening only
+**Status:** Active for Codex-owned root remediation, temporary-file proof, and bounded closeout preparation
 
 `[FABLE • FULL • spec-first/TDD • human-gated schema surface]`
 
@@ -54,17 +54,54 @@ hash and gate.
 | --- | --- |
 | Human activation | Ameen Mujtabaa: close WO-0165, then move to the next work order promptly (Codex task, 2026-08-21) |
 | Accepted predecessor | `WO-0165` closeout `2e47702c926515bf587aa71de987a3fb879e4d75`, tree `e8d2b0d4a8f734934252b8719cb0241574d03654` |
-| Branch | `codex/m2-i2-schema-direct-proof-r1` created directly from that predecessor |
+| Branch | `codex/m2-i2-schema-direct-proof-codex-r1` created from Ox Alpha v4 `6a8477d51d38eb4575d88395e3b57493d03b6812` |
 | Review identity | `REV-0071` reserved; independent packet not yet opened |
-| Current authority | Author exact DDL/schema bytes, inventory, RED tests, and the HUMAN-GATE bundle only |
-| DDL execution | `NOT_AUTHORIZED` |
-| SQLite create/open/access | `NOT_AUTHORIZED` |
-| Schema-test execution | `NOT_AUTHORIZED` |
+| Current authority | Codex root remediation plus direct and adversarial verification under the 2026-08-22 amendment |
+| DDL execution | `AUTHORIZED` for this bounded remediation proof only |
+| SQLite create/open/access | `AUTHORIZED` for fresh pytest `tmp_path` file databases only |
+| Schema-test execution | `AUTHORIZED` within WO-0166 scope |
 
-The implementation seat may inspect accepted authority, create the two new source/test files, run
-read-only/static checks that cannot execute SQL or open SQLite, commit/push the exact candidate,
-and then stop. It must not import or run a test path if doing so could connect to SQLite. The return
-bundle must disclose every command run and retain all `NOT_RUN` items.
+## Authority amendment — Codex takeover and standing DDL approval
+
+**Decision owner:** Ameen Mujtabaa
+
+**Decision date:** 2026-08-22
+
+Ameen directed Codex to take over the remaining WO-0166 remediation after repeated Ox Alpha
+attempts. He granted standing pre-approval for Codex's necessary in-scope DDL corrections and
+temporary-file execution, stating that another exact-hash approval pause was not needed for this
+area. He also authorized Codex to rely on its own direct verification plus adversarial review
+agents instead of requiring Ox Alpha or a separate external seat to approve the result.
+
+This amendment authorizes changes only within the existing allowed paths and execution only
+against fresh pytest `tmp_path` file databases. It does not authorize a configured database,
+migration, repository/hydration/runtime work, credentials, broker/network calls, orders,
+promotion, or merge to `master`. The historical 2026-08-21 exact-hash decision below remains
+preserved as prior evidence but no longer limits this remediation run.
+
+Operationally, this amendment supersedes the earlier pre-gate stop for the bounded Codex
+remediation run. The return bundle must still disclose every executed check and retain all
+`NOT_RUN` items; all other scope and safety limits remain in force.
+
+## Fable execution record — Codex remediation
+
+### RED
+
+The inherited Ox Alpha v4 candidate at `6a8477d51d38eb4575d88395e3b57493d03b6812`
+was tested with isolated negative controls before production correction. Six controls failed as
+intended: fact-lineage branching, missing exact venue-owner authority, retirement-time generation
+rebinding, venue-effect rebinding, exact owner/effect closure attribution, and same-version
+checkpoint payload substitution. These failures established that the inherited constraints were
+not load-bearing for the required invariants.
+
+### FIX
+
+Codex replaced the incomplete mechanisms at their semantic roots: authenticated direct fact heads
+and current-head predecessor enforcement; one immutable venue-owner relation used by closure
+authority; immutable identity/binding guards; version-coupled payload replacement; canonical
+effect state with immutable closure proof; and controller/generation compatibility and liveness
+coupling. Tests include both refusal mutants and positive/no-op controls so an over-restrictive
+repair cannot pass unnoticed.
 
 ## Functional requirements
 
