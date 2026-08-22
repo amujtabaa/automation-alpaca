@@ -86,6 +86,11 @@ def _seed_complete(connection: sqlite3.Connection) -> None:
     ):
         fixtures._expect_applied(operation(connection, value))
 
+    fixtures._expect_applied(
+        repository.advance_kernel_checkpoint(
+            connection, 1, fixtures._checkpoint(head=1, version=2)
+        )
+    )
     protection_v2 = fixtures._protection(controller_head=1, version=2)
     fixtures._expect_applied(
         repository.advance_protection_authority(connection, 1, protection_v2)
@@ -515,6 +520,177 @@ def test_same_family_growth_cannot_hide_a_root_full_scan(connection) -> None:
         "root_fill",
         "where root_fill_key_id = 1",
     )
+
+
+_PROOF_DOMAIN_TABLES = (
+    "execution_connection_profile",
+    "market_data_source_profile",
+    "application_generation",
+    "acquisition_scope",
+    "acquisition_generation",
+    "acquisition_generation_current",
+    "kernel_checkpoint",
+    "symbol_controller",
+    "protection_authority",
+    "market_stream_authority",
+    "market_cursor",
+    "root_fill",
+    "acquisition_root_route",
+    "execution_fact_head",
+    "execution_fact",
+    "venue_effect",
+    "dispatch_claim",
+    "venue_identity_owner",
+    "acceptance_set",
+    "acceptance_evidence",
+    "closure_chain",
+)
+
+
+def _capture_proof_queries(
+    connection: sqlite3.Connection,
+    proof_request: records.CurrentProofRequest,
+) -> tuple[str, ...]:
+    statements: list[str] = []
+    connection.set_trace_callback(statements.append)
+    outcome = repository.load_current_proof(connection, proof_request)
+    connection.set_trace_callback(None)
+    assert outcome.kind is records.RepositoryOutcomeKind.FOUND
+    assert outcome.record is not None
+    domain = tuple(
+        statement
+        for statement in statements
+        if statement.lstrip().upper().startswith("SELECT")
+        and any(f"FROM {table}" in statement for table in _PROOF_DOMAIN_TABLES)
+    )
+    assert domain
+    for statement in domain:
+        normalized = " ".join(statement.lower().split())
+        assert " where " in normalized
+        assert "select *" not in normalized
+        plan = connection.execute(f"EXPLAIN QUERY PLAN {statement}").fetchall()
+        plan_text = " ".join(str(row[-1]) for row in plan).upper()
+        assert "SEARCH" in plan_text
+        assert "SCAN" not in plan_text
+        assert "USE TEMP B-TREE" not in plan_text
+    return tuple(" ".join(statement.lower().split()) for statement in domain)
+
+
+def test_total_proof_uses_only_fixed_direct_key_queries_under_history_stress(
+    connection,
+) -> None:
+    _seed_complete(connection)
+    root_request = records.CurrentProofRequest(
+        fixtures.APP_ID,
+        1,
+        root_fill_key_id=1,
+    )
+    effect_request = records.CurrentProofRequest(
+        fixtures.APP_ID,
+        1,
+        effect_id=2,
+        owner_id=identity.OrderId("owner-2"),
+        require_acceptance=True,
+        require_closure=True,
+    )
+    baseline_root = _capture_proof_queries(connection, root_request)
+    baseline_effect = _capture_proof_queries(connection, effect_request)
+
+    connection.executemany(
+        "INSERT INTO root_fill (root_fill_key_id, scope_id, application_generation_id,"
+        " execution_profile_id, owner_generation_id, root_fill_external,"
+        " economics_head_ordinal) VALUES (?, 1, ?, ?, ?, ?, 0)",
+        (
+            (
+                root_id,
+                fixtures.APP_ID.value,
+                fixtures.EXECUTION_PROFILE_ID,
+                fixtures.ACQUISITION_ID.value,
+                f"proof-stress-root-{root_id}",
+            )
+            for root_id in range(10, 510)
+        ),
+    )
+    assert _capture_proof_queries(connection, root_request) == baseline_root
+    assert _capture_proof_queries(connection, effect_request) == baseline_effect
+
+
+class _AbsentCursor:
+    def fetchone(self) -> None:
+        return None
+
+
+class _OmittingConnection:
+    def __init__(self, connection: sqlite3.Connection, table: str) -> None:
+        self._connection = connection
+        self._table = table
+
+    def execute(self, sql: str, parameters: tuple[Any, ...] = ()):
+        normalized = " ".join(sql.lower().split())
+        if normalized.startswith("select ") and f" from {self._table}" in normalized:
+            return _AbsentCursor()
+        return self._connection.execute(sql, parameters)
+
+
+@pytest.mark.parametrize(
+    ("omitted_table", "request_kind"),
+    (
+        ("execution_connection_profile", "base"),
+        ("market_data_source_profile", "base"),
+        ("application_generation", "base"),
+        ("acquisition_scope", "base"),
+        ("acquisition_generation", "base"),
+        ("acquisition_generation_current", "base"),
+        ("kernel_checkpoint", "base"),
+        ("symbol_controller", "base"),
+        ("protection_authority", "base"),
+        ("market_stream_authority", "base"),
+        ("market_cursor", "base"),
+        ("root_fill", "root"),
+        ("acquisition_root_route", "root"),
+        ("execution_fact_head", "root"),
+        ("execution_fact", "root"),
+        ("venue_effect", "effect"),
+        ("dispatch_claim", "effect"),
+        ("venue_identity_owner", "effect"),
+        ("acceptance_set", "effect"),
+        ("acceptance_evidence", "effect"),
+        ("closure_chain", "effect"),
+    ),
+)
+def test_total_proof_refuses_each_independently_omitted_member(
+    connection,
+    omitted_table: str,
+    request_kind: str,
+) -> None:
+    _seed_complete(connection)
+    requests = {
+        "base": records.CurrentProofRequest(fixtures.APP_ID, 1),
+        "root": records.CurrentProofRequest(
+            fixtures.APP_ID,
+            1,
+            root_fill_key_id=1,
+        ),
+        "effect": records.CurrentProofRequest(
+            fixtures.APP_ID,
+            1,
+            effect_id=2,
+            owner_id=identity.OrderId("owner-2"),
+            require_acceptance=True,
+            require_closure=True,
+        ),
+    }
+    request = requests[request_kind]
+    baseline = repository.load_current_proof(connection, request)
+    assert baseline.kind is records.RepositoryOutcomeKind.FOUND
+    assert baseline.record is not None
+
+    outcome = repository.load_current_proof(
+        _OmittingConnection(connection, omitted_table),  # type: ignore[arg-type]
+        request,
+    )
+    assert outcome.kind is records.RepositoryOutcomeKind.INTEGRITY_FAILURE
+    assert outcome.record is None
 
 
 def test_single_row_loader_refuses_a_second_row(

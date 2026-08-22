@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import dataclasses
 from decimal import Decimal
 from pathlib import Path
@@ -296,11 +297,97 @@ def _assert_found(outcome: records.RepositoryOutcome[Any], expected: Any) -> Non
 
 
 def test_exact_exports_and_outcome_invariants() -> None:
+    expected_repository_exports = (
+        "advance_kernel_checkpoint",
+        "advance_market_cursor",
+        "advance_protection_authority",
+        "advance_symbol_controller",
+        "advance_venue_effect",
+        "load_acceptance_evidence",
+        "load_acceptance_set",
+        "load_acceptance_set_for_effect",
+        "load_acquisition_generation",
+        "load_acquisition_generation_current",
+        "load_acquisition_root_route",
+        "load_application_generation",
+        "load_closure_head",
+        "load_current_proof",
+        "load_dispatch_claim",
+        "load_dispatch_claim_for_effect",
+        "load_execution_fact",
+        "load_execution_fact_by_source",
+        "load_execution_fact_head",
+        "load_execution_profile",
+        "load_kernel_checkpoint",
+        "load_latest_acceptance_evidence",
+        "load_live_acquisition_generation",
+        "load_market_cursor",
+        "load_market_source_profile",
+        "load_market_stream_authority",
+        "load_open_venue_effects",
+        "load_protection_authority",
+        "load_root_fill",
+        "load_root_fill_by_external",
+        "load_scope",
+        "load_symbol_controller",
+        "load_venue_effect",
+        "load_venue_identity_owner",
+        "load_venue_identity_owners_for_effect",
+        "retire_acquisition_generation",
+        "store_acceptance_evidence",
+        "store_acceptance_set",
+        "store_acquisition_generation",
+        "store_acquisition_root_route",
+        "store_application_generation",
+        "store_closure",
+        "store_dispatch_claim",
+        "store_execution_fact",
+        "store_execution_profile",
+        "store_kernel_checkpoint",
+        "store_market_cursor",
+        "store_market_source_profile",
+        "store_market_stream_authority",
+        "store_protection_authority",
+        "store_root_fill",
+        "store_scope",
+        "store_symbol_controller",
+        "store_venue_effect",
+        "store_venue_identity_owner",
+    )
+    expected_record_exports = (
+        "AcceptanceEvidenceRecord",
+        "AcceptanceSetRecord",
+        "AcquisitionGenerationCurrentRecord",
+        "AcquisitionGenerationRecord",
+        "AcquisitionRootRouteRecord",
+        "ApplicationGenerationRecord",
+        "ClosureChainRecord",
+        "CurrentProofRequest",
+        "CurrentProofSlice",
+        "DispatchClaimRecord",
+        "ExecutionFactHeadRecord",
+        "ExecutionFactRecord",
+        "KernelCheckpointRecord",
+        "MarketCursorRecord",
+        "MarketStreamAuthorityRecord",
+        "ProtectionAuthorityRecord",
+        "RepositoryOutcome",
+        "RepositoryOutcomeKind",
+        "RootFillRecord",
+        "ScopeRecord",
+        "SymbolControllerRecord",
+        "VenueEffectRecord",
+        "VenueIdentityOwnerRecord",
+    )
+    assert repository.__all__ == expected_repository_exports
+    assert records.__all__ == expected_record_exports
+    assert len(repository.__all__) == len(set(repository.__all__))
+    assert len(records.__all__) == len(set(records.__all__))
     assert {name for name in vars(repository) if not name.startswith("_")} == set(
-        repository.__all__
+        expected_repository_exports
     )
     assert {name for name in vars(records) if not name.startswith("_")} == set(
-        records.__all__
+        expected_record_exports
     )
     with pytest.raises(ValueError):
         records.RepositoryOutcome(records.RepositoryOutcomeKind.FOUND)
@@ -309,7 +396,11 @@ def test_exact_exports_and_outcome_invariants() -> None:
 
 
 def _import_probe(
-    repo_root: Path, scratch: Path, *, mutate: bool
+    repo_root: Path,
+    scratch: Path,
+    write_target: Path,
+    *,
+    mutate: bool,
 ) -> subprocess.CompletedProcess[str]:
     script = f"""
 import os
@@ -317,15 +408,31 @@ from pathlib import Path
 import sys
 root = Path({str(repo_root)!r})
 scratch = Path({str(scratch)!r})
+write_target = Path({str(write_target)!r})
 sys.path.insert(0, str(root))
 source_path = root / 'app/execution_core/persistence/repository.py'
 source = source_path.read_text(encoding='utf-8')
-import app.execution_core.persistence
 scratch.mkdir(parents=True, exist_ok=True)
 before_env = dict(os.environ)
 before_files = set(scratch.rglob('*'))
+write_events = []
+capability_events = []
+def audit(event, args):
+    if event == 'open':
+        mode = args[1] if len(args) > 1 else None
+        flags = args[2] if len(args) > 2 else 0
+        writes_by_mode = isinstance(mode, str) and any(mark in mode for mark in 'wax+')
+        writes_by_flags = isinstance(flags, int) and bool(
+            flags & (os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND)
+        )
+        if writes_by_mode or writes_by_flags:
+            write_events.append((event, args[0]))
+    elif event in ('sqlite3.connect', 'socket.connect', 'subprocess.Popen'):
+        capability_events.append(event)
+sys.addaudithook(audit)
+import app.execution_core.persistence
 if {mutate!r}:
-    insertion = "\\nopen(" + repr(str(scratch / 'mutant-write')) + ", 'w').write('x')\\n"
+    insertion = "\\nopen(" + repr(str(write_target)) + ", 'w').write('x')\\n"
     source = source.replace('from __future__ import annotations as _annotations', 'from __future__ import annotations as _annotations' + insertion, 1)
     namespace = {{'__name__': 'app.execution_core.persistence._repository_mutant', '__package__': 'app.execution_core.persistence'}}
     exec(compile(source, str(source_path), 'exec'), namespace)
@@ -334,6 +441,8 @@ else:
 after_files = set(scratch.rglob('*'))
 assert dict(os.environ) == before_env
 assert after_files == before_files
+assert write_events == []
+assert capability_events == []
 assert 'sqlite3' not in sys.modules
 """
     return subprocess.run(
@@ -347,9 +456,21 @@ assert 'sqlite3' not in sys.modules
 
 def test_repository_import_is_inert_and_mutant_is_killed(tmp_path: Path) -> None:
     repo_root = Path(__file__).resolve().parents[2]
-    actual = _import_probe(repo_root, tmp_path / "actual", mutate=False)
+    write_target = tmp_path / "outside-observed-scratch" / "mutant-write"
+    write_target.parent.mkdir()
+    actual = _import_probe(
+        repo_root,
+        tmp_path / "actual",
+        write_target,
+        mutate=False,
+    )
     assert actual.returncode == 0, actual.stderr
-    mutant = _import_probe(repo_root, tmp_path / "mutant", mutate=True)
+    mutant = _import_probe(
+        repo_root,
+        tmp_path / "mutant",
+        write_target,
+        mutate=True,
+    )
     assert mutant.returncode != 0
     assert "AssertionError" in mutant.stderr
 
@@ -418,6 +539,8 @@ def test_all_remaining_families_and_total_current_proof_round_trip(connection) -
     controller = repository.load_symbol_controller(connection, 1).record
     assert isinstance(controller, records.SymbolControllerRecord)
     assert controller.currentness_head_ordinal == 1
+    checkpoint_v2 = _checkpoint(head=1, version=2)
+    _expect_applied(repository.advance_kernel_checkpoint(connection, 1, checkpoint_v2))
     protection_v2 = _protection(controller_head=1, version=2)
     _expect_applied(
         repository.advance_protection_authority(connection, 1, protection_v2)
@@ -496,7 +619,31 @@ def test_all_remaining_families_and_total_current_proof_round_trip(connection) -
     ):
         _assert_found(outcome, expected)
 
-    proof = repository.load_current_proof(
+    root_proof = repository.load_current_proof(
+        connection,
+        records.CurrentProofRequest(APP_ID, 1, root_fill_key_id=1),
+    )
+    assert root_proof.kind is records.RepositoryOutcomeKind.FOUND
+    assert root_proof.record is not None
+    assert root_proof.record.current_execution_fact == _fact()
+
+    effect_proof = repository.load_current_proof(
+        connection,
+        records.CurrentProofRequest(
+            APP_ID,
+            1,
+            effect_id=2,
+            owner_id=owner.owner_id,
+            require_acceptance=True,
+            require_closure=True,
+        ),
+    )
+    assert effect_proof.kind is records.RepositoryOutcomeKind.FOUND
+    assert effect_proof.record is not None
+    assert effect_proof.record.dispatch_claim == claim
+    assert effect_proof.record.closure_head == closure
+
+    spliced = repository.load_current_proof(
         connection,
         records.CurrentProofRequest(
             APP_ID,
@@ -504,15 +651,82 @@ def test_all_remaining_families_and_total_current_proof_round_trip(connection) -
             root_fill_key_id=1,
             effect_id=2,
             owner_id=owner.owner_id,
-            require_acceptance=True,
-            require_closure=True,
         ),
     )
-    assert proof.kind is records.RepositoryOutcomeKind.FOUND
-    assert proof.record is not None
-    assert proof.record.current_execution_fact == _fact()
-    assert proof.record.dispatch_claim == claim
-    assert proof.record.closure_head == closure
+    assert spliced.kind is records.RepositoryOutcomeKind.INTEGRITY_FAILURE
+    assert spliced.record is None
+
+
+def test_repository_loads_cross_the_accepted_codec_boundary(
+    connection,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _foundation(connection)
+    root = _root()
+    effect = _effect(1, controller_head=0, protection_version=1)
+    owner = _owner(1, root_fill_key_id=1)
+    route = records.AcquisitionRootRouteRecord(
+        1,
+        1,
+        APP_ID,
+        EXECUTION_PROFILE_ID,
+        ACQUISITION_ID,
+        1,
+        owner.owner_id,
+        owner.observation_id,
+    )
+    for operation, value in (
+        (repository.store_root_fill, root),
+        (repository.store_venue_effect, effect),
+        (repository.store_venue_identity_owner, owner),
+        (repository.store_acquisition_root_route, route),
+        (repository.store_dispatch_claim, _claim(1)),
+        (repository.store_execution_fact, _fact()),
+    ):
+        _expect_applied(operation(connection, value))
+
+    decoded_tags: list[str] = []
+    accepted_decoder = repository._decode_m1_value
+
+    def tracing_decoder(atom):
+        decoded_tags.append(atom.type_tag)
+        return accepted_decoder(atom)
+
+    monkeypatch.setattr(repository, "_decode_m1_value", tracing_decoder)
+    outcomes = (
+        repository.load_scope(connection, 1),
+        repository.load_market_cursor(connection, STREAM_ID),
+        repository.load_root_fill(connection, 1),
+        repository.load_execution_fact(connection, 1),
+        repository.load_venue_effect(connection, 1),
+        repository.load_venue_identity_owner(
+            connection,
+            EXECUTION_PROFILE_ID,
+            owner.owner_id,
+        ),
+        repository.load_acquisition_root_route(connection, 1),
+        repository.load_dispatch_claim(connection, 1),
+    )
+    assert {outcome.kind for outcome in outcomes} == {
+        records.RepositoryOutcomeKind.FOUND
+    }
+    assert {
+        "application_generation_id",
+        "symbol_id",
+        "market_stream_generation_id",
+        "acquisition_generation_id",
+        "session_id",
+        "root_fill_id",
+        "source_event_id",
+        "order_id",
+        "quantity",
+        "reported_price",
+        "effect_id",
+        "request_occurrence_id",
+        "mandate_id",
+        "claim_occurrence_id",
+        "venue_observation_id",
+    } <= set(decoded_tags)
 
 
 def test_mutable_rows_use_expected_version_and_caller_owns_rollback(connection) -> None:
@@ -545,6 +759,109 @@ def test_mutable_rows_use_expected_version_and_caller_owns_rollback(connection) 
         connection, 9, _checkpoint(head=1, version=2)
     )
     assert stale.kind is records.RepositoryOutcomeKind.CONFLICT
+
+
+def test_repository_source_cannot_begin_commit_or_rollback_transactions() -> None:
+    path = Path(repository.__file__)
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    forbidden_calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr in {"commit", "rollback"}
+    ]
+    forbidden_sql = [
+        node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and node.value.strip().upper().split(" ", 1)[0]
+        in {"BEGIN", "COMMIT", "ROLLBACK"}
+    ]
+    assert forbidden_calls == []
+    assert forbidden_sql == []
+
+
+def test_retirement_changes_state_and_remains_caller_rollback_owned(connection) -> None:
+    _foundation(connection)
+    successor = identity.AcquisitionGenerationId("56" * 32)
+    _expect_applied(
+        repository.store_scope(
+            connection,
+            records.ScopeRecord(
+                2,
+                APP_ID,
+                EXECUTION_PROFILE_ID,
+                identity.SymbolId("MSFT"),
+            ),
+        )
+    )
+    generation = dataclasses.replace(
+        _acquisition(),
+        acquisition_generation_id=successor,
+        scope_id=2,
+    )
+    _expect_applied(repository.store_acquisition_generation(connection, generation))
+    connection.commit()
+    connection.execute("BEGIN")
+    _expect_applied(repository.retire_acquisition_generation(connection, successor))
+    retired = dataclasses.replace(generation, status="RETIRED_UNSERVING")
+    _assert_found(
+        repository.load_acquisition_generation(connection, successor), retired
+    )
+    connection.rollback()
+    _assert_found(
+        repository.load_acquisition_generation(connection, successor), generation
+    )
+
+
+def test_advances_reject_contradictory_immutable_authority(connection) -> None:
+    _foundation(connection)
+    effect = _effect(1, controller_head=0, protection_version=1)
+    _expect_applied(repository.store_venue_effect(connection, effect))
+
+    wrong_application = identity.ApplicationGenerationId("wrong-generation")
+    controller = dataclasses.replace(
+        _controller(version=2),
+        application_generation_id=wrong_application,
+        execution_profile_id="ab" * 32,
+    )
+    cursor = dataclasses.replace(
+        _cursor(fixed=1, published=1),
+        scope_id=99,
+        application_generation_id=wrong_application,
+        acquisition_generation_id=identity.AcquisitionGenerationId("78" * 32),
+        generation_mandate_commitment_sha256="91" * 32,
+        source_profile_id="92" * 32,
+        session_id=identity.SessionId("wrong-session"),
+        sequence_mode="BROKER_SEQUENCE",
+    )
+    contradictory_effect = dataclasses.replace(
+        effect,
+        effect_external=identity.EffectId("different-effect"),
+        scope_id=99,
+        application_generation_id=wrong_application,
+        execution_profile_id="93" * 32,
+        lifecycle_state="ACKNOWLEDGED",
+    )
+
+    outcomes = (
+        repository.advance_symbol_controller(connection, 1, controller),
+        repository.advance_market_cursor(connection, 0, 0, cursor),
+        repository.advance_venue_effect(
+            connection,
+            "REQUESTED",
+            "OPEN",
+            contradictory_effect,
+        ),
+    )
+    assert {outcome.kind for outcome in outcomes} == {
+        records.RepositoryOutcomeKind.INTEGRITY_FAILURE
+    }
+    _assert_found(repository.load_symbol_controller(connection, 1), _controller())
+    _assert_found(repository.load_market_cursor(connection, STREAM_ID), _cursor())
+    _assert_found(repository.load_venue_effect(connection, 1), effect)
 
 
 def test_effect_transition_uses_expected_state(connection) -> None:
@@ -713,6 +1030,38 @@ def test_profile_decoder_rejects_a_valid_shape_with_wrong_commitment(
     assert outcome.record is None
 
 
+def test_every_numeric_loader_rejects_boolean_coordinate_aliases(connection) -> None:
+    _foundation(connection)
+    owner_id = identity.OrderId("owner-1")
+    operations = (
+        repository.load_scope(connection, True),
+        repository.load_symbol_controller(connection, True),
+        repository.load_root_fill(connection, True),
+        repository.load_execution_fact(connection, True),
+        repository.load_execution_fact_head(connection, True),
+        repository.load_venue_effect(connection, True),
+        repository.load_acquisition_root_route(connection, True),
+        repository.load_dispatch_claim(connection, True),
+        repository.load_acceptance_set(connection, True),
+        repository.load_acceptance_evidence(connection, True),
+        repository.load_protection_authority(connection, True),
+        repository.load_live_acquisition_generation(connection, True),
+        repository.load_open_venue_effects(connection, True),
+        repository.load_venue_identity_owners_for_effect(connection, True),
+        repository.load_dispatch_claim_for_effect(connection, True),
+        repository.load_acceptance_set_for_effect(connection, True),
+        repository.load_latest_acceptance_evidence(connection, True),
+        repository.load_closure_head(connection, True, owner_id),
+        repository.load_current_proof(
+            connection,
+            records.CurrentProofRequest(APP_ID, True),
+        ),
+    )
+    assert {outcome.kind for outcome in operations} == {
+        records.RepositoryOutcomeKind.INTEGRITY_FAILURE
+    }
+
+
 def test_non_sqlite_same_named_exception_propagates(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -727,6 +1076,41 @@ def test_non_sqlite_same_named_exception_propagates(
     monkeypatch.setattr(repository, "_verify_schema_connection", lambda connection: 1)
     with pytest.raises(IntegrityError):
         repository.load_scope(FakeConnection(), 1)  # type: ignore[arg-type]
+
+
+def test_non_sqlite_exception_cannot_spoof_sqlite_module_and_mro(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_error = type("Error", (Exception,), {"__module__": "sqlite3"})
+    fake_integrity = type(
+        "IntegrityError",
+        (fake_error,),
+        {"__module__": "sqlite3"},
+    )
+    caught = fake_integrity("not SQLite")
+    caught.sqlite_errorcode = 2067
+
+    class FakeConnection:
+        def execute(self, sql: str, parameters: tuple[Any, ...] = ()) -> Any:
+            del sql, parameters
+            raise caught
+
+    monkeypatch.setattr(repository, "_verify_schema_connection", lambda connection: 1)
+    with pytest.raises(fake_integrity):
+        repository.load_scope(FakeConnection(), 1)  # type: ignore[arg-type]
+
+
+def test_duplicate_probe_cannot_hide_broken_claim_authority(connection) -> None:
+    _foundation(connection)
+    effect = _effect(1, controller_head=0, protection_version=1)
+    claim = _claim(1)
+    _expect_applied(repository.store_venue_effect(connection, effect))
+    _expect_applied(repository.store_dispatch_claim(connection, claim))
+
+    broken = dataclasses.replace(claim, effect_id=999)
+    outcome = repository.store_dispatch_claim(connection, broken)
+    assert outcome.kind is records.RepositoryOutcomeKind.INTEGRITY_FAILURE
+    _assert_found(repository.load_dispatch_claim(connection, claim.claim_id), claim)
 
 
 def test_repository_never_commits(connection) -> None:
@@ -753,3 +1137,52 @@ def test_missing_requested_proof_member_fails_without_partial_record(
     )
     assert outcome.kind is records.RepositoryOutcomeKind.INTEGRITY_FAILURE
     assert outcome.record is None
+
+
+def test_current_proof_refuses_checkpoint_behind_controller_head(connection) -> None:
+    _foundation(connection)
+    owner = _owner(1, root_fill_key_id=1)
+    route = records.AcquisitionRootRouteRecord(
+        1,
+        1,
+        APP_ID,
+        EXECUTION_PROFILE_ID,
+        ACQUISITION_ID,
+        1,
+        owner.owner_id,
+        owner.observation_id,
+    )
+    for operation, value in (
+        (repository.store_root_fill, _root()),
+        (
+            repository.store_venue_effect,
+            _effect(1, controller_head=0, protection_version=1),
+        ),
+        (repository.store_venue_identity_owner, owner),
+        (repository.store_acquisition_root_route, route),
+        (repository.store_execution_fact, _fact()),
+    ):
+        _expect_applied(operation(connection, value))
+    _expect_applied(
+        repository.advance_protection_authority(
+            connection,
+            1,
+            _protection(controller_head=1, version=2),
+        )
+    )
+
+    proof_request = records.CurrentProofRequest(APP_ID, 1, root_fill_key_id=1)
+    stale = repository.load_current_proof(connection, proof_request)
+    assert stale.kind is records.RepositoryOutcomeKind.INTEGRITY_FAILURE
+    assert stale.record is None
+
+    _expect_applied(
+        repository.advance_kernel_checkpoint(
+            connection,
+            1,
+            _checkpoint(head=1, version=2),
+        )
+    )
+    fresh = repository.load_current_proof(connection, proof_request)
+    assert fresh.kind is records.RepositoryOutcomeKind.FOUND
+    assert fresh.record is not None

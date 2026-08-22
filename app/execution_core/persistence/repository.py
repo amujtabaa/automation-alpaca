@@ -48,10 +48,23 @@ def _classify_sqlite_failure(
 ) -> _records.RepositoryOutcome[_Any]:
     """Preserve duplicate contention separately from malformed authority."""
 
-    sqlite_bases = {(base.__module__, base.__name__) for base in type(caught).__mro__}
-    if ("sqlite3", "Error") not in sqlite_bases:
+    # Resolve only the already-loaded driver on the failure path. A direct
+    # ``sys`` or ``sqlite3`` dependency is forbidden in the pure kernel.
+    loaded_modules = getattr(__import__("sys"), "modules")
+    sqlite_module = loaded_modules.get("sqlite3")
+    sqlite_error = (
+        None if sqlite_module is None else getattr(sqlite_module, "Error", None)
+    )
+    sqlite_integrity_error = (
+        None
+        if sqlite_module is None
+        else getattr(sqlite_module, "IntegrityError", None)
+    )
+    if not isinstance(sqlite_error, type) or not isinstance(caught, sqlite_error):
         raise caught
-    if ("sqlite3", "IntegrityError") in sqlite_bases:
+    if isinstance(sqlite_integrity_error, type) and isinstance(
+        caught, sqlite_integrity_error
+    ):
         code = getattr(caught, "sqlite_errorcode", None)
         # SQLite extended result codes, intentionally kept as values so the
         # pure execution kernel never imports the sqlite3 capability module.
@@ -70,6 +83,7 @@ def _insert(
     conflict_probe: tuple[
         str,
         _Callable[[tuple[_Any, ...]], tuple[_Any, ...]],
+        _Callable[[tuple[_Any, ...], tuple[_Any, ...]], bool],
     ]
     | None = None,
 ) -> _records.RepositoryOutcome[_Any]:
@@ -89,7 +103,7 @@ def _insert(
             classified.kind is _records.RepositoryOutcomeKind.INTEGRITY_FAILURE
             and conflict_probe is not None
         ):
-            probe_sql, probe_parameters = conflict_probe
+            probe_sql, probe_parameters, retained_matches = conflict_probe
             try:
                 retained = connection.execute(
                     probe_sql,
@@ -97,7 +111,7 @@ def _insert(
                 ).fetchone()
             except Exception as probe_failure:
                 return _classify_sqlite_failure(probe_failure)
-            if retained is not None:
+            if retained is not None and retained_matches(tuple(retained), parameters):
                 return _outcome(_records.RepositoryOutcomeKind.CONFLICT)
         return classified
     return _outcome(_records.RepositoryOutcomeKind.APPLIED)
@@ -122,6 +136,23 @@ def _advance(
     return _outcome(_records.RepositoryOutcomeKind.APPLIED)
 
 
+def _validate_advance_authority(
+    connection: _SQLiteConnectionProtocol,
+    sql: str,
+    parameters: tuple[_Any, ...],
+    build: _Callable[[tuple[_Any, ...]], _RecordT],
+    matches: _Callable[[_RecordT], bool],
+) -> _records.RepositoryOutcome[_Any] | None:
+    retained = _select_one_unchecked(connection, sql, parameters, build)
+    if retained.kind is _records.RepositoryOutcomeKind.ABSENT:
+        return _outcome(_records.RepositoryOutcomeKind.CONFLICT)
+    if retained.kind is not _records.RepositoryOutcomeKind.FOUND:
+        return _outcome(retained.kind)
+    if retained.record is None or not matches(retained.record):
+        return _integrity()
+    return None
+
+
 def _select_one_unchecked(
     connection: _SQLiteConnectionProtocol,
     sql: str,
@@ -129,7 +160,7 @@ def _select_one_unchecked(
     build: _Callable[[tuple[_Any, ...]], _RecordT],
 ) -> _records.RepositoryOutcome[_RecordT]:
     try:
-        cursor = connection.execute(sql, parameters)
+        cursor = connection.execute(sql, _query_parameters(parameters))
         row = cursor.fetchone()
         if row is None:
             return _outcome(_records.RepositoryOutcomeKind.ABSENT)
@@ -180,6 +211,16 @@ def _exact_bytes(value: object) -> bytes:
     if type(value) is not bytes:
         raise TypeError("SQLite blob coordinate is not exact bytes")
     return value
+
+
+def _query_parameters(parameters: tuple[_Any, ...]) -> tuple[_Any, ...]:
+    normalized: list[_Any] = []
+    for value in parameters:
+        if value is None or type(value) in (int, str, bytes, float):
+            normalized.append(value)
+            continue
+        raise TypeError("SQLite query coordinate has a non-exact scalar type")
+    return tuple(normalized)
 
 
 def _identity_text(value: object, owner: type, tag: str) -> str:
@@ -861,9 +902,24 @@ def advance_symbol_controller(
     expected_version_ordinal: int,
     record: _records.SymbolControllerRecord,
 ) -> _records.RepositoryOutcome[_Any]:
-    def prepare() -> tuple[_Any, ...]:
+    _verify_schema_connection(connection)
+    try:
         values = _controller_parameters(record)
-        return (*values[3:], values[0], _exact_int(expected_version_ordinal))
+    except (TypeError, ValueError, OverflowError):
+        return _integrity()
+    authority_failure = _validate_advance_authority(
+        connection,
+        f"SELECT {_CONTROLLER_COLUMNS} FROM symbol_controller WHERE scope_id = ?",
+        (values[0],),
+        _build_controller,
+        lambda retained: (
+            retained.scope_id == record.scope_id
+            and retained.application_generation_id == record.application_generation_id
+            and retained.execution_profile_id == record.execution_profile_id
+        ),
+    )
+    if authority_failure is not None:
+        return authority_failure
 
     return _advance(
         connection,
@@ -871,7 +927,7 @@ def advance_symbol_controller(
         " aggregate_quantity = ?, integrity_state = ?, currentness_head_ordinal = ?,"
         " controller_version_ordinal = ?, emergency_compatibility_sha256 = ?"
         " WHERE scope_id = ? AND controller_version_ordinal = ?",
-        prepare,
+        lambda: (*values[3:], values[0], _exact_int(expected_version_ordinal)),
     )
 
 
@@ -1089,9 +1145,17 @@ def store_execution_fact(
         prepare,
         conflict_trigger_messages=("execution fact identity is already retained",),
         conflict_probe=(
-            "SELECT 1 FROM execution_fact WHERE fact_id = ?"
+            f"SELECT {_EXECUTION_FACT_COLUMNS} FROM execution_fact WHERE fact_id = ?"
             " OR (execution_profile_id = ? AND source_event_id = ?)",
             lambda parameters: (parameters[0], parameters[3], parameters[5]),
+            lambda retained, parameters: (
+                retained == parameters
+                or (
+                    retained[3] == parameters[3]
+                    and retained[5] == parameters[5]
+                    and retained[1:] == parameters[1:]
+                )
+            ),
         ),
     )
 
@@ -1221,6 +1285,32 @@ def _effect_parameters(record: _records.VenueEffectRecord) -> tuple[_Any, ...]:
     )
 
 
+def _effect_immutable_coordinates(
+    record: _records.VenueEffectRecord,
+) -> tuple[_Any, ...]:
+    return (
+        record.effect_id,
+        record.effect_external,
+        record.scope_id,
+        record.application_generation_id,
+        record.execution_profile_id,
+        record.acquisition_generation_id,
+        record.generation_mandate_commitment_sha256,
+        record.expected_controller_head_ordinal,
+        record.expected_protection_version_ordinal,
+        record.authority_class,
+        record.request_occurrence_id,
+        record.mandate_id,
+        record.effect_kind,
+        record.client_order_id,
+        record.target_order_id,
+        record.side,
+        record.quantity,
+        record.economic_scope,
+        record.created_ordinal,
+    )
+
+
 def store_venue_effect(
     connection: _SQLiteConnectionProtocol,
     record: _records.VenueEffectRecord,
@@ -1253,6 +1343,23 @@ def advance_venue_effect(
     expected_disposition: str,
     record: _records.VenueEffectRecord,
 ) -> _records.RepositoryOutcome[_Any]:
+    _verify_schema_connection(connection)
+    try:
+        parameters = _effect_parameters(record)
+    except (TypeError, ValueError, OverflowError):
+        return _integrity()
+    authority_failure = _validate_advance_authority(
+        connection,
+        f"SELECT {_EFFECT_COLUMNS} FROM venue_effect WHERE effect_id = ?",
+        (parameters[0],),
+        _build_effect,
+        lambda retained: (
+            _effect_immutable_coordinates(retained)
+            == _effect_immutable_coordinates(record)
+        ),
+    )
+    if authority_failure is not None:
+        return authority_failure
     return _advance(
         connection,
         "UPDATE venue_effect SET lifecycle_state = ?, disposition = ?,"
@@ -1453,8 +1560,13 @@ def store_dispatch_claim(
         ),
         conflict_trigger_messages=("dispatch claim identity is already retained",),
         conflict_probe=(
-            "SELECT 1 FROM dispatch_claim WHERE claim_id = ? OR effect_id = ?",
+            f"SELECT {_CLAIM_COLUMNS} FROM dispatch_claim"
+            " WHERE claim_id = ? OR effect_id = ?",
             lambda parameters: (parameters[0], parameters[1]),
+            lambda retained, parameters: (
+                retained == parameters
+                or (retained[1] == parameters[1] and retained[2:] == parameters[2:])
+            ),
         ),
     )
 
@@ -1746,6 +1858,21 @@ def _cursor_parameters(record: _records.MarketCursorRecord) -> tuple[_Any, ...]:
     )
 
 
+def _cursor_immutable_coordinates(
+    record: _records.MarketCursorRecord,
+) -> tuple[_Any, ...]:
+    return (
+        record.stream_generation_id,
+        record.scope_id,
+        record.application_generation_id,
+        record.acquisition_generation_id,
+        record.generation_mandate_commitment_sha256,
+        record.source_profile_id,
+        record.session_id,
+        record.sequence_mode,
+    )
+
+
 def store_market_cursor(
     connection: _SQLiteConnectionProtocol,
     record: _records.MarketCursorRecord,
@@ -1765,6 +1892,24 @@ def advance_market_cursor(
     expected_published_head_ordinal: int,
     record: _records.MarketCursorRecord,
 ) -> _records.RepositoryOutcome[_Any]:
+    _verify_schema_connection(connection)
+    try:
+        parameters = _cursor_parameters(record)
+    except (TypeError, ValueError, OverflowError):
+        return _integrity()
+    authority_failure = _validate_advance_authority(
+        connection,
+        f"SELECT {_MARKET_CURSOR_COLUMNS} FROM market_cursor"
+        " WHERE stream_generation_id = ?",
+        (parameters[0],),
+        _build_market_cursor,
+        lambda retained: (
+            _cursor_immutable_coordinates(retained)
+            == _cursor_immutable_coordinates(record)
+        ),
+    )
+    if authority_failure is not None:
+        return authority_failure
     return _advance(
         connection,
         "UPDATE market_cursor SET fixed_cursor_ordinal = ?,"
@@ -1921,7 +2066,7 @@ def _select_many_unchecked(
     build: _Callable[[tuple[_Any, ...]], _RecordT],
 ) -> _records.RepositoryOutcome[tuple[_RecordT, ...]]:
     try:
-        rows = connection.execute(sql, parameters).fetchall()
+        rows = connection.execute(sql, _query_parameters(parameters)).fetchall()
         if not rows:
             return _outcome(_records.RepositoryOutcomeKind.ABSENT)
         records = tuple(build(tuple(row)) for row in rows)
@@ -2188,6 +2333,8 @@ def load_current_proof(
             != live_generation.acquisition_generation_id
             or generation_current.scope_id != scope_key
             or checkpoint.application_generation_id != request.application_generation_id
+            or checkpoint.currentness_head_ordinal
+            != controller.currentness_head_ordinal
             or protection.scope_id != scope_key
             or protection.expected_controller_head_ordinal
             != controller.currentness_head_ordinal
@@ -2341,6 +2488,13 @@ def load_current_proof(
                 claim = _required(claim_outcome)
             elif claim_outcome.kind is _records.RepositoryOutcomeKind.FOUND:
                 raise _ProofFailure
+            if claim is not None and (
+                claim.effect_id != effect.effect_id
+                or claim.execution_profile_id != effect.execution_profile_id
+            ):
+                raise _ProofFailure
+            if route is not None and route.effect_id != effect.effect_id:
+                raise _ProofFailure
 
         owner: _records.VenueIdentityOwnerRecord | None = None
         if request.owner_id is not None:
@@ -2361,6 +2515,11 @@ def load_current_proof(
                 or owner.effect_id != effect.effect_id
                 or owner.owner_generation_id
                 != live_generation.acquisition_generation_id
+            ):
+                raise _ProofFailure
+            if route is not None and (
+                route.owner_id != owner.owner_id
+                or route.observation_id != owner.observation_id
             ):
                 raise _ProofFailure
 
@@ -2388,7 +2547,10 @@ def load_current_proof(
                     _build_evidence,
                 )
             )
-            if evidence.effect_id != effect.effect_id:
+            if (
+                evidence.acceptance_set_id != acceptance.acceptance_set_id
+                or evidence.effect_id != effect.effect_id
+            ):
                 raise _ProofFailure
 
         closure: _records.ClosureChainRecord | None = None
@@ -2408,7 +2570,11 @@ def load_current_proof(
                     _build_closure,
                 )
             )
-            if closure.effect_id != effect.effect_id:
+            if (
+                closure.scope_id != scope_key
+                or closure.owner_id != owner.owner_id
+                or closure.effect_id != effect.effect_id
+            ):
                 raise _ProofFailure
 
         proof = _records.CurrentProofSlice(
