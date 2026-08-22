@@ -32,7 +32,9 @@ from app.execution_core.persistence.schema import (
 )
 
 
-_GATE_DIGEST: str | None = None
+_GATE_DIGEST: str | None = (
+    "b9565de1dab1dd6388980260ffd5089abe11ce887bbf67ccce2434848e252cbc"
+)
 
 _FORBIDDEN_COLUMN_FRAGMENTS = (
     "identifier",
