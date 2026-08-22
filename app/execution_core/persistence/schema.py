@@ -16,6 +16,11 @@ empty SQLite connection and refuses to act unless:
    ``1`` on that connection (EC-3: disabled relational enforcement refused
    before execution).
 
+``verify_schema_connection`` is the mandatory per-operation guard for later
+repository work. SQLite enforcement pragmas are connection-local, so the
+guard re-verifies them and the exact installed schema identity after every
+open/reopen before durable authority may be read or written.
+
 The schema enforces, database-natively: immutable generation/profile
 bindings with exactly one selected profile pair per application generation;
 one LIVE acquisition generation per exact scope; immutable predecessor-linked
@@ -507,6 +512,8 @@ CREATE TABLE venue_effect (
             AND generation_mandate_commitment_sha256
                 NOT GLOB '*[^0-9a-f]*'
         ),
+    expected_controller_head_ordinal INTEGER NOT NULL
+        CHECK (expected_controller_head_ordinal >= 0),
     request_occurrence_external TEXT NOT NULL
         CHECK (length(request_occurrence_external) >= 1),
     mandate_external TEXT NOT NULL CHECK (length(mandate_external) >= 1),
@@ -825,7 +832,7 @@ CREATE TABLE protection_authority (
     active_sequence_mode TEXT,
     state_commitment_sha256 TEXT NOT NULL
         CHECK (length(state_commitment_sha256) = 64 AND state_commitment_sha256 NOT GLOB '*[^0-9a-f]*'),
-    version_ordinal INTEGER NOT NULL UNIQUE CHECK (version_ordinal >= 1),
+    version_ordinal INTEGER NOT NULL CHECK (version_ordinal >= 1),
     CHECK (
         (active_stream_generation_id IS NULL)
         = (active_acquisition_generation_id IS NULL)
@@ -855,6 +862,14 @@ CREATE TRIGGER trg_schema_meta_immutable_update
     BEFORE UPDATE ON schema_meta
 BEGIN
     SELECT RAISE (ABORT, 'schema_meta is immutable');
+END;
+
+CREATE TRIGGER trg_schema_meta_no_conflict_replace
+    BEFORE INSERT ON schema_meta
+    FOR EACH ROW
+    WHEN EXISTS (SELECT 1 FROM schema_meta)
+BEGIN
+    SELECT RAISE (ABORT, 'schema metadata is already retained');
 END;
 
 CREATE TRIGGER trg_schema_meta_immutable_delete
@@ -2049,13 +2064,45 @@ BEGIN
     SELECT RAISE (ABORT, 'venue_effect starts OPEN and REQUESTED without proof');
 END;
 
+CREATE TRIGGER trg_venue_effect_requires_current_controller
+    BEFORE INSERT ON venue_effect
+    FOR EACH ROW
+    WHEN NOT EXISTS (
+            SELECT 1
+              FROM symbol_controller AS controller
+             WHERE controller.scope_id = NEW.scope_id
+               AND controller.application_generation_id =
+                    NEW.application_generation_id
+               AND controller.execution_profile_id =
+                    NEW.execution_profile_id
+               AND controller.live_acquisition_generation_id =
+                    NEW.acquisition_generation_id
+               AND controller.currentness_head_ordinal =
+                    NEW.expected_controller_head_ordinal
+        )
+BEGIN
+    SELECT RAISE (
+        ABORT,
+        'venue effect requires the exact current controller head'
+    );
+END;
+
 CREATE TRIGGER trg_venue_effect_acceptance_transition
     BEFORE UPDATE OF disposition ON venue_effect
     FOR EACH ROW
     WHEN NOT (
         NEW.disposition = OLD.disposition
         OR (OLD.disposition = 'OPEN' AND NEW.disposition = 'CLOSED')
-        OR (OLD.disposition = 'CLOSED' AND NEW.disposition = 'INVALIDATED')
+        OR (
+            OLD.disposition = 'CLOSED'
+            AND NEW.disposition = 'INVALIDATED'
+            AND EXISTS (
+                SELECT 1
+                  FROM acceptance_evidence AS evidence
+                 WHERE evidence.effect_id = NEW.effect_id
+                   AND evidence.evidence_kind = 'INVALIDATION'
+            )
+        )
     )
 BEGIN
     SELECT RAISE (ABORT, 'venue_effect acceptance transition is invalid');
@@ -2117,6 +2164,7 @@ CREATE TRIGGER trg_venue_effect_identity_immutable
     BEFORE UPDATE OF effect_id, effect_external, scope_id,
         application_generation_id, execution_profile_id,
         acquisition_generation_id, generation_mandate_commitment_sha256,
+        expected_controller_head_ordinal,
         request_occurrence_external, mandate_external, effect_kind,
         client_order_external, target_order_external, side, quantity,
         economic_scope, created_ordinal ON venue_effect
@@ -2129,6 +2177,8 @@ CREATE TRIGGER trg_venue_effect_identity_immutable
       OR NEW.acquisition_generation_id IS NOT OLD.acquisition_generation_id
       OR NEW.generation_mandate_commitment_sha256
             IS NOT OLD.generation_mandate_commitment_sha256
+      OR NEW.expected_controller_head_ordinal
+            IS NOT OLD.expected_controller_head_ordinal
       OR NEW.request_occurrence_external IS NOT OLD.request_occurrence_external
       OR NEW.mandate_external IS NOT OLD.mandate_external
       OR NEW.effect_kind IS NOT OLD.effect_kind
@@ -2242,6 +2292,32 @@ CREATE TRIGGER trg_dispatch_claim_requires_open_effect
         )
 BEGIN
     SELECT RAISE (ABORT, 'dispatch claim requires an OPEN REQUESTED venue effect');
+END;
+
+CREATE TRIGGER trg_dispatch_claim_requires_current_controller
+    BEFORE INSERT ON dispatch_claim
+    FOR EACH ROW
+    WHEN NOT EXISTS (
+            SELECT 1
+              FROM venue_effect AS effect
+              JOIN symbol_controller AS controller
+                ON controller.scope_id = effect.scope_id
+               AND controller.application_generation_id =
+                    effect.application_generation_id
+               AND controller.execution_profile_id =
+                    effect.execution_profile_id
+               AND controller.live_acquisition_generation_id =
+                    effect.acquisition_generation_id
+               AND controller.currentness_head_ordinal =
+                    effect.expected_controller_head_ordinal
+             WHERE effect.effect_id = NEW.effect_id
+               AND effect.execution_profile_id = NEW.execution_profile_id
+        )
+BEGIN
+    SELECT RAISE (
+        ABORT,
+        'dispatch claim requires the exact current controller head'
+    );
 END;
 
 CREATE TRIGGER trg_dispatch_claim_advances_effect_state
@@ -2437,12 +2513,35 @@ CREATE TRIGGER trg_protection_authority_no_nonflat_transfer
         )
      AND EXISTS (
             SELECT 1
-              FROM symbol_controller AS controller
+             FROM symbol_controller AS controller
              WHERE controller.scope_id = NEW.scope_id
-               AND controller.aggregate_quantity <> 0
+               AND (
+                    controller.aggregate_quantity <> 0
+                    OR controller.integrity_state
+                        <> 'CONSISTENT'
+               )
         )
 BEGIN
-    SELECT RAISE (ABORT, 'nonflat protection authority cannot transfer');
+    SELECT RAISE (
+        ABORT,
+        'nonflat or quarantined protection authority cannot transfer'
+    );
+END;
+
+CREATE TRIGGER trg_protection_authority_requires_consistent_controller
+    BEFORE INSERT ON protection_authority
+    FOR EACH ROW
+    WHEN NOT EXISTS (
+            SELECT 1
+              FROM symbol_controller AS controller
+             WHERE controller.scope_id = NEW.scope_id
+               AND controller.integrity_state = 'CONSISTENT'
+        )
+BEGIN
+    SELECT RAISE (
+        ABORT,
+        'protection authority requires a consistent controller'
+    );
 END;
 
 CREATE TRIGGER trg_market_stream_authority_no_update
@@ -2555,6 +2654,49 @@ def schema_ddl_digest() -> str:
     return _sha256(SCHEMA_DDL.encode("utf-8")).hexdigest()
 
 
+def _verify_connection_pragmas(connection: SQLiteConnectionProtocol) -> None:
+    """Refuse a connection that cannot enforce the schema's relational rules."""
+
+    foreign_keys_row = connection.execute("PRAGMA foreign_keys").fetchone()
+    if foreign_keys_row is None or int(foreign_keys_row[0]) != 1:
+        raise SchemaForeignKeysDisabledError(
+            "foreign keys must verifiably be enabled on every schema connection"
+        )
+    recursive_triggers_row = connection.execute("PRAGMA recursive_triggers").fetchone()
+    if recursive_triggers_row is None or int(recursive_triggers_row[0]) != 1:
+        raise SchemaInstallError(
+            "recursive triggers must verifiably be enabled on every schema connection"
+        )
+
+
+def verify_schema_connection(connection: SQLiteConnectionProtocol) -> int:
+    """Verify per-connection enforcement and the exact installed schema identity.
+
+    SQLite enforcement pragmas are connection-local and reset when a database is
+    reopened. Every future repository operation must call this guard before it
+    reads or writes schema authority; direct SQL on an unverified connection is
+    outside the persistence contract.
+    """
+
+    _verify_connection_pragmas(connection)
+    meta_row = connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_meta'"
+    ).fetchone()
+    if meta_row is None:
+        raise SchemaInstallError(
+            "connection does not expose the exact installed schema identity"
+        )
+    identity_row = connection.execute(
+        "SELECT schema_version, approved_ddl_sha256 FROM schema_meta"
+    ).fetchone()
+    expected = (SCHEMA_VERSION, schema_ddl_digest())
+    if identity_row is None or tuple(identity_row) != expected:
+        raise SchemaInstallError(
+            "connection does not expose the exact installed schema identity"
+        )
+    return SCHEMA_VERSION
+
+
 def _ddl_statements() -> tuple[str, ...]:
     """Split fixed DDL without importing or acquiring a database capability.
 
@@ -2602,16 +2744,7 @@ def install_schema(
             "approved_ddl_sha256 does not match the exact schema bytes; "
             "returning to the human gate"
         )
-    foreign_keys_row = connection.execute("PRAGMA foreign_keys").fetchone()
-    if foreign_keys_row is None or int(foreign_keys_row[0]) != 1:
-        raise SchemaForeignKeysDisabledError(
-            "foreign keys must verifiably be enabled before installation"
-        )
-    recursive_triggers_row = connection.execute("PRAGMA recursive_triggers").fetchone()
-    if recursive_triggers_row is None or int(recursive_triggers_row[0]) != 1:
-        raise SchemaInstallError(
-            "recursive triggers must verifiably be enabled before installation"
-        )
+    _verify_connection_pragmas(connection)
 
     connection.execute("BEGIN IMMEDIATE")
     try:
@@ -2644,4 +2777,5 @@ __all__ = (
     "install_schema",
     "schema_ddl",
     "schema_ddl_digest",
+    "verify_schema_connection",
 )

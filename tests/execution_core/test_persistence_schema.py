@@ -25,11 +25,12 @@ from app.execution_core.persistence.schema import (
     SchemaTargetNotEmptyError,
     install_schema,
     schema_ddl_digest,
+    verify_schema_connection,
 )
 
 
 _GATE_DIGEST: str | None = (
-    "8bfbfaa30302d3c6be3266b02e3bc19bc6b3c72484fbd9a324aba0561e912ed0"
+    "cd9ffbd8997ce66c5a332473de4697f5d3ecfbab9b8810866af380d7968ee1cf"
 )
 
 _OPEN_CONNECTIONS: list[sqlite3.Connection] = []
@@ -236,6 +237,39 @@ def _seed_scope_with_live_generation(connection: sqlite3.Connection) -> int:
     return 1
 
 
+def _insert_controller(
+    connection: sqlite3.Connection,
+    *,
+    scope_id: int = 1,
+    application_generation_id: str = _DEFAULT_GENERATION_ID,
+    execution_profile_id: str = _DEFAULT_EXECUTION_PROFILE_ID,
+    acquisition_generation_id: str = "12" * 32,
+    emergency_compatibility_sha256: str = "9b" * 32,
+    aggregate_quantity: int = 0,
+    integrity_state: str = "CONSISTENT",
+) -> int:
+    connection.execute(
+        """
+        INSERT INTO symbol_controller (
+            scope_id, application_generation_id, execution_profile_id,
+            live_acquisition_generation_id, aggregate_quantity,
+            integrity_state, currentness_head_ordinal,
+            controller_version_ordinal, emergency_compatibility_sha256
+        ) VALUES (?, ?, ?, ?, ?, ?, 0, 1, ?)
+        """,
+        (
+            scope_id,
+            application_generation_id,
+            execution_profile_id,
+            acquisition_generation_id,
+            aggregate_quantity,
+            integrity_state,
+            emergency_compatibility_sha256,
+        ),
+    )
+    return scope_id
+
+
 def _insert_root(
     connection: sqlite3.Connection,
     *,
@@ -364,6 +398,7 @@ def _insert_bust(
     predecessor_fact_id: int,
     scope_id: int = 1,
     fact_ordinal: int | None = None,
+    side: str = "BUY",
 ) -> int:
     stored_ordinal = fact_id if fact_ordinal is None else fact_ordinal
     connection.execute(
@@ -377,7 +412,7 @@ def _insert_bust(
             tick_scale_digits, tick_scale_exponent,
             predecessor_fact_id, fact_ordinal
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, 'BUY', 'TRADE_BUST',
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'TRADE_BUST',
                 'BROKER_AUTHORITATIVE', 0,
                 0, 0, 0, '0', 0, 0, 0, '0', 0, ?, ?)
         """,
@@ -389,6 +424,7 @@ def _insert_bust(
             root_id,
             event,
             f"order-{root_id}",
+            side,
             predecessor_fact_id,
             stored_ordinal,
         ),
@@ -406,19 +442,49 @@ def _insert_open_effect(
     execution_profile_id: str = _DEFAULT_EXECUTION_PROFILE_ID,
     acquisition_generation_id: str = "12" * 32,
     generation_mandate_commitment_sha256: str = "9a" * 32,
+    expected_controller_head_ordinal: int | None = None,
 ) -> int:
     del root_id
+    controller_row = connection.execute(
+        "SELECT currentness_head_ordinal FROM symbol_controller WHERE scope_id = ?",
+        (scope_id,),
+    ).fetchone()
+    if controller_row is None:
+        compatibility_row = connection.execute(
+            "SELECT emergency_compatibility_sha256"
+            " FROM acquisition_generation"
+            " WHERE acquisition_generation_id = ? AND scope_id = ?",
+            (acquisition_generation_id, scope_id),
+        ).fetchone()
+        compatibility = (
+            str(compatibility_row[0]) if compatibility_row is not None else "9b" * 32
+        )
+        _insert_controller(
+            connection,
+            scope_id=scope_id,
+            application_generation_id=application_generation_id,
+            execution_profile_id=execution_profile_id,
+            acquisition_generation_id=acquisition_generation_id,
+            emergency_compatibility_sha256=compatibility,
+        )
+        controller_row = (0,)
+    stored_head = (
+        int(controller_row[0])
+        if expected_controller_head_ordinal is None
+        else expected_controller_head_ordinal
+    )
     connection.execute(
         """
         INSERT INTO venue_effect (
             effect_id, effect_external, scope_id, application_generation_id,
             execution_profile_id, acquisition_generation_id,
             generation_mandate_commitment_sha256,
+            expected_controller_head_ordinal,
             request_occurrence_external, mandate_external, effect_kind,
             client_order_external, target_order_external, side, quantity,
             economic_scope, lifecycle_state, disposition, created_ordinal
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'SUBMIT', ?, NULL, 'BUY', 10,
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'SUBMIT', ?, NULL, 'BUY', 10,
                 x'01', 'REQUESTED', 'OPEN', ?)
         """,
         (
@@ -429,6 +495,7 @@ def _insert_open_effect(
             execution_profile_id,
             acquisition_generation_id,
             generation_mandate_commitment_sha256,
+            stored_head,
             f"request-{effect_id}",
             f"mandate-{effect_id}",
             f"client-{effect_id}",
@@ -679,6 +746,14 @@ def test_disabled_recursive_triggers_are_refused_before_ddl(tmp_path: object) ->
     assert connection.execute("SELECT count(*) FROM sqlite_master").fetchone() == (0,)
 
 
+def test_connection_verifier_refuses_an_uninstalled_temporary_database(
+    tmp_path: object,
+) -> None:
+    connection = _connection(tmp_path)
+    with pytest.raises(SchemaInstallError, match="exact installed schema identity"):
+        verify_schema_connection(connection)
+
+
 def test_install_failure_rolls_back_all_ddl_and_remains_retryable(
     tmp_path: object,
 ) -> None:
@@ -723,6 +798,7 @@ def test_module_import_stays_inert_without_any_database() -> None:
         "install_schema",
         "schema_ddl",
         "schema_ddl_digest",
+        "verify_schema_connection",
     }
 
 
@@ -1130,6 +1206,7 @@ def test_insert_or_replace_cannot_bypass_immutable_authority(
 ) -> None:
     connection = _installed_connection(tmp_path)
     _seed_scope_with_live_generation(connection)
+    _insert_controller(connection)
     _insert_root(connection)
     _insert_fill(connection, fact_id=1, root_id=1, event="evt-1")
     _insert_open_effect(connection, 1)
@@ -1315,6 +1392,7 @@ def test_requested_effect_is_rootless_and_preserves_complete_scope(
 ) -> None:
     connection = _installed_connection(tmp_path)
     _seed_scope_with_live_generation(connection)
+    _insert_controller(connection)
 
     connection.execute(
         """
@@ -1322,11 +1400,12 @@ def test_requested_effect_is_rootless_and_preserves_complete_scope(
             effect_id, effect_external, scope_id, application_generation_id,
             execution_profile_id, acquisition_generation_id,
             generation_mandate_commitment_sha256,
+            expected_controller_head_ordinal,
             request_occurrence_external, mandate_external, effect_kind,
             client_order_external, target_order_external, side, quantity,
             economic_scope, lifecycle_state, disposition, created_ordinal
         ) VALUES (
-            1, 'effect-1', 1, ?, ?, ?, ?, 'request-1', 'mandate-1',
+            1, 'effect-1', 1, ?, ?, ?, ?, 0, 'request-1', 'mandate-1',
             'SUBMIT', 'client-1', NULL, 'BUY', 10, x'0102',
             'REQUESTED', 'OPEN', 1
         )
@@ -1378,6 +1457,11 @@ def test_invalidation_evidence_atomically_invalidates_closed_effect(
         ("91" * 32,),
     )
 
+    with pytest.raises(sqlite3.IntegrityError, match="acceptance transition"):
+        connection.execute(
+            "UPDATE venue_effect SET disposition = 'INVALIDATED' WHERE effect_id = 1"
+        )
+
     with pytest.raises(sqlite3.IntegrityError):
         connection.execute(
             "INSERT INTO acceptance_evidence VALUES"
@@ -1394,6 +1478,34 @@ def test_invalidation_evidence_atomically_invalidates_closed_effect(
     assert connection.execute(
         "SELECT disposition FROM venue_effect WHERE effect_id = 1"
     ).fetchone() == ("INVALIDATED",)
+
+
+def test_effect_creation_and_dispatch_claim_require_current_controller_head(
+    tmp_path: object,
+) -> None:
+    connection = _installed_connection(tmp_path)
+    _seed_scope_with_live_generation(connection)
+    _insert_controller(connection)
+    _insert_open_effect(connection, 1, expected_controller_head_ordinal=0)
+    _insert_root(connection)
+    _insert_fill(connection, fact_id=1, root_id=1, event="controller-advance")
+
+    with pytest.raises(sqlite3.IntegrityError, match="current controller head"):
+        _insert_claim(connection, claim_id=1, effect_id=1)
+    assert connection.execute("SELECT count(*) FROM dispatch_claim").fetchone() == (0,)
+    assert connection.execute(
+        "SELECT lifecycle_state FROM venue_effect WHERE effect_id = 1"
+    ).fetchone() == ("REQUESTED",)
+
+    with pytest.raises(sqlite3.IntegrityError, match="current controller head"):
+        _insert_open_effect(
+            connection,
+            2,
+            expected_controller_head_ordinal=0,
+        )
+
+    _insert_open_effect(connection, 3, expected_controller_head_ordinal=1)
+    assert _insert_claim(connection, claim_id=2, effect_id=3) == 2
 
 
 def test_owner_identity_cannot_rebind_across_scopes_in_one_profile(
@@ -1477,11 +1589,109 @@ def test_nonflat_protection_stream_cannot_be_transferred(tmp_path: object) -> No
         )
 
 
+def test_sticky_quarantine_refuses_flat_protection_transfer(tmp_path: object) -> None:
+    connection = _installed_connection(tmp_path)
+    _seed_scope_with_live_generation(connection)
+    _insert_controller(connection)
+    _insert_root(connection)
+    for stream_id in ("81" * 32, "82" * 32):
+        _insert_market_stream(connection, stream_generation_id=stream_id)
+    _insert_protection_authority(
+        connection,
+        stream_generation_id="81" * 32,
+        state_commitment_sha256="93" * 32,
+        version_ordinal=1,
+    )
+
+    _insert_fill(
+        connection,
+        fact_id=1,
+        root_id=1,
+        event="negative-fill",
+        side="SELL",
+    )
+    _insert_bust(
+        connection,
+        fact_id=2,
+        root_id=1,
+        event="negative-fill-bust",
+        predecessor_fact_id=1,
+        side="SELL",
+    )
+    assert connection.execute(
+        "SELECT aggregate_quantity, integrity_state FROM symbol_controller"
+    ).fetchone() == (0, "NEGATIVE_POSITION_QUARANTINED")
+
+    with pytest.raises(sqlite3.IntegrityError, match="quarantined"):
+        connection.execute(
+            "UPDATE protection_authority SET active_stream_generation_id = ?,"
+            " state_commitment_sha256 = ?, version_ordinal = 2 WHERE scope_id = 1",
+            ("82" * 32, "94" * 32),
+        )
+
+
+def test_quarantined_controller_refuses_new_protection_authority(
+    tmp_path: object,
+) -> None:
+    connection = _installed_connection(tmp_path)
+    _seed_scope_with_live_generation(connection)
+    _insert_controller(connection)
+    _insert_root(connection)
+    _insert_fill(
+        connection,
+        fact_id=1,
+        root_id=1,
+        event="negative-fill",
+        side="SELL",
+    )
+
+    with pytest.raises(sqlite3.IntegrityError, match="consistent controller"):
+        _insert_protection_authority(
+            connection,
+            state_commitment_sha256="95" * 32,
+            version_ordinal=1,
+        )
+
+
+def test_protection_versions_are_scope_local(tmp_path: object) -> None:
+    connection = _installed_connection(tmp_path)
+    _seed_two_scopes(connection)
+    _insert_controller(connection)
+    _insert_controller(
+        connection,
+        scope_id=2,
+        application_generation_id="56" * 32,
+        execution_profile_id="67" * 32,
+        acquisition_generation_id="34" * 32,
+        emergency_compatibility_sha256="8b" * 32,
+    )
+
+    assert (
+        _insert_protection_authority(
+            connection,
+            scope_id=1,
+            state_commitment_sha256="96" * 32,
+            version_ordinal=1,
+        )
+        == 1
+    )
+    assert (
+        _insert_protection_authority(
+            connection,
+            scope_id=2,
+            state_commitment_sha256="97" * 32,
+            version_ordinal=1,
+        )
+        == 2
+    )
+
+
 def test_reopened_default_connection_cannot_replace_direct_authority(
     tmp_path: object,
 ) -> None:
     connection = _installed_connection(tmp_path)
     _seed_scope_with_live_generation(connection)
+    _insert_controller(connection)
     _insert_protection_authority(
         connection,
         state_commitment_sha256="95" * 32,
@@ -1493,7 +1703,21 @@ def test_reopened_default_connection_cannot_replace_direct_authority(
 
     reopened = sqlite3.connect(tmp_path / "m2-i2-gate.db")  # type: ignore[operator]
     _OPEN_CONNECTIONS.append(reopened)
+    assert reopened.execute("PRAGMA foreign_keys").fetchone() == (0,)
     assert reopened.execute("PRAGMA recursive_triggers").fetchone() == (0,)
+    with pytest.raises(sqlite3.IntegrityError, match="metadata is already retained"):
+        reopened.execute(
+            "INSERT OR REPLACE INTO schema_meta VALUES (1, ?)",
+            ("00" * 32,),
+        )
+    reopened.rollback()
+    with pytest.raises(SchemaForeignKeysDisabledError):
+        verify_schema_connection(reopened)
+    reopened.execute("PRAGMA foreign_keys = ON")
+    with pytest.raises(SchemaInstallError, match="recursive triggers"):
+        verify_schema_connection(reopened)
+    reopened.execute("PRAGMA recursive_triggers = ON")
+    assert verify_schema_connection(reopened) == SCHEMA_VERSION
     with pytest.raises(sqlite3.IntegrityError):
         reopened.execute(
             "INSERT OR REPLACE INTO protection_authority VALUES"
@@ -1732,6 +1956,7 @@ def test_effect_schema_carries_lifecycle_and_bound_closure_proof(
         str(row[1]) for row in connection.execute("PRAGMA table_info(venue_effect)")
     }
     assert {
+        "expected_controller_head_ordinal",
         "lifecycle_state",
         "closure_proof_kind",
         "closure_proof_digest",
@@ -1743,6 +1968,7 @@ def test_effect_schema_carries_lifecycle_and_bound_closure_proof(
 def test_effect_must_start_open(tmp_path: object) -> None:
     connection = _installed_connection(tmp_path)
     _seed_scope_with_live_generation(connection)
+    _insert_controller(connection)
     _insert_root(connection)
 
     with pytest.raises(sqlite3.IntegrityError, match="starts OPEN"):
@@ -1753,11 +1979,12 @@ def test_effect_must_start_open(tmp_path: object) -> None:
                 application_generation_id, execution_profile_id,
                 acquisition_generation_id,
                 generation_mandate_commitment_sha256,
+                expected_controller_head_ordinal,
                 request_occurrence_external, mandate_external, effect_kind,
                 client_order_external, target_order_external, side, quantity,
                 economic_scope, lifecycle_state, disposition, created_ordinal
             )
-            VALUES (10, 'effect-10', 1, ?, ?, ?, ?,
+            VALUES (10, 'effect-10', 1, ?, ?, ?, ?, 0,
                     'request-10', 'mandate-10', 'SUBMIT', 'client-10', NULL,
                     'BUY', 10, x'01', 'REQUESTED', 'CLOSED', 10)
             """,
@@ -1813,6 +2040,7 @@ def test_market_stream_route_is_exact_scope_session_and_source_profile(
     } <= columns
 
     _seed_scope_with_live_generation(connection)
+    _insert_controller(connection)
     stream_id = "81" * 32
     _insert_market_stream(
         connection,
@@ -2045,8 +2273,16 @@ def test_close_requires_committed_claim_and_terminal_freezes(
 
     # Accepted authority (EC-2 / acceptance_set machine): CLOSED advances
     # only to INVALIDATED, which is then fully terminal.
+    with pytest.raises(sqlite3.IntegrityError, match="acceptance transition"):
+        connection.execute(
+            "UPDATE venue_effect SET disposition = 'INVALIDATED' WHERE effect_id = 1"
+        )
     connection.execute(
-        "UPDATE venue_effect SET disposition = 'INVALIDATED' WHERE effect_id = 1"
+        "INSERT INTO acceptance_evidence (evidence_id, acceptance_set_id,"
+        " effect_id, evidence_kind, proof_kind, evidence_digest, evidence_ordinal,"
+        " contradiction_owner_external, contradiction_observation_external)"
+        " VALUES (2, 1, 1, 'INVALIDATION', NULL, ?, 2, ?, ?)",
+        ("72" * 32, "owner-1", "observation-owner-1"),
     )
     with pytest.raises(sqlite3.IntegrityError):
         connection.execute(
@@ -2073,7 +2309,7 @@ def test_close_requires_committed_claim_and_terminal_freezes(
         INSERT INTO acceptance_evidence (
             evidence_id, acceptance_set_id, effect_id, evidence_kind,
             proof_kind, evidence_digest, evidence_ordinal
-        ) VALUES (2, 2, 2, 'CLOSURE_PROOF', 'NEVER_DISPATCHED', ?, 2)
+        ) VALUES (3, 2, 2, 'CLOSURE_PROOF', 'NEVER_DISPATCHED', ?, 3)
         """,
         ("72" * 32,),
     )
@@ -2083,7 +2319,7 @@ def test_close_requires_committed_claim_and_terminal_freezes(
            SET disposition = 'CLOSED',
                closure_proof_kind = 'NEVER_DISPATCHED',
                closure_proof_digest = ?,
-               closure_proof_evidence_id = 2
+               closure_proof_evidence_id = 3
          WHERE effect_id = 2
         """,
         ("72" * 32,),
@@ -2103,7 +2339,7 @@ def test_close_requires_committed_claim_and_terminal_freezes(
         INSERT INTO acceptance_evidence (
             evidence_id, acceptance_set_id, effect_id, evidence_kind,
             proof_kind, evidence_digest, evidence_ordinal
-        ) VALUES (3, 3, 3, 'CLOSURE_PROOF', 'NEVER_DISPATCHED', ?, 3)
+        ) VALUES (4, 3, 3, 'CLOSURE_PROOF', 'NEVER_DISPATCHED', ?, 4)
         """,
         ("73" * 32,),
     )
@@ -2114,7 +2350,7 @@ def test_close_requires_committed_claim_and_terminal_freezes(
                SET disposition = 'CLOSED',
                    closure_proof_kind = 'NEVER_DISPATCHED',
                    closure_proof_digest = ?,
-                   closure_proof_evidence_id = 3
+                   closure_proof_evidence_id = 4
              WHERE effect_id = 3
             """,
             ("73" * 32,),
@@ -2751,8 +2987,16 @@ def test_venue_effect_cannot_reference_generation_of_another_scope(
     connection = _installed_connection(tmp_path)
     _seed_two_scopes(connection)
     assert _insert_open_effect(connection, 1) == 1
+    _insert_controller(
+        connection,
+        scope_id=2,
+        application_generation_id="56" * 32,
+        execution_profile_id="67" * 32,
+        acquisition_generation_id="34" * 32,
+        emergency_compatibility_sha256="8b" * 32,
+    )
 
-    with pytest.raises(sqlite3.IntegrityError, match="FOREIGN KEY"):
+    with pytest.raises(sqlite3.IntegrityError, match="current controller head"):
         _insert_open_effect(
             connection,
             2,
