@@ -922,6 +922,10 @@ CREATE TABLE protection_authority (
         AND (active_stream_generation_id IS NULL)
         = (active_sequence_mode IS NULL)
     ),
+    CHECK (
+        authority_class = 'NORMAL'
+        OR active_stream_generation_id IS NOT NULL
+    ),
     FOREIGN KEY (
         active_stream_generation_id, scope_id,
         active_acquisition_generation_id,
@@ -1830,6 +1834,54 @@ CREATE TRIGGER trg_symbol_controller_integrity_sticky_update
     BEFORE UPDATE OF aggregate_quantity, integrity_state ON symbol_controller
     FOR EACH ROW
     WHEN NEW.integrity_state <> CASE
+            WHEN NEW.aggregate_quantity < 0
+                THEN 'NEGATIVE_POSITION_QUARANTINED'
+            WHEN OLD.integrity_state = 'MIXED_GENERATION_RECOVERY'
+             AND NEW.aggregate_quantity = 0
+             AND EXISTS (
+                    SELECT 1
+                      FROM execution_fact AS fact
+                      JOIN root_fill AS root
+                        ON root.root_fill_key_id = fact.root_fill_key_id
+                       AND root.current_fact_id = fact.fact_id
+                      JOIN acquisition_root_route AS route
+                        ON route.root_fill_key_id = fact.root_fill_key_id
+                       AND route.scope_id = fact.scope_id
+                     WHERE fact.scope_id = NEW.scope_id
+                       AND fact.fact_ordinal = (
+                            SELECT MAX(candidate.fact_ordinal)
+                              FROM execution_fact AS candidate
+                        )
+                       AND route.acquisition_generation_id =
+                            NEW.live_acquisition_generation_id
+                       AND (
+                            fact.predecessor_fact_id IS NULL
+                            OR NOT EXISTS (
+                                SELECT 1
+                                  FROM execution_fact AS predecessor
+                                 WHERE predecessor.fact_id =
+                                        fact.predecessor_fact_id
+                                   AND predecessor.side IS fact.side
+                                   AND predecessor.quantity IS fact.quantity
+                                   AND predecessor.price_present
+                                        IS fact.price_present
+                                   AND predecessor.price_units IS fact.price_units
+                                   AND predecessor.scale_sign IS fact.scale_sign
+                                   AND predecessor.scale_digits
+                                        IS fact.scale_digits
+                                   AND predecessor.scale_exponent
+                                        IS fact.scale_exponent
+                                   AND predecessor.tick_units IS fact.tick_units
+                                   AND predecessor.tick_scale_sign
+                                        IS fact.tick_scale_sign
+                                   AND predecessor.tick_scale_digits
+                                        IS fact.tick_scale_digits
+                                   AND predecessor.tick_scale_exponent
+                                        IS fact.tick_scale_exponent
+                            )
+                        )
+                )
+                THEN 'CONSISTENT'
             WHEN OLD.integrity_state <> 'CONSISTENT'
                 THEN OLD.integrity_state
             WHEN NEW.integrity_state = 'MIXED_GENERATION_RECOVERY'
@@ -1866,8 +1918,6 @@ CREATE TRIGGER trg_symbol_controller_integrity_sticky_update
                         )
                 )
                 THEN 'UNMATCHED_LINEAGE_QUARANTINED'
-            WHEN NEW.aggregate_quantity < 0
-                THEN 'NEGATIVE_POSITION_QUARANTINED'
             ELSE 'CONSISTENT'
         END
 BEGIN
@@ -2146,6 +2196,74 @@ BEGIN
                 0
            ),
            integrity_state = CASE
+                WHEN COALESCE(
+                        (
+                            SELECT SUM(
+                                CASE root.current_side
+                                    WHEN 'BUY' THEN root.current_quantity
+                                    ELSE -root.current_quantity
+                                END
+                            )
+                              FROM root_fill AS root
+                             WHERE root.scope_id = NEW.scope_id
+                               AND root.current_fact_id IS NOT NULL
+                        ),
+                        0
+                    ) < 0
+                    THEN 'NEGATIVE_POSITION_QUARANTINED'
+                WHEN integrity_state = 'MIXED_GENERATION_RECOVERY'
+                 AND COALESCE(
+                        (
+                            SELECT SUM(
+                                CASE root.current_side
+                                    WHEN 'BUY' THEN root.current_quantity
+                                    ELSE -root.current_quantity
+                                END
+                            )
+                              FROM root_fill AS root
+                             WHERE root.scope_id = NEW.scope_id
+                               AND root.current_fact_id IS NOT NULL
+                        ),
+                        0
+                    ) = 0
+                 AND EXISTS (
+                        SELECT 1
+                          FROM acquisition_root_route AS route
+                         WHERE route.root_fill_key_id = NEW.root_fill_key_id
+                           AND route.scope_id = NEW.scope_id
+                           AND route.acquisition_generation_id =
+                                live_acquisition_generation_id
+                           AND (
+                                NEW.predecessor_fact_id IS NULL
+                                OR NOT EXISTS (
+                                    SELECT 1
+                                      FROM execution_fact AS predecessor
+                                     WHERE predecessor.fact_id =
+                                            NEW.predecessor_fact_id
+                                       AND predecessor.side IS NEW.side
+                                       AND predecessor.quantity IS NEW.quantity
+                                       AND predecessor.price_present
+                                            IS NEW.price_present
+                                       AND predecessor.price_units
+                                            IS NEW.price_units
+                                       AND predecessor.scale_sign
+                                            IS NEW.scale_sign
+                                       AND predecessor.scale_digits
+                                            IS NEW.scale_digits
+                                       AND predecessor.scale_exponent
+                                            IS NEW.scale_exponent
+                                       AND predecessor.tick_units
+                                            IS NEW.tick_units
+                                       AND predecessor.tick_scale_sign
+                                            IS NEW.tick_scale_sign
+                                       AND predecessor.tick_scale_digits
+                                            IS NEW.tick_scale_digits
+                                       AND predecessor.tick_scale_exponent
+                                            IS NEW.tick_scale_exponent
+                                )
+                            )
+                    )
+                    THEN 'CONSISTENT'
                 WHEN integrity_state <> 'CONSISTENT'
                     THEN integrity_state
                 WHEN NOT EXISTS (
@@ -2203,25 +2321,76 @@ BEGIN
                         )
                     )
                     THEN 'MIXED_GENERATION_RECOVERY'
-                WHEN COALESCE(
-                        (
-                            SELECT SUM(
-                                CASE root.current_side
-                                    WHEN 'BUY' THEN root.current_quantity
-                                    ELSE -root.current_quantity
-                                END
-                            )
-                              FROM root_fill AS root
-                             WHERE root.scope_id = NEW.scope_id
-                               AND root.current_fact_id IS NOT NULL
-                        ),
-                        0
-                    ) < 0
-                    THEN 'NEGATIVE_POSITION_QUARANTINED'
                 ELSE 'CONSISTENT'
             END,
-           currentness_head_ordinal = currentness_head_ordinal + 1,
-           controller_version_ordinal = controller_version_ordinal + 1
+           currentness_head_ordinal = currentness_head_ordinal + CASE
+                WHEN EXISTS (
+                        SELECT 1
+                          FROM execution_fact AS predecessor
+                          JOIN acquisition_root_route AS route
+                            ON route.root_fill_key_id =
+                                NEW.root_fill_key_id
+                          JOIN acquisition_generation AS generation
+                            ON generation.acquisition_generation_id =
+                                route.acquisition_generation_id
+                           AND generation.scope_id = route.scope_id
+                         WHERE predecessor.fact_id =
+                                NEW.predecessor_fact_id
+                           AND generation.status = 'RETIRED_UNSERVING'
+                           AND predecessor.side IS NEW.side
+                           AND predecessor.quantity IS NEW.quantity
+                           AND predecessor.price_present
+                                IS NEW.price_present
+                           AND predecessor.price_units IS NEW.price_units
+                           AND predecessor.scale_sign IS NEW.scale_sign
+                           AND predecessor.scale_digits IS NEW.scale_digits
+                           AND predecessor.scale_exponent
+                                IS NEW.scale_exponent
+                           AND predecessor.tick_units IS NEW.tick_units
+                           AND predecessor.tick_scale_sign
+                                IS NEW.tick_scale_sign
+                           AND predecessor.tick_scale_digits
+                                IS NEW.tick_scale_digits
+                           AND predecessor.tick_scale_exponent
+                                IS NEW.tick_scale_exponent
+                    )
+                    THEN 0
+                ELSE 1
+            END,
+           controller_version_ordinal = controller_version_ordinal + CASE
+                WHEN EXISTS (
+                        SELECT 1
+                          FROM execution_fact AS predecessor
+                          JOIN acquisition_root_route AS route
+                            ON route.root_fill_key_id =
+                                NEW.root_fill_key_id
+                          JOIN acquisition_generation AS generation
+                            ON generation.acquisition_generation_id =
+                                route.acquisition_generation_id
+                           AND generation.scope_id = route.scope_id
+                         WHERE predecessor.fact_id =
+                                NEW.predecessor_fact_id
+                           AND generation.status = 'RETIRED_UNSERVING'
+                           AND predecessor.side IS NEW.side
+                           AND predecessor.quantity IS NEW.quantity
+                           AND predecessor.price_present
+                                IS NEW.price_present
+                           AND predecessor.price_units IS NEW.price_units
+                           AND predecessor.scale_sign IS NEW.scale_sign
+                           AND predecessor.scale_digits IS NEW.scale_digits
+                           AND predecessor.scale_exponent
+                                IS NEW.scale_exponent
+                           AND predecessor.tick_units IS NEW.tick_units
+                           AND predecessor.tick_scale_sign
+                                IS NEW.tick_scale_sign
+                           AND predecessor.tick_scale_digits
+                                IS NEW.tick_scale_digits
+                           AND predecessor.tick_scale_exponent
+                                IS NEW.tick_scale_exponent
+                    )
+                    THEN 0
+                ELSE 1
+            END
      WHERE scope_id = NEW.scope_id;
 END;
 
@@ -2304,6 +2473,18 @@ CREATE TRIGGER trg_venue_effect_requires_current_controller
                         controller.integrity_state =
                             'MIXED_GENERATION_RECOVERY'
                         AND NEW.authority_class = 'HARD_BAIL'
+                        AND controller.aggregate_quantity > 0
+                        AND NEW.quantity <= controller.aggregate_quantity
+                        AND EXISTS (
+                            SELECT 1
+                              FROM protection_authority AS protection
+                             WHERE protection.scope_id = NEW.scope_id
+                               AND protection.authority_class = 'HARD_BAIL'
+                               AND protection.expected_controller_head_ordinal =
+                                    NEW.expected_controller_head_ordinal
+                               AND protection.active_acquisition_generation_id =
+                                    NEW.acquisition_generation_id
+                        )
                     )
                )
         )
@@ -2559,6 +2740,18 @@ CREATE TRIGGER trg_dispatch_claim_requires_current_controller
                         controller.integrity_state =
                             'MIXED_GENERATION_RECOVERY'
                         AND effect.authority_class = 'HARD_BAIL'
+                        AND controller.aggregate_quantity > 0
+                        AND effect.quantity <= controller.aggregate_quantity
+                        AND EXISTS (
+                            SELECT 1
+                              FROM protection_authority AS protection
+                             WHERE protection.scope_id = effect.scope_id
+                               AND protection.authority_class = 'HARD_BAIL'
+                               AND protection.expected_controller_head_ordinal =
+                                    effect.expected_controller_head_ordinal
+                               AND protection.active_acquisition_generation_id =
+                                    effect.acquisition_generation_id
+                        )
                     )
                )
              WHERE effect.effect_id = NEW.effect_id
@@ -2838,9 +3031,19 @@ CREATE TRIGGER trg_protection_authority_requires_consistent_controller
                AND controller.currentness_head_ordinal =
                     NEW.expected_controller_head_ordinal
                AND (
-                    NEW.active_acquisition_generation_id IS NULL
-                    OR controller.live_acquisition_generation_id =
-                        NEW.active_acquisition_generation_id
+                    (
+                        NEW.authority_class = 'NORMAL'
+                        AND (
+                            NEW.active_acquisition_generation_id IS NULL
+                            OR controller.live_acquisition_generation_id =
+                                NEW.active_acquisition_generation_id
+                        )
+                    )
+                    OR (
+                        NEW.authority_class = 'HARD_BAIL'
+                        AND controller.live_acquisition_generation_id =
+                            NEW.active_acquisition_generation_id
+                    )
                )
         )
 BEGIN
@@ -2871,9 +3074,19 @@ CREATE TRIGGER trg_protection_authority_update_requires_current_controller
                AND controller.currentness_head_ordinal =
                     NEW.expected_controller_head_ordinal
                AND (
-                    NEW.active_acquisition_generation_id IS NULL
-                    OR controller.live_acquisition_generation_id =
-                        NEW.active_acquisition_generation_id
+                    (
+                        NEW.authority_class = 'NORMAL'
+                        AND (
+                            NEW.active_acquisition_generation_id IS NULL
+                            OR controller.live_acquisition_generation_id =
+                                NEW.active_acquisition_generation_id
+                        )
+                    )
+                    OR (
+                        NEW.authority_class = 'HARD_BAIL'
+                        AND controller.live_acquisition_generation_id =
+                            NEW.active_acquisition_generation_id
+                    )
                )
         )
 BEGIN
@@ -2957,7 +3170,7 @@ END;
 """
 
 _SCHEMA_CATALOG_SHA256 = (
-    "88b9dc1cbe4771f689f8d308802c2786b5e283910acfba70b7d341a1973113da"
+    "65dfedd48abfb25faf1ae1e758bccbb2738330370d1acc9df16b480add09c000"
 )
 
 
