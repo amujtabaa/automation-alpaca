@@ -271,6 +271,35 @@ the catalog identity matched on CPython 3.14.5 / SQLite 3.50.4; Ruff, formatting
 source files, 32 import-boundary tests, six import contracts, scope, ledger, and whitespace checks
 passed. `request-final-03.md` opens fresh exact-commit review.
 
+### Final review 03 verdict and direct generation-closure redesign
+
+The review of `9841bae870c462b36ec92d0dd588701d5c7125f6` returned combined `BLOCK`, P0=2,
+P1=3. `result-round6.md` preserves the unique findings: unresolved predecessor SELL authority
+could coexist with successor BUY authority; mixed recovery could clear around retained unmatched
+lineage; initial negative aggregate had the wrong classification priority; normal effects/claims
+did not require protection; and multi-acceptance ownership was unrepresentable.
+
+The replacement introduces one exact `acquisition_generation_current` record per generation with
+a direct economics head, unresolved-effect count, and active-protection count. Triggers maintain
+and verify those values against exact indexed authority. Controller unbinding, retirement, and
+successor admission require zero unresolved effects and non-serving predecessor protection. Late
+invalidation reopens the predecessor summary, advances controller currentness, and enters sticky
+unresolved-venue quarantine. Normal and HARD_BAIL effects bind exact protection, including its
+version, at creation and final claim. Negative and global unmatched classifications outrank mixed
+release, and distinct concrete owners may coexist under one effect without weakening exact route
+or closure keys.
+
+The replacement source/test candidate is commit
+`00507efebbb9dcee3f0f2926a718df3a4bd205c3`, tree
+`ba7a9f74aab639601bafaa41f543884946de99a5`, with `SCHEMA_DDL` exactly `138,120`
+UTF-8 bytes and SHA-256 `a798137e8d9b062abec70317167242a6afd68732654258e912c49e1317f2bd16`.
+Its installed-catalog fingerprint is
+`c2cbf42b61ec6ca6928dc63e5165584f525356a64878907574ab93c975478d56`. Fresh evidence:
+80 schema tests and all 1,688 collected `tests/execution_core` tests passed on CPython 3.12.13;
+the catalog identity matched on CPython 3.14.5 / SQLite 3.50.4; Ruff, formatting, mypy over 91
+source files, 32 import-boundary tests, six import contracts, scope, ledger, and whitespace checks
+passed. `request-final-04.md` opens fresh exact-commit review.
+
 ## Functional requirements
 
 - FR-1: The schema MUST bind one immutable application generation to one selected execution profile and a
