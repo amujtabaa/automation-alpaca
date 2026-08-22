@@ -30,7 +30,7 @@ from app.execution_core.persistence.schema import (
 
 
 _GATE_DIGEST: str | None = (
-    "1e5c0f1051bc41ec381135d76d020a299c507711bfdf9a23646b9e7d801338dc"
+    "2dc33ba1af41d7516b2cde43cac85ea6644dc9ab904501065aae1c77b14d3859"
 )
 
 _OPEN_CONNECTIONS: list[sqlite3.Connection] = []
@@ -3014,17 +3014,25 @@ def test_reopened_default_connection_cannot_replace_invalidation_evidence(
     _insert_open_effect(connection, 1)
     _insert_venue_owner(connection, owner_external="owner-1", effect_id=1)
     _insert_claim(connection, claim_id=1, effect_id=1)
+    _insert_open_effect(connection, 2)
+    _insert_venue_owner(connection, owner_external="owner-2", effect_id=2)
+    _insert_claim(connection, claim_id=2, effect_id=2)
     _close_generation_authority(connection, generation_id="12" * 32)
     acceptance_set_id = int(
         connection.execute(
             "SELECT acceptance_set_id FROM acceptance_set WHERE effect_id = 1"
         ).fetchone()[0]
     )
+    other_acceptance_set_id = int(
+        connection.execute(
+            "SELECT acceptance_set_id FROM acceptance_set WHERE effect_id = 2"
+        ).fetchone()[0]
+    )
     connection.execute(
         "INSERT INTO acceptance_evidence (evidence_id, acceptance_set_id,"
         " effect_id, evidence_kind, proof_kind, evidence_digest, evidence_ordinal,"
         " contradiction_owner_external, contradiction_observation_external)"
-        " VALUES (99, ?, 1, 'INVALIDATION', NULL, ?, 2, 'owner-1',"
+        " VALUES (99, ?, 1, 'INVALIDATION', NULL, ?, 3, 'owner-1',"
         " 'observation-owner-1')",
         (acceptance_set_id, "a8" * 32),
     )
@@ -3042,16 +3050,35 @@ def test_reopened_default_connection_cannot_replace_invalidation_evidence(
             " evidence_id, acceptance_set_id, effect_id, evidence_kind,"
             " proof_kind, evidence_digest, evidence_ordinal,"
             " contradiction_owner_external, contradiction_observation_external)"
-            " VALUES (100, ?, 1, 'INVALIDATION', NULL, ?, 3, 'owner-1',"
+            " VALUES (100, ?, 1, 'INVALIDATION', NULL, ?, 4, 'owner-1',"
             " 'observation-owner-1')",
             (acceptance_set_id, "a9" * 32),
         )
+    malformed_bindings = (
+        (101, acceptance_set_id, "owner-2", "observation-owner-1"),
+        (102, acceptance_set_id, "owner-1", "wrong-observation"),
+        (103, other_acceptance_set_id, "owner-1", "observation-owner-1"),
+    )
+    for evidence_id, set_id, owner, observation in malformed_bindings:
+        with pytest.raises(sqlite3.IntegrityError, match="exact retained authority"):
+            reopened.execute(
+                "INSERT INTO acceptance_evidence ("
+                " evidence_id, acceptance_set_id, effect_id, evidence_kind,"
+                " proof_kind, evidence_digest, evidence_ordinal,"
+                " contradiction_owner_external, contradiction_observation_external)"
+                " VALUES (?, ?, 1, 'INVALIDATION', NULL, ?, 4, ?, ?)",
+                (evidence_id, set_id, f"{evidence_id:064x}", owner, observation),
+            )
     reopened.rollback()
 
     assert reopened.execute(
         "SELECT evidence_id, evidence_kind FROM acceptance_evidence"
         " ORDER BY evidence_id"
-    ).fetchall() == [(1, "CLOSURE_PROOF"), (99, "INVALIDATION")]
+    ).fetchall() == [
+        (1, "CLOSURE_PROOF"),
+        (2, "CLOSURE_PROOF"),
+        (99, "INVALIDATION"),
+    ]
     assert reopened.execute(
         "SELECT closure_id, owner_external, closure_kind FROM closure_chain"
     ).fetchall() == [(-99, "owner-1", "INVALIDATED_TERMINAL")]
@@ -3064,6 +3091,9 @@ def test_reopened_default_connection_cannot_replace_invalidation_evidence(
         "SELECT integrity_state, currentness_head_ordinal,"
         " controller_version_ordinal FROM symbol_controller"
     ).fetchone() == ("UNRESOLVED_VENUE_QUARANTINED", 1, 2)
+    assert reopened.execute(
+        "SELECT effect_id, disposition FROM venue_effect ORDER BY effect_id"
+    ).fetchall() == [(1, "INVALIDATED"), (2, "CLOSED")]
 
     reopened.execute("PRAGMA foreign_keys = ON")
     reopened.execute("PRAGMA recursive_triggers = ON")

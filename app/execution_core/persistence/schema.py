@@ -1283,6 +1283,34 @@ BEGIN
     SELECT RAISE (ABORT, 'acceptance evidence identity is already retained');
 END;
 
+CREATE TRIGGER trg_acceptance_evidence_requires_exact_authority
+    BEFORE INSERT ON acceptance_evidence
+    FOR EACH ROW
+    WHEN NOT EXISTS (
+            SELECT 1
+              FROM acceptance_set AS accepted
+             WHERE accepted.acceptance_set_id = NEW.acceptance_set_id
+               AND accepted.effect_id = NEW.effect_id
+        )
+       OR (
+            NEW.evidence_kind = 'INVALIDATION'
+            AND NOT EXISTS (
+                SELECT 1
+                  FROM venue_identity_owner AS owner
+                 WHERE owner.effect_id = NEW.effect_id
+                   AND owner.owner_external =
+                        NEW.contradiction_owner_external
+                   AND owner.observation_external =
+                        NEW.contradiction_observation_external
+            )
+        )
+BEGIN
+    SELECT RAISE (
+        ABORT,
+        'acceptance evidence requires exact retained authority'
+    );
+END;
+
 CREATE TRIGGER trg_closure_chain_no_conflict_replace
     BEFORE INSERT ON closure_chain
     FOR EACH ROW
@@ -3711,7 +3739,7 @@ END;
 """
 
 _SCHEMA_CATALOG_SHA256 = (
-    "b85472838012e72c3fc74ba2db9101cdd4e4b385e9fdabc4ffb88c516e984ab4"
+    "145393452d7bd0f0227076f14daa5b6115e44581609e456646b82de663df0a08"
 )
 
 
