@@ -203,15 +203,14 @@ class ExecutionConnectionProfile:
             ),
             "account_identity must be 64 lowercase hexadecimal characters",
         )
-        for origin_field in (
-            "trade_command_origin",
-            "order_query_origin",
-            "order_event_origin",
+        for origin_value, origin_label in (
+            (self.trade_command_origin, "trade_command_origin"),
+            (self.order_query_origin, "order_query_origin"),
+            (self.order_event_origin, "order_event_origin"),
         ):
-            origin = getattr(self, origin_field)
             _require(
-                _is_canonical_origin(_require_text(origin, origin_field)),
-                f"{origin_field} must be a canonical https://host[:port] origin",
+                _is_canonical_origin(_require_text(origin_value, origin_label)),
+                f"{origin_label} must be a canonical https://host[:port] origin",
             )
         _require(
             _is_lowercase_hex_digest(
