@@ -30,7 +30,7 @@ from app.execution_core.persistence.schema import (
 
 
 _GATE_DIGEST: str | None = (
-    "b5f43175736fb4eafe2e6db1f847286e957dae0339ea44e2e5ce548b78feb80c"
+    "1e5c0f1051bc41ec381135d76d020a299c507711bfdf9a23646b9e7d801338dc"
 )
 
 _OPEN_CONNECTIONS: list[sqlite3.Connection] = []
@@ -2757,7 +2757,7 @@ def test_post_closure_owner_atomically_quarantines_serial_successor(
             ),
         )
 
-    with pytest.raises(sqlite3.IntegrityError, match="UNIQUE"):
+    with pytest.raises(sqlite3.IntegrityError, match="identity is already retained"):
         connection.execute(
             "INSERT INTO acceptance_evidence (evidence_id, acceptance_set_id,"
             " effect_id, evidence_kind, proof_kind, evidence_digest,"
@@ -3002,6 +3002,72 @@ def test_reopened_default_connection_cannot_replace_direct_authority(
         "SELECT state_commitment_sha256, version_ordinal"
         " FROM protection_authority WHERE scope_id = 1"
     ).fetchone() == ("95" * 32, 5)
+
+
+def test_reopened_default_connection_cannot_replace_invalidation_evidence(
+    tmp_path: object,
+) -> None:
+    connection = _installed_connection(tmp_path)
+    _seed_scope_with_live_generation(connection)
+    _insert_controller(connection)
+    _insert_root(connection)
+    _insert_open_effect(connection, 1)
+    _insert_venue_owner(connection, owner_external="owner-1", effect_id=1)
+    _insert_claim(connection, claim_id=1, effect_id=1)
+    _close_generation_authority(connection, generation_id="12" * 32)
+    acceptance_set_id = int(
+        connection.execute(
+            "SELECT acceptance_set_id FROM acceptance_set WHERE effect_id = 1"
+        ).fetchone()[0]
+    )
+    connection.execute(
+        "INSERT INTO acceptance_evidence (evidence_id, acceptance_set_id,"
+        " effect_id, evidence_kind, proof_kind, evidence_digest, evidence_ordinal,"
+        " contradiction_owner_external, contradiction_observation_external)"
+        " VALUES (99, ?, 1, 'INVALIDATION', NULL, ?, 2, 'owner-1',"
+        " 'observation-owner-1')",
+        (acceptance_set_id, "a8" * 32),
+    )
+    connection.commit()
+    connection.close()
+    _OPEN_CONNECTIONS.remove(connection)
+
+    reopened = sqlite3.connect(tmp_path / "m2-i2-gate.db")  # type: ignore[operator]
+    _OPEN_CONNECTIONS.append(reopened)
+    assert reopened.execute("PRAGMA foreign_keys").fetchone() == (0,)
+    assert reopened.execute("PRAGMA recursive_triggers").fetchone() == (0,)
+    with pytest.raises(sqlite3.IntegrityError, match="identity is already retained"):
+        reopened.execute(
+            "INSERT OR REPLACE INTO acceptance_evidence ("
+            " evidence_id, acceptance_set_id, effect_id, evidence_kind,"
+            " proof_kind, evidence_digest, evidence_ordinal,"
+            " contradiction_owner_external, contradiction_observation_external)"
+            " VALUES (100, ?, 1, 'INVALIDATION', NULL, ?, 3, 'owner-1',"
+            " 'observation-owner-1')",
+            (acceptance_set_id, "a9" * 32),
+        )
+    reopened.rollback()
+
+    assert reopened.execute(
+        "SELECT evidence_id, evidence_kind FROM acceptance_evidence"
+        " ORDER BY evidence_id"
+    ).fetchall() == [(1, "CLOSURE_PROOF"), (99, "INVALIDATION")]
+    assert reopened.execute(
+        "SELECT closure_id, owner_external, closure_kind FROM closure_chain"
+    ).fetchall() == [(-99, "owner-1", "INVALIDATED_TERMINAL")]
+    assert reopened.execute(
+        "SELECT unresolved_effect_count FROM acquisition_generation_current"
+        " WHERE acquisition_generation_id = ?",
+        ("12" * 32,),
+    ).fetchone() == (1,)
+    assert reopened.execute(
+        "SELECT integrity_state, currentness_head_ordinal,"
+        " controller_version_ordinal FROM symbol_controller"
+    ).fetchone() == ("UNRESOLVED_VENUE_QUARANTINED", 1, 2)
+
+    reopened.execute("PRAGMA foreign_keys = ON")
+    reopened.execute("PRAGMA recursive_triggers = ON")
+    assert verify_schema_connection(reopened) == SCHEMA_VERSION
 
 
 def test_controller_aggregate_query_is_scope_indexed(tmp_path: object) -> None:

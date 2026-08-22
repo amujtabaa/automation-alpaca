@@ -1269,6 +1269,15 @@ CREATE TRIGGER trg_acceptance_evidence_no_conflict_replace
             SELECT 1 FROM acceptance_evidence AS retained
              WHERE retained.evidence_id = NEW.evidence_id
                 OR retained.evidence_ordinal = NEW.evidence_ordinal
+                OR (
+                    NEW.evidence_kind = 'INVALIDATION'
+                    AND retained.evidence_kind = 'INVALIDATION'
+                    AND retained.effect_id = NEW.effect_id
+                    AND retained.contradiction_owner_external =
+                        NEW.contradiction_owner_external
+                    AND retained.contradiction_observation_external =
+                        NEW.contradiction_observation_external
+                )
         )
 BEGIN
     SELECT RAISE (ABORT, 'acceptance evidence identity is already retained');
@@ -3702,7 +3711,7 @@ END;
 """
 
 _SCHEMA_CATALOG_SHA256 = (
-    "0f81942dbec205583f0f44f115736d1256370550b9d1452e9ca0235c53188428"
+    "b85472838012e72c3fc74ba2db9101cdd4e4b385e9fdabc4ffb88c516e984ab4"
 )
 
 
