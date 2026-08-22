@@ -1,0 +1,18 @@
+# M2 execution and M3 preparation candidate manifest
+# algorithm: SHA-256 lowercase hexadecimal over exact file bytes
+# ratified_gate_b_head_before_preparation: 163ebf7db4025c0e9e8fcd743eb43ce7d10ce285
+# accepted_source_head: 177ea5fcd959b9e7d7d5a3172070f90f89ece963
+# active_work_order: WO-0165
+# self_exclusion: this manifest is excluded to avoid a self-referential digest; the merge request binds its exact SHA-256 separately.
+03404442cafc9db34d4d2997db2e9b407e4f6896b7a4935126421291936ac503 *work/active/WO-0165-m2-i1-durable-codec-contract.md
+5401273d3f1e751288e43ba888944390533c2b9b2ad7f464c50f8b48f9edf056 *work/queue/M2-EXECUTION-2026-08-21/00-CHECKPOINT-ORCHESTRATION-PROTOCOL.md
+cb64221aa81ed1fc27e8e17db12cfa0d38e6d72fb57411bc6c4b90c80cf996c9 *work/queue/M2-EXECUTION-2026-08-21/01-M2-M3-EXECUTION-MAP.md
+722663b8da0f871d6a77fe6b8481108788040e80ecd98ec6edabed97592ba475 *work/queue/M2-EXECUTION-2026-08-21/02-CURRENT-SOURCE-INVENTORY.md
+4faa75bbdf8306fbce854a5416a192f0418a9b31c08b641ef6d8de24ee92e9b2 *work/queue/M2-EXECUTION-2026-08-21/03-PREPARATION-MERGE-GATE.md
+bee1a72e77e3cc269ded20f5b2e9beb690f06df824ff180d8fae70bc6fbf3301 *work/queue/WO-0166-m2-i2-schema-direct-proof-foundation.md
+e6386a6d28d6909a0282599bb693dac5f1c8b933b8d3eaf3e8c27a75652df643 *work/queue/WO-0167-m2-i3-sqlite-repository-hydration.md
+948cf960a33ed736040c68f6b095bffbc10c0f7c9aaa01f49474eb984925f76f *work/queue/WO-0168-m2-i4-atomic-unit-of-work-effects.md
+e8753fb060e5795370dc02b06b5c422ed85ff2cecb49efd84577d29486bc0a33 *work/queue/WO-0169-m2-i5-startup-reconciliation-cold-recovery.md
+af4362e6ec3bc0e15c772ad4da993c8b482dfc6342ee70854c728ad712606eec *work/queue/WO-0170-m2-i6-crash-restore-fault-closeout.md
+45e4480cdccb21da50330103778e8f71a235049b9e258881316dd0d9d868d285 *work/queue/WO-0171-m3-p1-deterministic-simulator-tape-clock.md
+b43aa6b25c59083014bf69494b4f5e7d1e6b8f42fcb74e6d68427340c912f031 *work/queue/WO-0172-m3-p2-semantic-replay-regression-corpus.md
