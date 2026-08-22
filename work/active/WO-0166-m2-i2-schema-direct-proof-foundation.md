@@ -13,7 +13,7 @@ predecessor: WO-0165 exact accepted closeout head 2e47702c926515bf587aa71de987a3
 base_sha: 2e47702c926515bf587aa71de987a3fb879e4d75
 branch: codex/m2-i2-schema-direct-proof-r1
 review_id: REV-0071
-execution_authority: Ameen Mujtabaa separately activated WO-0166 in the Codex task on 2026-08-21 for a documentation and RED-test/schema candidate only; exact DDL execution, any SQLite database open/create, and every schema test remain NOT_AUTHORIZED until the recorded HUMAN-GATE packet is approved.
+execution_authority: Ameen Mujtabaa approved the exact hash-bound M2-I2 schema candidate in the Codex task on 2026-08-21. Authority is limited to one unlock commit that sets _GATE_DIGEST to the approved SHA-256, execution of exactly the 17 schema tests against fresh pytest tmp_path file databases, RED/GREEN evidence collection, and opening REV-0071. Any byte-level DDL change returns to HUMAN-GATE.
 ---
 
 # Work Order: M2-I2 schema and direct-proof foundation
@@ -22,7 +22,7 @@ execution_authority: Ameen Mujtabaa separately activated WO-0166 in the Codex ta
 
 **Date:** 2026-08-21
 
-**Status:** Active for documentation and RED-test/schema candidate only — stopped before DDL/database execution
+**Status:** Active for the exact approved DDL unlock, 17-test temporary-file proof, and REV-0071 opening only
 
 `[FABLE • FULL • spec-first/TDD • human-gated schema surface]`
 
@@ -167,3 +167,41 @@ reviewed scope amendment before editing.
 Completion requires exact human-gated DDL, RED/negative constraints, direct-query plans, focused/
 static/full-governance evidence, independent P0=0/P1=0 acceptance, exact publication, and an M2-I3
 handoff. It grants no activation of M2-I3.
+
+## HUMAN-GATE decision — exact WO-0165 to WO-0166 schema candidate
+
+**Decision owner:** Ameen Mujtabaa
+
+**Decision date:** 2026-08-21
+
+**Decision:** APPROVED for the bounded proof step below
+
+The approval binds all of these identities together:
+
+| Identity | Approved exact value |
+| --- | --- |
+| Branch | `codex/m2-i2-schema-direct-proof-r1` |
+| Candidate commit | `7a91de3d45b9dfc884f35c1eaa1d1b48b0a532de` |
+| Candidate tree | `a99d387a6e6a7cd60a511d37ace26797a8bd3731` |
+| `SCHEMA_DDL` SHA-256 | `b9565de1dab1dd6388980260ffd5089abe11ce887bbf67ccce2434848e252cbc` |
+| `SCHEMA_DDL` UTF-8 length | `22,916` bytes |
+| DDL source | `app/execution_core/persistence/schema.py` |
+
+Before recording this decision, Codex independently parsed the `SCHEMA_DDL` string without
+importing the module or opening SQLite and reproduced the approved byte length and digest. Codex
+also verified the exact branch, commit, tree, clean worktree, matching remote branch, exactly 17
+schema tests, only `pytest` `tmp_path` file connections, no in-memory/configured database path, and
+the gate check before connection construction.
+
+This decision authorizes only:
+
+1. one unlock commit setting `_GATE_DIGEST` in
+   `tests/execution_core/test_persistence_schema.py` to the approved digest above;
+2. execution of exactly those 17 schema tests against fresh temporary file databases under
+   pytest `tmp_path`, with no configured or in-memory database;
+3. collection and return of RED/GREEN evidence, followed by opening independent review `REV-0071`.
+
+It does not authorize configured database access, migration, repository/hydration or runtime work
+(`M2-I3+`), credentials, broker/network calls, orders, promotion, merge to `master`, or any semantic
+change to the DDL. Any byte-level change to `SCHEMA_DDL` requires a new digest and a new HUMAN-GATE
+decision before execution.
