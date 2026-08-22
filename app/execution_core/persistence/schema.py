@@ -239,7 +239,9 @@ CREATE TABLE symbol_controller (
     integrity_state TEXT NOT NULL
         CHECK (
             integrity_state IN (
-                'CONSISTENT', 'NEGATIVE_POSITION_QUARANTINED'
+                'CONSISTENT',
+                'NEGATIVE_POSITION_QUARANTINED',
+                'UNMATCHED_LINEAGE_QUARANTINED'
             )
         ),
     currentness_head_ordinal INTEGER NOT NULL CHECK (currentness_head_ordinal >= 0),
@@ -560,6 +562,10 @@ CREATE TABLE venue_effect (
     UNIQUE (effect_id, execution_profile_id),
     UNIQUE (effect_id, scope_id, execution_profile_id),
     UNIQUE (
+        effect_id, scope_id, execution_profile_id,
+        acquisition_generation_id
+    ),
+    UNIQUE (
         effect_id, scope_id, application_generation_id,
         execution_profile_id, acquisition_generation_id
     ),
@@ -645,9 +651,17 @@ CREATE TABLE venue_identity_owner (
     PRIMARY KEY (execution_profile_id, owner_external),
     UNIQUE (scope_id, owner_external, effect_id),
     UNIQUE (effect_id, owner_external, observation_external),
+    UNIQUE (
+        effect_id, owner_external, observation_external, scope_id,
+        execution_profile_id, owner_generation_id
+    ),
     UNIQUE (effect_id, scope_id, execution_profile_id),
-    FOREIGN KEY (effect_id, scope_id, execution_profile_id)
-        REFERENCES venue_effect (effect_id, scope_id, execution_profile_id),
+    FOREIGN KEY (
+        effect_id, scope_id, execution_profile_id, owner_generation_id
+    ) REFERENCES venue_effect (
+        effect_id, scope_id, execution_profile_id,
+        acquisition_generation_id
+    ),
     FOREIGN KEY (owner_generation_id, scope_id)
         REFERENCES acquisition_generation (acquisition_generation_id, scope_id),
     FOREIGN KEY (
@@ -660,6 +674,43 @@ CREATE TABLE venue_identity_owner (
 CREATE INDEX ix_venue_identity_owner_effect
     ON venue_identity_owner (
         effect_id, scope_id, execution_profile_id, owner_external
+    );
+
+CREATE TABLE acquisition_root_route (
+    root_fill_key_id INTEGER PRIMARY KEY,
+    scope_id INTEGER NOT NULL,
+    application_generation_id TEXT NOT NULL,
+    execution_profile_id TEXT NOT NULL,
+    acquisition_generation_id TEXT NOT NULL,
+    effect_id INTEGER NOT NULL,
+    owner_external TEXT NOT NULL CHECK (length(owner_external) >= 1),
+    observation_external TEXT NOT NULL
+        CHECK (length(observation_external) >= 1),
+    UNIQUE (
+        root_fill_key_id, scope_id, application_generation_id,
+        execution_profile_id
+    ),
+    UNIQUE (root_fill_key_id, acquisition_generation_id),
+    FOREIGN KEY (
+        root_fill_key_id, scope_id, application_generation_id,
+        execution_profile_id, acquisition_generation_id
+    ) REFERENCES root_fill (
+        root_fill_key_id, scope_id, application_generation_id,
+        execution_profile_id, owner_generation_id
+    ),
+    FOREIGN KEY (
+        effect_id, owner_external, observation_external, scope_id,
+        execution_profile_id, acquisition_generation_id
+    ) REFERENCES venue_identity_owner (
+        effect_id, owner_external, observation_external, scope_id,
+        execution_profile_id, owner_generation_id
+    )
+);
+
+CREATE INDEX ix_acquisition_root_route_owner
+    ON acquisition_root_route (
+        effect_id, owner_external, observation_external,
+        acquisition_generation_id, root_fill_key_id
     );
 
 CREATE TABLE dispatch_claim (
@@ -685,7 +736,7 @@ CREATE TABLE acceptance_set (
 );
 
 CREATE TABLE acceptance_evidence (
-    evidence_id INTEGER PRIMARY KEY,
+    evidence_id INTEGER PRIMARY KEY CHECK (evidence_id >= 1),
     acceptance_set_id INTEGER NOT NULL,
     effect_id INTEGER NOT NULL,
     evidence_kind TEXT NOT NULL
@@ -746,7 +797,10 @@ CREATE TABLE closure_chain (
         REFERENCES venue_identity_owner (scope_id, owner_external, effect_id),
     FOREIGN KEY (scope_id, owner_external, predecessor_closure_id)
         REFERENCES closure_chain (scope_id, owner_external, closure_id),
-    CHECK ((predecessor_closure_id IS NULL) = (ordinal = 1))
+    CHECK ((predecessor_closure_id IS NULL) = (ordinal = 1)),
+    CHECK (
+        (closure_kind = 'INVALIDATED_TERMINAL') = (closure_id < 0)
+    )
 );
 
 CREATE UNIQUE INDEX uq_closure_single_successor
@@ -830,6 +884,8 @@ CREATE TABLE protection_authority (
     active_source_profile_id TEXT,
     active_session_external TEXT,
     active_sequence_mode TEXT,
+    expected_controller_head_ordinal INTEGER NOT NULL
+        CHECK (expected_controller_head_ordinal >= 0),
     state_commitment_sha256 TEXT NOT NULL
         CHECK (length(state_commitment_sha256) = 64 AND state_commitment_sha256 NOT GLOB '*[^0-9a-f]*'),
     version_ordinal INTEGER NOT NULL CHECK (version_ordinal >= 1),
@@ -1053,6 +1109,18 @@ CREATE TRIGGER trg_venue_owner_no_conflict_replace
         )
 BEGIN
     SELECT RAISE (ABORT, 'venue owner identity is already retained');
+END;
+
+CREATE TRIGGER trg_acquisition_root_route_no_conflict_replace
+    BEFORE INSERT ON acquisition_root_route
+    FOR EACH ROW
+    WHEN EXISTS (
+            SELECT 1
+              FROM acquisition_root_route AS retained
+             WHERE retained.root_fill_key_id = NEW.root_fill_key_id
+        )
+BEGIN
+    SELECT RAISE (ABORT, 'acquisition root route is already retained');
 END;
 
 CREATE TRIGGER trg_dispatch_claim_no_conflict_replace
@@ -1693,6 +1761,24 @@ CREATE TRIGGER trg_symbol_controller_integrity_exact_insert
     BEFORE INSERT ON symbol_controller
     FOR EACH ROW
     WHEN NEW.integrity_state <> CASE
+            WHEN EXISTS (
+                    SELECT 1
+                      FROM root_fill AS root
+                     WHERE root.scope_id = NEW.scope_id
+                       AND root.current_fact_id IS NOT NULL
+                       AND NOT EXISTS (
+                            SELECT 1
+                              FROM acquisition_root_route AS route
+                             WHERE route.root_fill_key_id =
+                                    root.root_fill_key_id
+                               AND route.scope_id = root.scope_id
+                               AND route.application_generation_id =
+                                    root.application_generation_id
+                               AND route.execution_profile_id =
+                                    root.execution_profile_id
+                        )
+                )
+                THEN 'UNMATCHED_LINEAGE_QUARANTINED'
             WHEN NEW.aggregate_quantity < 0
                 THEN 'NEGATIVE_POSITION_QUARANTINED'
             ELSE 'CONSISTENT'
@@ -1705,15 +1791,34 @@ CREATE TRIGGER trg_symbol_controller_integrity_sticky_update
     BEFORE UPDATE OF aggregate_quantity, integrity_state ON symbol_controller
     FOR EACH ROW
     WHEN NEW.integrity_state <> CASE
-            WHEN OLD.integrity_state = 'NEGATIVE_POSITION_QUARANTINED'
-              OR NEW.aggregate_quantity < 0
+            WHEN OLD.integrity_state <> 'CONSISTENT'
+                THEN OLD.integrity_state
+            WHEN EXISTS (
+                    SELECT 1
+                      FROM root_fill AS root
+                     WHERE root.scope_id = NEW.scope_id
+                       AND root.current_fact_id IS NOT NULL
+                       AND NOT EXISTS (
+                            SELECT 1
+                              FROM acquisition_root_route AS route
+                             WHERE route.root_fill_key_id =
+                                    root.root_fill_key_id
+                               AND route.scope_id = root.scope_id
+                               AND route.application_generation_id =
+                                    root.application_generation_id
+                               AND route.execution_profile_id =
+                                    root.execution_profile_id
+                        )
+                )
+                THEN 'UNMATCHED_LINEAGE_QUARANTINED'
+            WHEN NEW.aggregate_quantity < 0
                 THEN 'NEGATIVE_POSITION_QUARANTINED'
             ELSE 'CONSISTENT'
         END
 BEGIN
     SELECT RAISE (
         ABORT,
-        'negative-position quarantine is exact and cannot be cleared in place'
+        'controller integrity is exact and quarantine cannot clear in place'
     );
 END;
 
@@ -1984,10 +2089,23 @@ BEGIN
                        AND root.current_fact_id IS NOT NULL
                 ),
                 0
-            ),
+           ),
            integrity_state = CASE
-                WHEN integrity_state = 'NEGATIVE_POSITION_QUARANTINED'
-                  OR COALESCE(
+                WHEN integrity_state <> 'CONSISTENT'
+                    THEN integrity_state
+                WHEN NOT EXISTS (
+                        SELECT 1
+                          FROM acquisition_root_route AS route
+                         WHERE route.root_fill_key_id =
+                                NEW.root_fill_key_id
+                           AND route.scope_id = NEW.scope_id
+                           AND route.application_generation_id =
+                                NEW.application_generation_id
+                           AND route.execution_profile_id =
+                                NEW.execution_profile_id
+                    )
+                    THEN 'UNMATCHED_LINEAGE_QUARANTINED'
+                WHEN COALESCE(
                         (
                             SELECT SUM(
                                 CASE root.current_side
@@ -2079,6 +2197,7 @@ CREATE TRIGGER trg_venue_effect_requires_current_controller
                     NEW.acquisition_generation_id
                AND controller.currentness_head_ordinal =
                     NEW.expected_controller_head_ordinal
+               AND controller.integrity_state = 'CONSISTENT'
         )
 BEGIN
     SELECT RAISE (
@@ -2280,6 +2399,18 @@ BEGIN
     SELECT RAISE (ABORT, 'venue identity owner rows are retained');
 END;
 
+CREATE TRIGGER trg_acquisition_root_route_no_update
+    BEFORE UPDATE ON acquisition_root_route
+BEGIN
+    SELECT RAISE (ABORT, 'acquisition root routes are immutable');
+END;
+
+CREATE TRIGGER trg_acquisition_root_route_no_delete
+    BEFORE DELETE ON acquisition_root_route
+BEGIN
+    SELECT RAISE (ABORT, 'acquisition root routes are retained');
+END;
+
 CREATE TRIGGER trg_dispatch_claim_requires_open_effect
     BEFORE INSERT ON dispatch_claim
     FOR EACH ROW
@@ -2310,6 +2441,7 @@ CREATE TRIGGER trg_dispatch_claim_requires_current_controller
                     effect.acquisition_generation_id
                AND controller.currentness_head_ordinal =
                     effect.expected_controller_head_ordinal
+               AND controller.integrity_state = 'CONSISTENT'
              WHERE effect.effect_id = NEW.effect_id
                AND effect.execution_profile_id = NEW.execution_profile_id
         )
@@ -2379,10 +2511,10 @@ CREATE TRIGGER trg_acceptance_invalidation_requires_closed_authority
     WHEN NEW.evidence_kind = 'INVALIDATION'
      AND NOT EXISTS (
             SELECT 1
-              FROM venue_effect AS effect
-             WHERE effect.effect_id = NEW.effect_id
-               AND effect.disposition IN ('CLOSED', 'INVALIDATED')
-        )
+                 FROM venue_effect AS effect
+                 WHERE effect.effect_id = NEW.effect_id
+                   AND effect.disposition = 'CLOSED'
+            )
 BEGIN
     SELECT RAISE (
         ABORT,
@@ -2399,6 +2531,41 @@ BEGIN
        SET disposition = 'INVALIDATED'
      WHERE effect_id = NEW.effect_id
        AND disposition = 'CLOSED';
+
+    INSERT INTO closure_chain (
+        closure_id, scope_id, owner_external, ordinal, effect_id,
+        closure_kind, predecessor_closure_id
+    )
+    SELECT
+        -NEW.evidence_id,
+        owner.scope_id,
+        NEW.contradiction_owner_external,
+        COALESCE(
+            (
+                SELECT MAX(retained.ordinal)
+                  FROM closure_chain AS retained
+                 WHERE retained.scope_id = owner.scope_id
+                   AND retained.owner_external =
+                        NEW.contradiction_owner_external
+            ),
+            0
+        ) + 1,
+        NEW.effect_id,
+        'INVALIDATED_TERMINAL',
+        (
+            SELECT retained.closure_id
+              FROM closure_chain AS retained
+             WHERE retained.scope_id = owner.scope_id
+               AND retained.owner_external =
+                    NEW.contradiction_owner_external
+             ORDER BY retained.ordinal DESC
+             LIMIT 1
+        )
+      FROM venue_identity_owner AS owner
+     WHERE owner.effect_id = NEW.effect_id
+       AND owner.owner_external = NEW.contradiction_owner_external
+       AND owner.observation_external =
+            NEW.contradiction_observation_external;
 END;
 
 CREATE TRIGGER trg_acceptance_evidence_append_only_update
@@ -2434,9 +2601,9 @@ CREATE TRIGGER trg_closure_chain_matches_effect_authority
             NEW.closure_kind = 'ACCEPTANCE_CLOSED'
             AND NOT EXISTS (
                 SELECT 1
-                  FROM venue_effect AS effect
+                 FROM venue_effect AS effect
                  WHERE effect.effect_id = NEW.effect_id
-                   AND effect.disposition IN ('CLOSED', 'INVALIDATED')
+                   AND effect.disposition = 'CLOSED'
             )
         )
        OR (
@@ -2482,6 +2649,8 @@ CREATE TRIGGER trg_protection_authority_version_monotonic
                     IS NOT OLD.active_session_external
                 OR NEW.active_sequence_mode
                     IS NOT OLD.active_sequence_mode
+                OR NEW.expected_controller_head_ordinal
+                    IS NOT OLD.expected_controller_head_ordinal
                 OR NEW.state_commitment_sha256
                     IS NOT OLD.state_commitment_sha256
             )
@@ -2533,14 +2702,44 @@ CREATE TRIGGER trg_protection_authority_requires_consistent_controller
     FOR EACH ROW
     WHEN NOT EXISTS (
             SELECT 1
-              FROM symbol_controller AS controller
+             FROM symbol_controller AS controller
              WHERE controller.scope_id = NEW.scope_id
                AND controller.integrity_state = 'CONSISTENT'
+               AND controller.currentness_head_ordinal =
+                    NEW.expected_controller_head_ordinal
+               AND (
+                    NEW.active_acquisition_generation_id IS NULL
+                    OR controller.live_acquisition_generation_id =
+                        NEW.active_acquisition_generation_id
+               )
         )
 BEGIN
     SELECT RAISE (
         ABORT,
         'protection authority requires a consistent controller'
+    );
+END;
+
+CREATE TRIGGER trg_protection_authority_update_requires_current_controller
+    BEFORE UPDATE ON protection_authority
+    FOR EACH ROW
+    WHEN NOT EXISTS (
+            SELECT 1
+              FROM symbol_controller AS controller
+             WHERE controller.scope_id = NEW.scope_id
+               AND controller.integrity_state = 'CONSISTENT'
+               AND controller.currentness_head_ordinal =
+                    NEW.expected_controller_head_ordinal
+               AND (
+                    NEW.active_acquisition_generation_id IS NULL
+                    OR controller.live_acquisition_generation_id =
+                        NEW.active_acquisition_generation_id
+               )
+        )
+BEGIN
+    SELECT RAISE (
+        ABORT,
+        'protection update requires exact current consistent controller'
     );
 END;
 
@@ -2617,6 +2816,10 @@ BEGIN
 END;
 """
 
+_SCHEMA_CATALOG_SHA256 = (
+    "5dc150333a89ff369956ad16c364b1bcbb7d15e93e71860236ebeaebcbac309f"
+)
+
 
 class SchemaInstallError(Exception):
     """Base typed failure for the pure schema installer."""
@@ -2654,6 +2857,22 @@ def schema_ddl_digest() -> str:
     return _sha256(SCHEMA_DDL.encode("utf-8")).hexdigest()
 
 
+def _schema_catalog_digest(connection: SQLiteConnectionProtocol) -> str:
+    """Hash the complete installed application-owned SQLite catalog."""
+
+    rows = connection.execute(
+        "SELECT type, name, tbl_name, sql FROM sqlite_master "
+        "WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name"
+    ).fetchall()
+    digest = _sha256()
+    for row in rows:
+        for value in row:
+            encoded = ("" if value is None else str(value)).encode("utf-8")
+            digest.update(len(encoded).to_bytes(8, "big"))
+            digest.update(encoded)
+    return digest.hexdigest()
+
+
 def _verify_connection_pragmas(connection: SQLiteConnectionProtocol) -> None:
     """Refuse a connection that cannot enforce the schema's relational rules."""
 
@@ -2686,13 +2905,17 @@ def verify_schema_connection(connection: SQLiteConnectionProtocol) -> int:
         raise SchemaInstallError(
             "connection does not expose the exact installed schema identity"
         )
-    identity_row = connection.execute(
+    identity_rows = connection.execute(
         "SELECT schema_version, approved_ddl_sha256 FROM schema_meta"
-    ).fetchone()
+    ).fetchall()
     expected = (SCHEMA_VERSION, schema_ddl_digest())
-    if identity_row is None or tuple(identity_row) != expected:
+    if len(identity_rows) != 1 or tuple(identity_rows[0]) != expected:
         raise SchemaInstallError(
             "connection does not expose the exact installed schema identity"
+        )
+    if _schema_catalog_digest(connection) != _SCHEMA_CATALOG_SHA256:
+        raise SchemaInstallError(
+            "connection does not expose the exact installed schema catalog"
         )
     return SCHEMA_VERSION
 
@@ -2755,6 +2978,10 @@ def install_schema(
             )
         for statement in _ddl_statements():
             connection.execute(statement)
+        if _schema_catalog_digest(connection) != _SCHEMA_CATALOG_SHA256:
+            raise SchemaInstallError(
+                "installed schema catalog differs from the exact contract"
+            )
         connection.execute(
             "INSERT INTO schema_meta (schema_version, approved_ddl_sha256) VALUES (?, ?)",
             (SCHEMA_VERSION, actual_digest),
