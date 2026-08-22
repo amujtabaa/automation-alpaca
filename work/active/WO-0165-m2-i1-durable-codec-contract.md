@@ -10,7 +10,7 @@ disposition: []
 owner: local coding LLM implementation seat; Codex checkpoint governor
 created: 2026-08-21
 branch: codex/m2-i1-durable-codec-r1
-base_sha: PENDING_EXACT_DOCUMENTATION_BASELINE_MERGE
+base_sha: abcefca80d1a16ae86f7982d27ba6212a9504bfa
 review_id: REV-0070
 execution_authority: Ameen Mujtabaa approved the exact M2-I1 activation in the Codex task on 2026-08-21; implementation is held until the separately authorized documentation-only preparation baseline is merged and the implementation branch base is recorded.
 ---
