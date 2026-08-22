@@ -1,12 +1,12 @@
 ---
 type: Work Order
 title: M2-I2 schema and direct-current-proof foundation
-status: ACTIVE
+status: CLOSED
 work_order_id: WO-0166
 wave: M2-I2
 model_tier: strong
 risk: critical
-disposition: []
+disposition: [RESULT_SUMMARY_KEPT, ARCHIVED]
 owner: Codex implementation and checkpoint seat; adversarial agents provide in-process review
 created: 2026-08-21
 predecessor: WO-0165 exact accepted closeout head 2e47702c926515bf587aa71de987a3fb879e4d75
@@ -22,7 +22,7 @@ execution_authority: On 2026-08-22 Ameen Mujtabaa explicitly directed Codex to t
 
 **Date:** 2026-08-21
 
-**Status:** Active for Codex-owned root remediation, temporary-file proof, and bounded closeout preparation
+**Status:** Closed after root remediation, exact temporary-file proof, and terminal adversarial acceptance
 
 `[FABLE • FULL • spec-first/TDD • human-gated schema surface]`
 
@@ -439,3 +439,59 @@ It does not authorize configured database access, migration, repository/hydratio
 (`M2-I3+`), credentials, broker/network calls, orders, promotion, merge to `master`, or any semantic
 change to the DDL. Any byte-level change to `SCHEMA_DDL` requires a new digest and a new HUMAN-GATE
 decision before execution.
+
+## Terminal remediation, acceptance, and closeout
+
+Round 7 reproduced a P0 in which an owner discovered after effect closure left predecessor closure
+summary and successor authority unchanged. Codex replaced the snapshot assumption with a durable,
+database-verified post-closure marker. Its insertion atomically makes the exact generation
+unresolved, quarantines and advances controller currentness, and stales successor authority.
+
+Rounds 8 through 10 then identified adjacent proof-integrity gaps rather than serving escapes:
+multi-owner invalidation was not total or evidence-exact; exact invalidation evidence could be
+replaced after a raw default reopen; and malformed evidence could depend on disabled foreign keys
+for owner/observation or acceptance-set/effect binding. Each finding received an isolated failing
+control before repair. The terminal schema permits one immutable invalidation per exact owner,
+binds every negative terminal to its exact evidence ID and owner/observation, and mirrors both
+foreign-key relations plus the unique invalidation key in top-level pre-insert guards that remain
+effective before connection pragmas are restored.
+
+The accepted source/test candidate is commit
+`b00c2dec5fab7f87fd30aecc130a29bec600bf39`, tree
+`3da4736c39747f14a0d3663d1f6871cc07f740ac`. `SCHEMA_DDL` is exactly 146,417 UTF-8 bytes with
+SHA-256 `2dc33ba1af41d7516b2cde43cac85ea6644dc9ab904501065aae1c77b14d3859`; its installed-catalog
+SHA-256 is `145393452d7bd0f0227076f14daa5b6115e44581609e456646b82de663df0a08`.
+
+Fresh author evidence at that identity: all 82 focused schema tests and all 1,690 collected
+`tests/execution_core` tests passed on CPython 3.12.13; CPython 3.14.5/SQLite 3.50.4 reproduced the
+exact DDL and catalog; Ruff, formatting, mypy over 91 source files, 32 import-boundary tests, six
+import contracts, actual changed-path scope, ledger, and whitespace checks passed. Every database
+was a fresh file-backed pytest or system-temporary database. No configured/in-memory database,
+migration, runtime composition, credential, broker/network call, order, promotion, or merge
+occurred.
+
+Three fresh terminal adversarial seats each returned `ACCEPT`, P0=0/P1=0/P2=0, after exact
+identity verification and 82/82 focused tests. `work/review/REV-0071/result-final.md` is the
+authoritative result; all earlier results remain preserved as negative evidence.
+
+## Completion disposition
+
+- [x] `RESULT_SUMMARY_KEPT`
+- [x] `ARCHIVED`
+- [x] PKL/ADR update not required: implementation realizes accepted ADR-020/ADR-021 semantics and
+  changes no accepted architecture claim.
+
+```yaml
+fable_done:
+  status: VERIFIED
+  evidence: "REV-0071 terminal ACCEPT P0=0/P1=0/P2=0; 82 focused and 1690 execution-core tests; cross-runtime catalog, static, import, scope, ledger, and whitespace gates passed."
+  command: "See work/review/REV-0071/result-final.md and disposition.md."
+  terminal_state: "WO-0166 CLOSED — WO-0167 REMAINS READY BUT NOT ACTIVATED"
+```
+
+## Distillation decision
+
+Keep this work order and the complete REV-0071 chain as durable schema authority, negative
+evidence, remediation history, and terminal acceptance. Delete no source, test, ADR, PKL, or review
+history. WO-0167 remains subject to separate activation; this closeout grants no repository,
+hydration, runtime, configured-database, migration, or `master`-merge authority.
