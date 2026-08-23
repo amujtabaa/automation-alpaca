@@ -701,6 +701,25 @@ composition, external activity, or safety exception. No R9 source or test change
 a fresh REV-0074 R9 documentation review accepts the exact amendment with P0=0/P1=0. The normal
 REV-0075 implementation review and changed-DDL human gate remain independent.
 
+### R10 complete nonmembership amendment
+
+R9 is not accepted because it did not state the terminal-prefix nonmembership case. The authenticated
+radix verifier has exactly two absence outcomes. Before the queried key is fully consumed, the
+authenticated current node's complete canonical child tuple must omit the next queried byte label.
+After every queried key byte is consumed, the authenticated terminal node must have
+`has_value=False`; its complete canonical child tuple remains part of the node commitment and may
+contain descendants for longer keys. Membership, conversely, consumes every queried byte, requires
+the terminal `has_value=True`, and requires the exact selected value commitment. No third terminal
+or inferred absence case is admitted.
+
+`test_position.py` must contain a failure-capable negative control built from the existing private
+persistent-map primitive: a map containing a longer key must prove its shorter prefix absent, and a
+mutated prefix-terminal witness must be refused. This is a proof-primitive test only; it adds no
+history, schema, repository, runtime, database execution, or external surface. No R10 source or
+test change may be made until a fresh REV-0074 R10 documentation review accepts the exact amendment
+with P0=0/P1=0. The normal REV-0075 implementation review and changed-DDL human gate remain
+independent.
+
 Governance paths are the queue/active/completed WO-0168a file, this frozen contract, the additive
 post-I3 map, `work/ledger.jsonl`, and `work/review/REV-0074/**` plus the separately assigned
 implementation review directory. No other path is implied.

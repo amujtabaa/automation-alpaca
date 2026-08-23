@@ -336,6 +336,16 @@ exact amendment with `P0=0/P1=0`. This amendment adds no operation, schema famil
 execution, runtime composition, credential, network, broker, order, promotion, merge, or safety
 relaxation. Normal REV-0075 and the changed-DDL human gate remain independently required.
 
+REV-0074 R9's corrected rerun returned `ACCEPT-WITH-CHANGES` with `P0=0/P1=1/P2=0`; the finding is
+retained in `result-r9b.md`. R9 omitted the exact nonmembership rule for a queried key that is a
+prefix of a longer retained key. The R10 companion-contract amendment makes that two-case absence
+rule explicit and requires one failure-capable prefix-key primitive test. It adds no source or test
+path beyond R9's already named surface.
+
+No R10 source or test change may be made until a fresh REV-0074 R10 documentation review accepts
+the exact amendment with `P0=0/P1=0`. The normal REV-0075 implementation review and changed-DDL
+human gate remain independently required.
+
 ## Out of scope
 
 - OS-1: The atomic transaction coordinator, commit, publication, and effect eligibility are
