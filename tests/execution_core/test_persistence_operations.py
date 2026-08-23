@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import fields
+from decimal import Decimal
+from fractions import Fraction
 from hashlib import sha256
 import json
 import struct
@@ -10,11 +12,436 @@ from typing import get_args
 
 import pytest
 
-from app.execution_core import identity, values, venue
+from app.execution_core import (
+    acquisition,
+    authority,
+    fills,
+    identity,
+    protection,
+    recovery,
+    values,
+    venue,
+)
 import app.execution_core.persistence.operations as operations
 
 
 _KEY_PREFIX = b"execution-core/m2-semantic-key/v1\n"
+
+
+def _operation_price(units: int = 100) -> values.ReportedPrice:
+    scale = values.PriceScale(Decimal("0.01"))
+    return values.ReportedPrice(
+        values.PriceUnits(units),
+        scale,
+        values.TickMetadata(values.PriceUnits(1), scale),
+    )
+
+
+def _operation_position_scope() -> fills.PositionScope:
+    return fills.PositionScope(
+        identity.BrokerId("broker"),
+        identity.EnvironmentId("paper"),
+        identity.AccountId("account"),
+        identity.SymbolId("symbol"),
+    )
+
+
+def _operation_execution_scope() -> fills.ExecutionScope:
+    scope = _operation_position_scope()
+    return fills.ExecutionScope(
+        scope.broker,
+        scope.environment,
+        scope.account,
+        identity.OrderId("order"),
+        scope.symbol_id,
+        fills.ExecutionSide.BUY,
+    )
+
+
+def _operation_coordinates() -> tuple[
+    operations.ExecutionOperationCoordinates,
+    operations.VenueOperationCoordinates,
+    operations.VenueOperationCoordinates,
+    operations.AcquisitionOperationCoordinates,
+    operations.MarketOperationCoordinates,
+]:
+    application_generation_id = identity.ApplicationGenerationId("ab" * 32)
+    session_id = identity.SessionId("session")
+    acquisition_generation_id = identity.AcquisitionGenerationId("cd" * 32)
+    stream_generation_id = identity.MarketStreamGenerationId("ef" * 32)
+    execution = operations.ExecutionOperationCoordinates(
+        application_generation_id,
+        "11" * 32,
+        7,
+    )
+    venue_coordinates = operations.VenueOperationCoordinates(
+        application_generation_id,
+        "11" * 32,
+        7,
+        session_id,
+    )
+    passive_venue_coordinates = operations.VenueOperationCoordinates(
+        application_generation_id,
+        "11" * 32,
+        7,
+        None,
+    )
+    acquisition_coordinates = operations.AcquisitionOperationCoordinates(
+        application_generation_id,
+        "11" * 32,
+        7,
+        session_id,
+        acquisition_generation_id,
+    )
+    market_coordinates = operations.MarketOperationCoordinates(
+        application_generation_id,
+        "11" * 32,
+        7,
+        session_id,
+        acquisition_generation_id,
+        "22" * 32,
+        stream_generation_id,
+    )
+    return (
+        execution,
+        venue_coordinates,
+        passive_venue_coordinates,
+        acquisition_coordinates,
+        market_coordinates,
+    )
+
+
+def _operation_mandate() -> acquisition.AcquisitionMandate:
+    position_scope = _operation_position_scope()
+    session_id = identity.SessionId("session")
+    price = _operation_price()
+    emergency_guard = protection.ExecutionGuard("emergency", b"e" * 32)
+    compatibility = protection.EmergencyRecoveryCompatibility(
+        identity.EmergencyRecoveryCompatibilityId("compatibility"),
+        position_scope,
+        session_id,
+        "compatibility-v1",
+        b"c" * 32,
+        emergency_guard,
+        5,
+        1,
+        1_000,
+        values.Quantity(10),
+    )
+    protection_mandate = protection.ProtectionMandate(
+        identity.MandateId("protection-mandate"),
+        position_scope,
+        session_id,
+        "protection-v1",
+        Fraction(1, 10),
+        Fraction(1, 5),
+        Fraction(1, 20),
+        Fraction(2),
+        price.tick,
+        protection.ExecutionGuard("normal", b"n" * 32),
+        emergency_guard,
+        protection.EvidencePolicy(
+            identity.MarketDataSourceId("source"),
+            identity.MarketStreamGenerationId("ef" * 32),
+            protection.MarketSequenceMode.SEQUENCED,
+            10,
+            5,
+            Fraction(1, 2),
+        ),
+        values.Quantity(10),
+        5,
+        1_000,
+        compatibility,
+    )
+    return acquisition._m2_hydrate_acquisition_mandate(
+        acquisition_mandate_id=identity.AcquisitionMandateId("acquisition-mandate"),
+        position_scope=position_scope,
+        session_id=session_id,
+        configuration_version="acquisition-v1",
+        maximum_quantity=values.Quantity(10),
+        maximum_notional=Fraction(1_000),
+        maximum_entry_price=price,
+        allowed_order_types=(authority.AcquisitionOrderType.LIMIT,),
+        expiry=1_000,
+        deadline=900,
+        fixed_child_cap=values.Quantity(1),
+        certified_participation_cap=Fraction(1, 2),
+        cancel_reprice_budget=2,
+        protection_mandate=protection_mandate,
+    )
+
+
+def _all_exact_operations() -> tuple[operations.M2Operation, ...]:
+    (
+        execution_coordinates,
+        venue_coordinates,
+        passive_venue_coordinates,
+        acquisition_coordinates,
+        market_coordinates,
+    ) = _operation_coordinates()
+    execution_scope = _operation_execution_scope()
+    price = _operation_price()
+    leg_key = identity.VenueLegKey(
+        execution_scope.broker,
+        execution_scope.environment,
+        execution_scope.account,
+        execution_scope.order_id,
+    )
+    fill_fact = fills.BrokerFillFact(
+        identity.ExecutionFactKey(
+            execution_scope.broker,
+            execution_scope.environment,
+            execution_scope.account,
+            identity.SourceEventId("fill-event"),
+        ),
+        execution_scope,
+        identity.RootFillId("fill-root"),
+        values.Quantity(1),
+        price,
+    )
+    correction_fact = fills.BrokerTradeCorrectFact(
+        identity.ExecutionFactKey(
+            execution_scope.broker,
+            execution_scope.environment,
+            execution_scope.account,
+            identity.SourceEventId("correct-event"),
+        ),
+        execution_scope,
+        fill_fact.root_fill_id,
+        fill_fact.key.source_event_id,
+        values.Quantity(1),
+        price,
+    )
+    bust_fact = fills.BrokerTradeBustFact(
+        identity.ExecutionFactKey(
+            execution_scope.broker,
+            execution_scope.environment,
+            execution_scope.account,
+            identity.SourceEventId("bust-event"),
+        ),
+        execution_scope,
+        fill_fact.root_fill_id,
+        fill_fact.key.source_event_id,
+        price,
+    )
+    human_fact = fills.HumanAttestedFillFact(
+        identity.ExecutionFactKey(
+            execution_scope.broker,
+            execution_scope.environment,
+            execution_scope.account,
+            identity.SourceEventId("human-event"),
+        ),
+        execution_scope,
+        identity.RootFillId("human-root"),
+        leg_key,
+        identity.RequestOccurrenceId("request"),
+        identity.ClaimOccurrenceId("claim"),
+        values.Quantity(1),
+        values.Quantity(0),
+        values.Quantity(1),
+        price,
+        identity.ActorId("operator"),
+        "attested",
+        identity.EvidenceReference("evidence"),
+    )
+    request = authority.BrokerEffectRequest(
+        identity.EffectId("effect"),
+        identity.RequestOccurrenceId("request"),
+        identity.MandateId("protection-mandate"),
+        venue.EffectKind.SUBMIT,
+        identity.ClientOrderId("client-order"),
+        execution_scope.symbol_id,
+        fills.ExecutionSide.BUY,
+        values.Quantity(1),
+        b"economic-scope",
+        None,
+    )
+    mandate = _operation_mandate()
+    market_occurrence = protection.MarketOccurrence(
+        identity.MarketDataSourceId("source"),
+        identity.MarketStreamGenerationId("ef" * 32),
+        _operation_position_scope(),
+        identity.SessionId("session"),
+        0,
+        0,
+        100,
+        101,
+        protection.MarketKind.BEST_BID,
+        price,
+        _operation_price(101),
+        None,
+        None,
+        None,
+        False,
+    )
+    return (
+        operations.BrokerExecutionOperation(execution_coordinates, fill_fact),
+        operations.BrokerExecutionOperation(execution_coordinates, correction_fact),
+        operations.BrokerExecutionOperation(execution_coordinates, bust_fact),
+        operations.VenueRecoveryOperation(
+            venue_coordinates,
+            venue.RecordTransportOutcome(
+                identity.VenueInputId("transport"),
+                identity.EffectId("effect"),
+                venue.BrokerEffectState.REQUESTED,
+            ),
+        ),
+        operations.VenueRecoveryOperation(
+            venue_coordinates,
+            venue.RecoverClaimedEffect(
+                identity.VenueInputId("recover"),
+                identity.EffectId("effect"),
+            ),
+        ),
+        operations.VenueRecoveryOperation(
+            venue_coordinates,
+            venue.DiscoverVenueLeg(
+                identity.VenueInputId("discover"),
+                identity.EffectId("effect"),
+                leg_key,
+                identity.VenueObservationId("discover-observation"),
+            ),
+        ),
+        operations.VenueRecoveryOperation(
+            passive_venue_coordinates,
+            venue.ObserveVenueStatus(
+                identity.VenueInputId("status"),
+                leg_key,
+                venue.VenueAttemptState.WORKING,
+                identity.VenueObservationId("status-observation"),
+                values.Quantity(0),
+            ),
+        ),
+        operations.VenueRecoveryOperation(
+            venue_coordinates,
+            recovery.IngestHumanAttestedFill(
+                identity.VenueInputId("human"), identity.EffectId("effect"), human_fact
+            ),
+        ),
+        operations.VenueRecoveryOperation(
+            venue_coordinates,
+            recovery.ReleaseVenueLeg(
+                identity.VenueInputId("release"),
+                identity.EffectId("effect"),
+                leg_key,
+                identity.ClaimOccurrenceId("claim"),
+                values.Quantity(1),
+                venue.VenueAttemptState.FILLED,
+                identity.ActorId("operator"),
+                "released",
+                identity.EvidenceReference("evidence"),
+                identity.ClosureId("closure"),
+                b"d" * 32,
+            ),
+        ),
+        operations.VenueRecoveryOperation(
+            venue_coordinates,
+            recovery.RecordBrokerFillEvidence(
+                identity.VenueInputId("broker-fill"),
+                identity.EffectId("effect"),
+                leg_key,
+                values.Quantity(0),
+                values.Quantity(1),
+                fill_fact,
+                b"f" * 32,
+            ),
+        ),
+        operations.VenueRecoveryOperation(
+            venue_coordinates,
+            recovery.RecordBrokerRevisionEvidence(
+                identity.VenueInputId("broker-revision"),
+                identity.EffectId("effect"),
+                leg_key,
+                values.Quantity(1),
+                values.Quantity(1),
+                values.Quantity(1),
+                correction_fact,
+                b"r" * 32,
+            ),
+        ),
+        operations.AuthorityOperation(
+            execution_coordinates,
+            authority.CreateBrokerEffect(
+                identity.AuthorityInputId("create"),
+                identity.SessionId("session"),
+                request,
+                None,
+                None,
+            ),
+        ),
+        operations.AuthorityOperation(
+            execution_coordinates,
+            authority.ClaimEffect(
+                identity.AuthorityInputId("claim-effect"),
+                identity.EffectId("effect"),
+                identity.ClaimOccurrenceId("claim"),
+            ),
+        ),
+        operations.AuthorityOperation(
+            execution_coordinates,
+            authority.ClaimBrokerQuery(
+                identity.AuthorityInputId("query"),
+                identity.QueryClaimId("query-claim"),
+                execution_scope.symbol_id,
+                authority.AuthorityQueryKind.QUERY,
+            ),
+        ),
+        operations.AuthorityOperation(
+            execution_coordinates,
+            authority.EngageKill(
+                identity.AuthorityInputId("kill"),
+                identity.ActorId("operator"),
+                "kill reason",
+                identity.EvidenceReference("evidence"),
+            ),
+        ),
+        operations.AuthorityOperation(
+            execution_coordinates,
+            authority.BeginManualFlatten(
+                identity.AuthorityInputId("flatten"),
+                identity.ManualFlattenId("flatten-id"),
+                identity.SessionId("session"),
+                execution_scope.symbol_id,
+                identity.ActorId("operator"),
+                "flatten reason",
+                identity.EvidenceReference("evidence"),
+                None,
+            ),
+        ),
+        operations.AuthorityOperation(
+            execution_coordinates,
+            authority.AdvanceManualFlatten(
+                identity.AuthorityInputId("advance"),
+                identity.ManualFlattenId("flatten-id"),
+            ),
+        ),
+        operations.BeginAcquisitionGenerationOperation(
+            acquisition_coordinates,
+            identity.AuthorityInputId("begin-generation"),
+            mandate,
+        ),
+        operations.CreateAcquisitionEffectOperation(
+            acquisition_coordinates,
+            identity.AuthorityInputId("create-acquisition"),
+            authority.AcquisitionEffectTerms(
+                values.Quantity(1),
+                price,
+                authority.AcquisitionOrderType.LIMIT,
+                100,
+            ),
+        ),
+        operations.ClaimAcquisitionEffectOperation(
+            acquisition_coordinates,
+            identity.AuthorityInputId("claim-acquisition"),
+            identity.EffectId("effect"),
+            identity.ClaimOccurrenceId("claim"),
+        ),
+        operations.BeginAcquisitionPreemptionOperation(
+            acquisition_coordinates,
+            identity.AuthorityInputId("preempt-acquisition"),
+        ),
+        operations.MarketOccurrenceOperation(market_coordinates, market_occurrence),
+    )
 
 
 @pytest.mark.parametrize(
@@ -565,6 +992,187 @@ def test_missing_venue_session_is_limited_to_passive_status_observation() -> Non
         )
 
 
+def test_private_operation_wire_foundation_is_canonical_and_typed() -> None:
+    application_generation_id = identity.ApplicationGenerationId("ab" * 32)
+    coordinates = operations.ExecutionOperationCoordinates(
+        application_generation_id,
+        "11" * 32,
+        7,
+    )
+
+    encoded_coordinates = operations._encode_m2_coordinates(coordinates)
+
+    assert encoded_coordinates == [
+        "m2.operations.ExecutionOperationCoordinates/v1",
+        ["1", "application_generation_id", ["ab" * 32]],
+        "11" * 32,
+        7,
+    ]
+    assert operations._decode_m2_coordinates(encoded_coordinates) == coordinates
+    assert operations._encode_m2_enum(operations.OperationDomain.BROKER_EXECUTION) == [
+        "m2.operations.OperationDomain",
+        "BROKER_EXECUTION",
+    ]
+
+    payload = [
+        1,
+        "m2.operation/v1",
+        ["m2.operations.OperationDomain", "BROKER_EXECUTION"],
+        encoded_coordinates,
+        ["m1.fills.BrokerFillFact/v1"],
+    ]
+    document = operations._encode_m2_document(payload)
+    canonical_json = json.dumps(
+        payload,
+        ensure_ascii=True,
+        allow_nan=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+    assert document == (
+        b"execution-core/m2-document/v1\n"
+        + b"\x01"
+        + struct.pack(">Q", len(canonical_json))
+        + canonical_json
+    )
+    assert operations._decode_m2_document(document) == payload
+
+
+def test_private_operation_wire_foundation_rejects_noncanonical_or_wrongly_typed_parts() -> (
+    None
+):
+    application_generation_id = identity.ApplicationGenerationId("ab" * 32)
+    coordinates = operations._encode_m2_coordinates(
+        operations.ExecutionOperationCoordinates(
+            application_generation_id,
+            "11" * 32,
+            7,
+        )
+    )
+    payload = [
+        1,
+        "m2.operation/v1",
+        ["m2.operations.OperationDomain", "BROKER_EXECUTION"],
+        coordinates,
+        ["m1.fills.BrokerFillFact/v1"],
+    ]
+    spaced_json = json.dumps(
+        payload,
+        ensure_ascii=True,
+        allow_nan=False,
+        separators=(", ", ": "),
+    ).encode("utf-8")
+    malformed_document = (
+        b"execution-core/m2-document/v1\n"
+        + b"\x01"
+        + struct.pack(">Q", len(spaced_json))
+        + spaced_json
+    )
+    bad_tag = list(coordinates)
+    bad_tag[0] = "m2.operations.VenueOperationCoordinates/v1"
+
+    with pytest.raises(ValueError, match="canonical"):
+        operations._decode_m2_document(malformed_document)
+    with pytest.raises(ValueError, match="coordinate"):
+        operations._decode_m2_coordinates(bad_tag)
+    with pytest.raises(ValueError, match="enum"):
+        operations._decode_m2_enum(["m2.operations.OperationDomain", "NOT_A_DOMAIN"])
+
+
+def test_every_frozen_operation_payload_round_trips_through_exact_owner_codecs() -> (
+    None
+):
+    expected_payload_tags = {
+        "m1.fills.BrokerFillFact/v1",
+        "m1.fills.BrokerTradeCorrectFact/v1",
+        "m1.fills.BrokerTradeBustFact/v1",
+        "m1.venue.RecordTransportOutcome/v1",
+        "m1.venue.RecoverClaimedEffect/v1",
+        "m1.venue.DiscoverVenueLeg/v1",
+        "m1.venue.ObserveVenueStatus/v1",
+        "m1.recovery.IngestHumanAttestedFill/v1",
+        "m1.recovery.ReleaseVenueLeg/v1",
+        "m1.recovery.RecordBrokerFillEvidence/v1",
+        "m1.recovery.RecordBrokerRevisionEvidence/v1",
+        "m1.authority.CreateBrokerEffect/v1",
+        "m1.authority.ClaimEffect/v1",
+        "m1.authority.ClaimBrokerQuery/v1",
+        "m1.authority.EngageKill/v1",
+        "m1.authority.BeginManualFlatten/v1",
+        "m1.authority.AdvanceManualFlatten/v1",
+        "m2.acquisition.BeginAcquisitionGeneration/v1",
+        "m2.acquisition.CreateAcquisitionEffect/v1",
+        "m2.acquisition.ClaimAcquisitionEffect/v1",
+        "m2.acquisition.BeginAcquisitionPreemption/v1",
+        "m2.protection.MarketOccurrenceOperation/v1",
+    }
+    observed_payload_tags: set[str] = set()
+
+    for operation in _all_exact_operations():
+        encoded = operations.encode_m2_operation(operation)
+        document = operations._decode_m2_document(encoded)
+        payload = document[4]
+
+        assert type(payload) is list
+        assert type(payload[0]) is str
+        observed_payload_tags.add(payload[0])
+        assert operations.decode_m2_operation(encoded) == operation
+        assert (
+            operations.encode_m2_operation(operations.decode_m2_operation(encoded))
+            == encoded
+        )
+
+    assert observed_payload_tags == expected_payload_tags
+
+
+def test_operation_decode_refuses_domain_coordinate_payload_and_canonicality_mutants() -> (
+    None
+):
+    encoded = operations.encode_m2_operation(_all_exact_operations()[0])
+    document = operations._decode_m2_document(encoded)
+
+    wrong_domain = list(document)
+    wrong_domain[2] = ["m2.operations.OperationDomain", "VENUE_RECOVERY"]
+    wrong_coordinate = list(document)
+    wrong_coordinate[3] = [
+        "m2.operations.VenueOperationCoordinates/v1",
+        *document[3][1:],
+        None,
+    ]
+    wrong_payload = list(document)
+    wrong_payload[4] = ["m1.venue.RecoverClaimedEffect/v1", *document[4][1:]]
+
+    for mutant in (wrong_domain, wrong_coordinate, wrong_payload):
+        with pytest.raises((TypeError, ValueError)):
+            operations.decode_m2_operation(operations._encode_m2_document(mutant))
+
+    noncanonical = json.dumps(
+        document,
+        ensure_ascii=True,
+        allow_nan=False,
+        separators=(", ", ": "),
+    ).encode("utf-8")
+    malformed_document = (
+        b"execution-core/m2-document/v1\n"
+        + b"\x01"
+        + struct.pack(">Q", len(noncanonical))
+        + noncanonical
+    )
+    with pytest.raises(ValueError, match="canonical"):
+        operations.decode_m2_operation(malformed_document)
+
+
+def test_acquisition_hydration_rebuilds_the_private_binding_from_terms_only() -> None:
+    mandate = _operation_mandate()
+    encoded = operations._encode_m2_acquisition_mandate(mandate)
+    decoded = operations._decode_m2_acquisition_mandate(encoded)
+
+    assert decoded == mandate
+    assert decoded.binding == mandate.binding
+    assert acquisition._acquisition_mandate_is_authentic(decoded)
+    assert "DualMandateBinding" not in json.dumps(encoded, separators=(",", ":"))
+
+
 def test_operation_foundation_public_exports_are_exact_and_inert() -> None:
     expected = {
         "AcquisitionOperationCoordinates",
@@ -585,7 +1193,9 @@ def test_operation_foundation_public_exports_are_exact_and_inert() -> None:
         "OperationDomain",
         "VenueOperationCoordinates",
         "VenueRecoveryOperation",
+        "decode_m2_operation",
         "decode_m2_semantic_key",
+        "encode_m2_operation",
         "encode_m2_semantic_key",
     }
 

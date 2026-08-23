@@ -1573,6 +1573,68 @@ class AcquisitionMandate:
         raise TypeError("AcquisitionMandate cannot be subclassed")
 
 
+def _m2_hydrate_acquisition_mandate(
+    *,
+    acquisition_mandate_id: _AcquisitionMandateId,
+    position_scope: _PositionScope,
+    session_id: _SessionId,
+    configuration_version: str,
+    maximum_quantity: _Quantity,
+    maximum_notional: _Fraction,
+    maximum_entry_price: _ReportedPrice,
+    allowed_order_types: tuple[AcquisitionOrderType, ...],
+    expiry: int,
+    deadline: int,
+    fixed_child_cap: _Quantity,
+    certified_participation_cap: _Fraction | None,
+    cancel_reprice_budget: int,
+    protection_mandate: _ProtectionMandate,
+) -> AcquisitionMandate:
+    """Rebuild one durable M2 mandate through the sole binding mint.
+
+    The operation codec supplies only independently durable mandate terms.  It
+    never accepts a caller-supplied private binding, commitment, or seal; this
+    owner reconstructs those values once and proves the completed result.
+    """
+
+    binding = _mint_dual_mandate_binding(
+        acquisition_mandate_id=acquisition_mandate_id,
+        position_scope=position_scope,
+        session_id=session_id,
+        configuration_version=configuration_version,
+        maximum_quantity=maximum_quantity,
+        maximum_notional=maximum_notional,
+        maximum_entry_price=maximum_entry_price,
+        allowed_order_types=allowed_order_types,
+        expiry=expiry,
+        deadline=deadline,
+        fixed_child_cap=fixed_child_cap,
+        certified_participation_cap=certified_participation_cap,
+        cancel_reprice_budget=cancel_reprice_budget,
+        protection_mandate=protection_mandate,
+    )
+    hydrated = AcquisitionMandate(
+        acquisition_mandate_id=acquisition_mandate_id,
+        position_scope=position_scope,
+        session_id=session_id,
+        configuration_version=configuration_version,
+        maximum_quantity=maximum_quantity,
+        maximum_notional=maximum_notional,
+        maximum_entry_price=maximum_entry_price,
+        allowed_order_types=allowed_order_types,
+        expiry=expiry,
+        deadline=deadline,
+        fixed_child_cap=fixed_child_cap,
+        certified_participation_cap=certified_participation_cap,
+        cancel_reprice_budget=cancel_reprice_budget,
+        protection_mandate=protection_mandate,
+        binding=binding,
+    )
+    if not _acquisition_mandate_is_authentic(hydrated):
+        raise ValueError("hydrated acquisition mandate is not authentic")
+    return hydrated
+
+
 def _acquisition_mandate_is_authentic(value: object) -> bool:
     if type(value) is not AcquisitionMandate:
         return False
