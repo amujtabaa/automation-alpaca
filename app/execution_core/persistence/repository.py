@@ -4795,9 +4795,11 @@ def select_runtime_checkpoint(
         acceptance_by_effect = _checkpoint_unique_records(
             acceptances, lambda acceptance: acceptance.effect_id
         )
-        evidence_by_acceptance = _checkpoint_unique_records(
-            evidence, lambda item: item.acceptance_set_id
+        _checkpoint_unique_records(
+            evidence,
+            lambda item: (item.effect_id, item.evidence_ordinal, item.evidence_id),
         )
+        evidence_acceptance_ids = {item.acceptance_set_id for item in evidence}
         if (
             any(effect_id not in qualifying_effect_ids for effect_id in claim_by_effect)
             or any(
@@ -4882,7 +4884,8 @@ def select_runtime_checkpoint(
 
         streams: list[_records.MarketStreamAuthorityRecord] = []
         cursors: list[_records.MarketCursorRecord] = []
-        stream_by_generation: dict[str, _Any] = {}
+        streams_by_generation: dict[str, list[_Any]] = {}
+        stream_by_identity: dict[str, _Any] = {}
         cursor_by_stream: dict[str, _Any] = {}
         for row in later_rows[8]:
             if len(row) != 19:
@@ -4891,13 +4894,15 @@ def select_runtime_checkpoint(
             cursor_values = row[9:19]
             present = _checkpoint_presence(row[8], cursor_values, optional=True)
             generation_key = _acquisition_id(stream.acquisition_generation_id)
+            stream_key = stream.stream_generation_id.value
             if (
                 generation_key,
                 stream.scope_id,
-            ) not in selected_coordinates or generation_key in stream_by_generation:
+            ) not in selected_coordinates or stream_key in stream_by_identity:
                 raise ValueError("checkpoint stream has no selected generation")
             streams.append(stream)
-            stream_by_generation[generation_key] = stream
+            stream_by_identity[stream_key] = stream
+            streams_by_generation.setdefault(generation_key, []).append(stream)
             if present:
                 cursor = _build_market_cursor(cursor_values)
                 if cursor.stream_generation_id != stream.stream_generation_id:
@@ -4911,7 +4916,11 @@ def select_runtime_checkpoint(
             generation_key = _acquisition_id(
                 protection.active_acquisition_generation_id
             )
-            selected_stream = stream_by_generation.get(generation_key)
+            selected_stream = stream_by_identity.get(
+                protection.active_stream_generation_id.value
+                if protection.active_stream_generation_id is not None
+                else ""
+            )
             if (
                 controller.live_acquisition_generation_id
                 != protection.active_acquisition_generation_id
@@ -4943,9 +4952,7 @@ def select_runtime_checkpoint(
                 ),
             )
         )
-        selected_generation_ids = set(stream_by_generation) | {
-            coordinate[0] for coordinate in selected_coordinates
-        }
+        selected_generation_ids = {coordinate[0] for coordinate in selected_coordinates}
         owner_effect_absences = tuple(
             _checkpoint_absence(
                 "owner/effect",
@@ -4977,7 +4984,7 @@ def select_runtime_checkpoint(
                 _checkpoint_field_int(acceptance.acceptance_set_id),
             )
             for acceptance in acceptances
-            if acceptance.acceptance_set_id not in evidence_by_acceptance
+            if acceptance.acceptance_set_id not in evidence_acceptance_ids
         )
         closure_owner_absences = tuple(
             _checkpoint_absence(
@@ -5030,7 +5037,7 @@ def select_runtime_checkpoint(
                 _checkpoint_field_text(generation_id),
             )
             for generation_id in sorted(
-                selected_generation_ids - set(stream_by_generation)
+                selected_generation_ids - set(streams_by_generation)
             )
         )
         cursor_stream_absences = tuple(
@@ -5041,6 +5048,32 @@ def select_runtime_checkpoint(
             )
             for stream in streams
             if stream.stream_generation_id.value not in cursor_by_stream
+        )
+        (
+            owner_effect_absences,
+            claim_effect_absences,
+            acceptance_effect_absences,
+            evidence_acceptance_absences,
+            closure_owner_absences,
+            route_owner_absences,
+            fact_head_root_absences,
+            current_fact_root_absences,
+            stream_generation_absences,
+            cursor_stream_absences,
+        ) = tuple(
+            tuple(sorted(items, key=lambda item: item[1]))
+            for items in (
+                owner_effect_absences,
+                claim_effect_absences,
+                acceptance_effect_absences,
+                evidence_acceptance_absences,
+                closure_owner_absences,
+                route_owner_absences,
+                fact_head_root_absences,
+                current_fact_root_absences,
+                stream_generation_absences,
+                cursor_stream_absences,
+            )
         )
         query_counts = tuple(
             len(rows) for rows in (q1, q2, *generation_rows, *later_rows)

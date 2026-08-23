@@ -144,6 +144,13 @@ def test_decode_refuses_noncanonical_bytes_wrong_shape_and_scope_order() -> None
             _outer_payload(scopes=[_scope_row(2), _scope_row(2)]), _LOAD_BINDING
         )
 
+    zero_version = json.loads(_outer_payload())
+    zero_version[6] = 0
+    with pytest.raises(ValueError, match="version ordinal must be positive"):
+        checkpoint_codec._decode_runtime_checkpoint(
+            _canonical(zero_version), _LOAD_BINDING
+        )
+
 
 def test_decode_refuses_profile_alias_bad_binding_and_cross_scope_splice() -> None:
     payload = json.loads(_outer_payload(scopes=[_scope_row(1)]))

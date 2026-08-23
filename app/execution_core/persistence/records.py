@@ -359,13 +359,13 @@ def _runtime_checkpoint_price_columns(
     if value is None:
         if absent_is_null:
             return (None,) * 9
-        return (0, 0, 0, "0", 0, 0, 0, "0", 0)
+        return (False, 0, 0, "0", 0, 0, 0, "0", 0)
     if type(value) is not _values.ReportedPrice:
         raise TypeError("runtime checkpoint price must be exact ReportedPrice")
     scale = value.scale.value.as_tuple()
     tick_scale = value.tick.scale.value.as_tuple()
     return (
-        1,
+        True,
         value.units.value,
         scale.sign,
         "".join(str(digit) for digit in scale.digits),
@@ -1270,6 +1270,37 @@ def _runtime_checkpoint_load_proof_binding(
         head_binding,
         payload_binding,
         selection_binding,
+    )
+
+
+def _runtime_checkpoint_selection_proof_is_authentic(value: object) -> bool:
+    """Expose one private exact proof-authenticity route to the repository."""
+
+    return RuntimeCheckpointSelectionProof._is_authentic(value)
+
+
+def _issue_runtime_checkpoint_load_proof_binding(
+    request: RuntimeCheckpointLoadRequest,
+    initial_checkpoint: KernelCheckpointRecord,
+    payload: RuntimeCheckpointPayloadRecord,
+    proof: RuntimeCheckpointSelectionProof,
+) -> bytes:
+    """Bind a load only to one fresh authentic selection proof's exact set."""
+
+    if not RuntimeCheckpointSelectionProof._is_authentic(proof):
+        raise ValueError("runtime checkpoint selection proof is not authentic")
+    if (
+        proof.request.application_generation_id != request.application_generation_id
+        or proof.request.execution_profile_id != request.execution_profile_id
+        or proof.request.market_source_profile_id != request.market_source_profile_id
+        or proof.request.expected_checkpoint != initial_checkpoint
+    ):
+        raise ValueError("runtime checkpoint load selection coordinates do not agree")
+    return _runtime_checkpoint_load_proof_binding(
+        request,
+        initial_checkpoint,
+        payload,
+        proof._selection,
     )
 
 

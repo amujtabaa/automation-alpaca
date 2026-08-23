@@ -681,6 +681,8 @@ def _decode_runtime_checkpoint(
     checkpoint_version_ordinal = _require_nonnegative_int(
         "checkpoint version ordinal", payload[6]
     )
+    if checkpoint_version_ordinal < 1:
+        raise ValueError("checkpoint version ordinal must be positive")
     venue = _decode_component(payload[7], _M2_VENUE_STATE_TAG)
     authority = _decode_component(payload[8], _M2_AUTHORITY_CHECKPOINT_TAG)
     scope_wrapper = payload[9]

@@ -6,7 +6,7 @@ import ast
 import inspect
 import re
 
-from app.execution_core.persistence import repository
+from app.execution_core.persistence import records, repository
 
 
 def test_runtime_checkpoint_repository_has_one_static_thirteen_query_manifest() -> None:
@@ -89,3 +89,22 @@ def test_runtime_checkpoint_public_repository_surface_is_exactly_added() -> None
     assert "store_runtime_checkpoint_payload" not in repository.__all__
     assert "load_kernel_checkpoint" not in repository.__all__
     assert "store_kernel_checkpoint" not in repository.__all__
+
+
+def test_runtime_checkpoint_records_integration_routes_and_boolean_domains_exist() -> (
+    None
+):
+    assert callable(records._runtime_checkpoint_selection_proof_is_authentic)
+    assert callable(records._issue_runtime_checkpoint_load_proof_binding)
+    absent_fact_price = records._runtime_checkpoint_price_columns(
+        None, absent_is_null=False
+    )
+    absent_root_price = records._runtime_checkpoint_price_columns(
+        None, absent_is_null=True
+    )
+
+    assert absent_fact_price[0] is False
+    assert absent_root_price[0] is None
+    assert records._runtime_checkpoint_storage_field_binding(False) != (
+        records._runtime_checkpoint_storage_field_binding(0)
+    )
