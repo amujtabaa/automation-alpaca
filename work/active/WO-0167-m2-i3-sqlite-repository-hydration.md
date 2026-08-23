@@ -21,7 +21,7 @@ execution_authority: Ameen Mujtabaa activated WO-0167 (Codex task, 2026-08-21) a
 
 **Date:** 2026-08-21
 
-**Status:** REVIEW — Codex R4 gate-remediation candidate awaits fresh REV-0073 acceptance
+**Status:** REVIEW — Codex R5 capability/rollback candidate awaits fresh REV-0073 acceptance
 
 `[FABLE • FULL • spec-first/TDD • direct-key repository only]`
 
@@ -378,3 +378,44 @@ All SQLite-bearing tests used explicit fresh file-backed pytest temporary databa
 or in-memory database, DDL/schema change, migration, runtime composition, credential,
 broker/network call, order, M2-I4+ implementation, promotion, PR, or merge occurred. R4 awaits fresh
 independent `REV-0073/result-r4.md`; author evidence does not accept or close WO-0167.
+
+## REV-0073 R4 BLOCK disposition and remediation R5 (2026-08-22)
+
+Fresh authoritative `result-r4.md` returned `BLOCK` against R4 commit
+`0813a9bec8bb7c2ff37f31dec68d3f7f98bf414a` (P0=1, P1=0, P2=0). The reviewer-owned result is
+preserved unchanged with SHA-256
+`51b0147bea7e5b56e3374fe24f9e350ab4e9551ce12732001e0a09bcaee58d62`.
+It reproduced a capability-gated cursor hidden read; it also recorded a cursor transaction/
+rollback-persistence path as adjacent unverified evidence. Codex closed both owning boundaries in
+test-only commit `3c028b9ae5fd3e1b6bf84b7d73c2f3039ac14043`, tree
+`d078be4b8b0157216aef51c80b13cf211626b0d1`.
+
+- Proof instrumentation now exposes and wraps `cursor`, connection/cursor `execute`,
+  `executemany`, and `executescript`; wrapped cursors return the recording connection rather than a
+  raw escape. Exact allowlist accounting therefore observes the same execution capabilities as the
+  accepted SQLite connection.
+- Transaction instrumentation likewise wraps cursor execution, hides raw connection escape through
+  `cursor.connection`, and forbids repository source from acquiring cursor/executemany APIs.
+- Every public operation starts with all seed writes inside one caller transaction. After the
+  operation, the caller rolls back and the test compares row counts for every application table to
+  the pre-transaction state.
+
+Failure-capable R5 mutations were demonstrated: the exact capability-gated cursor hidden read, an
+encoded cursor `COMMIT` followed by replacement `BEGIN`, and a deliberately raw escaped commit that
+restored `in_transaction=True` each failed for the intended independent reason.
+
+| R5 evidence | Exact result |
+| --- | --- |
+| Candidate commit / tree | `3c028b9ae5fd3e1b6bf84b7d73c2f3039ac14043` / `d078be4b8b0157216aef51c80b13cf211626b0d1` |
+| Focused repository/directness | 190 passed |
+| Codec/profile/value/schema/import/repository integration | 563 passed |
+| R2 conformance oracle | 61 passed |
+| Full `tests/execution_core` at exact commit | 1,880 collected and passed; 0 failed/skipped |
+| Static/architecture | Ruff check/format; mypy `app/` 93 files; Import Linter 6 kept/0 broken |
+| Governance | install, version v0.9.2, ledger, PKL, disposition, exact scope, whitespace all passed |
+| Production/schema identity | Repository production blob `2a668f28b547272ed9c6afd00ffa60a0c5938984`, unchanged from R3; `schema.py` blob `5ab6a87fe5212dd44b8cb0a3ad91b39c43ee65bd`, unchanged from base; DDL SHA-256 `2dc33ba1af41d7516b2cde43cac85ea6644dc9ab904501065aae1c77b14d3859` |
+
+All SQLite-bearing tests used explicit fresh file-backed pytest temporary databases. No configured
+or in-memory database, DDL/schema change, migration, runtime composition, credential,
+broker/network call, order, M2-I4+ implementation, promotion, PR, or merge occurred. R5 awaits fresh
+independent `REV-0073/result-r5.md`; author evidence does not accept or close WO-0167.

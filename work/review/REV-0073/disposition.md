@@ -2,7 +2,7 @@
 type: Review Disposition
 rev_id: REV-0073
 work_order_id: WO-0167
-status: REMEDIATED_AWAITING_R4
+status: REMEDIATED_AWAITING_R5
 date: 2026-08-22
 recorded_by: Codex implementation and orchestration seat
 ---
@@ -130,3 +130,29 @@ The exact four reviewer mutants were killed for the intended reason. Fresh autho
 Ruff, format, mypy over 93 app files, six import contracts, installation/version/ledger/PKL/
 disposition/scope, and whitespace gates passed. Production and schema identities remain unchanged.
 R4 remains unaccepted until fresh independent `result-r4.md` returns P0=0/P1=0.
+
+## R4 BLOCK disposition and R5 root resolutions
+
+Fresh authoritative `result-r4.md` returned `BLOCK` against R4 commit
+`0813a9bec8bb7c2ff37f31dec68d3f7f98bf414a` (P0=1, P1=0, P2=0). Its SHA-256 is
+`51b0147bea7e5b56e3374fe24f9e350ab4e9551ce12732001e0a09bcaee58d62`; the result remains
+reviewer-owned and unchanged. The counted finding was a live cursor capability bypass. The same
+result recorded a cursor-based transaction/rollback path as unverified rather than counted. R5
+commit `3c028b9ae5fd3e1b6bf84b7d73c2f3039ac14043`, tree
+`d078be4b8b0157216aef51c80b13cf211626b0d1`, closes both root mechanisms:
+
+1. Exact proof instrumentation is capability-transparent for connection/cursor execute,
+   executemany, executescript, cursor chaining, and `cursor.connection`; every SQL path reaches the
+   same ordered call ledger.
+2. Transaction tripwires wrap connection and cursor execution, and the source gate forbids cursor/
+   executemany acquisition in repository production.
+3. Every public operation runs with all seed writes inside the caller transaction. Caller rollback
+   must restore exact zero pre-transaction row counts across every application table, catching even
+   a hidden commit followed by replacement begin.
+
+The exact cursor hidden-read mutant, cursor encoded commit/begin mutant, and raw escaped
+commit/replacement-begin mutant were each killed for the intended reason. Fresh author evidence
+passed 190 focused tests, 563 integration tests, the 61-case R2 oracle, and all 1,880 execution-core
+tests. Ruff, format, mypy over 93 app files, six import contracts, installation/version/ledger/PKL/
+disposition/scope, and whitespace gates passed. Production and schema remain unchanged. R5 remains
+unaccepted until fresh independent `result-r5.md` returns P0=0/P1=0.
