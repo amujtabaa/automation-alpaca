@@ -6,11 +6,13 @@ from copy import copy
 from dataclasses import replace
 from decimal import Decimal
 from fractions import Fraction
+import inspect
 from unittest.mock import patch
 
 import pytest
 
 import app.execution_core.venue as venue_module
+from app.execution_core.persistence import checkpoint_codec
 from app.execution_core.fills import (
     BrokerFillFact,
     ExecutionFactKey,
@@ -1987,3 +1989,61 @@ def test_ordered_input_fold_accepts_valid_cancel_and_claim_recovery_histories() 
         VenueInputId("fold-valid-claim"),
         VenueInputId("fold-valid-recovery"),
     }
+
+
+def test_r19_checkpoint_projection_has_no_source_order_or_rank_dependency() -> None:
+    source = "\n".join(
+        inspect.getsource(member)
+        for member in (
+            checkpoint_codec._project_runtime_checkpoint,
+            checkpoint_codec._encode_runtime_checkpoint_venue,
+            checkpoint_codec._encode_runtime_checkpoint_authority,
+        )
+    )
+
+    for forbidden in (
+        "_effect_order",
+        "_owner_order",
+        "source_ordinal",
+        "source_rank",
+        "rank_map",
+    ):
+        assert forbidden not in source
+    assert "checkpoint_ordinal" in inspect.getsource(checkpoint_codec)
+
+
+def test_r19_selected_authority_families_do_not_require_whole_superset_cardinality() -> (
+    None
+):
+    source = inspect.getsource(checkpoint_codec._project_runtime_checkpoint)
+    module_source = inspect.getsource(checkpoint_codec)
+
+    for family in (
+        "_effect_authority_by_id",
+        "_claim_by_effect",
+        "_claim_by_occurrence",
+        "_acquisition_descriptor_by_effect",
+    ):
+        assert family in module_source
+        assert f"{family}.size" not in source
+    for family_marker in (
+        "effect_authorization",
+        "claim_by_effect",
+        "descriptor_by_effect",
+    ):
+        assert family_marker in module_source
+
+
+def test_r19_projector_source_contains_failure_capable_scope_relation_checks() -> None:
+    source = inspect.getsource(checkpoint_codec._project_runtime_checkpoint)
+    required_relations = (
+        "aggregate_quantity",
+        "raw_quantity",
+        "expected_controller_head_ordinal",
+        "currentness_head_ordinal",
+        "state_commitment_sha256",
+        "version_ordinal",
+        "selection_proof",
+    )
+    for relation in required_relations:
+        assert relation in source

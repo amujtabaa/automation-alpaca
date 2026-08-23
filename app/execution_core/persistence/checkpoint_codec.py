@@ -13,6 +13,7 @@ import json as _json
 from struct import pack as _struct_pack
 from threading import RLock as _RLock
 from typing import TypeVar as _TypeVar
+from typing import Any as _Any
 from typing import cast as _cast
 from weakref import ReferenceType as _ReferenceType
 from weakref import ref as _weakref_ref
@@ -38,6 +39,8 @@ _M2_RUNTIME_SCOPES_TAG = "m2.runtime-checkpoint.scopes/v1"
 _M2_VENUE_STATE_TAG = "m2.venue.State/v1"
 _M2_AUTHORITY_CHECKPOINT_TAG = "m2.authority.Checkpoint/v1"
 _M2_ACQUISITION_STATE_TAG = "m2.acquisition.State/v1"
+_M2_DORMANT_ACQUISITION_TAG = "m2.acquisition.Dormant/v2"
+_M2_DORMANT_PROTECTION_TAG = "m2.protection.Dormant/v1"
 _M2_POSITION_SCOPE_TAG = "m1.fills.PositionScope/v1"
 _MAX_RUNTIME_CHECKPOINT_SCOPES = 4_096
 _MAX_RUNTIME_CHECKPOINT_ROW_BYTES = 2_097_152
@@ -105,9 +108,9 @@ class _RuntimeCheckpointScopeOwners:
     """Exact ordered serving owners admitted only as projection inputs."""
 
     scope_id: int
-    acquisition: _acquisition.AcquisitionControllerState
+    acquisition: _acquisition.AcquisitionControllerState | None
     execution: _position.ExecutionSnapshot
-    protection: _protection.PositionProtectionState
+    protection: _protection.PositionProtectionState | None
 
 
 @_dataclass(frozen=True, slots=True, weakref_slot=True, init=False)
@@ -638,8 +641,10 @@ _COMPONENT_MEMBER_COUNTS = {
     _M2_VENUE_STATE_TAG: 23,
     _M2_AUTHORITY_CHECKPOINT_TAG: 14,
     _M2_ACQUISITION_STATE_TAG: 17,
+    _M2_DORMANT_ACQUISITION_TAG: 17,
     _M2_EXECUTION_STATE_TAG: 21,
     _M2_PROTECTION_CHECKPOINT_TAG: 32,
+    _M2_DORMANT_PROTECTION_TAG: 7,
     _M2_POSITION_SCOPE_TAG: 5,
 }
 
@@ -672,6 +677,11 @@ _CHECKPOINT_COLLECTION_TAGS = {
     "m2.acquisition.UnresolvedGenerations/v1",
     "m2.acquisition.UnresolvedMarketStreamRoutes/v1",
     "m2.acquisition.LineageRoutes/v1",
+    "m2.acquisition.DormantGenerations/v1",
+    "m2.acquisition.DormantGenerationCurrents/v1",
+    "m2.acquisition.DormantMarketStreams/v1",
+    "m2.acquisition.DormantMarketCursors/v1",
+    "m2.acquisition.DormantLineageRoutes/v1",
 }
 
 _CHECKPOINT_FIXED_ROW_LENGTHS = {
@@ -729,6 +739,15 @@ _CHECKPOINT_FIXED_ROW_LENGTHS = {
     "m2.acquisition.LineageFactSource/v1": 2,
     "m2.acquisition.BoundedRegistry/v1": 5,
     "m2.acquisition.BoundedLineage/v1": 2,
+    "m2.acquisition.DormantGeneration/v1": 8,
+    "m2.acquisition.DormantGenerationCurrent/v1": 6,
+    "m2.acquisition.DormantMarketStream/v1": 9,
+    "m2.acquisition.DormantMarketCursor/v1": 11,
+    "m2.acquisition.DormantLineageRoute/v1": 7,
+    "m2.acquisition.DormantRootSourceBinding/v1": 3,
+    "m2.acquisition.DormantRegistry/v2": 5,
+    "m2.scalar.Fraction/v1": 3,
+    "m2.position.PositionIntegrity": 2,
     _M2_TAIL_FOLD_INPUT_TAG: 7,
 }
 
@@ -927,6 +946,9 @@ def _validate_runtime_checkpoint_authority_wire(value: list[object]) -> None:
 
 
 def _validate_runtime_checkpoint_acquisition_wire(value: list[object]) -> None:
+    if value and value[0] == _M2_DORMANT_ACQUISITION_TAG:
+        _validate_runtime_checkpoint_dormant_acquisition_wire(value)
+        return
     _validate_checkpoint_nested_value(value[1])
     _operations._decode_m2_position_scope(value[2])
     for index in (3, 4, 5):
@@ -955,6 +977,61 @@ def _validate_runtime_checkpoint_acquisition_wire(value: list[object]) -> None:
         raise ValueError("acquisition checkpoint commitment does not match its row")
 
 
+def _validate_runtime_checkpoint_dormant_acquisition_wire(
+    value: list[object],
+) -> None:
+    """Validate the exact R18/R19 database-derived dormant acquisition row."""
+
+    _operations._decode_m2_m1_as(
+        "dormant acquisition application generation",
+        value[1],
+        _identity.ApplicationGenerationId,
+    )
+    _operations._decode_m2_position_scope(value[2])
+    for index in (3, 4, 6, 7):
+        _require_nonnegative_int("dormant acquisition integer", value[index])
+    if type(value[5]) is not str:
+        raise TypeError("dormant acquisition integrity state must be exact text")
+    _require_sha256_text("dormant acquisition compatibility", value[8])
+    wrapper_tags = (
+        "m2.acquisition.DormantGenerations/v1",
+        "m2.acquisition.DormantGenerationCurrents/v1",
+        "m2.acquisition.DormantMarketStreams/v1",
+        "m2.acquisition.DormantMarketCursors/v1",
+        "m2.acquisition.DormantLineageRoutes/v1",
+    )
+    for member, tag in zip(value[9:14], wrapper_tags, strict=True):
+        _validate_checkpoint_collection(member, tag)
+    registry = _require_sha256_text(
+        "dormant acquisition registry commitment", value[14]
+    )
+    lineage = _require_sha256_text("dormant acquisition lineage commitment", value[15])
+    registry_row = ["m2.acquisition.DormantRegistry/v2", *value[9:13]]
+    if (
+        registry
+        != _checkpoint_row_commitment(
+            b"execution-core/m2-acquisition/dormant-registry/v2", registry_row
+        ).hex()
+    ):
+        raise ValueError("dormant acquisition registry commitment does not match")
+    if (
+        lineage
+        != _checkpoint_row_commitment(
+            b"execution-core/m2-acquisition/dormant-lineage/v2",
+            _cast(list[object], value[13]),
+        ).hex()
+    ):
+        raise ValueError("dormant acquisition lineage commitment does not match")
+    retained = _require_sha256_text("dormant acquisition commitment", value[16])
+    if (
+        retained
+        != _checkpoint_row_commitment(
+            b"execution-core/m2-acquisition/dormant/v2", value[:16]
+        ).hex()
+    ):
+        raise ValueError("dormant acquisition commitment does not match its row")
+
+
 def _validate_runtime_checkpoint_execution_wire(value: list[object]) -> None:
     _operations._decode_m2_position_scope(value[1])
     if type(value[2]) is not int:
@@ -978,6 +1055,9 @@ def _validate_runtime_checkpoint_execution_wire(value: list[object]) -> None:
 
 
 def _validate_runtime_checkpoint_protection_wire(value: list[object]) -> None:
+    if value and value[0] == _M2_DORMANT_PROTECTION_TAG:
+        _validate_runtime_checkpoint_dormant_protection_wire(value)
+        return
     if type(value[1]) is not list or value[1][0] != "m2.protection.ProtectionPolicy":
         raise ValueError("protection policy tag is not admitted")
     _validate_checkpoint_nested_value(value[1])
@@ -1010,32 +1090,57 @@ def _validate_runtime_checkpoint_protection_wire(value: list[object]) -> None:
     _require_sha256_text("protection exit provenance", value[31])
 
 
-def _decode_component(
-    value: object, expected_tag: str
-) -> InertRuntimeCheckpointComponent:
-    expected_count = _COMPONENT_MEMBER_COUNTS[expected_tag]
+def _validate_runtime_checkpoint_dormant_protection_wire(
+    value: list[object],
+) -> None:
+    """Validate one exact database-derived dormant protection row."""
+
+    for index in (1, 3, 5):
+        _require_nonnegative_int("dormant protection integer", value[index])
+    if type(value[2]) is not str:
+        raise TypeError("dormant protection authority class must be exact text")
+    _require_sha256_text("dormant protection state commitment", value[4])
+    retained = _require_sha256_text("dormant protection commitment", value[6])
     if (
-        type(value) is not list
-        or len(value) != expected_count
-        or value[0] != expected_tag
+        retained
+        != _checkpoint_row_commitment(
+            b"execution-core/m2-protection/dormant/v1", value[:6]
+        ).hex()
     ):
-        raise ValueError(f"{expected_tag} has the wrong exact shape")
-    if expected_tag == _M2_POSITION_SCOPE_TAG:
+        raise ValueError("dormant protection commitment does not match its row")
+
+
+def _decode_component(
+    value: object, expected_tag: str | tuple[str, ...]
+) -> InertRuntimeCheckpointComponent:
+    admitted_tags = (expected_tag,) if type(expected_tag) is str else expected_tag
+    if type(value) is not list or not value or value[0] not in admitted_tags:
+        label = "/".join(admitted_tags)
+        raise ValueError(f"{label} has the wrong exact shape")
+    actual_tag = _cast(str, value[0])
+    expected_count = _COMPONENT_MEMBER_COUNTS[actual_tag]
+    if len(value) != expected_count or type(value[0]) is not str:
+        raise ValueError(f"{actual_tag} has the wrong exact shape")
+    if actual_tag == _M2_POSITION_SCOPE_TAG:
         _operations._decode_m2_position_scope(value)
-    elif expected_tag == _M2_VENUE_STATE_TAG:
+    elif actual_tag == _M2_VENUE_STATE_TAG:
         _validate_runtime_checkpoint_venue_wire(value)
-    elif expected_tag == _M2_AUTHORITY_CHECKPOINT_TAG:
+    elif actual_tag == _M2_AUTHORITY_CHECKPOINT_TAG:
         _validate_runtime_checkpoint_authority_wire(value)
-    elif expected_tag == _M2_ACQUISITION_STATE_TAG:
+    elif actual_tag == _M2_ACQUISITION_STATE_TAG:
         _validate_runtime_checkpoint_acquisition_wire(value)
-    elif expected_tag == _M2_EXECUTION_STATE_TAG:
+    elif actual_tag == _M2_DORMANT_ACQUISITION_TAG:
+        _validate_runtime_checkpoint_dormant_acquisition_wire(value)
+    elif actual_tag == _M2_EXECUTION_STATE_TAG:
         _validate_runtime_checkpoint_execution_wire(value)
-    elif expected_tag == _M2_PROTECTION_CHECKPOINT_TAG:
+    elif actual_tag == _M2_PROTECTION_CHECKPOINT_TAG:
         _validate_runtime_checkpoint_protection_wire(value)
+    elif actual_tag == _M2_DORMANT_PROTECTION_TAG:
+        _validate_runtime_checkpoint_dormant_protection_wire(value)
     canonical = _encode_canonical_json(value)
     if len(canonical) > _MAX_RUNTIME_CHECKPOINT_COMPONENT_BYTES:
         raise OverflowError("checkpoint component exceeds its byte limit")
-    return _issue_component(expected_tag, canonical)
+    return _issue_component(actual_tag, canonical)
 
 
 def _decode_runtime_checkpoint(
@@ -1098,11 +1203,17 @@ def _decode_runtime_checkpoint(
             raise ValueError("runtime checkpoint scopes are not strictly ordered")
         prior_scope_id = scope_id
         position_scope = _decode_component(row[2], _M2_POSITION_SCOPE_TAG)
-        acquisition = _decode_component(row[3], _M2_ACQUISITION_STATE_TAG)
+        acquisition = _decode_component(
+            row[3], (_M2_ACQUISITION_STATE_TAG, _M2_DORMANT_ACQUISITION_TAG)
+        )
         execution = _decode_component(row[4], _M2_EXECUTION_STATE_TAG)
-        protection = _decode_component(row[5], _M2_PROTECTION_CHECKPOINT_TAG)
+        protection = _decode_component(
+            row[5], (_M2_PROTECTION_CHECKPOINT_TAG, _M2_DORMANT_PROTECTION_TAG)
+        )
         if row[2] != row[3][2] or row[2] != row[4][1]:
             raise ValueError("runtime checkpoint scope components do not agree")
+        if row[5][0] == _M2_DORMANT_PROTECTION_TAG and row[5][1] != scope_id:
+            raise ValueError("dormant protection scope does not agree")
         scopes.append(
             _issue_scope_candidate(
                 scope_id, position_scope, acquisition, execution, protection
@@ -1149,9 +1260,15 @@ def _issue_projected_runtime_checkpoint(
         _issue_scope_candidate(
             scope_id,
             _decode_component(position_wire, _M2_POSITION_SCOPE_TAG),
-            _decode_component(acquisition_wire, _M2_ACQUISITION_STATE_TAG),
+            _decode_component(
+                acquisition_wire,
+                (_M2_ACQUISITION_STATE_TAG, _M2_DORMANT_ACQUISITION_TAG),
+            ),
             _decode_component(execution_wire, _M2_EXECUTION_STATE_TAG),
-            _decode_component(protection_wire, _M2_PROTECTION_CHECKPOINT_TAG),
+            _decode_component(
+                protection_wire,
+                (_M2_PROTECTION_CHECKPOINT_TAG, _M2_DORMANT_PROTECTION_TAG),
+            ),
         )
         for scope_id, position_wire, acquisition_wire, execution_wire, protection_wire in scope_wires
     )
@@ -1209,6 +1326,385 @@ def _checkpoint_enum(owner: str, value: object) -> list[str]:
     if type(member) is not str:
         raise TypeError("checkpoint enum must expose one exact text member")
     return [owner, member]
+
+
+def _selected_record_binding(record: object) -> bytes:
+    binding = _records._runtime_checkpoint_selected_record_binding(record)
+    if type(binding) is not bytes or len(binding) != 32:
+        raise ValueError("selected record binding is not exact SHA-256 bytes")
+    return binding
+
+
+def _dormant_generation_row(
+    record: _records.AcquisitionGenerationRecord,
+) -> list[object]:
+    return [
+        "m2.acquisition.DormantGeneration/v1",
+        _operations._encode_m2_m1_atom(record.acquisition_generation_id),
+        record.scope_id,
+        record.status,
+        record.successor_ordinal,
+        None
+        if record.predecessor_generation_id is None
+        else _operations._encode_m2_m1_atom(record.predecessor_generation_id),
+        _require_sha256_text(
+            "generation mandate commitment", record.mandate_commitment_sha256
+        ),
+        _require_sha256_text(
+            "generation compatibility", record.emergency_compatibility_sha256
+        ),
+    ]
+
+
+def _dormant_generation_current_row(
+    record: _records.AcquisitionGenerationCurrentRecord,
+) -> list[object]:
+    return [
+        "m2.acquisition.DormantGenerationCurrent/v1",
+        _operations._encode_m2_m1_atom(record.acquisition_generation_id),
+        record.scope_id,
+        record.current_economics_head_ordinal,
+        record.unresolved_effect_count,
+        record.active_protection_count,
+    ]
+
+
+def _dormant_stream_row(record: _records.MarketStreamAuthorityRecord) -> list[object]:
+    return [
+        "m2.acquisition.DormantMarketStream/v1",
+        _operations._encode_m2_m1_atom(record.stream_generation_id),
+        record.scope_id,
+        _operations._encode_m2_m1_atom(record.application_generation_id),
+        _operations._encode_m2_m1_atom(record.acquisition_generation_id),
+        _require_sha256_text(
+            "stream mandate commitment", record.generation_mandate_commitment_sha256
+        ),
+        record.source_profile_id,
+        _operations._encode_m2_m1_atom(record.session_id),
+        record.sequence_mode,
+    ]
+
+
+def _dormant_cursor_row(record: _records.MarketCursorRecord) -> list[object]:
+    return [
+        "m2.acquisition.DormantMarketCursor/v1",
+        _operations._encode_m2_m1_atom(record.stream_generation_id),
+        record.scope_id,
+        _operations._encode_m2_m1_atom(record.application_generation_id),
+        _operations._encode_m2_m1_atom(record.acquisition_generation_id),
+        _require_sha256_text(
+            "cursor mandate commitment", record.generation_mandate_commitment_sha256
+        ),
+        record.source_profile_id,
+        _operations._encode_m2_m1_atom(record.session_id),
+        record.sequence_mode,
+        record.fixed_cursor_ordinal,
+        record.published_head_ordinal,
+    ]
+
+
+def _dormant_lineage_row(
+    kind: _acquisition.GenerationRouteKind,
+    identity: object,
+    generation_id: _identity.AcquisitionGenerationId,
+    source: list[object],
+    source_record_binding: bytes,
+) -> list[object]:
+    row: list[object] = [
+        "m2.acquisition.DormantLineageRoute/v1",
+        _checkpoint_enum("m1.acquisition.GenerationRouteKind", kind),
+        _operations._encode_m2_m1_atom(_cast(_durable_codec._OwningValue, identity)),
+        _operations._encode_m2_m1_atom(generation_id),
+        source,
+        source_record_binding.hex(),
+    ]
+    row.append(
+        _checkpoint_row_commitment(
+            b"execution-core/m2-acquisition/dormant-lineage-route/v1", row
+        ).hex()
+    )
+    return row
+
+
+def _encode_dormant_acquisition(
+    selection: _records._RuntimeCheckpointSelectionSet,
+    controller: _records.SymbolControllerRecord,
+    position_scope: object,
+    selection_binding: bytes,
+) -> tuple[list[object], bytes]:
+    """Project one null-LIVE scope solely from repository-authentic selected rows."""
+
+    scope_id = controller.scope_id
+    generations = tuple(
+        row for row in selection.unresolved_generations if row.scope_id == scope_id
+    )
+    currents = tuple(
+        row
+        for row in selection.unresolved_generation_current
+        if row.scope_id == scope_id
+    )
+    if len(generations) != len(currents) or any(
+        generation.acquisition_generation_id != current.acquisition_generation_id
+        for generation, current in zip(generations, currents, strict=True)
+    ):
+        raise ValueError("dormant generation/current rows do not pair exactly")
+    generation_ids = {row.acquisition_generation_id for row in generations}
+    streams = tuple(
+        row
+        for row in selection.streams
+        if row.scope_id == scope_id and row.acquisition_generation_id in generation_ids
+    )
+    cursors = tuple(
+        row
+        for row in selection.cursors
+        if row.scope_id == scope_id and row.acquisition_generation_id in generation_ids
+    )
+    stream_by_id = {row.stream_generation_id: row for row in streams}
+    if any(
+        cursor.stream_generation_id not in stream_by_id
+        or (
+            cursor.application_generation_id,
+            cursor.acquisition_generation_id,
+            cursor.generation_mandate_commitment_sha256,
+            cursor.source_profile_id,
+            cursor.session_id,
+            cursor.sequence_mode,
+        )
+        != (
+            stream_by_id[cursor.stream_generation_id].application_generation_id,
+            stream_by_id[cursor.stream_generation_id].acquisition_generation_id,
+            stream_by_id[
+                cursor.stream_generation_id
+            ].generation_mandate_commitment_sha256,
+            stream_by_id[cursor.stream_generation_id].source_profile_id,
+            stream_by_id[cursor.stream_generation_id].session_id,
+            stream_by_id[cursor.stream_generation_id].sequence_mode,
+        )
+        for cursor in cursors
+    ):
+        raise ValueError("dormant stream/cursor rows do not pair exactly")
+
+    position = _cast(_Any, position_scope)
+    broker = position.broker
+    environment = position.environment
+    account = position.account
+    roots_by_id = {
+        row.root_fill_key_id: row
+        for row in selection.roots
+        if row.scope_id == scope_id and row.owner_generation_id in generation_ids
+    }
+    routes_by_root = {
+        row.root_fill_key_id: row
+        for row in selection.root_routes
+        if row.scope_id == scope_id and row.acquisition_generation_id in generation_ids
+    }
+    lineage_rows: list[list[object]] = []
+    lineage_bindings: list[bytes] = []
+    for effect in selection.effects:
+        if (
+            effect.scope_id != scope_id
+            or effect.acquisition_generation_id not in generation_ids
+        ):
+            continue
+        binding = _selected_record_binding(effect)
+        source: list[object] = [
+            "m2.acquisition.LineageEffectSource/v1",
+            _operations._encode_m2_m1_atom(effect.effect_external),
+        ]
+        lineage_rows.extend(
+            (
+                _dormant_lineage_row(
+                    _acquisition.GenerationRouteKind.REQUEST,
+                    effect.request_occurrence_id,
+                    effect.acquisition_generation_id,
+                    source,
+                    binding,
+                ),
+                _dormant_lineage_row(
+                    _acquisition.GenerationRouteKind.EFFECT,
+                    effect.effect_external,
+                    effect.acquisition_generation_id,
+                    source,
+                    binding,
+                ),
+            )
+        )
+        lineage_bindings.extend((binding, binding))
+    for owner in selection.owners:
+        if (
+            owner.scope_id != scope_id
+            or owner.owner_generation_id not in generation_ids
+        ):
+            continue
+        binding = _selected_record_binding(owner)
+        lineage_rows.append(
+            _dormant_lineage_row(
+                _acquisition.GenerationRouteKind.OWNER,
+                _identity.VenueLegKey(broker, environment, account, owner.owner_id),
+                owner.owner_generation_id,
+                [
+                    "m2.acquisition.LineageOwnerSource/v1",
+                    scope_id,
+                    _operations._encode_m2_m1_atom(owner.owner_id),
+                ],
+                binding,
+            )
+        )
+        lineage_bindings.append(binding)
+    for root_id, root in roots_by_id.items():
+        route = routes_by_root.get(root_id)
+        if route is None or route.acquisition_generation_id != root.owner_generation_id:
+            raise ValueError("dormant root route is missing or spliced")
+        route_binding = _selected_record_binding(route)
+        root_binding = _selected_record_binding(root)
+        pair: list[object] = [
+            "m2.acquisition.DormantRootSourceBinding/v1",
+            route_binding.hex(),
+            root_binding.hex(),
+        ]
+        source_binding = _checkpoint_row_commitment(
+            b"execution-core/m2-acquisition/dormant-root-source/v1", pair
+        )
+        lineage_rows.append(
+            _dormant_lineage_row(
+                _acquisition.GenerationRouteKind.ROOT,
+                _identity.RootFillKey(broker, environment, account, root.root_fill_id),
+                root.owner_generation_id,
+                ["m2.acquisition.LineageRootSource/v1", root_id],
+                source_binding,
+            )
+        )
+        lineage_bindings.append(source_binding)
+    for fact in selection.current_facts:
+        selected_root = roots_by_id.get(fact.root_fill_key_id)
+        if selected_root is None:
+            continue
+        binding = _selected_record_binding(fact)
+        lineage_rows.append(
+            _dormant_lineage_row(
+                _acquisition.GenerationRouteKind.FACT,
+                _identity.ExecutionFactKey(
+                    broker, environment, account, fact.source_event_id
+                ),
+                selected_root.owner_generation_id,
+                ["m2.acquisition.LineageFactSource/v1", fact.fact_id],
+                binding,
+            )
+        )
+        lineage_bindings.append(binding)
+
+    generation_rows = _checkpoint_collection(
+        "m2.acquisition.DormantGenerations/v1",
+        [_dormant_generation_row(row) for row in generations],
+    )
+    current_rows = _checkpoint_collection(
+        "m2.acquisition.DormantGenerationCurrents/v1",
+        [_dormant_generation_current_row(row) for row in currents],
+    )
+    stream_rows = _checkpoint_collection(
+        "m2.acquisition.DormantMarketStreams/v1",
+        [_dormant_stream_row(row) for row in streams],
+    )
+    cursor_rows = _checkpoint_collection(
+        "m2.acquisition.DormantMarketCursors/v1",
+        [_dormant_cursor_row(row) for row in cursors],
+    )
+    lineage = _checkpoint_collection(
+        "m2.acquisition.DormantLineageRoutes/v1",
+        _cast(list[object], lineage_rows),
+    )
+    registry_preimage: list[object] = [
+        "m2.acquisition.DormantRegistry/v2",
+        generation_rows,
+        current_rows,
+        stream_rows,
+        cursor_rows,
+    ]
+    registry_commitment = _checkpoint_row_commitment(
+        b"execution-core/m2-acquisition/dormant-registry/v2", registry_preimage
+    )
+    lineage_commitment = _checkpoint_row_commitment(
+        b"execution-core/m2-acquisition/dormant-lineage/v2", lineage
+    )
+    row: list[object] = [
+        _M2_DORMANT_ACQUISITION_TAG,
+        _operations._encode_m2_m1_atom(controller.application_generation_id),
+        _operations._encode_m2_position_scope(position_scope),
+        scope_id,
+        controller.aggregate_quantity,
+        controller.integrity_state,
+        controller.currentness_head_ordinal,
+        controller.controller_version_ordinal,
+        _require_sha256_text(
+            "controller compatibility", controller.emergency_compatibility_sha256
+        ),
+        generation_rows,
+        current_rows,
+        stream_rows,
+        cursor_rows,
+        lineage,
+        registry_commitment.hex(),
+        lineage_commitment.hex(),
+    ]
+    row.append(
+        _checkpoint_row_commitment(
+            b"execution-core/m2-acquisition/dormant/v2", row
+        ).hex()
+    )
+    selected_bindings = tuple(
+        _selected_record_binding(item)
+        for family in (generations, currents, streams, cursors)
+        for item in family
+    ) + tuple(lineage_bindings)
+    source_projection = _commit_runtime_parts(
+        b"execution-core/m2-acquisition/dormant-source-projection/v1",
+        _field_bytes(selection_binding),
+        _field_int(scope_id),
+        _field_bytes(_selected_record_binding(controller)),
+        _sequence_domain(
+            b"execution-core/m2-acquisition/dormant-selected-records/v1",
+            tuple(_field_bytes(binding) for binding in selected_bindings),
+        ),
+    )
+    return row, source_projection
+
+
+def _encode_dormant_protection(
+    authority: _records.ProtectionAuthorityRecord,
+    selection_binding: bytes,
+) -> tuple[list[object], bytes]:
+    active = (
+        authority.active_stream_generation_id,
+        authority.active_acquisition_generation_id,
+        authority.active_generation_mandate_commitment_sha256,
+        authority.active_source_profile_id,
+        authority.active_session_id,
+        authority.active_sequence_mode,
+    )
+    if any(value is not None for value in active):
+        raise ValueError("dormant protection authority is partially active")
+    row: list[object] = [
+        _M2_DORMANT_PROTECTION_TAG,
+        authority.scope_id,
+        authority.authority_class,
+        authority.expected_controller_head_ordinal,
+        _require_sha256_text(
+            "dormant protection state", authority.state_commitment_sha256
+        ),
+        authority.version_ordinal,
+    ]
+    row.append(
+        _checkpoint_row_commitment(
+            b"execution-core/m2-protection/dormant/v1", row
+        ).hex()
+    )
+    source_projection = _commit_runtime_parts(
+        b"execution-core/m2-protection/dormant-source-projection/v1",
+        _field_bytes(selection_binding),
+        _field_int(authority.scope_id),
+        _field_bytes(_selected_record_binding(authority)),
+    )
+    return row, source_projection
 
 
 def _encode_runtime_checkpoint_venue(
@@ -1376,6 +1872,8 @@ def _encode_runtime_checkpoint_generation(
 
 def _encode_runtime_checkpoint_acquisition(
     state: _acquisition.AcquisitionControllerState,
+    selection: _records._RuntimeCheckpointSelectionSet,
+    scope_id: int,
 ) -> tuple[list[object], bytes]:
     """Encode one authentic bounded acquisition owner without generic traversal."""
 
@@ -1392,21 +1890,6 @@ def _encode_runtime_checkpoint_acquisition(
     )
     if live is None or route is None or route.binding != live.binding:
         raise ValueError("acquisition live generation route is incomplete")
-    if (
-        state.registry._records.size != 1
-        or state.registry._market_stream_routes.size != 1
-        or any(
-            routes.size
-            for routes in (
-                state.lineage._request_routes,
-                state.lineage._effect_routes,
-                state.lineage._owner_routes,
-                state.lineage._root_routes,
-                state.lineage._fact_routes,
-            )
-        )
-    ):
-        raise ValueError("nonempty unresolved acquisition rows are not admitted")
     controller_wire = [
         "m2.acquisition.Controller/v1",
         _operations._encode_m2_m1_atom(controller.application_generation_id),
@@ -1439,13 +1922,202 @@ def _encode_runtime_checkpoint_acquisition(
         _operations._encode_m2_m1_atom(generation_id),
         _operations._encode_m2_bytes(route_commitment),
     ]
+    unresolved_records = tuple(
+        record
+        for record in selection.unresolved_generations
+        if record.scope_id == scope_id
+    )
+    unresolved_views: list[_acquisition.GenerationRecordView] = []
+    unresolved_route_wires: list[object] = []
+    for selected_record in unresolved_records:
+        retained = state.registry.record(selected_record.acquisition_generation_id)
+        if retained is None:
+            raise ValueError("selected unresolved generation is absent from owner")
+        binding = retained.binding
+        if (
+            binding.application_generation_id != state.application_generation_id
+            or binding.position_scope != state.position_scope
+            or binding.successor_ordinal != selected_record.successor_ordinal
+            or binding.dual_mandate_binding_commitment.hex()
+            != selected_record.mandate_commitment_sha256
+            or binding.emergency_recovery_compatibility_commitment.hex()
+            != selected_record.emergency_compatibility_sha256
+            or retained.serving_class.value != selected_record.status
+        ):
+            raise ValueError("selected unresolved generation is spliced")
+        unresolved_views.append(retained)
+        selected_streams = tuple(
+            stream
+            for stream in selection.streams
+            if stream.scope_id == scope_id
+            and stream.acquisition_generation_id
+            == selected_record.acquisition_generation_id
+        )
+        if len(selected_streams) != 1:
+            raise ValueError("selected unresolved generation requires one stream route")
+        selected_stream = selected_streams[0]
+        retained_route = _acquisition._registry_market_stream_route(
+            state.registry, selected_stream.stream_generation_id
+        )
+        if (
+            retained_route is None
+            or retained_route.binding != binding
+            or selected_stream.application_generation_id
+            != state.application_generation_id
+            or selected_stream.generation_mandate_commitment_sha256
+            != selected_record.mandate_commitment_sha256
+        ):
+            raise ValueError("selected unresolved stream route is spliced")
+        unresolved_route_wires.append(
+            [
+                "m2.acquisition.MarketStreamRoute/v1",
+                _operations._encode_m2_m1_atom(retained_route.stream_generation),
+                _operations._encode_m2_m1_atom(binding.generation_id),
+                _operations._encode_m2_bytes(
+                    _acquisition._market_stream_generation_route_commitment(
+                        retained_route.stream_generation, binding
+                    )
+                ),
+            ]
+        )
     unresolved_generations = _checkpoint_collection(
-        "m2.acquisition.UnresolvedGenerations/v1", []
+        "m2.acquisition.UnresolvedGenerations/v1",
+        [_encode_runtime_checkpoint_generation(value) for value in unresolved_views],
     )
     unresolved_routes = _checkpoint_collection(
-        "m2.acquisition.UnresolvedMarketStreamRoutes/v1", []
+        "m2.acquisition.UnresolvedMarketStreamRoutes/v1", unresolved_route_wires
     )
-    lineage = _checkpoint_collection("m2.acquisition.LineageRoutes/v1", [])
+
+    position_scope = state.position_scope
+    lineage_rows: list[object] = []
+
+    def append_lineage(
+        kind: _acquisition.GenerationRouteKind,
+        identity_value: _durable_codec._OwningValue,
+        generation: _identity.AcquisitionGenerationId,
+        source_binding: list[object],
+    ) -> None:
+        if kind is _acquisition.GenerationRouteKind.REQUEST:
+            route_view = state.lineage.route_request(
+                _cast(_identity.RequestOccurrenceId, identity_value)
+            )
+        elif kind is _acquisition.GenerationRouteKind.EFFECT:
+            route_view = state.lineage.route_effect(
+                _cast(_identity.EffectId, identity_value)
+            )
+        elif kind is _acquisition.GenerationRouteKind.OWNER:
+            route_view = state.lineage.route_owner(
+                _cast(_identity.VenueLegKey, identity_value)
+            )
+        elif kind is _acquisition.GenerationRouteKind.ROOT:
+            route_view = state.lineage.route_root(
+                _cast(_identity.RootFillKey, identity_value)
+            )
+        else:
+            route_view = state.lineage.route_fact(
+                _cast(_identity.ExecutionFactKey, identity_value)
+            )
+        if route_view is None or route_view.generation_id != generation:
+            raise ValueError("selected acquisition lineage route is absent or spliced")
+        route_row: list[object] = [
+            "m2.acquisition.LineageRoute/v1",
+            _checkpoint_enum("m1.acquisition.GenerationRouteKind", kind),
+            _operations._encode_m2_m1_atom(identity_value),
+            _operations._encode_m2_m1_atom(generation),
+            source_binding,
+            _operations._encode_m2_bytes(
+                _acquisition._generation_route_commitment(
+                    route_view.route_kind,
+                    route_view.source_commitment,
+                    route_view.generation_id,
+                )
+            ),
+        ]
+        lineage_rows.append(route_row)
+
+    selected_generation_ids = {generation_id} | {
+        record.acquisition_generation_id for record in unresolved_records
+    }
+    for effect in selection.effects:
+        if (
+            effect.scope_id != scope_id
+            or effect.acquisition_generation_id not in selected_generation_ids
+        ):
+            continue
+        source: list[object] = [
+            "m2.acquisition.LineageEffectSource/v1",
+            _operations._encode_m2_m1_atom(effect.effect_external),
+        ]
+        append_lineage(
+            _acquisition.GenerationRouteKind.REQUEST,
+            effect.request_occurrence_id,
+            effect.acquisition_generation_id,
+            source,
+        )
+        append_lineage(
+            _acquisition.GenerationRouteKind.EFFECT,
+            effect.effect_external,
+            effect.acquisition_generation_id,
+            source,
+        )
+    for owner in selection.owners:
+        if (
+            owner.scope_id != scope_id
+            or owner.owner_generation_id not in selected_generation_ids
+        ):
+            continue
+        leg_key = _identity.VenueLegKey(
+            position_scope.broker,
+            position_scope.environment,
+            position_scope.account,
+            owner.owner_id,
+        )
+        append_lineage(
+            _acquisition.GenerationRouteKind.OWNER,
+            leg_key,
+            owner.owner_generation_id,
+            [
+                "m2.acquisition.LineageOwnerSource/v1",
+                scope_id,
+                _operations._encode_m2_m1_atom(owner.owner_id),
+            ],
+        )
+    roots_by_id = {
+        root.root_fill_key_id: root
+        for root in selection.roots
+        if root.scope_id == scope_id
+        and root.owner_generation_id in selected_generation_ids
+    }
+    for root_id, root in roots_by_id.items():
+        root_key = _identity.RootFillKey(
+            position_scope.broker,
+            position_scope.environment,
+            position_scope.account,
+            root.root_fill_id,
+        )
+        append_lineage(
+            _acquisition.GenerationRouteKind.ROOT,
+            root_key,
+            root.owner_generation_id,
+            ["m2.acquisition.LineageRootSource/v1", root_id],
+        )
+    for fact in selection.current_facts:
+        selected_root = roots_by_id.get(fact.root_fill_key_id)
+        if selected_root is None:
+            continue
+        fact_key = _identity.ExecutionFactKey(
+            position_scope.broker,
+            position_scope.environment,
+            position_scope.account,
+            fact.source_event_id,
+        )
+        append_lineage(
+            _acquisition.GenerationRouteKind.FACT,
+            fact_key,
+            selected_root.owner_generation_id,
+            ["m2.acquisition.LineageFactSource/v1", fact.fact_id],
+        )
+    lineage = _checkpoint_collection("m2.acquisition.LineageRoutes/v1", lineage_rows)
     bounded_registry: list[object] = [
         "m2.acquisition.BoundedRegistry/v1",
         live_wire,
@@ -1545,83 +2217,153 @@ def _project_runtime_checkpoint(
         tuple[int, list[object], list[object], list[object], list[object]]
     ] = []
     owner_commitments: list[tuple[int, bytes, bytes, bytes]] = []
+    controllers_by_scope = {
+        controller.scope_id: controller
+        for controller in selection_proof._selection.controllers
+    }
+    protections_by_scope = {
+        protection.scope_id: protection
+        for protection in selection_proof._selection.protection_authorities
+    }
     for selected, owners in zip(selected_scopes, scope_owners, strict=True):
         acquisition = owners.acquisition
         execution = owners.execution
         protection = owners.protection
-        if type(acquisition) is not _acquisition.AcquisitionControllerState:
+        if (
+            acquisition is not None
+            and type(acquisition) is not _acquisition.AcquisitionControllerState
+        ):
             raise TypeError(
-                "acquisition owner must be exact AcquisitionControllerState"
+                "acquisition owner must be exact AcquisitionControllerState or None"
             )
         if type(execution) is not _position.ExecutionSnapshot:
             raise TypeError("execution owner must be exact ExecutionSnapshot")
-        if type(protection) is not _protection.PositionProtectionState:
-            raise TypeError("protection owner must be exact PositionProtectionState")
-        if not _acquisition._controller_state_is_authentic(acquisition):
-            raise ValueError("acquisition owner is not authentic")
         execution_state = _position._m2_execution_state_from_snapshot(execution)
-        if not _protection._state_is_authentic(protection):
-            raise ValueError("protection owner is not authentic")
         position_scope = execution.position.scope
+        controller_record = controllers_by_scope.get(owners.scope_id)
+        protection_record = protections_by_scope.get(owners.scope_id)
+        if controller_record is None or protection_record is None:
+            raise ValueError("selected scope is missing controller/protection state")
+        if controller_record.aggregate_quantity != execution.position.raw_quantity:
+            raise ValueError("controller/execution quantity does not agree")
+        if (
+            protection_record.expected_controller_head_ordinal
+            != controller_record.currentness_head_ordinal
+        ):
+            raise ValueError("protection/controller head does not agree")
         if (
             selected.application_generation_id != request.application_generation_id
             or selected.execution_profile_id != request.execution_profile_id
             or selected.symbol != position_scope.symbol_id
-            or acquisition.application_generation_id
+            or controller_record.application_generation_id
             != request.application_generation_id
-            or acquisition.position_scope != position_scope
-            or protection.mandate.position_scope != position_scope
+            or controller_record.execution_profile_id != request.execution_profile_id
+            or protection_record.scope_id != owners.scope_id
             or venue_scope.broker != position_scope.broker
             or venue_scope.environment != position_scope.environment
             or venue_scope.account != position_scope.account
         ):
             raise ValueError("selected scope coordinates do not agree with owners")
-        if (
-            acquisition.scope_execution_commitment != execution.commitment
-            or acquisition.venue_commitment != venue._protection_commitment
-            or (
-                acquisition.protection_commitment is not None
-                and acquisition.protection_commitment != protection.commitment
-            )
-        ):
-            raise ValueError("scope owner commitments are spliced")
 
-        acquisition_wire, _ = _encode_runtime_checkpoint_acquisition(acquisition)
+        if controller_record.live_acquisition_generation_id is None:
+            if acquisition is not None:
+                raise ValueError("dormant acquisition cannot retain a serving owner")
+            acquisition_wire, acquisition_source_commitment = (
+                _encode_dormant_acquisition(
+                    selection_proof._selection,
+                    controller_record,
+                    position_scope,
+                    selection_proof._binding,
+                )
+            )
+        else:
+            if type(acquisition) is not _acquisition.AcquisitionControllerState:
+                raise TypeError(
+                    "active acquisition owner must be exact AcquisitionControllerState"
+                )
+            if not _acquisition._controller_state_is_authentic(acquisition):
+                raise ValueError("acquisition owner is not authentic")
+            if (
+                acquisition.application_generation_id
+                != request.application_generation_id
+                or acquisition.position_scope != position_scope
+                or acquisition._controller.live_generation_id
+                != controller_record.live_acquisition_generation_id
+                or acquisition.scope_execution_commitment != execution.commitment
+                or acquisition.venue_commitment != venue._protection_commitment
+            ):
+                raise ValueError("active acquisition owner is spliced")
+            acquisition_wire, _ = _encode_runtime_checkpoint_acquisition(
+                acquisition, selection_proof._selection, owners.scope_id
+            )
+            acquisition_source_commitment = acquisition.commitment
         execution_wire = _encode_m2_execution_state_component(execution_state)
-        checkpoint = _protection._M2ProtectionCheckpoint(
-            protection.policy,
-            protection.mandate,
-            protection.raw_quantity,
-            protection.execution_commitment,
-            protection.formula_available,
-            protection.armed_hard_bail_trigger,
-            protection.activation_price,
-            protection.high_watermark,
-            protection.trail,
-            protection.waiting_buy_resolution,
-            protection.commitment,
-            protection._cursor_ordinal,
-            protection._cursor_head,
-            protection._market_occurrence_epoch,
-            protection._market_committed_epoch,
-            protection._market_expected_epoch,
-            protection._market_source_sequence,
-            protection._market_source_time,
-            protection._market_evaluation_time,
-            protection._market_occurrence_identity,
-            protection._market_halted,
-            protection._market_baseline_required,
-            protection._market_exhausted,
-            protection._market_last_primary,
-            protection._hard_bid_identity,
-            protection._hard_bid_source_time,
-            protection._trade_identity,
-            protection._trade_source_time,
-            protection._trail_bid_identity,
-            protection._trail_bid_source_time,
-            protection._exit_provenance,
+        active_protection_coordinates = (
+            protection_record.active_stream_generation_id,
+            protection_record.active_acquisition_generation_id,
+            protection_record.active_generation_mandate_commitment_sha256,
+            protection_record.active_source_profile_id,
+            protection_record.active_session_id,
+            protection_record.active_sequence_mode,
         )
-        protection_wire = _encode_m2_protection_checkpoint_component(checkpoint)
+        if all(value is None for value in active_protection_coordinates):
+            if protection is not None:
+                raise ValueError("dormant protection cannot retain a serving owner")
+            protection_wire, protection_source_commitment = _encode_dormant_protection(
+                protection_record, selection_proof._binding
+            )
+        else:
+            if any(value is None for value in active_protection_coordinates):
+                raise ValueError("active protection coordinates are partial")
+            if type(protection) is not _protection.PositionProtectionState:
+                raise TypeError(
+                    "active protection owner must be exact PositionProtectionState"
+                )
+            if not _protection._state_is_authentic(protection):
+                raise ValueError("protection owner is not authentic")
+            if (
+                protection.mandate.position_scope != position_scope
+                or protection.raw_quantity != execution.position.raw_quantity
+                or protection.execution_commitment != execution.commitment
+                or protection.commitment.hex()
+                != protection_record.state_commitment_sha256
+            ):
+                raise ValueError("active protection owner is spliced")
+            checkpoint = _protection._M2ProtectionCheckpoint(
+                protection.policy,
+                protection.mandate,
+                protection.raw_quantity,
+                protection.execution_commitment,
+                protection.formula_available,
+                protection.armed_hard_bail_trigger,
+                protection.activation_price,
+                protection.high_watermark,
+                protection.trail,
+                protection.waiting_buy_resolution,
+                protection.commitment,
+                protection._cursor_ordinal,
+                protection._cursor_head,
+                protection._market_occurrence_epoch,
+                protection._market_committed_epoch,
+                protection._market_expected_epoch,
+                protection._market_source_sequence,
+                protection._market_source_time,
+                protection._market_evaluation_time,
+                protection._market_occurrence_identity,
+                protection._market_halted,
+                protection._market_baseline_required,
+                protection._market_exhausted,
+                protection._market_last_primary,
+                protection._hard_bid_identity,
+                protection._hard_bid_source_time,
+                protection._trade_identity,
+                protection._trade_source_time,
+                protection._trail_bid_identity,
+                protection._trail_bid_source_time,
+                protection._exit_provenance,
+            )
+            protection_wire = _encode_m2_protection_checkpoint_component(checkpoint)
+            protection_source_commitment = protection.commitment
         scope_wires.append(
             (
                 owners.scope_id,
@@ -1634,9 +2376,9 @@ def _project_runtime_checkpoint(
         owner_commitments.append(
             (
                 owners.scope_id,
-                acquisition.commitment,
+                acquisition_source_commitment,
                 execution.commitment,
-                protection.commitment,
+                protection_source_commitment,
             )
         )
 
