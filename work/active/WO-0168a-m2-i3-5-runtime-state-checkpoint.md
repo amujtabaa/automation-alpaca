@@ -396,6 +396,21 @@ all SQLite-bearing tests remain stopped at the exact human digest/candidate/tree
 This acceptance adds no configured/in-memory database, runtime composition, credential, network,
 broker, order, promotion, merge, M2-I4, or M3 authority.
 
+## 2026-08-23 pre-gate execution deviation record
+
+During an otherwise static verification pass, Codex mistakenly included
+`tests/execution_core/test_persistence_repository.py -k "not schema"` in a combined pytest
+command. That invoked SQLite-bearing repository tests before the R12 exact changed-DDL gate. At
+that moment `app/execution_core/persistence/schema.py` was unchanged, so no schema-v2 DDL was
+installed, exercised, or hashed; no configured database path, credential, network, broker, order,
+or runtime-composition surface was supplied or touched. The run passed, but it is not evidence for
+R12 schema authority and does not constitute a human gate.
+
+The error was recognized immediately. No further SQLite-bearing test will run until the exact
+changed-DDL candidate, commit/tree, digest, byte length, and temporary-file-only test plan receive
+the required human decision. The pure/import/static evidence remains separately identified; this
+record is append-only disclosure rather than a retroactive authorization.
+
 ## Out of scope
 
 - OS-1: The atomic transaction coordinator, commit, publication, and effect eligibility are

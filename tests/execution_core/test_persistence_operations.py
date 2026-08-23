@@ -24,6 +24,7 @@ from app.execution_core import (
     venue,
 )
 import app.execution_core.persistence.operations as operations
+from app.execution_core.persistence import records
 
 
 _KEY_PREFIX = b"execution-core/m2-semantic-key/v1\n"
@@ -471,6 +472,44 @@ def _all_exact_operations() -> tuple[operations.M2Operation, ...]:
         ),
         operations.MarketOccurrenceOperation(market_coordinates, market_occurrence),
     )
+
+
+def test_durable_input_projection_covers_the_closed_operation_union() -> None:
+    for ordinal, operation in enumerate(_all_exact_operations(), start=1):
+        payload = operations.encode_m2_operation(operation)
+        (
+            input_domain,
+            application_generation_id,
+            execution_profile_id,
+            scope_id,
+            session_id,
+            acquisition_generation_id,
+            market_source_profile_id,
+            stream_generation_id,
+            input_identity_sha256,
+        ) = operations._derive_m2_durable_input_projection(
+            operations.decode_m2_operation(payload)
+        )
+
+        record = records.DurableInputRecord(
+            application_generation_id,
+            execution_profile_id,
+            scope_id,
+            input_domain,
+            session_id,
+            acquisition_generation_id,
+            market_source_profile_id,
+            stream_generation_id,
+            input_identity_sha256,
+            1,
+            payload,
+            sha256(payload).hexdigest(),
+            "CLAIMED",
+            ordinal,
+        )
+
+        assert record.input_domain is input_domain
+        assert record.input_identity_sha256 == input_identity_sha256
 
 
 def _operation_document(operation: operations.M2Operation) -> list[object]:

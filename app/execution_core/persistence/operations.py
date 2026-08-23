@@ -61,6 +61,8 @@ __all__ = (
 _SEMANTIC_KEY_PREFIX = b"execution-core/m2-semantic-key/v1\n"
 _M2_DOCUMENT_PREFIX = b"execution-core/m2-document/v1\n"
 _M2_OPERATION_DOCUMENT_KIND = 0x01
+_M2_INPUT_IDENTITY_PREFIX = b"execution-core/m2-input-identity/v1\n"
+_M2_DOCUMENT_KINDS = frozenset({0x01, 0x02, 0x03, 0x04, 0x05})
 _SHA256_HEX_LENGTH = 64
 
 
@@ -560,32 +562,43 @@ def _decode_m2_coordinates(
     return decoded
 
 
-def _encode_m2_document(payload: list[object]) -> bytes:
+def _encode_m2_canonical_json(payload: list[object]) -> bytes:
     if type(payload) is not list:
         raise TypeError("M2 document payload must be an exact array")
-    encoded_payload = _json.dumps(
+    return _json.dumps(
         payload,
         ensure_ascii=True,
         allow_nan=False,
         separators=(",", ":"),
     ).encode("utf-8")
+
+
+def _encode_m2_document_kind(kind_octet: int, payload: list[object]) -> bytes:
+    if type(kind_octet) is not int or kind_octet not in _M2_DOCUMENT_KINDS:
+        raise ValueError("M2 document kind is not admitted")
+    encoded_payload = _encode_m2_canonical_json(payload)
     return (
         _M2_DOCUMENT_PREFIX
-        + bytes((_M2_OPERATION_DOCUMENT_KIND,))
+        + bytes((kind_octet,))
         + _struct.pack(">Q", len(encoded_payload))
         + encoded_payload
     )
 
 
-def _decode_m2_document(value: object) -> list[object]:
+def _decode_m2_document_kind(value: object, expected_kind_octet: int) -> list[object]:
+    if (
+        type(expected_kind_octet) is not int
+        or expected_kind_octet not in _M2_DOCUMENT_KINDS
+    ):
+        raise ValueError("M2 document kind is not admitted")
     if type(value) is not bytes:
         raise TypeError("M2 document must be exact bytes")
     fixed_size = len(_M2_DOCUMENT_PREFIX) + 9
     if len(value) < fixed_size or not value.startswith(_M2_DOCUMENT_PREFIX):
         raise ValueError("M2 document prefix is malformed")
     kind_octet = value[len(_M2_DOCUMENT_PREFIX)]
-    if kind_octet != _M2_OPERATION_DOCUMENT_KIND:
-        raise ValueError("M2 document kind is not an operation")
+    if kind_octet != expected_kind_octet:
+        raise ValueError("M2 document kind is not the expected kind")
     length_offset = len(_M2_DOCUMENT_PREFIX) + 1
     payload_length = _struct.unpack(">Q", value[length_offset : length_offset + 8])[0]
     payload = value[fixed_size:]
@@ -598,11 +611,19 @@ def _decode_m2_document(value: object) -> list[object]:
     if type(decoded) is not list:
         raise ValueError("M2 document payload must be an array")
     try:
-        if _encode_m2_document(decoded) != value:
+        if _encode_m2_document_kind(expected_kind_octet, decoded) != value:
             raise ValueError("M2 document bytes are not canonical")
     except (TypeError, ValueError) as exc:
         raise ValueError("M2 document payload is not canonical") from exc
     return decoded
+
+
+def _encode_m2_document(payload: list[object]) -> bytes:
+    return _encode_m2_document_kind(_M2_OPERATION_DOCUMENT_KIND, payload)
+
+
+def _decode_m2_document(value: object) -> list[object]:
+    return _decode_m2_document_kind(value, _M2_OPERATION_DOCUMENT_KIND)
 
 
 def _encode_m2_bytes(value: object) -> str:
@@ -2121,6 +2142,126 @@ def decode_m2_operation(value: object) -> M2Operation:
     if encode_m2_operation(decoded) != value:
         raise ValueError("operation document is not canonical")
     return decoded
+
+
+def _derive_m2_durable_input_projection(
+    operation: M2Operation,
+) -> tuple[
+    OperationDomain,
+    _identity.ApplicationGenerationId,
+    str,
+    int,
+    _identity.SessionId | None,
+    _identity.AcquisitionGenerationId | None,
+    str | None,
+    _identity.MarketStreamGenerationId | None,
+    str,
+]:
+    """Derive the sole durable-input identity and coordinates from one operation.
+
+    This package-private projection deliberately receives a decoded exact operation,
+    rather than caller-supplied coordinates or a digest.  The durable-input record
+    boundary uses it after byte-identical operation decode, so its persisted primary
+    identity cannot be redirected to a different input, scope, or collision domain.
+    """
+
+    coordinates: (
+        ExecutionOperationCoordinates
+        | VenueOperationCoordinates
+        | AcquisitionOperationCoordinates
+        | MarketOperationCoordinates
+    )
+    primary_identity: object
+    if type(operation) is BrokerExecutionOperation:
+        coordinates = operation.coordinates
+        primary_identity = operation.fact.key
+        domain = OperationDomain.BROKER_EXECUTION
+        session_id: _identity.SessionId | None = None
+        acquisition_generation_id: _identity.AcquisitionGenerationId | None = None
+        market_source_profile_id: str | None = None
+        stream_generation_id: _identity.MarketStreamGenerationId | None = None
+    elif type(operation) is VenueRecoveryOperation:
+        coordinates = operation.coordinates
+        primary_identity = operation.item.input_id
+        domain = OperationDomain.VENUE_RECOVERY
+        session_id = coordinates.session_id
+        acquisition_generation_id = None
+        market_source_profile_id = None
+        stream_generation_id = None
+    elif type(operation) is AuthorityOperation:
+        coordinates = operation.coordinates
+        primary_identity = operation.command.input_id
+        domain = OperationDomain.AUTHORITY
+        session_id = None
+        acquisition_generation_id = None
+        market_source_profile_id = None
+        stream_generation_id = None
+    elif type(operation) is BeginAcquisitionGenerationOperation:
+        coordinates = operation.coordinates
+        primary_identity = operation.input_id
+        domain = OperationDomain.BEGIN_ACQUISITION_GENERATION
+        session_id = coordinates.session_id
+        acquisition_generation_id = coordinates.acquisition_generation_id
+        market_source_profile_id = None
+        stream_generation_id = None
+    elif type(operation) is CreateAcquisitionEffectOperation:
+        coordinates = operation.coordinates
+        primary_identity = operation.input_id
+        domain = OperationDomain.CREATE_ACQUISITION_EFFECT
+        session_id = coordinates.session_id
+        acquisition_generation_id = coordinates.acquisition_generation_id
+        market_source_profile_id = None
+        stream_generation_id = None
+    elif type(operation) is ClaimAcquisitionEffectOperation:
+        coordinates = operation.coordinates
+        primary_identity = operation.input_id
+        domain = OperationDomain.CLAIM_ACQUISITION_EFFECT
+        session_id = coordinates.session_id
+        acquisition_generation_id = coordinates.acquisition_generation_id
+        market_source_profile_id = None
+        stream_generation_id = None
+    elif type(operation) is BeginAcquisitionPreemptionOperation:
+        coordinates = operation.coordinates
+        primary_identity = operation.input_id
+        domain = OperationDomain.BEGIN_ACQUISITION_PREEMPTION
+        session_id = coordinates.session_id
+        acquisition_generation_id = coordinates.acquisition_generation_id
+        market_source_profile_id = None
+        stream_generation_id = None
+    elif type(operation) is MarketOccurrenceOperation:
+        coordinates = operation.coordinates
+        primary_identity = operation.occurrence.occurrence_id
+        domain = OperationDomain.MARKET_OCCURRENCE
+        session_id = coordinates.session_id
+        acquisition_generation_id = coordinates.acquisition_generation_id
+        market_source_profile_id = coordinates.market_source_profile_id
+        stream_generation_id = coordinates.stream_generation_id
+    else:
+        raise TypeError("operation is not an exact admitted M2 operation")
+
+    identity_json = _encode_m2_canonical_json(
+        [
+            1,
+            domain.value,
+            _encode_m2_m1_atom(_cast(_durable_codec._OwningValue, primary_identity)),
+        ],
+    )
+    input_identity_sha256 = _hashlib.sha256(
+        _M2_INPUT_IDENTITY_PREFIX
+        + _struct.pack(">Q", len(identity_json))
+        + identity_json
+    ).hexdigest()
+    return (
+        domain,
+        coordinates.application_generation_id,
+        coordinates.execution_profile_id,
+        coordinates.scope_id,
+        session_id,
+        acquisition_generation_id,
+        market_source_profile_id,
+        stream_generation_id,
+        input_identity_sha256,
+    )
 
 
 _VENUE_SEMANTIC_KEY_KINDS = (

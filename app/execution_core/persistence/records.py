@@ -17,9 +17,11 @@ from typing import TypeVar as _TypeVar
 from typing import cast as _cast
 
 from .. import durable_codec as _durable_codec
+from .. import fills as _fills
 from .. import identity as _identity
 from .. import profiles as _profiles
 from .. import values as _values
+from .. import venue as _venue
 from ..fills import _commit_parts as _commit_parts
 from ..fills import _encode_int as _encode_int
 from ..fills import _encode_text as _encode_text
@@ -35,6 +37,43 @@ class RepositoryOutcomeKind(_enum.Enum):
 
 
 _RecordT = _TypeVar("_RecordT")
+_M2_INPUT_OUTCOME_DOCUMENT_KIND = 0x03
+_M2_DECISION_RECEIPT_DOCUMENT_KIND = 0x04
+_M2_BROKER_OUTBOX_DOCUMENT_KIND = 0x05
+_M2_REDUCER_RESULT_PREFIX = b"execution-core/m2-reducer-result/v1\n"
+_OWNER_DISPOSITIONS = {
+    "POSITION": frozenset(
+        {"APPLIED", "EXACT_REPLAY", "FACT_CONFLICT", "RECONCILIATION_REQUIRED"}
+    ),
+    "VENUE_RECOVERY": frozenset(
+        {
+            "APPLIED",
+            "EXACT_REPLAY",
+            "CONFLICT",
+            "RECONCILIATION_REQUIRED",
+            "REFUSED",
+        }
+    ),
+    "AUTHORITY": frozenset({"APPLIED", "REFUSED", "EXACT_REPLAY", "CONFLICT"}),
+    "ACQUISITION": frozenset({"APPLIED", "EXACT_REPLAY", "REFUSED"}),
+    "PROTECTION": frozenset({"APPLIED", "EXACT_REPLAY", "STALE", "REFUSED"}),
+}
+_OPERATION_OWNER_DOMAINS = {
+    _operations.OperationDomain.BROKER_EXECUTION: "POSITION",
+    _operations.OperationDomain.VENUE_RECOVERY: "VENUE_RECOVERY",
+    _operations.OperationDomain.AUTHORITY: "AUTHORITY",
+    _operations.OperationDomain.BEGIN_ACQUISITION_GENERATION: "ACQUISITION",
+    _operations.OperationDomain.CREATE_ACQUISITION_EFFECT: "ACQUISITION",
+    _operations.OperationDomain.CLAIM_ACQUISITION_EFFECT: "ACQUISITION",
+    _operations.OperationDomain.BEGIN_ACQUISITION_PREEMPTION: "ACQUISITION",
+    _operations.OperationDomain.MARKET_OCCURRENCE: "PROTECTION",
+}
+_OUTBOX_INPUT_DOMAINS = frozenset(
+    {
+        _operations.OperationDomain.AUTHORITY,
+        _operations.OperationDomain.CLAIM_ACQUISITION_EFFECT,
+    }
+)
 
 
 def _require_sha256_text(name: str, value: object) -> str:
@@ -219,6 +258,7 @@ class DurableInputRecord:
             raise ValueError(
                 "durable input payload SHA-256 does not match payload bytes"
             )
+        _validate_durable_input_operation_binding(self)
         if type(self.technical_state) is not str:
             raise TypeError("durable input technical state must be exact text")
         if self.technical_state not in {
@@ -231,6 +271,185 @@ class DurableInputRecord:
             raise TypeError("durable input created ordinal must be an exact integer")
         if self.created_ordinal < 1:
             raise ValueError("durable input created ordinal must be positive")
+
+
+@_dataclass(frozen=True, slots=True)
+class DecisionReceiptRecord:
+    """Immutable explanatory receipt correlated to one durable input outcome."""
+
+    receipt_ordinal: int
+    application_generation_id: _identity.ApplicationGenerationId
+    input_domain: _operations.OperationDomain
+    input_identity_sha256: str
+    owner_domain: str
+    owner_disposition: str
+    terminal_technical_state: str
+    result_sha256: str
+    checkpoint_currentness_head_ordinal: int | None
+    checkpoint_version_ordinal: int | None
+    checkpoint_payload_sha256: str | None
+    canonical_receipt_bytes: bytes
+    receipt_length: int
+    receipt_sha256: str
+
+    def __post_init__(self) -> None:
+        if type(self.receipt_ordinal) is not int:
+            raise TypeError("decision receipt ordinal must be an exact integer")
+        if self.receipt_ordinal < 1:
+            raise ValueError("decision receipt ordinal must be positive")
+        _validate_durable_input_reference(
+            "decision receipt",
+            self.application_generation_id,
+            self.input_domain,
+            self.input_identity_sha256,
+        )
+        _validate_input_owner_domain(
+            "decision receipt", self.input_domain, self.owner_domain
+        )
+        checkpoint_reference = _validate_owner_result_fields(
+            "decision receipt",
+            self.owner_domain,
+            self.owner_disposition,
+            self.terminal_technical_state,
+            self.result_sha256,
+            self.checkpoint_currentness_head_ordinal,
+            self.checkpoint_version_ordinal,
+            self.checkpoint_payload_sha256,
+        )
+        document = _validate_canonical_document_bytes(
+            "decision receipt",
+            self.canonical_receipt_bytes,
+            self.receipt_length,
+            self.receipt_sha256,
+            _M2_DECISION_RECEIPT_DOCUMENT_KIND,
+        )
+        _validate_decision_receipt_document(self, checkpoint_reference, document)
+
+
+@_dataclass(frozen=True, slots=True)
+class DurableInputOutcomeRecord:
+    """Immutable terminal owner result that refers to its mandatory receipt."""
+
+    application_generation_id: _identity.ApplicationGenerationId
+    input_domain: _operations.OperationDomain
+    input_identity_sha256: str
+    owner_domain: str
+    owner_disposition: str
+    terminal_technical_state: str
+    result_sha256: str
+    checkpoint_currentness_head_ordinal: int | None
+    checkpoint_version_ordinal: int | None
+    checkpoint_payload_sha256: str | None
+    receipt_ordinal: int
+    receipt_sha256: str
+    canonical_outcome_bytes: bytes
+    outcome_length: int
+    outcome_sha256: str
+
+    def __post_init__(self) -> None:
+        _validate_durable_input_reference(
+            "durable input outcome",
+            self.application_generation_id,
+            self.input_domain,
+            self.input_identity_sha256,
+        )
+        _validate_input_owner_domain(
+            "durable input outcome", self.input_domain, self.owner_domain
+        )
+        checkpoint_reference = _validate_owner_result_fields(
+            "durable input outcome",
+            self.owner_domain,
+            self.owner_disposition,
+            self.terminal_technical_state,
+            self.result_sha256,
+            self.checkpoint_currentness_head_ordinal,
+            self.checkpoint_version_ordinal,
+            self.checkpoint_payload_sha256,
+        )
+        if type(self.receipt_ordinal) is not int:
+            raise TypeError("outcome receipt ordinal must be an exact integer")
+        if self.receipt_ordinal < 1:
+            raise ValueError("outcome receipt ordinal must be positive")
+        _require_sha256_text("outcome receipt SHA-256", self.receipt_sha256)
+        document = _validate_canonical_document_bytes(
+            "durable input outcome",
+            self.canonical_outcome_bytes,
+            self.outcome_length,
+            self.outcome_sha256,
+            _M2_INPUT_OUTCOME_DOCUMENT_KIND,
+        )
+        _validate_durable_input_outcome_document(
+            self,
+            checkpoint_reference,
+            document,
+        )
+
+
+@_dataclass(frozen=True, slots=True)
+class BrokerOutboxRecord:
+    """Immutable dispatch snapshot, never a broker-success or serving fact."""
+
+    outbox_sequence: int
+    application_generation_id: _identity.ApplicationGenerationId
+    execution_profile_id: str
+    scope_id: int
+    acquisition_generation_id: _identity.AcquisitionGenerationId
+    input_domain: _operations.OperationDomain
+    input_identity_sha256: str
+    effect_id: int
+    claim_id: int
+    canonical_payload_bytes: bytes
+    payload_length: int
+    payload_sha256: str
+
+    def __post_init__(self) -> None:
+        if type(self.outbox_sequence) is not int:
+            raise TypeError("broker outbox sequence must be an exact integer")
+        if self.outbox_sequence < 1:
+            raise ValueError("broker outbox sequence must be positive")
+        if (
+            type(self.application_generation_id)
+            is not _identity.ApplicationGenerationId
+        ):
+            raise TypeError("broker outbox application generation must be exact")
+        _identity.ApplicationGenerationId(self.application_generation_id.value)
+        _require_sha256_text(
+            "broker outbox execution profile", self.execution_profile_id
+        )
+        if type(self.scope_id) is not int:
+            raise TypeError("broker outbox scope must be an exact integer")
+        if self.scope_id < 1:
+            raise ValueError("broker outbox scope must be positive")
+        if (
+            type(self.acquisition_generation_id)
+            is not _identity.AcquisitionGenerationId
+        ):
+            raise TypeError("broker outbox acquisition generation must be exact")
+        if not _identity._acquisition_generation_id_is_canonical(
+            self.acquisition_generation_id
+        ):
+            raise ValueError("broker outbox acquisition generation is not canonical")
+        if type(self.input_domain) is not _operations.OperationDomain:
+            raise TypeError("broker outbox input domain must be exact OperationDomain")
+        if self.input_domain not in _OUTBOX_INPUT_DOMAINS:
+            raise ValueError("broker outbox input domain is not admitted")
+        _require_sha256_text("broker outbox input identity", self.input_identity_sha256)
+        if type(self.effect_id) is not int:
+            raise TypeError("broker outbox effect id must be an exact integer")
+        if self.effect_id < 1:
+            raise ValueError("broker outbox effect id must be positive")
+        if type(self.claim_id) is not int:
+            raise TypeError("broker outbox claim id must be an exact integer")
+        if self.claim_id < 1:
+            raise ValueError("broker outbox claim id must be positive")
+        document = _validate_canonical_document_bytes(
+            "broker outbox",
+            self.canonical_payload_bytes,
+            self.payload_length,
+            self.payload_sha256,
+            _M2_BROKER_OUTBOX_DOCUMENT_KIND,
+        )
+        _validate_broker_outbox_document(self, document)
 
 
 @_dataclass(frozen=True, slots=True)
@@ -333,6 +552,470 @@ def _validate_durable_input_coordinates(record: DurableInputRecord) -> None:
         raise ValueError(
             "execution coordinates cannot retain session or derived coordinates"
         )
+
+
+def _validate_durable_input_operation_binding(record: DurableInputRecord) -> None:
+    """Require stored input fields to be the exact projection of retained bytes."""
+
+    try:
+        operation = _operations.decode_m2_operation(record.canonical_payload_bytes)
+    except (TypeError, ValueError) as error:
+        raise ValueError(
+            "durable input payload must be a canonical operation document"
+        ) from error
+    if _operations.encode_m2_operation(operation) != record.canonical_payload_bytes:
+        raise ValueError("durable input payload must be a canonical operation document")
+    (
+        input_domain,
+        application_generation_id,
+        execution_profile_id,
+        scope_id,
+        session_id,
+        acquisition_generation_id,
+        market_source_profile_id,
+        stream_generation_id,
+        input_identity_sha256,
+    ) = _operations._derive_m2_durable_input_projection(operation)
+    if record.input_domain is not input_domain:
+        raise ValueError("durable input domain does not match canonical operation")
+    if record.application_generation_id != application_generation_id:
+        raise ValueError(
+            "durable input application generation does not match canonical operation"
+        )
+    if record.execution_profile_id != execution_profile_id:
+        raise ValueError(
+            "durable input execution profile does not match canonical operation"
+        )
+    if record.scope_id != scope_id:
+        raise ValueError("durable input scope does not match canonical operation")
+    if record.session_id != session_id:
+        raise ValueError("durable input session does not match canonical operation")
+    if record.acquisition_generation_id != acquisition_generation_id:
+        raise ValueError(
+            "durable input acquisition generation does not match canonical operation"
+        )
+    if record.market_source_profile_id != market_source_profile_id:
+        raise ValueError(
+            "durable input market-source profile does not match canonical operation"
+        )
+    if record.stream_generation_id != stream_generation_id:
+        raise ValueError(
+            "durable input stream generation does not match canonical operation"
+        )
+    if record.input_identity_sha256 != input_identity_sha256:
+        raise ValueError("durable input identity does not match canonical operation")
+
+
+_CheckpointReference = tuple[int, int, str]
+
+
+def _validate_durable_input_reference(
+    record_name: str,
+    application_generation_id: object,
+    input_domain: object,
+    input_identity_sha256: object,
+) -> None:
+    if type(application_generation_id) is not _identity.ApplicationGenerationId:
+        raise TypeError(f"{record_name} application generation must be exact")
+    _identity.ApplicationGenerationId(application_generation_id.value)
+    if type(input_domain) is not _operations.OperationDomain:
+        raise TypeError(f"{record_name} input domain must be exact OperationDomain")
+    _require_sha256_text(f"{record_name} input identity", input_identity_sha256)
+
+
+def _validate_input_owner_domain(
+    record_name: str,
+    input_domain: _operations.OperationDomain,
+    owner_domain: object,
+) -> None:
+    if type(owner_domain) is not str:
+        raise TypeError(f"{record_name} owner domain must be exact text")
+    if _OPERATION_OWNER_DOMAINS[input_domain] != owner_domain:
+        raise ValueError(f"{record_name} owner domain does not match input domain")
+
+
+def _checkpoint_reference_from_fields(
+    record_name: str,
+    currentness_head_ordinal: object,
+    checkpoint_version_ordinal: object,
+    checkpoint_payload_sha256: object,
+) -> _CheckpointReference | None:
+    members = (
+        currentness_head_ordinal,
+        checkpoint_version_ordinal,
+        checkpoint_payload_sha256,
+    )
+    if all(member is None for member in members):
+        return None
+    if any(member is None for member in members):
+        raise ValueError(f"{record_name} checkpoint reference must be all-or-none")
+    if type(currentness_head_ordinal) is not int:
+        raise TypeError(f"{record_name} checkpoint head must be an exact integer")
+    if currentness_head_ordinal < 0:
+        raise ValueError(f"{record_name} checkpoint head must be non-negative")
+    if type(checkpoint_version_ordinal) is not int:
+        raise TypeError(f"{record_name} checkpoint version must be an exact integer")
+    if checkpoint_version_ordinal < 1:
+        raise ValueError(f"{record_name} checkpoint version must be positive")
+    return (
+        currentness_head_ordinal,
+        checkpoint_version_ordinal,
+        _require_sha256_text(
+            f"{record_name} checkpoint payload SHA-256",
+            checkpoint_payload_sha256,
+        ),
+    )
+
+
+def _encode_checkpoint_reference(
+    reference: _CheckpointReference | None,
+) -> list[object] | None:
+    if reference is None:
+        return None
+    return [reference[0], reference[1], reference[2]]
+
+
+def _decode_checkpoint_reference(
+    record_name: str,
+    value: object,
+) -> _CheckpointReference | None:
+    if value is None:
+        return None
+    if type(value) is not list or len(value) != 3:
+        raise ValueError(f"{record_name} checkpoint reference is malformed")
+    reference = _checkpoint_reference_from_fields(
+        record_name,
+        value[0],
+        value[1],
+        value[2],
+    )
+    if reference is None or _encode_checkpoint_reference(reference) != value:
+        raise ValueError(f"{record_name} checkpoint reference is not canonical")
+    return reference
+
+
+def _derive_owner_result_sha256(
+    owner_domain: str,
+    owner_disposition: str,
+    terminal_technical_state: str,
+    checkpoint_reference: _CheckpointReference | None,
+) -> str:
+    """Derive the immutable owner-result digest from its complete semantic tuple."""
+
+    payload = _operations._encode_m2_canonical_json(
+        [
+            1,
+            owner_domain,
+            owner_disposition,
+            terminal_technical_state,
+            _encode_checkpoint_reference(checkpoint_reference),
+        ]
+    )
+    return _sha256(
+        _M2_REDUCER_RESULT_PREFIX + len(payload).to_bytes(8, "big") + payload
+    ).hexdigest()
+
+
+def _validate_owner_result_fields(
+    record_name: str,
+    owner_domain: object,
+    owner_disposition: object,
+    terminal_technical_state: object,
+    result_sha256: object,
+    checkpoint_currentness_head_ordinal: object,
+    checkpoint_version_ordinal: object,
+    checkpoint_payload_sha256: object,
+) -> _CheckpointReference | None:
+    if type(owner_domain) is not str:
+        raise TypeError(f"{record_name} owner domain must be exact text")
+    admitted_dispositions = _OWNER_DISPOSITIONS.get(owner_domain)
+    if admitted_dispositions is None:
+        raise ValueError(f"{record_name} owner domain is not admitted")
+    if type(owner_disposition) is not str:
+        raise TypeError(f"{record_name} owner disposition must be exact text")
+    if owner_disposition not in admitted_dispositions:
+        raise ValueError(f"{record_name} owner disposition is not admitted")
+    if type(terminal_technical_state) is not str:
+        raise TypeError(f"{record_name} terminal technical state must be exact text")
+    expected_technical_state = (
+        "RECONCILIATION_PENDING"
+        if owner_disposition == "RECONCILIATION_REQUIRED"
+        else "TERMINAL"
+    )
+    if terminal_technical_state != expected_technical_state:
+        raise ValueError(
+            f"{record_name} terminal technical state does not match disposition"
+        )
+    checkpoint_reference = _checkpoint_reference_from_fields(
+        record_name,
+        checkpoint_currentness_head_ordinal,
+        checkpoint_version_ordinal,
+        checkpoint_payload_sha256,
+    )
+    _require_sha256_text(f"{record_name} result SHA-256", result_sha256)
+    expected_result_sha256 = _derive_owner_result_sha256(
+        owner_domain,
+        owner_disposition,
+        terminal_technical_state,
+        checkpoint_reference,
+    )
+    if result_sha256 != expected_result_sha256:
+        raise ValueError(f"{record_name} result SHA-256 does not match result fields")
+    return checkpoint_reference
+
+
+def _validate_canonical_document_bytes(
+    record_name: str,
+    document_bytes: object,
+    document_length: object,
+    document_sha256: object,
+    expected_kind_octet: int,
+) -> list[object]:
+    if type(document_bytes) is not bytes:
+        raise TypeError(f"{record_name} document bytes must be exact bytes")
+    if not document_bytes:
+        raise ValueError(f"{record_name} document bytes must be nonempty")
+    if type(document_length) is not int:
+        raise TypeError(f"{record_name} document length must be an exact integer")
+    if document_length != len(document_bytes):
+        raise ValueError(f"{record_name} document length does not match document bytes")
+    _require_sha256_text(f"{record_name} document SHA-256", document_sha256)
+    if document_sha256 != _sha256(document_bytes).hexdigest():
+        raise ValueError(
+            f"{record_name} document SHA-256 does not match document bytes"
+        )
+    try:
+        return _operations._decode_m2_document_kind(
+            document_bytes,
+            expected_kind_octet,
+        )
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"{record_name} document is not canonical") from error
+
+
+def _validate_document_application_generation(
+    record_name: str,
+    value: object,
+    expected: _identity.ApplicationGenerationId,
+) -> None:
+    decoded = _operations._decode_m2_m1_as(
+        f"{record_name} application generation",
+        value,
+        _identity.ApplicationGenerationId,
+    )
+    if decoded != expected:
+        raise ValueError(
+            f"{record_name} application generation does not match document"
+        )
+
+
+def _validate_document_domain(
+    record_name: str,
+    value: object,
+    expected: _operations.OperationDomain,
+) -> None:
+    if value != _operations._encode_m2_enum(expected):
+        raise ValueError(f"{record_name} input domain does not match document")
+
+
+def _validate_decision_receipt_document(
+    record: DecisionReceiptRecord,
+    checkpoint_reference: _CheckpointReference | None,
+    document: list[object],
+) -> None:
+    if len(document) != 11:
+        raise ValueError("decision receipt document must have exactly eleven members")
+    if _operations._require_exact_int("decision receipt version", document[0]) != 1:
+        raise ValueError("decision receipt document version is not admitted")
+    if document[1] != "m2.decision-receipt/v1":
+        raise ValueError("decision receipt document type tag is not admitted")
+    _validate_document_application_generation(
+        "decision receipt", document[2], record.application_generation_id
+    )
+    _validate_document_domain("decision receipt", document[3], record.input_domain)
+    if document[4] != record.input_identity_sha256:
+        raise ValueError("decision receipt input identity does not match document")
+    if _operations._require_exact_int("decision receipt ordinal", document[5]) != (
+        record.receipt_ordinal
+    ):
+        raise ValueError("decision receipt ordinal does not match document")
+    if document[6] != record.owner_domain:
+        raise ValueError("decision receipt owner domain does not match document")
+    if document[7] != record.owner_disposition:
+        raise ValueError("decision receipt disposition does not match document")
+    if document[8] != record.terminal_technical_state:
+        raise ValueError("decision receipt technical state does not match document")
+    if document[9] != record.result_sha256:
+        raise ValueError("decision receipt result SHA-256 does not match document")
+    if _decode_checkpoint_reference("decision receipt", document[10]) != (
+        checkpoint_reference
+    ):
+        raise ValueError(
+            "decision receipt checkpoint reference does not match document"
+        )
+
+
+def _validate_durable_input_outcome_document(
+    record: DurableInputOutcomeRecord,
+    checkpoint_reference: _CheckpointReference | None,
+    document: list[object],
+) -> None:
+    if len(document) != 12:
+        raise ValueError(
+            "durable input outcome document must have exactly twelve members"
+        )
+    if (
+        _operations._require_exact_int("durable input outcome version", document[0])
+        != 1
+    ):
+        raise ValueError("durable input outcome document version is not admitted")
+    if document[1] != "m2.durable-input-outcome/v1":
+        raise ValueError("durable input outcome document type tag is not admitted")
+    _validate_document_application_generation(
+        "durable input outcome", document[2], record.application_generation_id
+    )
+    _validate_document_domain("durable input outcome", document[3], record.input_domain)
+    if document[4] != record.input_identity_sha256:
+        raise ValueError("durable input outcome input identity does not match document")
+    if document[5] != record.owner_domain:
+        raise ValueError("durable input outcome owner domain does not match document")
+    if document[6] != record.owner_disposition:
+        raise ValueError("durable input outcome disposition does not match document")
+    if document[7] != record.terminal_technical_state:
+        raise ValueError(
+            "durable input outcome technical state does not match document"
+        )
+    if document[8] != record.result_sha256:
+        raise ValueError("durable input outcome result SHA-256 does not match document")
+    if _decode_checkpoint_reference("durable input outcome", document[9]) != (
+        checkpoint_reference
+    ):
+        raise ValueError(
+            "durable input outcome checkpoint reference does not match document"
+        )
+    if _operations._require_exact_int("outcome receipt ordinal", document[10]) != (
+        record.receipt_ordinal
+    ):
+        raise ValueError(
+            "durable input outcome receipt ordinal does not match document"
+        )
+    if document[11] != record.receipt_sha256:
+        raise ValueError(
+            "durable input outcome receipt SHA-256 does not match document"
+        )
+
+
+def _require_document_nonnegative_int(name: str, value: object) -> int:
+    decoded = _operations._require_exact_int(name, value)
+    if decoded < 0:
+        raise ValueError(f"{name} must be non-negative")
+    return decoded
+
+
+def _require_document_positive_int(name: str, value: object) -> int:
+    decoded = _operations._require_exact_int(name, value)
+    if decoded < 1:
+        raise ValueError(f"{name} must be positive")
+    return decoded
+
+
+def _validate_broker_outbox_document(
+    record: BrokerOutboxRecord,
+    document: list[object],
+) -> None:
+    if len(document) != 26:
+        raise ValueError("broker outbox document must have exactly twenty-six members")
+    if _operations._require_exact_int("broker outbox version", document[0]) != 1:
+        raise ValueError("broker outbox document version is not admitted")
+    if document[1] != "m2.broker-outbox/v1":
+        raise ValueError("broker outbox document type tag is not admitted")
+    if _require_document_positive_int("broker outbox sequence", document[2]) != (
+        record.outbox_sequence
+    ):
+        raise ValueError("broker outbox sequence does not match document")
+    _validate_document_application_generation(
+        "broker outbox", document[3], record.application_generation_id
+    )
+    _require_sha256_text("broker outbox document execution profile", document[4])
+    if document[4] != record.execution_profile_id:
+        raise ValueError("broker outbox execution profile does not match document")
+    if _require_document_positive_int("broker outbox scope", document[5]) != (
+        record.scope_id
+    ):
+        raise ValueError("broker outbox scope does not match document")
+    acquisition_generation_id = _operations._decode_m2_m1_as(
+        "broker outbox acquisition generation",
+        document[6],
+        _identity.AcquisitionGenerationId,
+    )
+    if acquisition_generation_id != record.acquisition_generation_id:
+        raise ValueError("broker outbox acquisition generation does not match document")
+    _validate_document_domain("broker outbox", document[7], record.input_domain)
+    if document[8] != record.input_identity_sha256:
+        raise ValueError("broker outbox input identity does not match document")
+    if _require_document_positive_int("broker outbox effect id", document[9]) != (
+        record.effect_id
+    ):
+        raise ValueError("broker outbox effect id does not match document")
+    _operations._decode_m2_m1_as(
+        "broker outbox effect external",
+        document[10],
+        _identity.EffectId,
+    )
+    _operations._decode_m2_m1_as(
+        "broker outbox request occurrence",
+        document[11],
+        _identity.RequestOccurrenceId,
+    )
+    _operations._decode_m2_m1_as(
+        "broker outbox mandate",
+        document[12],
+        _identity.MandateId,
+    )
+    _require_sha256_text("broker outbox mandate commitment", document[13])
+    _require_document_nonnegative_int(
+        "broker outbox expected controller head", document[14]
+    )
+    _require_document_positive_int(
+        "broker outbox expected protection version", document[15]
+    )
+    _operations._require_exact_text("broker outbox authority class", document[16])
+    _operations._decode_m2_enum_as(
+        "broker outbox effect kind",
+        document[17],
+        _venue.EffectKind,
+    )
+    _operations._decode_m2_optional_m1_as(
+        "broker outbox client order",
+        document[18],
+        _identity.ClientOrderId,
+    )
+    _operations._decode_m2_optional_m1_as(
+        "broker outbox target order",
+        document[19],
+        _identity.OrderId,
+    )
+    _operations._decode_m2_enum_as(
+        "broker outbox side",
+        document[20],
+        _fills.ExecutionSide,
+    )
+    _operations._decode_m2_m1_as(
+        "broker outbox quantity",
+        document[21],
+        _values.Quantity,
+    )
+    _operations._decode_m2_bytes("broker outbox economic scope", document[22])
+    if _require_document_positive_int("broker outbox claim id", document[23]) != (
+        record.claim_id
+    ):
+        raise ValueError("broker outbox claim id does not match document")
+    _operations._decode_m2_m1_as(
+        "broker outbox claim occurrence",
+        document[24],
+        _identity.ClaimOccurrenceId,
+    )
+    _require_document_positive_int("broker outbox claim ordinal", document[25])
 
 
 def _validate_durable_input_semantic_key_coordinates(
@@ -1331,10 +2014,13 @@ __all__ = (
     "AcquisitionGenerationRecord",
     "AcquisitionRootRouteRecord",
     "ApplicationGenerationRecord",
+    "BrokerOutboxRecord",
     "ClosureChainRecord",
     "CurrentProofRequest",
     "CurrentProofSlice",
+    "DecisionReceiptRecord",
     "DurableInputRecord",
+    "DurableInputOutcomeRecord",
     "DurableInputSemanticKeyRecord",
     "DispatchClaimRecord",
     "ExecutionFactHeadRecord",
