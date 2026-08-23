@@ -225,6 +225,14 @@ REV-0074 R4 documentation review accepts the exact amendment candidate with P0=0
 pure semantic-key and wrapper work remains subject to the implementation review `REV-0075` and
 does not grant DDL execution.
 
+REV-0074 R4 accepted the exact amendment candidate
+`78eb37a3cfc347cf4b31aa16da275c427e8614b2`, tree
+`c03e599b26ca4061ae36a04be48d271d147eedc2`, at `P0=0/P1=0/P2=0` in
+`result-r4.md`. The operation-document codec may now proceed only within the frozen R4 table;
+source still requires its normal RED/GREEN proof and fresh `REV-0075` implementation review. A
+separate narrowly scoped reviewer was interrupted before completing its row-by-row pass; it found
+no evidence-backed P0/P1/P2 finding and is not treated as an acceptance verdict.
+
 ## Out of scope
 
 - OS-1: The atomic transaction coordinator, commit, publication, and effect eligibility are
