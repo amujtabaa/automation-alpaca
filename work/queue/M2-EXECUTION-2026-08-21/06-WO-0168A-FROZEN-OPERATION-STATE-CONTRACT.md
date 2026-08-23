@@ -720,6 +720,23 @@ test change may be made until a fresh REV-0074 R10 documentation review accepts 
 with P0=0/P1=0. The normal REV-0075 implementation review and changed-DDL human gate remain
 independent.
 
+### R11 terminal-nonmembership mutation-proof amendment
+
+R10 is not accepted because its longer-key-only prefix test could still pass if the verifier forgot
+the terminal `has_value=False` rule. Retain that positive absence case, and add one separate
+authenticated negative control: construct a map containing both a prefix key and a descendant key,
+obtain the valid witness for the retained prefix, then ask the verifier to treat that witness as
+nonmembership. It must refuse specifically because the exhausted-key terminal has
+`has_value=True`, even though every node commitment and every child tuple is otherwise authentic.
+The pair proves both prefix absence and rejection of a genuine present-prefix witness misclassified
+as absent. No fabricated commitment is an adequate substitute for this control.
+
+R11 changes only the already named `test_position.py` proof primitive expectation. It adds no source
+path, map redesign, history, schema, repository, runtime, database execution, external activity, or
+safety exception. No R11 source or test change may be made until a fresh REV-0074 R11 documentation
+review accepts the exact amendment with P0=0/P1=0. The normal REV-0075 implementation review and
+changed-DDL human gate remain independent.
+
 Governance paths are the queue/active/completed WO-0168a file, this frozen contract, the additive
 post-I3 map, `work/ledger.jsonl`, and `work/review/REV-0074/**` plus the separately assigned
 implementation review directory. No other path is implied.

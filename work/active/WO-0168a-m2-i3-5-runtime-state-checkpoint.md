@@ -346,6 +346,16 @@ No R10 source or test change may be made until a fresh REV-0074 R10 documentatio
 the exact amendment with `P0=0/P1=0`. The normal REV-0075 implementation review and changed-DDL
 human gate remain independently required.
 
+REV-0074 R10 returned `ACCEPT-WITH-CHANGES` with `P0=0/P1=1/P2=0`; its test-strength finding is
+retained in `result-r10.md`. R11 retains the valid absent-prefix control and adds one distinct
+authenticated present-prefix-as-absent control, so the test fails for omission of the exact terminal
+`has_value=False` rule rather than only for an invalid commitment mutation. It adds no path or
+runtime/schema authority beyond R10.
+
+No R11 source or test change may be made until a fresh REV-0074 R11 documentation review accepts
+the exact amendment with `P0=0/P1=0`. The normal REV-0075 implementation review and changed-DDL
+human gate remain independently required.
+
 ## Out of scope
 
 - OS-1: The atomic transaction coordinator, commit, publication, and effect eligibility are
