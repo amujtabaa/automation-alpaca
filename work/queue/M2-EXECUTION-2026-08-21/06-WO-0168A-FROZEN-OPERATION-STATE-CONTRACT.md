@@ -1264,3 +1264,10 @@ the already-required exact human gate. R13-R1 does not change the eventual R12 r
 reverse-edge semantics, eight-operation union, owner reducers, or M2 safety boundaries. No source
 or test work under this correction may proceed until a fresh documentation review accepts its exact
 candidate with P0=0/P1=0.
+
+REV-0074 R13-R1 accepted exact candidate
+`f38224861365a2d2210b7964b4709348ffd055cd`, tree
+`f1755a8db69a325f6d13d371ab7696f798fe2e3c`, with `P0=0/P1=0/P2=0` in
+`result-r13-r1.md`. R13-S source/test work may now continue only within the non-serving boundary
+above. The normal REV-0075 implementation review and exact changed-DDL human gate remain
+independent.

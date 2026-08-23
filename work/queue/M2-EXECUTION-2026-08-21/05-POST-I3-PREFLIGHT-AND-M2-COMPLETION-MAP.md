@@ -116,3 +116,9 @@ R13-S phrase in the remaining-chain table is superseded by R13-R1 until a new do
 accepts it: static substrate work must exclude every serving checkpoint-payload record, store/load,
 envelope, and kernel-head eligibility path. R13-H freezes the complete owner wire/proof rows, and
 R13-C then introduces the typed checkpoint candidate before the exact DDL human gate.
+
+REV-0074 R13-R1 subsequently accepted exact candidate
+`f38224861365a2d2210b7964b4709348ffd055cd`, tree
+`f1755a8db69a325f6d13d371ab7696f798fe2e3c`, with `P0=0/P1=0/P2=0` in
+`result-r13-r1.md`. WO-0168a may continue R13-S only under that non-serving boundary; R13-H/C
+remain separately prepared successors.

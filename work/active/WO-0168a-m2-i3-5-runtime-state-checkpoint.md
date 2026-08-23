@@ -425,6 +425,13 @@ may not materialize a structural header as checkpoint authority. No R13-R1 sourc
 begin until a fresh documentation review returns `P0=0/P1=0`; the normal REV-0075 review and exact
 changed-DDL human gate remain independently required.
 
+REV-0074 R13-R1 accepted exact candidate
+`f38224861365a2d2210b7964b4709348ffd055cd`, tree
+`f1755a8db69a325f6d13d371ab7696f798fe2e3c`, with `P0=0/P1=0/P2=0` in
+`result-r13-r1.md`. The active R13-S increment may now complete its non-serving static substrate;
+all serving checkpoint-payload behavior remains deferred to the separately prepared R13-C
+successor.
+
 ## 2026-08-23 pre-gate execution deviation record
 
 During an otherwise static verification pass, Codex mistakenly included
