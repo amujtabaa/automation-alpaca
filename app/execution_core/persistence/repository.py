@@ -83,9 +83,7 @@ def _insert(
     conflict_probe: tuple[
         str,
         _Callable[[tuple[_Any, ...]], tuple[_Any, ...]],
-        _Callable[[tuple[_Any, ...], tuple[_Any, ...]], bool],
-    ]
-    | None = None,
+    ],
 ) -> _records.RepositoryOutcome[_Any]:
     _verify_schema_connection(connection)
     try:
@@ -99,21 +97,18 @@ def _insert(
             caught,
             conflict_trigger_messages=conflict_trigger_messages,
         )
-        if conflict_probe is not None:
-            probe_sql, probe_parameters, retained_matches = conflict_probe
-            try:
-                retained = connection.execute(
-                    probe_sql,
-                    probe_parameters(parameters),
-                ).fetchone()
-            except Exception as probe_failure:
-                return _classify_sqlite_failure(probe_failure)
-            if retained is not None:
-                if retained_matches(tuple(retained), parameters):
-                    return _outcome(_records.RepositoryOutcomeKind.CONFLICT)
-                return _integrity()
-            if classified.kind is _records.RepositoryOutcomeKind.CONFLICT:
-                return _integrity()
+        probe_sql, probe_parameters = conflict_probe
+        try:
+            retained_rows = connection.execute(
+                probe_sql,
+                probe_parameters(parameters),
+            ).fetchall()
+        except Exception as probe_failure:
+            return _classify_sqlite_failure(probe_failure)
+        if len(retained_rows) == 1 and tuple(retained_rows[0]) == parameters:
+            return _outcome(_records.RepositoryOutcomeKind.CONFLICT)
+        if retained_rows or classified.kind is _records.RepositoryOutcomeKind.CONFLICT:
+            return _integrity()
         return classified
     return _outcome(_records.RepositoryOutcomeKind.APPLIED)
 
@@ -516,6 +511,11 @@ def store_execution_profile(
         " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         prepare,
         conflict_trigger_messages=("execution profile identity is already retained",),
+        conflict_probe=(
+            f"SELECT {_EXECUTION_PROFILE_COLUMNS} FROM execution_connection_profile"
+            " WHERE connection_profile_id = ? OR profile_commitment_sha256 = ?",
+            lambda parameters: (parameters[0], parameters[12]),
+        ),
     )
 
 
@@ -571,6 +571,12 @@ def store_market_source_profile(
         " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         prepare,
         conflict_trigger_messages=("market profile identity is already retained",),
+        conflict_probe=(
+            f"SELECT {_MARKET_PROFILE_COLUMNS} FROM market_data_source_profile"
+            " WHERE market_source_profile_id = ?"
+            " OR source_profile_commitment_sha256 = ?",
+            lambda parameters: (parameters[0], parameters[7]),
+        ),
     )
 
 
@@ -618,6 +624,12 @@ def store_application_generation(
         ),
         conflict_trigger_messages=(
             "application generation identity is already retained",
+        ),
+        conflict_probe=(
+            f"SELECT {_APPLICATION_COLUMNS} FROM application_generation"
+            " WHERE application_generation_id = ?"
+            " OR selected_execution_profile_id = ?",
+            lambda parameters: (parameters[0], parameters[1]),
         ),
     )
 
@@ -668,6 +680,17 @@ def store_scope(
             _identity_text(record.symbol, _identity.SymbolId, "symbol_id"),
         ),
         conflict_trigger_messages=("acquisition scope identity is already retained",),
+        conflict_probe=(
+            f"SELECT {_SCOPE_COLUMNS} FROM acquisition_scope WHERE scope_id = ?"
+            " OR (application_generation_id = ? AND execution_profile_id = ?"
+            " AND symbol_text = ?)",
+            lambda parameters: (
+                parameters[0],
+                parameters[1],
+                parameters[2],
+                parameters[3],
+            ),
+        ),
     )
 
 
@@ -729,6 +752,12 @@ def store_acquisition_generation(
         ),
         conflict_trigger_messages=(
             "acquisition generation identity is already retained",
+        ),
+        conflict_probe=(
+            f"SELECT {_ACQUISITION_COLUMNS} FROM acquisition_generation"
+            " WHERE acquisition_generation_id = ?"
+            " OR (scope_id = ? AND successor_ordinal = ?)",
+            lambda parameters: (parameters[0], parameters[1], parameters[3]),
         ),
     )
 
@@ -828,6 +857,11 @@ def store_kernel_checkpoint(
             _exact_int(record.checkpoint_version_ordinal),
         ),
         conflict_trigger_messages=("kernel checkpoint identity is already retained",),
+        conflict_probe=(
+            f"SELECT {_CHECKPOINT_COLUMNS} FROM kernel_checkpoint"
+            " WHERE application_generation_id = ?",
+            lambda parameters: (parameters[0],),
+        ),
     )
 
 
@@ -923,6 +957,10 @@ def store_symbol_controller(
         " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         lambda: _controller_parameters(record),
         conflict_trigger_messages=("symbol controller identity is already retained",),
+        conflict_probe=(
+            f"SELECT {_CONTROLLER_COLUMNS} FROM symbol_controller WHERE scope_id = ?",
+            lambda parameters: (parameters[0],),
+        ),
     )
 
 
@@ -1057,6 +1095,11 @@ def store_root_fill(
         " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         prepare,
         conflict_trigger_messages=("root fill identity is already retained",),
+        conflict_probe=(
+            f"SELECT {_ROOT_FILL_COLUMNS} FROM root_fill WHERE root_fill_key_id = ?"
+            " OR (execution_profile_id = ? AND root_fill_external = ?)",
+            lambda parameters: (parameters[0], parameters[3], parameters[5]),
+        ),
     )
 
 
@@ -1177,14 +1220,6 @@ def store_execution_fact(
             f"SELECT {_EXECUTION_FACT_COLUMNS} FROM execution_fact WHERE fact_id = ?"
             " OR (execution_profile_id = ? AND source_event_id = ?)",
             lambda parameters: (parameters[0], parameters[3], parameters[5]),
-            lambda retained, parameters: (
-                retained == parameters
-                or (
-                    retained[3] == parameters[3]
-                    and retained[5] == parameters[5]
-                    and retained[1:] == parameters[1:]
-                )
-            ),
         ),
     )
 
@@ -1363,6 +1398,23 @@ def store_venue_effect(
         " ?, ?, ?, ?, ?)",
         prepare,
         conflict_trigger_messages=("venue effect identity is already retained",),
+        conflict_probe=(
+            f"SELECT {_EFFECT_COLUMNS} FROM venue_effect WHERE effect_id = ?"
+            " OR (execution_profile_id = ? AND effect_external = ?)"
+            " OR (execution_profile_id = ? AND request_occurrence_external = ?)"
+            " OR (? IS NOT NULL AND execution_profile_id = ?"
+            " AND client_order_external = ?)",
+            lambda parameters: (
+                parameters[0],
+                parameters[4],
+                parameters[1],
+                parameters[4],
+                parameters[10],
+                parameters[13],
+                parameters[4],
+                parameters[13],
+            ),
+        ),
     )
 
 
@@ -1473,6 +1525,11 @@ def store_venue_identity_owner(
             else (_ for _ in ()).throw(TypeError("admission flag must be bool")),
         ),
         conflict_trigger_messages=("venue owner identity is already retained",),
+        conflict_probe=(
+            f"SELECT {_OWNER_COLUMNS} FROM venue_identity_owner"
+            " WHERE execution_profile_id = ? AND owner_external = ?",
+            lambda parameters: (parameters[1], parameters[2]),
+        ),
     )
 
 
@@ -1538,6 +1595,11 @@ def store_acquisition_root_route(
             ),
         ),
         conflict_trigger_messages=("acquisition root route is already retained",),
+        conflict_probe=(
+            f"SELECT {_ROUTE_COLUMNS} FROM acquisition_root_route"
+            " WHERE root_fill_key_id = ?",
+            lambda parameters: (parameters[0],),
+        ),
     )
 
 
@@ -1591,11 +1653,13 @@ def store_dispatch_claim(
         conflict_trigger_messages=("dispatch claim identity is already retained",),
         conflict_probe=(
             f"SELECT {_CLAIM_COLUMNS} FROM dispatch_claim"
-            " WHERE claim_id = ? OR effect_id = ?",
-            lambda parameters: (parameters[0], parameters[1]),
-            lambda retained, parameters: (
-                retained == parameters
-                or (retained[1] == parameters[1] and retained[2:] == parameters[2:])
+            " WHERE claim_id = ? OR effect_id = ?"
+            " OR (execution_profile_id = ? AND claim_occurrence_external = ?)",
+            lambda parameters: (
+                parameters[0],
+                parameters[1],
+                parameters[2],
+                parameters[3],
             ),
         ),
     )
@@ -1632,6 +1696,11 @@ def store_acceptance_set(
             _exact_int(record.effect_id),
         ),
         conflict_trigger_messages=("acceptance set identity is already retained",),
+        conflict_probe=(
+            f"SELECT {_ACCEPTANCE_SET_COLUMNS} FROM acceptance_set"
+            " WHERE acceptance_set_id = ? OR effect_id = ?",
+            lambda parameters: (parameters[0], parameters[1]),
+        ),
     )
 
 
@@ -1701,6 +1770,21 @@ def store_acceptance_evidence(
             ),
         ),
         conflict_trigger_messages=("acceptance evidence identity is already retained",),
+        conflict_probe=(
+            f"SELECT {_EVIDENCE_COLUMNS} FROM acceptance_evidence"
+            " WHERE evidence_id = ? OR evidence_ordinal = ?"
+            " OR (? = 'INVALIDATION' AND evidence_kind = 'INVALIDATION'"
+            " AND effect_id = ? AND contradiction_owner_external = ?"
+            " AND contradiction_observation_external = ?)",
+            lambda parameters: (
+                parameters[0],
+                parameters[6],
+                parameters[3],
+                parameters[2],
+                parameters[7],
+                parameters[8],
+            ),
+        ),
     )
 
 
@@ -1751,6 +1835,20 @@ def store_closure(
             _exact_optional_int(record.predecessor_closure_id),
         ),
         conflict_trigger_messages=("closure identity is already retained",),
+        conflict_probe=(
+            f"SELECT {_CLOSURE_COLUMNS} FROM closure_chain WHERE closure_id = ?"
+            " OR (scope_id = ? AND owner_external = ?"
+            " AND ((? IS NOT NULL AND predecessor_closure_id = ?)"
+            " OR (? IS NULL AND predecessor_closure_id IS NULL)))",
+            lambda parameters: (
+                parameters[0],
+                parameters[1],
+                parameters[2],
+                parameters[6],
+                parameters[6],
+                parameters[6],
+            ),
+        ),
     )
 
 
@@ -1826,6 +1924,11 @@ def store_market_stream_authority(
             _exact_text(record.sequence_mode),
         ),
         conflict_trigger_messages=("market stream identity is already retained",),
+        conflict_probe=(
+            f"SELECT {_MARKET_STREAM_COLUMNS} FROM market_stream_authority"
+            " WHERE stream_generation_id = ?",
+            lambda parameters: (parameters[0],),
+        ),
     )
 
 
@@ -1914,6 +2017,11 @@ def store_market_cursor(
         " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         lambda: _cursor_parameters(record),
         conflict_trigger_messages=("market cursor identity is already retained",),
+        conflict_probe=(
+            f"SELECT {_MARKET_CURSOR_COLUMNS} FROM market_cursor"
+            " WHERE stream_generation_id = ?",
+            lambda parameters: (parameters[0],),
+        ),
     )
 
 
@@ -2052,6 +2160,11 @@ def store_protection_authority(
         lambda: _protection_parameters(record),
         conflict_trigger_messages=(
             "protection_authority identity is already retained",
+        ),
+        conflict_probe=(
+            f"SELECT {_PROTECTION_COLUMNS} FROM protection_authority"
+            " WHERE scope_id = ?",
+            lambda parameters: (parameters[0],),
         ),
     )
 
@@ -2386,6 +2499,20 @@ def load_current_proof(
         ):
             raise _ProofFailure
 
+        active_stream_coordinates = (
+            protection.active_stream_generation_id,
+            protection.active_acquisition_generation_id,
+            protection.active_generation_mandate_commitment_sha256,
+            protection.active_source_profile_id,
+            protection.active_session_id,
+            protection.active_sequence_mode,
+        )
+        if not (
+            all(value is None for value in active_stream_coordinates)
+            or all(value is not None for value in active_stream_coordinates)
+        ):
+            raise _ProofFailure
+
         market_stream: _records.MarketStreamAuthorityRecord | None = None
         market_cursor: _records.MarketCursorRecord | None = None
         if protection.active_stream_generation_id is not None:
@@ -2411,6 +2538,10 @@ def load_current_proof(
             if (
                 protection.active_acquisition_generation_id
                 != live_generation.acquisition_generation_id
+                or protection.active_generation_mandate_commitment_sha256
+                != live_generation.mandate_commitment_sha256
+                or protection.active_source_profile_id
+                != application.selected_market_source_profile_id
                 or market_stream.stream_generation_id
                 != protection.active_stream_generation_id
                 or market_stream.scope_id != scope_key
@@ -2422,6 +2553,8 @@ def load_current_proof(
                 != live_generation.mandate_commitment_sha256
                 or market_stream.source_profile_id
                 != application.selected_market_source_profile_id
+                or market_stream.session_id != protection.active_session_id
+                or market_stream.sequence_mode != protection.active_sequence_mode
                 or market_cursor.stream_generation_id
                 != market_stream.stream_generation_id
                 or market_cursor.scope_id != market_stream.scope_id
@@ -2429,6 +2562,8 @@ def load_current_proof(
                 != market_stream.application_generation_id
                 or market_cursor.acquisition_generation_id
                 != market_stream.acquisition_generation_id
+                or market_cursor.generation_mandate_commitment_sha256
+                != market_stream.generation_mandate_commitment_sha256
                 or market_cursor.source_profile_id != market_stream.source_profile_id
                 or market_cursor.session_id != market_stream.session_id
                 or market_cursor.sequence_mode != market_stream.sequence_mode
@@ -2489,6 +2624,10 @@ def load_current_proof(
                 or root.current_fact_id != fact_head.fact_id
                 or root.economics_head_ordinal != fact_head.fact_ordinal
                 or current_fact.root_fill_key_id != root.root_fill_key_id
+                or current_fact.scope_id != scope_key
+                or current_fact.application_generation_id
+                != request.application_generation_id
+                or current_fact.execution_profile_id != scope.execution_profile_id
                 or current_fact.fact_id != fact_head.fact_id
                 or current_fact.fact_ordinal != fact_head.fact_ordinal
                 or root.current_kind != current_fact.kind
@@ -2517,6 +2656,9 @@ def load_current_proof(
                 or effect.execution_profile_id != scope.execution_profile_id
                 or effect.acquisition_generation_id
                 != live_generation.acquisition_generation_id
+                or effect.generation_mandate_commitment_sha256
+                != live_generation.mandate_commitment_sha256
+                or effect.authority_class != protection.authority_class
                 or effect.expected_controller_head_ordinal
                 != controller.currentness_head_ordinal
                 or effect.expected_protection_version_ordinal
@@ -2557,6 +2699,7 @@ def load_current_proof(
             )
             if (
                 owner.scope_id != scope_key
+                or owner.execution_profile_id != scope.execution_profile_id
                 or owner.effect_id != effect.effect_id
                 or owner.owner_generation_id
                 != live_generation.acquisition_generation_id
@@ -2582,6 +2725,8 @@ def load_current_proof(
                     _build_acceptance_set,
                 )
             )
+            if acceptance.effect_id != effect.effect_id:
+                raise _ProofFailure
             evidence = _required(
                 _select_one_unchecked(
                     connection,

@@ -260,6 +260,39 @@ def _operation_cases() -> dict[str, Callable[[Any], Any]]:
     }
 
 
+class _TransactionTripwireConnection:
+    _FORBIDDEN_ATTRIBUTES = frozenset({"commit", "rollback", "executescript"})
+    _FORBIDDEN_SQL = frozenset(
+        {"BEGIN", "COMMIT", "END", "ROLLBACK", "SAVEPOINT", "RELEASE"}
+    )
+
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def __getattribute__(self, name: str) -> Any:
+        if name in object.__getattribute__(self, "_FORBIDDEN_ATTRIBUTES"):
+            raise AssertionError(f"repository attempted transaction method {name}")
+        return object.__getattribute__(self, name)
+
+    def execute(self, sql: str, parameters: tuple[Any, ...] = ()) -> Any:
+        token = sql.lstrip().split(None, 1)[0].rstrip(";").upper()
+        if token in self._FORBIDDEN_SQL:
+            raise AssertionError(f"repository attempted transaction SQL {token}")
+        return self._connection.execute(sql, parameters)
+
+
+@pytest.mark.parametrize("operation_name", tuple(sorted(_operation_cases())))
+def test_every_public_operation_leaves_transactions_with_caller(
+    connection,
+    operation_name: str,
+) -> None:
+    _seed_complete(connection)
+    outcome = _operation_cases()[operation_name](
+        _TransactionTripwireConnection(connection)
+    )
+    assert isinstance(outcome, records.RepositoryOutcome)
+
+
 def test_every_public_operation_executes_the_schema_guard_first(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -548,6 +581,31 @@ _PROOF_DOMAIN_TABLES = (
 )
 
 
+def _statement_domain_tables(statement: str) -> tuple[str, ...]:
+    normalized = statement.lower().translate(str.maketrans("", "", '"`[]'))
+    normalized = re.sub(r"\b(?:main|temp)\s*\.\s*", "", normalized)
+    return tuple(
+        table
+        for table in _PROOF_DOMAIN_TABLES
+        if re.search(rf"\b(?:from|join)\s+{re.escape(table)}\b", normalized)
+    )
+
+
+@pytest.mark.parametrize(
+    "statement",
+    (
+        'SELECT count(*) FROM "execution_fact"',
+        "SELECT count(*) FROM main.execution_fact",
+        "SELECT count(*) FROM [execution_fact]",
+        "SELECT count(*) FROM `execution_fact`",
+    ),
+)
+def test_domain_query_accounting_recognizes_quoted_and_qualified_tables(
+    statement: str,
+) -> None:
+    assert _statement_domain_tables(statement) == ("execution_fact",)
+
+
 def _capture_proof_queries(
     connection: sqlite3.Connection,
     proof_request: records.CurrentProofRequest,
@@ -563,12 +621,14 @@ def _capture_proof_queries(
         statement
         for statement in statements
         if statement.lstrip().upper().startswith("SELECT")
-        and any(f"FROM {table}" in statement for table in _PROOF_DOMAIN_TABLES)
+        and _statement_domain_tables(statement)
     )
     assert domain
     assert len(domain) == len(expected_shapes)
     for statement, expected_shape in zip(domain, expected_shapes, strict=True):
         normalized = " ".join(statement.lower().split())
+        normalized = normalized.translate(str.maketrans("", "", '"`[]'))
+        normalized = re.sub(r"\b(?:main|temp)\s*\.\s*", "", normalized)
         query_tail = "from " + normalized.split(" from ", 1)[1]
         query_tail = re.sub(r"'(?:''|[^'])*'", "?", query_tail)
         query_tail = re.sub(r"(?<![\w.])-?\d+(?:\.\d+)?(?![\w.])", "?", query_tail)
@@ -676,6 +736,75 @@ def test_total_proof_uses_only_fixed_direct_key_queries_under_history_stress(
     )
 
 
+def test_root_proof_binds_fact_head_id_not_root_coordinate(connection) -> None:
+    fixtures._foundation(connection)
+    root_key = 41
+    fact_id = 7
+    root = dataclasses.replace(
+        fixtures._root(),
+        root_fill_key_id=root_key,
+        root_fill_id=identity.RootFillId("root-41"),
+    )
+    effect = fixtures._effect(1, controller_head=0, protection_version=1)
+    owner = dataclasses.replace(
+        fixtures._owner(1, root_fill_key_id=1),
+        root_fill_key_id=root_key,
+    )
+    route = dataclasses.replace(
+        _route(),
+        root_fill_key_id=root_key,
+        owner_id=owner.owner_id,
+        observation_id=owner.observation_id,
+    )
+    fact = dataclasses.replace(
+        fixtures._fact(),
+        fact_id=fact_id,
+        root_fill_key_id=root_key,
+    )
+    for operation, value in (
+        (repository.store_root_fill, root),
+        (repository.store_venue_effect, effect),
+        (repository.store_venue_identity_owner, owner),
+        (repository.store_acquisition_root_route, route),
+        (repository.store_execution_fact, fact),
+    ):
+        fixtures._expect_applied(operation(connection, value))
+    fixtures._expect_applied(
+        repository.advance_kernel_checkpoint(
+            connection,
+            1,
+            fixtures._checkpoint(head=1, version=2),
+        )
+    )
+    fixtures._expect_applied(
+        repository.advance_protection_authority(
+            connection,
+            1,
+            fixtures._protection(controller_head=1, version=2),
+        )
+    )
+
+    statements: list[str] = []
+    connection.set_trace_callback(statements.append)
+    outcome = repository.load_current_proof(
+        connection,
+        records.CurrentProofRequest(
+            fixtures.APP_ID,
+            1,
+            root_fill_key_id=root_key,
+        ),
+    )
+    connection.set_trace_callback(None)
+    assert outcome.kind is records.RepositoryOutcomeKind.FOUND
+    fact_queries = tuple(
+        " ".join(statement.lower().split())
+        for statement in statements
+        if _statement_domain_tables(statement) == ("execution_fact",)
+    )
+    assert len(fact_queries) == 1
+    assert fact_queries[0].endswith(f"where fact_id = {fact_id}")
+
+
 class _AbsentCursor:
     def fetchone(self) -> None:
         return None
@@ -749,6 +878,202 @@ def test_total_proof_refuses_each_independently_omitted_member(
     outcome = repository.load_current_proof(
         _OmittingConnection(connection, omitted_table),  # type: ignore[arg-type]
         request,
+    )
+    assert outcome.kind is records.RepositoryOutcomeKind.INTEGRITY_FAILURE
+    assert outcome.record is None
+
+
+class _CorruptingCursor:
+    def __init__(self, cursor: Any) -> None:
+        self._cursor = cursor
+        self._first = True
+
+    def fetchone(self) -> tuple[Any, ...] | None:
+        row = self._cursor.fetchone()
+        if row is None or not self._first:
+            return row
+        self._first = False
+        corrupted = list(row)
+        corrupted[0] = object()
+        return tuple(corrupted)
+
+
+class _FailingProofMemberConnection:
+    def __init__(
+        self,
+        connection: sqlite3.Connection,
+        table: str,
+        failure_mode: str,
+    ) -> None:
+        self._connection = connection
+        self._table = table
+        self._failure_mode = failure_mode
+
+    def execute(self, sql: str, parameters: tuple[Any, ...] = ()) -> Any:
+        normalized = " ".join(sql.lower().split())
+        targeted = normalized.startswith("select ") and re.search(
+            rf"\bfrom\s+{re.escape(self._table)}\b",
+            normalized,
+        )
+        if not targeted:
+            return self._connection.execute(sql, parameters)
+        if self._failure_mode == "read":
+            raise sqlite3.DatabaseError(f"injected {self._table} read failure")
+        return _CorruptingCursor(self._connection.execute(sql, parameters))
+
+
+@pytest.mark.parametrize("failure_mode", ("read", "decode"))
+@pytest.mark.parametrize(
+    ("failed_table", "request_kind"),
+    (
+        ("execution_connection_profile", "base"),
+        ("market_data_source_profile", "base"),
+        ("application_generation", "base"),
+        ("acquisition_scope", "base"),
+        ("acquisition_generation", "base"),
+        ("acquisition_generation_current", "base"),
+        ("kernel_checkpoint", "base"),
+        ("symbol_controller", "base"),
+        ("protection_authority", "base"),
+        ("market_stream_authority", "base"),
+        ("market_cursor", "base"),
+        ("root_fill", "root"),
+        ("acquisition_root_route", "root"),
+        ("execution_fact_head", "root"),
+        ("execution_fact", "root"),
+        ("venue_effect", "effect"),
+        ("dispatch_claim", "effect"),
+        ("venue_identity_owner", "effect"),
+        ("acceptance_set", "effect"),
+        ("acceptance_evidence", "effect"),
+        ("closure_chain", "effect"),
+    ),
+)
+def test_total_proof_fails_closed_for_each_member_read_or_decode_failure(
+    connection,
+    failed_table: str,
+    request_kind: str,
+    failure_mode: str,
+) -> None:
+    _seed_complete(connection)
+    requests = {
+        "base": records.CurrentProofRequest(fixtures.APP_ID, 1),
+        "root": records.CurrentProofRequest(
+            fixtures.APP_ID,
+            1,
+            root_fill_key_id=1,
+        ),
+        "effect": records.CurrentProofRequest(
+            fixtures.APP_ID,
+            1,
+            effect_id=2,
+            owner_id=identity.OrderId("owner-2"),
+            require_acceptance=True,
+            require_closure=True,
+        ),
+    }
+    outcome = repository.load_current_proof(
+        _FailingProofMemberConnection(
+            connection,
+            failed_table,
+            failure_mode,
+        ),  # type: ignore[arg-type]
+        requests[request_kind],
+    )
+    assert outcome.kind is records.RepositoryOutcomeKind.INTEGRITY_FAILURE
+    assert outcome.record is None
+
+
+class _MutatingCursor:
+    def __init__(self, cursor: Any, column: int, value: Any) -> None:
+        self._cursor = cursor
+        self._column = column
+        self._value = value
+        self._first = True
+
+    def fetchone(self) -> tuple[Any, ...] | None:
+        row = self._cursor.fetchone()
+        if row is None or not self._first:
+            return row
+        self._first = False
+        mutated = list(row)
+        mutated[self._column] = self._value
+        return tuple(mutated)
+
+
+class _MutatingProofMemberConnection:
+    def __init__(
+        self,
+        connection: sqlite3.Connection,
+        table: str,
+        column: int,
+        value: Any,
+    ) -> None:
+        self._connection = connection
+        self._table = table
+        self._column = column
+        self._value = value
+
+    def execute(self, sql: str, parameters: tuple[Any, ...] = ()) -> Any:
+        normalized = " ".join(sql.lower().split())
+        if not (
+            normalized.startswith("select ")
+            and re.search(rf"\bfrom\s+{re.escape(self._table)}\b", normalized)
+        ):
+            return self._connection.execute(sql, parameters)
+        return _MutatingCursor(
+            self._connection.execute(sql, parameters),
+            self._column,
+            self._value,
+        )
+
+
+@pytest.mark.parametrize(
+    ("table", "column", "value", "request_kind"),
+    (
+        ("protection_authority", 3, None, "base"),
+        ("protection_authority", 5, "00" * 32, "base"),
+        ("market_cursor", 4, "00" * 32, "base"),
+        ("execution_fact", 1, 999, "root"),
+        ("execution_fact", 2, "generation-2", "root"),
+        ("execution_fact", 3, "00" * 32, "root"),
+        ("venue_effect", 6, "00" * 32, "effect"),
+        ("venue_identity_owner", 1, "00" * 32, "effect"),
+        ("acceptance_set", 1, 999, "effect"),
+    ),
+)
+def test_total_proof_rejects_each_cross_record_contradiction(
+    connection,
+    table: str,
+    column: int,
+    value: Any,
+    request_kind: str,
+) -> None:
+    _seed_complete(connection)
+    requests = {
+        "base": records.CurrentProofRequest(fixtures.APP_ID, 1),
+        "root": records.CurrentProofRequest(
+            fixtures.APP_ID,
+            1,
+            root_fill_key_id=1,
+        ),
+        "effect": records.CurrentProofRequest(
+            fixtures.APP_ID,
+            1,
+            effect_id=2,
+            owner_id=identity.OrderId("owner-2"),
+            require_acceptance=True,
+            require_closure=True,
+        ),
+    }
+    outcome = repository.load_current_proof(
+        _MutatingProofMemberConnection(
+            connection,
+            table,
+            column,
+            value,
+        ),  # type: ignore[arg-type]
+        requests[request_kind],
     )
     assert outcome.kind is records.RepositoryOutcomeKind.INTEGRITY_FAILURE
     assert outcome.record is None

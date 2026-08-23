@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import dataclasses
 from decimal import Decimal
+from enum import IntEnum
 from pathlib import Path
 import sqlite3
 import subprocess
@@ -25,6 +26,18 @@ MARKET_PROFILE_ID = "ef" * 32
 ACQUISITION_ID = identity.AcquisitionGenerationId("12" * 32)
 STREAM_ID = identity.MarketStreamGenerationId("34" * 32)
 SESSION_ID = identity.SessionId("session-1")
+
+
+class _IntCoordinateAlias(int):
+    pass
+
+
+class _TextCoordinateAlias(str):
+    pass
+
+
+class _CoordinateEnum(IntEnum):
+    ONE = 1
 
 
 @pytest.fixture()
@@ -764,22 +777,40 @@ def test_mutable_rows_use_expected_version_and_caller_owns_rollback(connection) 
 def test_repository_source_cannot_begin_commit_or_rollback_transactions() -> None:
     path = Path(repository.__file__)
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    forbidden_calls = [
+    forbidden_attributes = [
         node
         for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr in {"commit", "rollback", "executescript"}
+        if isinstance(node, ast.Attribute)
+        and node.attr in {"commit", "rollback", "executescript"}
     ]
-    forbidden_sql = [
-        node.value
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Constant)
-        and isinstance(node.value, str)
-        and node.value.strip().upper().split(" ", 1)[0]
-        in {"BEGIN", "COMMIT", "END", "ROLLBACK", "SAVEPOINT", "RELEASE"}
-    ]
-    assert forbidden_calls == []
+    transaction_tokens = {
+        "BEGIN",
+        "COMMIT",
+        "END",
+        "ROLLBACK",
+        "SAVEPOINT",
+        "RELEASE",
+    }
+
+    def constant_text(node: ast.AST) -> str | None:
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return node.value
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            left = constant_text(node.left)
+            right = constant_text(node.right)
+            return None if left is None or right is None else left + right
+        return None
+
+    forbidden_sql = []
+    for node in ast.walk(tree):
+        text = constant_text(node)
+        if (
+            text is not None
+            and text.strip()
+            and text.strip().upper().split(" ", 1)[0] in transaction_tokens
+        ):
+            forbidden_sql.append(text)
+    assert forbidden_attributes == []
     assert forbidden_sql == []
 
 
@@ -989,6 +1020,296 @@ def test_every_insert_owned_family_reports_duplicate_contention(connection) -> N
         )
 
 
+def test_every_insert_owned_family_rejects_primary_identity_mismatch(
+    connection,
+) -> None:
+    _foundation(connection)
+    foundation_mismatches = (
+        (
+            repository.store_execution_profile,
+            dataclasses.replace(
+                _execution_profile(),
+                deployment_identity="de" * 32,
+            ),
+        ),
+        (
+            repository.store_market_source_profile,
+            dataclasses.replace(
+                _market_profile(),
+                environment_or_feed="sip-feed",
+            ),
+        ),
+        (
+            repository.store_application_generation,
+            dataclasses.replace(_application(), activation_ordinal=2),
+        ),
+        (
+            repository.store_scope,
+            dataclasses.replace(_scope(), symbol=identity.SymbolId("MSFT")),
+        ),
+        (
+            repository.store_acquisition_generation,
+            dataclasses.replace(
+                _acquisition(),
+                emergency_compatibility_sha256="ac" * 32,
+            ),
+        ),
+        (repository.store_kernel_checkpoint, _checkpoint(head=1, version=2)),
+        (
+            repository.store_symbol_controller,
+            dataclasses.replace(
+                _controller(),
+                emergency_compatibility_sha256="ac" * 32,
+            ),
+        ),
+        (
+            repository.store_market_stream_authority,
+            dataclasses.replace(
+                _market_stream(),
+                session_id=identity.SessionId("session-2"),
+            ),
+        ),
+        (
+            repository.store_market_cursor,
+            dataclasses.replace(
+                _cursor(),
+                session_id=identity.SessionId("session-2"),
+            ),
+        ),
+        (
+            repository.store_protection_authority,
+            dataclasses.replace(
+                _protection(),
+                state_commitment_sha256="ac" * 32,
+            ),
+        ),
+    )
+    for operation, mismatched in foundation_mismatches:
+        outcome = operation(connection, mismatched)
+        assert outcome.kind is records.RepositoryOutcomeKind.INTEGRITY_FAILURE, (
+            operation.__name__
+        )
+
+    root = _root()
+    effect = _effect(1, controller_head=0, protection_version=1)
+    owner = _owner(1, root_fill_key_id=1)
+    route = records.AcquisitionRootRouteRecord(
+        1,
+        1,
+        APP_ID,
+        EXECUTION_PROFILE_ID,
+        ACQUISITION_ID,
+        1,
+        owner.owner_id,
+        owner.observation_id,
+    )
+    claim = _claim(1)
+    fact = _fact()
+    acceptance = records.AcceptanceSetRecord(1, 1)
+    evidence = records.AcceptanceEvidenceRecord(
+        1,
+        1,
+        1,
+        "OBSERVATION",
+        None,
+        "a1" * 32,
+        1,
+        None,
+        None,
+    )
+    closure = records.ClosureChainRecord(
+        1,
+        1,
+        owner.owner_id,
+        1,
+        1,
+        "TERMINAL_LEG",
+        None,
+    )
+    owned = (
+        (
+            repository.store_root_fill,
+            root,
+            dataclasses.replace(root, root_fill_id=identity.RootFillId("root-x")),
+        ),
+        (
+            repository.store_venue_effect,
+            effect,
+            dataclasses.replace(effect, economic_scope=b"\x02"),
+        ),
+        (
+            repository.store_venue_identity_owner,
+            owner,
+            dataclasses.replace(
+                owner,
+                observation_id=identity.VenueObservationId("observation-x"),
+            ),
+        ),
+        (
+            repository.store_acquisition_root_route,
+            route,
+            dataclasses.replace(
+                route,
+                observation_id=identity.VenueObservationId("observation-x"),
+            ),
+        ),
+        (
+            repository.store_dispatch_claim,
+            claim,
+            dataclasses.replace(claim, claim_ordinal=99),
+        ),
+        (
+            repository.store_execution_fact,
+            fact,
+            dataclasses.replace(fact, order_id=identity.OrderId("order-x")),
+        ),
+        (
+            repository.store_acceptance_set,
+            acceptance,
+            dataclasses.replace(acceptance, effect_id=999),
+        ),
+        (
+            repository.store_acceptance_evidence,
+            evidence,
+            dataclasses.replace(evidence, evidence_digest="ab" * 32),
+        ),
+        (
+            repository.store_closure,
+            closure,
+            dataclasses.replace(closure, effect_id=999),
+        ),
+    )
+    for operation, retained, mismatched in owned:
+        _expect_applied(operation(connection, retained))
+        outcome = operation(connection, mismatched)
+        assert outcome.kind is records.RepositoryOutcomeKind.INTEGRITY_FAILURE, (
+            operation.__name__
+        )
+
+
+def test_insert_conflict_probes_cover_alternate_and_ambiguous_identities(
+    connection,
+) -> None:
+    _foundation(connection)
+    alternate_foundation = (
+        (
+            repository.store_application_generation,
+            dataclasses.replace(
+                _application(),
+                application_generation_id=identity.ApplicationGenerationId(
+                    "generation-2"
+                ),
+            ),
+        ),
+        (
+            repository.store_scope,
+            dataclasses.replace(_scope(), scope_id=2),
+        ),
+        (
+            repository.store_acquisition_generation,
+            dataclasses.replace(
+                _acquisition(),
+                acquisition_generation_id=identity.AcquisitionGenerationId("13" * 32),
+            ),
+        ),
+    )
+    for operation, alternate in alternate_foundation:
+        outcome = operation(connection, alternate)
+        assert outcome.kind is records.RepositoryOutcomeKind.INTEGRITY_FAILURE, (
+            operation.__name__
+        )
+
+    root = _root()
+    _expect_applied(repository.store_root_fill(connection, root))
+    alternate_root = dataclasses.replace(root, root_fill_key_id=2)
+    assert (
+        repository.store_root_fill(connection, alternate_root).kind
+        is records.RepositoryOutcomeKind.INTEGRITY_FAILURE
+    )
+
+    effect = _effect(1, controller_head=0, protection_version=1)
+    _expect_applied(repository.store_venue_effect(connection, effect))
+    alternate_effect = dataclasses.replace(
+        effect,
+        effect_id=2,
+        created_ordinal=2,
+    )
+    assert (
+        repository.store_venue_effect(connection, alternate_effect).kind
+        is records.RepositoryOutcomeKind.INTEGRITY_FAILURE
+    )
+
+    claim = _claim(1)
+    _expect_applied(repository.store_dispatch_claim(connection, claim))
+    alternate_claim = dataclasses.replace(claim, claim_id=2, claim_ordinal=2)
+    assert (
+        repository.store_dispatch_claim(connection, alternate_claim).kind
+        is records.RepositoryOutcomeKind.INTEGRITY_FAILURE
+    )
+
+    acceptance = records.AcceptanceSetRecord(1, 1)
+    _expect_applied(repository.store_acceptance_set(connection, acceptance))
+    assert (
+        repository.store_acceptance_set(
+            connection,
+            records.AcceptanceSetRecord(2, 1),
+        ).kind
+        is records.RepositoryOutcomeKind.INTEGRITY_FAILURE
+    )
+
+    evidence = records.AcceptanceEvidenceRecord(
+        1,
+        1,
+        1,
+        "OBSERVATION",
+        None,
+        "a1" * 32,
+        1,
+        None,
+        None,
+    )
+    _expect_applied(repository.store_acceptance_evidence(connection, evidence))
+    alternate_evidence = dataclasses.replace(evidence, evidence_id=2)
+    assert (
+        repository.store_acceptance_evidence(connection, alternate_evidence).kind
+        is records.RepositoryOutcomeKind.INTEGRITY_FAILURE
+    )
+
+    owner = _owner(1, root_fill_key_id=1)
+    _expect_applied(repository.store_venue_identity_owner(connection, owner))
+    closure = records.ClosureChainRecord(
+        1,
+        1,
+        owner.owner_id,
+        1,
+        1,
+        "TERMINAL_LEG",
+        None,
+    )
+    _expect_applied(repository.store_closure(connection, closure))
+    alternate_closure = dataclasses.replace(closure, closure_id=2)
+    assert (
+        repository.store_closure(connection, alternate_closure).kind
+        is records.RepositoryOutcomeKind.INTEGRITY_FAILURE
+    )
+
+    scope_two = records.ScopeRecord(
+        2,
+        APP_ID,
+        EXECUTION_PROFILE_ID,
+        identity.SymbolId("MSFT"),
+    )
+    _expect_applied(repository.store_scope(connection, scope_two))
+    ambiguous_scope = dataclasses.replace(
+        scope_two,
+        scope_id=1,
+    )
+    assert (
+        repository.store_scope(connection, ambiguous_scope).kind
+        is records.RepositoryOutcomeKind.INTEGRITY_FAILURE
+    )
+
+
 def test_profile_decoder_rejects_a_valid_shape_with_wrong_commitment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1030,7 +1351,19 @@ def test_profile_decoder_rejects_a_valid_shape_with_wrong_commitment(
     assert outcome.record is None
 
 
-@pytest.mark.parametrize("alias", (True, 1.0, "1", "01", "+1", "1.0"))
+@pytest.mark.parametrize(
+    "alias",
+    (
+        True,
+        1.0,
+        "1",
+        "01",
+        "+1",
+        "1.0",
+        _IntCoordinateAlias(1),
+        _CoordinateEnum.ONE,
+    ),
+)
 def test_every_numeric_loader_rejects_cross_type_coordinate_aliases(
     connection,
     alias: object,
@@ -1066,24 +1399,28 @@ def test_every_numeric_loader_rejects_cross_type_coordinate_aliases(
     }
 
 
-def test_every_text_loader_rejects_non_text_coordinate_aliases(connection) -> None:
+@pytest.mark.parametrize("alias", (1, _TextCoordinateAlias(EXECUTION_PROFILE_ID)))
+def test_every_text_loader_rejects_non_exact_coordinate_aliases(
+    connection,
+    alias: object,
+) -> None:
     _foundation(connection)
     operations = (
-        repository.load_execution_profile(connection, 1),  # type: ignore[arg-type]
-        repository.load_market_source_profile(connection, 1),  # type: ignore[arg-type]
+        repository.load_execution_profile(connection, alias),  # type: ignore[arg-type]
+        repository.load_market_source_profile(connection, alias),  # type: ignore[arg-type]
         repository.load_root_fill_by_external(
             connection,
-            1,  # type: ignore[arg-type]
+            alias,  # type: ignore[arg-type]
             identity.RootFillId("root-1"),
         ),
         repository.load_execution_fact_by_source(
             connection,
-            1,  # type: ignore[arg-type]
+            alias,  # type: ignore[arg-type]
             identity.SourceEventId("event-1"),
         ),
         repository.load_venue_identity_owner(
             connection,
-            1,  # type: ignore[arg-type]
+            alias,  # type: ignore[arg-type]
             identity.OrderId("owner-1"),
         ),
     )
