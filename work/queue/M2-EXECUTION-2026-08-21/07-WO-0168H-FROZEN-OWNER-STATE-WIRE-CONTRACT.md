@@ -43,6 +43,7 @@ The notation below is normative:
 | Symbol | Exact representation |
 | --- | --- |
 | `I` | exact JSON integer; booleans are rejected; non-negative where the member says count, ordinal, epoch, quantity, or time |
+| `Z` | exact signed JSON integer; booleans are rejected; used only for position raw quantity and economic deltas |
 | `B` | exact JSON `true` or `false` |
 | `T` | nonblank NFC text with no C0/DEL control character |
 | `X` | lowercase, even-length hexadecimal text for exact bytes |
@@ -112,8 +113,14 @@ Only these owner/value pairs are admitted by rows in this contract:
   `RECONCILIATION_CURSOR_ADVANCE`;
 - `m2.protection.AuthorityClass`: `NORMAL`, `HARD_BAIL`;
 - `m1.position.BasisAuthority`: `AVAILABLE`, `BASIS_RECONCILIATION_PENDING`;
+- `m1.fills.ExecutionSide`: `BUY`, `SELL`;
+- `m1.fills.FirstObservationClassification`: `APPLIED_AVAILABLE`,
+  `APPLIED_BASIS_PENDING`, `APPLIED_OVERFILL_QUARANTINE`,
+  `APPLIED_PENDING_OVERFILL`, `CORROBORATED_ZERO_ECONOMIC`,
+  `RECONCILIATION_REQUIRED`;
 - `m1.fills.FactKind`: `FILL`, `TRADE_CORRECT`, `TRADE_BUST`;
 - `m1.fills.ExecutionAuthority`: `BROKER_AUTHORITATIVE`, `HUMAN_ATTESTED`; and
+- `m1.protection.MarketSequenceMode`: `SEQUENCED`, `SOURCE_TIME`;
 - every other enum appearing inside a reused semantic array is restricted to the exact closed
   encoder/decoder pair named in section 2.2.
 
@@ -182,10 +189,10 @@ Every existing `VenueRecoveryBook` field appears exactly once:
 | --- | --- |
 | payload scalar | `scope`; `_account_authority_epoch`; `_unresolved_account_execution_reconciliation_count`; `execution_registry_count`; `execution_registry_commitment`; `_registry_transition_head_commitment` |
 | payload semantic row | `_effect_order` as bounded source ordinal on each retained effect; `_effect_by_id`; `_authority_epoch_by_scope`; `_claim_by_effect`; `_owner_order` as bounded source ordinal on each retained owner; `_owner_by_leg`; `_acquisition_correlation_by_root`; `_leg_current_by_leg`; `_closure_head_by_leg`; `_economic_high_water_by_leg`; `_human_coverage_by_root`; `_broker_coverage_by_root`; `_coverage_provenance_by_scope`; `_reconciliation_by_input`; `_execution_reconciliation_by_input`; `_execution_snapshot_by_scope`; `_bootstrap_bound_target_by_scope`; `_protection_cursor_by_scope` |
-| derived index/count | `_effect_by_request_occurrence`; `_effect_by_client_order`; `_claim_by_occurrence`; `_leg_summary_by_effect`; `_cancel_target_reservation_by_leg`; `_authority_contribution_by_effect`; `_authority_summary_by_scope`; `_account_unclaimed_requested_effect_ids`; `_reconciliation_count_by_effect`; `_coverage_current_by_leg`; `_coverage_total_by_effect`; `_attributed_broker_root_count_by_scope`; `_human_interval_index`; `_human_broker_fact_index`; `_unresolved_reconciliation_count_by_leg`; `_canonical_revision_count_by_leg`; `_unresolved_execution_reconciliation_count_by_scope`; `_binding_by_scope` |
-| omitted audit/history | `_contradiction_order_by_effect`; `_claim_order`; `_closure_ledger`; `_closure_by_id`; `_input_ledger`; `_input_by_id`; `_direct_input_by_semantic`; `_first_input_by_fact`; `_human_coverage_ledger`; `_broker_coverage_ledger`; `_reconciliation_ledger`; `_execution_reconciliation_ledger`; `_registry_transition_ledger`; `_binding_order`; `_protection_transition_ledger` |
+| derived index/count | `_effect_by_request_occurrence`; `_effect_by_client_order`; `_contradiction_order_by_effect` rebuilt from each retained effect's contradiction rows; `_claim_by_occurrence`; `_leg_summary_by_effect`; `_cancel_target_reservation_by_leg`; `_authority_contribution_by_effect`; `_authority_summary_by_scope`; `_account_unclaimed_requested_effect_ids`; `_reconciliation_count_by_effect`; `_coverage_current_by_leg`; `_coverage_total_by_effect`; `_attributed_broker_root_count_by_scope`; `_human_interval_index`; `_human_broker_fact_index`; `_unresolved_reconciliation_count_by_leg`; `_canonical_revision_count_by_leg`; `_unresolved_execution_reconciliation_count_by_scope`; `_binding_by_scope` |
+| omitted audit/history | `_claim_order`; `_closure_ledger`; `_closure_by_id`; `_input_ledger`; `_input_by_id`; `_direct_input_by_semantic`; `_first_input_by_fact`; `_human_coverage_ledger`; `_broker_coverage_ledger`; `_reconciliation_ledger`; `_execution_reconciliation_ledger`; `_registry_transition_ledger`; `_binding_order`; `_protection_transition_ledger` |
 
-The 6 + 18 + 18 + 15 entries above are all 57 fields. A new field added to the owner before R13-C
+The 6 + 18 + 19 + 14 entries above are all 57 fields. A new field added to the owner before R13-C
 requires this contract to be revised and re-reviewed.
 
 ### 3.2 Exact venue state row
@@ -298,10 +305,14 @@ VenueExecutionBinding = ["m2.venue.ExecutionBinding/v1", PositionScope,
 
 `pending_operation=null` is the canonical absence form. The enum member
 `PendingVenueOperation.NONE` is never accepted as a substitute. Effect and owner source ordinals
-are non-negative and unique within their family; gaps are allowed because unrelated terminal
-history is omitted. Rows remain identity-sorted on the wire, but `_effect_order`,
+are the dense integers `0..retained_count-1`. The issuer verifies effect rank against increasing
+`VenueEffectRecord.created_ordinal` and owner rank against the increasing
+`DurableInputRecord.created_ordinal` for each owner's exact discovery observation. Rows remain
+identity-sorted on the wire, but `_effect_order`,
 `_owner_order`, and per-effect leg sequences are rebuilt by increasing retained source ordinal.
 This preserves behavior-significant discovery order without retaining unrelated history.
+Contradiction rows preserve their exact tuple order, reject duplicate
+`(leg_key,observation_id)`, and rebuild `_contradiction_order_by_effect`.
 
 `BootstrapTarget` is a closed discriminated union. Active form is exactly:
 
@@ -341,7 +352,7 @@ All retained seals and commitments are re-derived and compared, never trusted.
  B(predecessor_execution_binding_matches), B(execution_binding_matches),
  B(predecessor_account_reconciliation_clear), B(account_reconciliation_clear),
  H(command_commitment), E("m1.venue.VenueRecoveryDisposition",disposition),
- I(quantity_delta), E("m1.venue.ProtectionTransitionSourceKind",source_kind),
+ Z(quantity_delta), E("m1.venue.ProtectionTransitionSourceKind",source_kind),
  H(source_binding)]
 ```
 
@@ -370,6 +381,33 @@ Both bootstrap proof-commitment members are exactly
 `K("execution-core/m2-venue/transition-proof/v1", proof_row)`; R13-H changes the in-memory
 bootstrap record to retain these M2 proofs rather than carrying the legacy proof object forward.
 
+The resulting cursor head is independently derived as:
+
+```text
+CursorHeadPreimage = ["m2.venue.CursorHeadPreimage/v1",
+ H(predecessor_cursor_commitment), PositionScope, A(resulting_mandate_id)|N,
+ VenueScope(predecessor), VenueScope(resulting),
+ H(predecessor_execution_commitment), H(execution_commitment),
+ VenueExecutionCheckpoint(predecessor), VenueExecutionCheckpoint(resulting),
+ SymbolAuthoritySummary(predecessor), SymbolAuthoritySummary(resulting),
+ VenueExecutionBinding|N, VenueExecutionBinding|N,
+ B(predecessor_execution_binding_matches), B(execution_binding_matches),
+ B(predecessor_account_reconciliation_clear), B(account_reconciliation_clear),
+ H(command_commitment), E("m1.venue.VenueRecoveryDisposition",disposition),
+ Z(quantity_delta), E("m1.venue.ProtectionTransitionSourceKind",source_kind),
+ H(source_binding)]
+
+cursor.head = K("execution-core/m2-venue/protection-cursor-head/v1", CursorHeadPreimage)
+```
+
+The resulting cursor ordinal is predecessor ordinal plus one; mandate, execution commitment, and
+execution checkpoint equal the corresponding resulting members. The ordinal-zero cursor remains
+the exact existing genesis with head
+`_commit_parts("execution-core/protection-cursor-genesis/v1")`, null mandate, and null execution
+pair. Every new ordinal-positive cursor uses the M2 formula. A legacy v2 ordinal-positive cursor is
+non-serving and cannot be silently converted; because no R13-C payload has yet been installed, the
+fresh M2 lane starts from genesis or explicit reconciliation rather than migrating hidden history.
+
 ### 3.4 Venue selection completeness
 
 One `_M2VenueState` is account-wide for its exact `VenueScope`; it is never duplicated per
@@ -393,6 +431,8 @@ owners, attempts, closure heads, coverage, reconciliations, bindings, bootstrap 
 are the exact rows reachable from that set or from a selected current scope. Every reference must
 resolve exactly once. A terminal unrelated row is forbidden; a required reachable row missing from
 the payload is forbidden. Selection uses canonical external identities, never internal SQL row IDs.
+For every selected owner, exactly one current terminal form exists: a non-null attempt forbids a
+closure head; a null attempt requires exactly one closure head.
 
 ## 4. Authority state
 
@@ -407,6 +447,16 @@ the payload is forbidden. Selection uses canonical external identities, never in
 | omitted direct/history | `_input_by_id`; `_query_by_id`; `_consumed_grant_ids` |
 
 These 7 + 1 + 6 + 3 + 3 entries are all 20 fields.
+
+The three omitted maps are replaced only at an explicit behavioral boundary, not defaulted empty.
+The M2 authority kernel is callable only with a repository-issued `InputDedupeFact` and complete
+semantic matches. Primary durable-input lookup owns exact replay/conflict formerly decided by
+`_input_by_id`; `AUTHORITY_QUERY_CLAIM_V1` owns query uniqueness formerly decided by
+`_query_by_id`; and `AUTHORITY_EMERGENCY_GRANT_CONSUMPTION_V1` owns one-use grant state formerly
+decided by `_consumed_grant_ids`. The kernel must not run when any required lookup is absent or
+unsealed. The pure reference adapter derives the same facts from the legacy maps before calling
+that one kernel. Thus no hydrated owner can bypass or repeat those decisions, and no second replay
+algorithm is introduced.
 
 ### 4.2 Exact authority state and rows
 
@@ -577,8 +627,11 @@ Generation rows are:
 ```
 
 Every present acquisition owner requires a non-null controller `live_generation_id`, its exact
-matching LIVE row, and a non-null stream route for the mandate evidence-policy stream. The route
-must resolve to that LIVE generation.
+matching current-role row, and a non-null stream route for the mandate evidence-policy stream. The
+route must resolve to that current generation. The current-role row's serving class is exactly
+`LIVE` or `RECONCILIATION_REQUIRED`; the latter requires controller recovery class
+`RECONCILIATION_REQUIRED` or `MIXED_GENERATION_RECONCILIATION_REQUIRED`. Controller recovery
+`NORMAL` or `MIXED_GENERATION_RECOVERY` requires current serving class `LIVE`.
 The targeted-retired row is present only when the operation proof names a late fact or unresolved
 predecessor-generation route. It must differ from LIVE. The active stream route is
 `["m2.acquisition.MarketStreamRoute/v1",A(stream_generation_id),A(generation_id),H(commitment)]`
@@ -586,6 +639,7 @@ and must resolve to the LIVE row. When the targeted-retired generation is presen
 historical stream route is also mandatory and must resolve to that retired row; when absent, the
 retired route is null. Thus the bounded registry always has one route per selected generation and
 can pass the owner's record/route cardinality and binding checks.
+The targeted-retired row's serving class is exactly `RETIRED_UNSERVING`.
 
 Each lineage row is length 5:
 `["m2.acquisition.LineageRoute/v1",E("m1.acquisition.GenerationRouteKind",kind),Identity,A(generation_id),
@@ -601,13 +655,30 @@ domains `execution-core/m2-acquisition/bounded-registry/v1`,
 claim equality with history-shaped `GenerationRegistry._seal`, `AcquisitionLineageIndex._seal`, or
 the old full-map `AcquisitionControllerState.commitment`.
 
+Their exact preimages are:
+
+```text
+BoundedRegistry = ["m2.acquisition.BoundedRegistry/v1",
+ GenerationLive, GenerationTargetedRetired|N,
+ MarketStreamRouteLive, MarketStreamRouteTargetedRetired|N]
+
+BoundedLineage = ["m2.acquisition.BoundedLineage/v1",
+ lineage_row_count, lineage_rows]
+```
+
+`bounded_registry_commitment = K("execution-core/m2-acquisition/bounded-registry/v1",
+BoundedRegistry)`; `bounded_lineage_commitment =
+K("execution-core/m2-acquisition/bounded-lineage/v1",BoundedLineage)`. Child generation and route
+commitment members remain present exactly as shown in their rows; lineage child commitments remain
+present exactly as shown. Null retired slots are committed as literal null.
+
 ## 6. Execution proof encoding
 
 The existing `_M2ExecutionState` component remains the exact length-21 array already implemented
 at the accepted base:
 
 ```text
-["m2.position.execution-state/v1", PositionScope, I(raw_quantity),
+["m2.position.execution-state/v1", PositionScope, Z(raw_quantity),
  E("m2.position.BasisAuthority",basis_authority), Fraction(cost_basis)|N,
  A(basis_price_metadata)|N, TailFoldInput|N,
  ["m2.position.PositionIntegrity",I(integrity_floor_bits)],
@@ -620,7 +691,7 @@ at the accepted base:
 ```
 
 `TailFoldInput` is
-`["m2.position.tail-fold-input/v1",I(raw_quantity),Fraction(cost_basis),
+`["m2.position.tail-fold-input/v1",Z(raw_quantity),Fraction(cost_basis),
 A(price_metadata)|N,PositionScope|N,A(tail_root_key)|N,I(prefix_count),
 H(prefix_heads_commitment)]`. It must be bound. Basis authority is exactly `AVAILABLE` or
 `BASIS_RECONCILIATION_PENDING`; integrity bits contain only the closed
@@ -700,13 +771,34 @@ Each owner proof is an opaque exact type. Its canonical row is:
 ```text
 [OWNER_PROOF_TAG,
  A(application_generation_id), T(execution_profile_id),
- T(market_source_profile_id)|N, I(currentness_head_ordinal), I(checkpoint_version_ordinal),
+ T(market_source_profile_id), I(currentness_head_ordinal), I(checkpoint_version_ordinal),
+ AccountScopeVector,
  H(owner_state_bytes_sha256), H(owner_state_commitment),
- C(FAMILY_COUNTS_TAG, [[family_tag,count,predicate_tag,family_rows_commitment],...]),
+ C(FAMILY_COUNTS_TAG, [[family_tag,count,predicate_tag,predicate_preimage,
+                        family_rows_commitment],...]),
  C(DIRECT_ROWS_TAG, exact_direct_rows),
  C(ABSENCE_ROWS_TAG, exact_negative_lookup_coordinates),
+ TargetedExecutionProofRows,
  H(proof_commitment)]
 ```
+
+This is exact length 14. `AccountScopeVector` is
+`C("m2.owner.AccountScopes/v1",rows)`, where each row is
+`["m2.owner.AccountScope/v1",I(scope_id),PositionScope,
+A(live_generation_id),I(controller_currentness_head_ordinal)]`. It is strictly ordered by
+`(scope_id,canonical PositionScope bytes)`, duplicate-free, and exactly equals
+`ExecutionScopeRows` plus each scope's current controller/live-generation direct rows.
+
+`TargetedExecutionProofRows` is
+`C("m2.position.TargetedObservationProofs/v1",rows)`; each row is
+`["m2.position.TargetedObservationProof/v1",A(execution_fact_key),
+ExecutionObservationProof]`. It is strictly key-ordered and has count zero for an ordinary
+checkpoint or exactly one for the currently targeted broker operation/late fact. The proof's fact
+key must equal its row key. The wrapper is a direct member of the owner-proof commitment; omitted,
+duplicate, extra, or wrong-key targeted proofs fail.
+
+Currentness is at least zero and checkpoint version is at least one. The
+three profile/application coordinates must equal the future outer envelope exactly.
 
 The owner-state byte digest is deliberately not the future outer checkpoint digest: binding a proof
 contained inside that checkpoint to the checkpoint's own digest would be circular. R13-C binds the
@@ -715,7 +807,8 @@ already sealed owner state/proof bytes into the outer payload and derives the ou
 The three tags are `m2.venue.ObservationProof/v1`,
 `m2.authority.ObservationProof/v1`, and `m2.acquisition.ObservationProof/v1`. Family-count rows are
 strictly ordered by the family order declared in this contract. `predicate_tag` is one of:
-`CURRENT_SCOPE_V1`, `ACTIVE_OR_UNRESOLVED_EFFECT_V1`, `REACHABLE_OWNER_V1`,
+`HEADER_IDENTITY_V1`, `CURRENT_SCOPE_V1`, `ACCOUNT_ACTIVE_OR_UNRESOLVED_EFFECT_V1`,
+`REACHABLE_OWNER_V1`,
 `CURRENT_HEAD_V1`, `TARGETED_LATE_FACT_V1`, `ACTIVE_AUTHORITY_V1`,
 `LIVE_GENERATION_V1`, or `ACTIVE_LINEAGE_V1`. Direct rows use the exact accepted typed persistence
 record arrays frozen in WO-0167/R13-S, not caller dictionaries. Negative rows bind a complete direct
@@ -729,28 +822,29 @@ The symbolic wrapper names in the shape above resolve to these exact literal tag
 | authority | `m2.authority.ProofFamilyCounts/v1` | `m2.authority.ProofDirectRows/v1` | `m2.authority.ProofAbsenceRows/v1` |
 | acquisition | `m2.acquisition.ProofFamilyCounts/v1` | `m2.acquisition.ProofDirectRows/v1` | `m2.acquisition.ProofAbsenceRows/v1` |
 
-Each family-count entry is the exact length-5 row
+Each family-count entry is the exact length-6 row
 `["m2.owner.ProofFamily/v1",T(family_tag),I(count),T(predicate_tag),
-H(family_rows_commitment)]`. Its family commitment is
+predicate_preimage,H(family_rows_commitment)]`. Its family commitment is
 `K("execution-core/m2-owner/proof-family/v1", C(family_tag, exact_rows))`.
 Direct-selection commitment is, in argument order,
 `K(owner_direct_selection_domain,
-[owner_family_counts_wrapper,owner_direct_rows_wrapper,owner_absence_rows_wrapper])`.
+[AccountScopeVector,owner_family_counts_wrapper,owner_direct_rows_wrapper,
+owner_absence_rows_wrapper])`.
 Owner state commitment is `K(owner_state_domain,state_row_without_state_commitment)`.
 Owner proof commitment is `K(owner_observation_proof_domain,proof_row_without_proof_commitment)`.
 
 Family order is exact and closed:
 
-- venue: `APPLICATION_GENERATION`, `EXECUTION_PROFILE`, `MARKET_SOURCE_PROFILE`, `SCOPE`,
+- venue: `APPLICATION_GENERATION`, `KERNEL_CHECKPOINT`, `EXECUTION_PROFILE`, `MARKET_SOURCE_PROFILE`, `SCOPE`,
   `ACQUISITION_CURRENT`, `SYMBOL_CONTROLLER`, `VENUE_EFFECT`, `ACCEPTANCE_SET`,
   `ACCEPTANCE_EVIDENCE`, `DISPATCH_CLAIM`, `VENUE_OWNER`, `CLOSURE_HEAD`,
   `ACQUISITION_ROOT_ROUTE`, `ROOT_FILL`, `EXECUTION_FACT_HEAD`, `EXECUTION_FACT`,
   `DURABLE_INPUT`, `DURABLE_INPUT_SEMANTIC_KEY`, `DURABLE_INPUT_OUTCOME`,
   `MARKET_STREAM_AUTHORITY`, `PROTECTION_AUTHORITY`;
-- authority: `APPLICATION_GENERATION`, `EXECUTION_PROFILE`, `SCOPE`,
+- authority: `APPLICATION_GENERATION`, `KERNEL_CHECKPOINT`, `EXECUTION_PROFILE`, `SCOPE`,
   `ACQUISITION_CURRENT`, `SYMBOL_CONTROLLER`, `VENUE_EFFECT`, `DISPATCH_CLAIM`,
   `DURABLE_INPUT`, `DURABLE_INPUT_SEMANTIC_KEY`, `DURABLE_INPUT_OUTCOME`; and
-- acquisition: `APPLICATION_GENERATION`, `EXECUTION_PROFILE`, `MARKET_SOURCE_PROFILE`, `SCOPE`,
+- acquisition: `APPLICATION_GENERATION`, `KERNEL_CHECKPOINT`, `EXECUTION_PROFILE`, `MARKET_SOURCE_PROFILE`, `SCOPE`,
   `ACQUISITION_CURRENT`, `SYMBOL_CONTROLLER`, `LIVE_GENERATION`,
   `TARGETED_RETIRED_GENERATION`, `MARKET_STREAM_AUTHORITY`, `VENUE_EFFECT`,
   `VENUE_OWNER`, `ACQUISITION_ROOT_ROUTE`, `ROOT_FILL`, `EXECUTION_FACT_HEAD`,
@@ -793,6 +887,23 @@ Every positive array is decoded by constructing that exact accepted class (or ex
 then re-encoded and byte-compared. Profile secrets are absent by design. A field not present in the
 accepted class cannot be added to its direct row.
 
+Direct rows are grouped in the exact owner family order above. Each family appears once in
+`ProofFamilyCounts` even when its count is zero. It admits only the like-named direct tag
+(`TARGETED_RETIRED_GENERATION` uses `m2.direct.AcquisitionGeneration/v1`;
+`LIVE_GENERATION` uses the same tag in its distinct slot). Within a family, rows are strictly
+increasing by the exact absence/direct uniqueness key listed below. Duplicate tag/key pairs fail.
+The number of positive direct rows with that family tag equals its family count and their complete
+wrapper hashes to `family_rows_commitment`. `exact_direct_rows` is the concatenation of these
+already sorted family groups; `exact_negative_lookup_coordinates` uses the same family order and
+within-family key order. A row cannot appear in two families except the two distinct fixed
+generation roles, which must name different generation IDs.
+
+`KERNEL_CHECKPOINT` is mandatory with count one for every owner proof and uses
+`m2.direct.KernelCheckpoint/v1` plus `CURRENT_SCOPE_V1`; its application generation,
+currentness head, checkpoint version, and checkpoint digest must equal the proof header. The
+application/profile/current-scope fixed families also have count one per exact header/scope-vector
+coordinate. Other family counts equal the relevant declared selection predicate.
+
 An absence row is exactly
 `["m2.owner.ProofAbsent/v1",T(family_tag),C("m2.owner.ProofKey/v1",key_members)]`.
 The key members are the accepted direct uniqueness key in this order:
@@ -816,12 +927,36 @@ The key members are the accepted direct uniqueness key in this order:
 Each key member uses its exact scalar/atom form. Missing, extra, reordered, non-key, or digest-only
 coordinates fail.
 
+Record construction alone is not validation. Before construction, each handwritten branch enforces
+the accepted schema's exact scalar, optional-group, and cross-field rules. At minimum the closed
+persisted sets are: generation status `LIVE|RETIRED_UNSERVING`; effect authority
+`NORMAL|HARD_BAIL`; effect kind `SUBMIT|CANCEL|REPLACE`; side `BUY|SELL`; lifecycle state the
+eight `BrokerEffectState` values; disposition `OPEN|CLOSED|INVALIDATED`; closure proof the three
+`AcceptanceProofKind` values or null; closure kind
+`TERMINAL_LEG|ACCEPTANCE_CLOSED|INVALIDATED_TERMINAL`; sequence mode
+`SEQUENCED|SOURCE_TIME`; input technical state
+`CLAIMED|TERMINAL|RECONCILIATION_PENDING`; outcome owner domain
+`POSITION|VENUE_RECOVERY|AUTHORITY|ACQUISITION|PROTECTION`; and terminal technical state
+`TERMINAL|RECONCILIATION_PENDING`. Unknown text is refused even if the current record dataclass
+lacks `__post_init__`.
+
+All identifiers/text/hex/byte lengths, numeric lower bounds, wholly-present optional groups,
+predecessor/ordinal rules, digest-to-byte checks, profile/application/scope equality, and
+root/effect/owner/fact/current-head relations are the exact accepted WO-0166 schema constraints and
+WO-0167 record invariants, applied by pure explicit validators before the exact record constructor.
+R13-H tests pin each closed set and at least one optional, numeric, digest, and cross-field mutant
+per direct tag; R13-C repository issuance re-runs the same validators after SQL load.
+
 Predicate preimages are fixed arrays:
 
+- `HEADER_IDENTITY_V1`:
+  `[application_generation_id,execution_profile_id,market_source_profile_id,
+  currentness_head_ordinal,checkpoint_version_ordinal]`;
 - `CURRENT_SCOPE_V1`: `[application_generation_id,execution_profile_id,scope_id,
   position_scope,currentness_head_ordinal,checkpoint_version_ordinal]`;
-- `ACTIVE_OR_UNRESOLVED_EFFECT_V1`: the current-scope preimage plus
-  `["DISPOSITION_NOT_CLOSED_OR_LATE_OWNER",live_generation_id]`;
+- `ACCOUNT_ACTIVE_OR_UNRESOLVED_EFFECT_V1`:
+  `[application_generation_id,execution_profile_id,venue_scope,AccountScopeVector,
+  "DISPOSITION_NOT_CLOSED_OR_LATE_OWNER"]`; every included scope is selected together;
 - `REACHABLE_OWNER_V1`: current-scope preimage plus `[effect_id,owner_id]`;
 - `CURRENT_HEAD_V1`: current-scope preimage plus `[root_fill_id,current_fact_id]`;
 - `TARGETED_LATE_FACT_V1`: current-scope preimage plus
@@ -835,6 +970,15 @@ Predicate preimages are fixed arrays:
 Identity values in predicate preimages use `A(v)`; profile and predicate literals use `T`;
 numeric coordinates use `I`; booleans use `B`. The row arrays themselves, not prose SQL or a
 digest-only summary, are the proof preimage.
+
+Family-to-predicate mapping is exact: application/checkpoint/profile families use
+`HEADER_IDENTITY_V1`; scope/current/controller/market-stream/protection families use
+`CURRENT_SCOPE_V1`; effect/claim/acceptance families use
+`ACCOUNT_ACTIVE_OR_UNRESOLVED_EFFECT_V1`; owner/closure/root-route families use
+`REACHABLE_OWNER_V1`; root/fact-head/current-fact families use `CURRENT_HEAD_V1`, except the
+single late-fact slice uses `TARGETED_LATE_FACT_V1`; authority input/key/outcome families use
+`ACTIVE_AUTHORITY_V1`; current generation uses `LIVE_GENERATION_V1`; targeted retired
+generation uses `TARGETED_LATE_FACT_V1`. A family/predicate pairing outside this table fails.
 
 The issuer must bind one connection snapshot and verify:
 
