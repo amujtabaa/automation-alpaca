@@ -290,6 +290,14 @@ No source or test change implementing the R7 proof boundary may be made until a 
 documentation review accepts the exact amendment with `P0=0/P1=0`. Normal REV-0075
 implementation review and the changed-DDL human gate remain independently required.
 
+REV-0074 R7 accepted the exact owner-proof amendment candidate
+`b85e253f100571c9cd0456a062cc41d39b77dd0d`, tree
+`3e6c0b7db09d6283236d356da99e2c4509ef686b`, at `P0=0/P1=0/P2=0` in
+`result-r7.md`. The already-named source and test paths may now implement only the aggregate-bound
+execution proof, typed protection-currentness proof, and associated parity/mutation coverage.
+This acceptance does not relax the normal REV-0075 implementation review or the changed-DDL human
+gate.
+
 ## Out of scope
 
 - OS-1: The atomic transaction coordinator, commit, publication, and effect eligibility are
