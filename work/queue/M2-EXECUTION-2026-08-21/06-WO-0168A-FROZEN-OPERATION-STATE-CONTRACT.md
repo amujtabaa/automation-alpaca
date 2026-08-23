@@ -594,6 +594,7 @@ test_paths:
   - tests/execution_core/test_persistence_checkpoint_codec.py
   - tests/execution_core/test_persistence_reducer_parity.py
   - tests/execution_core/test_persistence_input_receipt.py
+  - tests/execution_core/persistence_setup_support.py
   - tests/execution_core/test_persistence_write_capability.py
   - tests/execution_core/test_persistence_schema.py
   - tests/execution_core/test_persistence_repository.py
@@ -763,3 +764,353 @@ Fresh preflight must return P0=0/P1=0 before source work. Changed DDL stops at t
 before installation or SQLite tests. A parity failure, missing member, need for a ninth top-level
 operation, or need for an unlisted source path stops for a head-bound work-order amendment and
 fresh review; it is not handled through a wildcard or local assumption.
+
+## R12 persisted-document and write-capability closure amendment
+
+**Status: draft — documentation only; no source, test, DDL installation, or SQLite authority.**
+
+R12 addresses the remaining R9 root cause: a self-consistent component proof is not a
+persistence-level authenticity anchor. The anchor is one immutable retained checkpoint document
+whose exact bytes are bound to the selected current `kernel_checkpoint` head. Component codecs
+remain owner-local construction helpers; they must not be used as a standalone restart/hydration
+entry point or treated as proof of a database selection.
+
+R12 also closes the missing exact columns, primary identities, lifecycle transition owner,
+receipt/outcome linkage, outbox snapshot, and capability matrix identified by
+`REV-0075/result-r9-preflight.md`. It intentionally adds no operation, reducer branch, runtime
+composition, or external activity.
+
+### R12.1 Retained checkpoint anchor and outer checkpoint document
+
+`RuntimeCheckpointPayloadRecord` has exactly these ordered persisted members:
+
+1. `application_generation_id`;
+2. `execution_profile_id`;
+3. `market_source_profile_id`;
+4. `currentness_head_ordinal`;
+5. `checkpoint_version_ordinal`;
+6. `payload_bytes`;
+7. `payload_length`; and
+8. `payload_sha256`.
+
+`payload_bytes` is exactly one kind-`0x02` document. Its canonical JSON is:
+
+```text
+[1, "m2.runtime-checkpoint/v1", application_generation_atom,
+ execution_profile_id, market_source_profile_id,
+ currentness_head_ordinal, checkpoint_version_ordinal,
+ authority_state, scope_states,
+ active_or_unresolved_effect_refs, active_or_unresolved_route_refs]
+```
+
+The array has exactly eleven members. `application_generation_atom` is the section-5 M1 durable
+atom for the exact `ApplicationGenerationId`; profile identities are lowercase SHA-256 text;
+the two ordinals are exact nonnegative/positive JSON integers respectively. The four tail
+members are the explicitly typed, fixed-order owner representations in section 4; they are never
+generic objects, maps, reflected dataclasses, or opaque Python bytes. `scope_states` is ordered
+strictly by `scope_id`; effect references are ordered by canonical effect identity; route
+references are ordered by domain then canonical identity. `payload_sha256` is the document digest
+and is deliberately not serialized as an eleventh self-reference.
+
+`RuntimeCheckpointEnvelope` remains the only public checkpoint data type. Its two public codec
+entry points are exactly `encode_runtime_checkpoint(envelope) -> bytes` and
+`decode_runtime_checkpoint(payload_record, current_proofs) -> RuntimeCheckpointEnvelope`.
+`decode_runtime_checkpoint` accepts no raw bytes, caller-shaped scope, or caller-shaped proof.
+It requires an exact `RuntimeCheckpointPayloadRecord` and the complete, sealed,
+repository-issued `CurrentProofSlice` tuple selected for that payload. Before any owner hydrator
+runs it must require all of the following:
+
+1. `payload_sha256 == SHA256(payload_bytes)` and the payload parses/re-encodes byte-for-byte;
+2. the document header equals every record coordinate;
+3. the record coordinates and digest equal the selected `kernel_checkpoint` current head;
+4. every proof is exact, authentic, belongs to that application/profile/head, and is selected
+   once only for its stated direct rows; and
+5. every reconstructed owner state is semantically equal to its canonical component and its
+   derived commitment equals the retained component commitment.
+
+Until an owner has its complete section-4 typed wire row and complete direct-proof tuple,
+`decode_runtime_checkpoint` must refuse that state rather than hydrate an approximation. In
+particular, the existing R7--R11 execution and protection component helpers are not a retained
+payload decoder and cannot establish persistence-level authenticity by themselves. The eventual
+outer decoder is the only place that may pass a checkpoint `PositionScope` to a protection
+hydrator: it is first anchored by retained bytes and then compared to the exact selected scope
+state. It must not derive a `PositionScope` from an execution profile, whose provider token,
+environment token, and account fingerprint are deliberately not M1 position identities.
+
+`runtime_checkpoint_payload` is immutable historical data, while `kernel_checkpoint` is a
+mutable current-head pointer. They therefore cannot use a normal child foreign key: updating the
+head would orphan every retained older payload. The schema-v2 candidate instead has these exact
+relations:
+
+- primary key `(application_generation_id, checkpoint_version_ordinal)` on
+  `runtime_checkpoint_payload`;
+- unique `(application_generation_id, currentness_head_ordinal, checkpoint_version_ordinal,
+  payload_sha256)` on that table;
+- foreign keys from its application/profile coordinates to the accepted application-generation
+  selections; immutable insert-only/no-delete triggers; and
+- `BEFORE INSERT` and `BEFORE UPDATE OF currentness_head_ordinal, checkpoint_sha256,
+  checkpoint_version_ordinal` triggers on `kernel_checkpoint`. Each trigger refuses unless one
+  matching payload row already exists with
+  `(NEW.application_generation_id, NEW.currentness_head_ordinal,
+  NEW.checkpoint_version_ordinal, NEW.checkpoint_sha256)`.
+
+The exact profile foreign keys are `(application_generation_id, execution_profile_id)` to
+`application_generation(application_generation_id, selected_execution_profile_id)` and
+`(application_generation_id, market_source_profile_id)` to
+`application_generation(application_generation_id, selected_market_source_profile_id)`. A
+checkpoint reference from a receipt or outcome is the exact composite
+`(application_generation_id, checkpoint_currentness_head_ordinal,
+checkpoint_version_ordinal, checkpoint_payload_sha256)` foreign key to the payload-table unique
+key above. It is either fully null or fully present.
+
+The sole allowed write order is therefore: insert the immutable new payload first, then insert or
+advance `kernel_checkpoint` in the same caller-owned transaction. The payload's application/profile
+foreign keys are ordinary; no foreign key points at mutable `kernel_checkpoint`. This is the
+necessary reverse-edge constraint: a payload may refer to history, but a serving head cannot exist
+without its exact retained payload. A static DDL review and fresh-file test must prove both
+directions, historical payload survival after head advance, and refusal of an unpaired head.
+
+### R12.2 Primary input identity and durable-input lifecycle
+
+The primary identity is derived only after `decode_m2_operation` has accepted and canonicalized the
+payload. Its bytes are:
+
+```text
+input-identity = ASCII("execution-core/m2-input-identity/v1\n")
+                 || uint64-be(json-byte-length)
+                 || canonical-json-utf8([1, DOMAIN, PRIMARY_ATOM])
+input_identity_sha256 = lowercase-hex(SHA256(input-identity))
+```
+
+`DOMAIN` is the exact `OperationDomain.value`; `PRIMARY_ATOM` is the section-5 M1 durable atom of
+the decoded operation's exact technical identity: `fact.key` for broker execution,
+`item.input_id` for venue recovery, `command.input_id` for authority,
+the operation's `input_id` for each acquisition row, and `occurrence.occurrence_id` for market.
+There is no caller-provided primary digest, alternate-key substitution, coordinate-derived digest,
+or raw payload hash substitute. The application generation, domain, and identity digest together
+are the primary key; unequal coordinates or bytes at that key are an identity conflict.
+
+`DurableInputRecord` has exactly these ordered persisted members:
+
+1. `application_generation_id`;
+2. `execution_profile_id`;
+3. `scope_id`;
+4. `input_domain`;
+5. `session_id_or_null`;
+6. `acquisition_generation_id_or_null`;
+7. `market_source_profile_id_or_null`;
+8. `stream_generation_id_or_null`;
+9. `input_identity_sha256`;
+10. `operation_contract_version` (literal `1`);
+11. `canonical_payload_bytes`;
+12. `payload_sha256`;
+13. `technical_state`; and
+14. `created_ordinal`.
+
+Its exact primary key is `(application_generation_id, input_domain,
+input_identity_sha256)`. It has a unique immutable `created_ordinal`; foreign keys
+`(application_generation_id, execution_profile_id)` to the selected execution profile;
+`(scope_id, application_generation_id, execution_profile_id)` to `acquisition_scope`; optional
+`(acquisition_generation_id, scope_id)` to `acquisition_generation`; optional
+`(application_generation_id, market_source_profile_id)` to the selected market profile; and
+optional `stream_generation_id` to `market_stream_authority`; plus immutable-byte/no-delete
+triggers. Its
+constructor and repository load path must decode/re-encode the operation and require the row's
+domain, every coordinate, primary identity, version, bytes, and digest to match that decoded
+operation. A null venue session is allowed only when the decoded payload is exact
+`ObserveVenueStatus`; it is never accepted merely because a row has a venue domain.
+
+`claim_durable_input` is the sole creation method and accepts only `technical_state == "CLAIMED"`.
+`finalize_durable_input` is the sole transition method and is called only by the finite
+`unit_of_work.py` row-write table after the matching receipt and outcome are stored. It allows
+exactly one transition from `CLAIMED` to either:
+
+- `TERMINAL` for every owner disposition except `RECONCILIATION_REQUIRED`; or
+- `RECONCILIATION_PENDING` only for `RECONCILIATION_REQUIRED`.
+
+Neither terminal state may change in WO-0168a. A schema trigger refuses either transition unless
+the exact one outcome/receipt pair described below exists and has the same terminal technical
+state. An exact replay reads that retained outcome and writes no new receipt, outcome, checkpoint,
+or outbox row. An identity conflict writes none of those rows. This is a lifecycle fact, not a
+claim that a broker action succeeded.
+
+### R12.3 Outcome and decision-receipt documents
+
+`OwnerDomain` is the closed text set `POSITION`, `VENUE_RECOVERY`, `AUTHORITY`,
+`ACQUISITION`, and `PROTECTION`. Its admitted dispositions are exactly the row-specific sets in
+section 3; a generic outcome name is refused. A `result_sha256` is independently derived from:
+
+```text
+ASCII("execution-core/m2-reducer-result/v1\n")
+|| uint64-be(json-byte-length)
+|| canonical-json-utf8(
+     [1, owner_domain, owner_disposition, terminal_technical_state,
+      checkpoint_reference_or_null]
+   )
+```
+
+`checkpoint_reference_or_null` is either `null`, or exactly
+`[currentness_head_ordinal, checkpoint_version_ordinal, payload_sha256]`. All three members are
+present together or absent together. It is a reference to the immutable payload row, not a
+receipt or outbox authority.
+
+`DecisionReceiptRecord` has these ordered persisted members:
+
+1. `receipt_ordinal`;
+2. `application_generation_id`;
+3. `input_domain`;
+4. `input_identity_sha256`;
+5. `owner_domain`;
+6. `owner_disposition`;
+7. `terminal_technical_state`;
+8. `result_sha256`;
+9. `checkpoint_currentness_head_ordinal_or_null`;
+10. `checkpoint_version_ordinal_or_null`;
+11. `checkpoint_payload_sha256_or_null`;
+12. `canonical_receipt_bytes`;
+13. `receipt_length`; and
+14. `receipt_sha256`.
+
+Its primary key is `receipt_ordinal`; the input identity tuple is unique; it has a foreign key to
+that exact durable input; it has a unique
+`(application_generation_id, input_domain, input_identity_sha256, receipt_ordinal,
+receipt_sha256)` key for the outcome link; its nullable checkpoint reference has the R12.1
+composite foreign key; its canonical document is kind `0x04`; and it has the immutable
+row/no-delete rules. The JSON array is exactly:
+
+```text
+[1, "m2.decision-receipt/v1", application_generation_atom,
+ ["m2.operations.OperationDomain", DOMAIN], input_identity_sha256,
+ receipt_ordinal, owner_domain, owner_disposition, terminal_technical_state,
+ result_sha256, checkpoint_reference_or_null]
+```
+
+`DurableInputOutcomeRecord` has these ordered persisted members:
+
+1. `application_generation_id`;
+2. `input_domain`;
+3. `input_identity_sha256`;
+4. `owner_domain`;
+5. `owner_disposition`;
+6. `terminal_technical_state`;
+7. `result_sha256`;
+8. `checkpoint_currentness_head_ordinal_or_null`;
+9. `checkpoint_version_ordinal_or_null`;
+10. `checkpoint_payload_sha256_or_null`;
+11. `receipt_ordinal`;
+12. `receipt_sha256`;
+13. `canonical_outcome_bytes`;
+14. `outcome_length`; and
+15. `outcome_sha256`.
+
+Its primary key is the durable-input identity tuple; it has an exact foreign key to that input and
+an exact composite foreign key to the receipt identity tuple
+`(application_generation_id, input_domain, input_identity_sha256, receipt_ordinal,
+receipt_sha256)`. A nullable checkpoint reference has an exact composite foreign key to the
+immutable payload row. Its canonical document is kind `0x03` and is exactly:
+
+```text
+[1, "m2.durable-input-outcome/v1", application_generation_atom,
+ ["m2.operations.OperationDomain", DOMAIN], input_identity_sha256,
+ owner_domain, owner_disposition, terminal_technical_state, result_sha256,
+ checkpoint_reference_or_null, receipt_ordinal, receipt_sha256]
+```
+
+`store_decision_receipt` and `store_durable_input_outcome` accept only a write capability and
+exact record. They decode/re-encode their own bytes, recompute all digests, and require every
+duplicate field and foreign coordinate to agree. The receipt is explanatory evidence only: no
+reducer, currentness, claim, closure, recovery, outbox, or serving query may take it as an input
+authority. A receipt must be inserted before its outcome; neither row is updateable or deletable.
+
+### R12.4 Immutable broker outbox snapshot
+
+`BrokerOutboxRecord` has these ordered persisted members:
+
+1. `outbox_sequence`;
+2. `application_generation_id`;
+3. `execution_profile_id`;
+4. `scope_id`;
+5. `acquisition_generation_id`;
+6. `input_domain`;
+7. `input_identity_sha256`;
+8. `effect_id`;
+9. `claim_id`;
+10. `canonical_payload_bytes`;
+11. `payload_length`; and
+12. `payload_sha256`.
+
+Its primary key is `outbox_sequence`, which must be the next global positive sequence at insert;
+`(effect_id, claim_id)` is unique; `input_domain` is exactly `AUTHORITY` or
+`CLAIM_ACQUISITION_EFFECT`; and it has exact foreign keys from
+`(application_generation_id, input_domain, input_identity_sha256)` to durable input,
+`(effect_id, scope_id, application_generation_id, execution_profile_id,
+acquisition_generation_id)` to the venue-effect coordinate key, and `(effect_id, claim_id)` to
+dispatch claim. The repository also compares the decoded snapshot to all immutable fields of the
+retained effect and claim before accepting or loading it; an ID-only foreign key is insufficient.
+
+The kind-`0x05` canonical JSON array is exactly:
+
+```text
+[1, "m2.broker-outbox/v1", application_generation_atom,
+ execution_profile_id, scope_id, acquisition_generation_atom,
+ ["m2.operations.OperationDomain", DOMAIN], input_identity_sha256,
+ effect_id, effect_external_atom, request_occurrence_atom, mandate_atom,
+ generation_mandate_commitment_sha256,
+ expected_controller_head_ordinal, expected_protection_version_ordinal,
+ authority_class, effect_kind, client_order_atom_or_null, target_order_atom_or_null,
+ side, quantity_atom, economic_scope_hex,
+ claim_id, claim_occurrence_atom, claim_ordinal]
+```
+
+Every `_atom` is the section-5 M1 durable atom, `economic_scope_hex` is lowercase even-length
+hex for the exact retained bytes, and each enum/value has the section-5 owner tag. This is the
+complete immutable dispatch snapshot; a later dispatcher must not reconstruct a broker command
+from mutable effect lifecycle fields. The outbox has no delivered, acknowledged, success, retry,
+or broker-result state. Later observed venue activity remains a separately durable input. An
+outbox row is eligible only after the caller-owned transaction commits; it is never economic,
+currentness, closure, or recovery authority.
+
+### R12.5 Exact capability and test-support boundary
+
+`tests/execution_core/persistence_setup_support.py` is the only setup-capability issuer and is
+added to the exact test scope. It may import the private setup issuer from `repository.py`; only
+`test_persistence_schema.py`, `test_persistence_repository.py`,
+`test_persistence_directness.py`, and `test_persistence_write_capability.py` may import that
+support module. No `app/**` module may import it or a setup capability.
+
+`_RuntimeWriteCapability` is a private exact, non-subclassable, connection- and transaction-bound
+type. Its constructor raises; only `unit_of_work.py` may obtain it after `BEGIN IMMEDIATE` and
+exact schema/application/profile verification. `_SetupWriteCapability` is likewise private,
+exact, non-subclassable, and connection-bound. Its constructor raises; the named support module
+may obtain it only for a fresh `tmp_path` fixture connection. These are structural controls, not a
+claim that hostile arbitrary Python cannot inspect process memory.
+
+All `load_*` repository functions, including `load_current_proof`, are **read-only** and accept no
+capability. The existing and new mutators are classified exactly as follows. Runtime mutators
+accept a runtime capability in production and a setup capability only through the named test
+support route; setup mutators accept setup capability only.
+
+| Class | Exact mutators |
+| --- | --- |
+| setup | `store_execution_profile`, `store_market_source_profile`, `store_application_generation`, `store_scope`, `store_kernel_checkpoint`, `store_symbol_controller`, `store_protection_authority` |
+| runtime | `store_acquisition_generation`, `retire_acquisition_generation`, `advance_kernel_checkpoint`, `advance_symbol_controller`, `store_root_fill`, `store_execution_fact`, `store_venue_effect`, `advance_venue_effect`, `store_venue_identity_owner`, `store_acquisition_root_route`, `store_dispatch_claim`, `store_acceptance_set`, `store_acceptance_evidence`, `store_closure`, `store_market_stream_authority`, `store_market_cursor`, `advance_market_cursor`, `advance_protection_authority`, `claim_durable_input`, `finalize_durable_input`, `store_runtime_checkpoint_payload`, `store_durable_input_semantic_key`, `store_decision_receipt`, `store_durable_input_outcome`, `store_broker_outbox` |
+
+Static and runtime boundary tests must enumerate this table, all private issuer names, direct
+aliases, wrapped connections/cursors, subclass attempts, and every `store_`, `advance_`,
+`retire_`, `claim_`, and `finalize_` export. A source method not in this table is a preflight stop,
+not a defaulted capability choice.
+
+### R12.6 Scope, proof, and stop rule
+
+R12 adds only `tests/execution_core/persistence_setup_support.py` to section 8 and the active work
+order's allowed paths. It adds no production path beyond those already named. The decisive future
+tests include known-answer and byte-mutant controls for kinds `0x02`--`0x05`, primary-identity
+cross-coordinate conflicts, passive-session refusal, lifecycle/receipt rollback, immutable
+historical payload survival, unpaired-head refusal, outbox snapshot mismatch, and every capability
+matrix bypass. Static DDL authoring remains allowed; installation and every SQLite-bearing test
+remain stopped at the exact changed-DDL human gate.
+
+No source or test implementation of R12 is authorized until a fresh `REV-0074` R12 documentation
+review accepts the exact amendment candidate with `P0=0/P1=0`. The normal `REV-0075`
+implementation review, changed-DDL human gate, no-runtime-composition rule, and all safety
+boundaries remain independent and unchanged.

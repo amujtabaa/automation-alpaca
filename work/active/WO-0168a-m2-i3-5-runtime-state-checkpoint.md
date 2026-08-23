@@ -179,6 +179,7 @@ allowed_paths:
   - tests/execution_core/test_persistence_checkpoint_codec.py
   - tests/execution_core/test_persistence_reducer_parity.py
   - tests/execution_core/test_persistence_input_receipt.py
+  - tests/execution_core/persistence_setup_support.py
   - tests/execution_core/test_persistence_write_capability.py
   - tests/execution_core/test_persistence_schema.py
   - tests/execution_core/test_persistence_repository.py
@@ -364,6 +365,28 @@ opaque repository-issued current proof, checkpoint-codec-only protection-proof i
 exact mutation controls. This acceptance does not authorize DDL execution, SQLite activity, runtime
 composition, credentials, broker/network calls, orders, promotion, merge, or relax the normal
 REV-0075 and changed-DDL human gates.
+
+## R12 persisted-document and write-capability closure checkpoint
+
+REV-0075 R9 then exposed a distinct persistence-layer root gap: local component commitments and
+sealed direct-row slices can be self-consistent without being anchored to retained checkpoint
+bytes. Its preflight result also found that the remaining schema-v2 records, lifecycle transition,
+receipt/outcome linkage, checkpoint parent relation, and capability matrix were not exact enough
+to author source or DDL faithfully.
+
+The companion contract's R12 amendment freezes the minimal root correction: an immutable
+checkpoint-payload history whose matching current head is required by a reverse-edge trigger;
+typed canonical documents for outcomes, receipts, and outbox snapshots; a decoded-operation
+primary input identity; one exact durable-input lifecycle; and every repository mutator's
+runtime/setup classification. It expressly does not treat a profile fingerprint as an M1 position
+scope, a component codec as a persistence decoder, or a mutable `kernel_checkpoint` row as a
+historical foreign-key parent. It adds only the exact test support module
+`tests/execution_core/persistence_setup_support.py` to the existing section-8 surface.
+
+No R12 source, test, or DDL change may be made until a fresh REV-0074 R12 documentation review
+accepts the exact amendment candidate with `P0=0/P1=0`. The normal REV-0075 implementation review
+and changed-DDL human gate remain independent; this amendment does not authorize SQLite activity,
+runtime composition, credential, network, broker, order, promotion, merge, or any M2-I4/M3 work.
 
 ## Out of scope
 
