@@ -1,6 +1,6 @@
 # Post-I3 preflight and remaining M2 completion map
 
-Status: **PREFLIGHT CANDIDATE — DOCUMENTATION ONLY — SOURCE IMPLEMENTATION HELD**
+Status: **PREFLIGHT REMEDIATION CANDIDATE — DOCUMENTATION ONLY — SOURCE IMPLEMENTATION HELD**
 
 Date: 2026-08-22
 
@@ -29,6 +29,12 @@ Implementing around those gaps would either invent a second engine, pass caller-
 or make an unauthorized schema change. The root correction is one prerequisite implementation
 increment, WO-0168a. It does not weaken or replace the ratified M2-I4 semantics.
 
+The first formal reviewer preserved that stop as `REV-0074/result.md` (P0=0/P1=1): the initial
+candidate correctly required a finite matrix but had not frozen it. The additive
+`06-WO-0168A-FROZEN-OPERATION-STATE-CONTRACT.md` now supplies the exact operation union, state
+inventory, encoding, schema, capability, path, budget, and fault contract. Source remains held
+until a fresh head-bound review accepts that remediation with P0=0/P1=0.
+
 ## Remaining serial chain
 
 | Order | State after this preflight candidate | Purpose | Exit required before successor |
@@ -51,7 +57,7 @@ editing the historical packet.
 ## Mandatory checkpoint order
 
 ```text
-REV-0074 post-I3 preflight acceptance
+REV-0074 remediation preflight acceptance
   -> WO-0168a runtime-state/input-receipt substrate
   -> fresh implementation review
   -> WO-0168b atomic unit of work/effect eligibility

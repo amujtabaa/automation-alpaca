@@ -13,7 +13,7 @@ predecessor: WO-0167 closeout 0777fab62598f85ce189f40eb1a69319791282c2
 branch: codex/m2-i3-5-runtime-checkpoint-r1
 preflight_review_id: REV-0074
 implementation_review_id: TO_ASSIGN_AFTER_PREFLIGHT_ACCEPTANCE
-execution_authority: Documentation, static analysis, RED design, and ordinary reversible non-DDL work are authorized by Ameen Mujtabaa's 2026-08-22 serial-M2 request. Source implementation starts only after REV-0074 returns P0=0/P1=0. Any changed DDL may be authored and hashed but not executed before an exact recorded human gate for those bytes and the temporary-file test plan.
+execution_authority: Documentation, static analysis, and RED design are authorized by Ameen Mujtabaa's 2026-08-22 serial-M2 request. The original REV-0074 result returned P1=1; source implementation starts only after a fresh head-bound REV-0074 remediation review returns P0=0/P1=0. Any changed DDL may be authored and hashed but not executed before an exact recorded human gate for those bytes and the temporary-file test plan.
 ---
 
 # Work Order: M2-I3.5 runtime-state checkpoint and input/receipt substrate
@@ -22,7 +22,7 @@ execution_authority: Documentation, static analysis, RED design, and ordinary re
 
 **Date:** 2026-08-22
 
-**Status:** Ready for independent preflight; no source edit before acceptance
+**Status:** Ready for fresh remediation preflight; no source edit before acceptance
 
 `[FABLE • FULL • spec-first/TDD • prerequisite root correction • no external I/O]`
 
@@ -37,13 +37,22 @@ This order closes that prerequisite at the owning boundaries. It must not create
 serialize arbitrary Python objects, replay full history at startup, or turn a digest into proof of
 bytes that were never retained.
 
+The complete finite contract is
+`work/queue/M2-EXECUTION-2026-08-21/06-WO-0168A-FROZEN-OPERATION-STATE-CONTRACT.md`.
+That file freezes the eight-operation union, owner reducers and dispositions, derived inputs,
+complete state-member classification, canonical byte grammar, five schema/repository additions,
+capability issuance rules, exact paths, tests, budgets, and fault names. This work order and that
+contract are one indivisible preflight candidate.
+
 ## Functional requirements
 
-- FR-1: Freeze an exact, head-bound matrix of every input family intended for WO-0168b. Each row
+- FR-1: Implement the exact, head-bound eight-row matrix frozen in the companion contract. Each row
   MUST name the exact public admitted type, technical dedupe result, owning pure reducer, required
   authenticated current-state members, possible dispositions, durable write set, and named fault
   edges. An unenumerated input is refused before transaction work.
-- FR-2: Enumerate every semantic member needed to authenticate and reconstruct the existing pure
+- FR-2: Enforce the complete member classification frozen in the companion contract and reconstruct
+  the shared owning transition-kernel proof—not a serialized opaque reference-model object. Every
+  semantic member needed to authenticate the pure
   reducer context. The retained representation MUST be bounded by current/active/unresolved state,
   not audit-history length, and MUST identify any existing reducer member that cannot satisfy that
   boundary.
@@ -129,10 +138,11 @@ capability while explicit tests retain bounded fixture setup
 
 ## API contracts
 
-The final contract MUST expose only exact immutable persistence types and one verified checkpoint
-encode/decode seam needed by WO-0168b and WO-0169. The preflight review freezes names and exact type
-unions before source implementation. No HTTP, broker, adapter, dispatcher, or configured-database
-API is introduced.
+The exact names, ordered members, literal type unions, `__all__`, codec functions, package-private
+owner hydration/kernel seams, repository records/methods, and runtime/setup capability contract are
+frozen in sections 2 through 7 of the companion contract. No additional input class, wildcard
+registry, protocol-shaped authority, HTTP, broker, adapter, dispatcher, or configured-database API
+is introduced.
 
 ## Data models
 
@@ -145,19 +155,24 @@ API is introduced.
 | Decision receipt | Mandatory correlated explanation | Append-only/non-authoritative; failure rolls back transition |
 | Runtime write capability | Restricts capital mutation route | Not caller-mintable; test/setup capability distinct |
 
+The exact member sets and byte representation of these models are frozen in the companion
+contract; this summary table does not grant implementation discretion.
+
 ## Preflight-only allowed paths
 
 ```yaml
 allowed_paths:
   - work/queue/M2-EXECUTION-2026-08-21/05-POST-I3-PREFLIGHT-AND-M2-COMPLETION-MAP.md
+  - work/queue/M2-EXECUTION-2026-08-21/06-WO-0168A-FROZEN-OPERATION-STATE-CONTRACT.md
   - work/queue/WO-0168a-m2-i3-5-runtime-state-checkpoint.md
   - work/review/REV-0074/**
   - work/ledger.jsonl
 ```
 
-After REV-0074 acceptance, activation MUST replace this list with exact source/test/governance paths
-derived from the accepted operation/state matrix. No source path is implicitly authorized by this
-candidate.
+After fresh REV-0074 remediation acceptance, activation MUST replace this preflight-only list with
+exactly the source/test/governance paths frozen in section 8 of the companion contract plus the
+newly assigned implementation-review directory. No source path is implicitly authorized by this
+candidate, and adding one requires a head-bound amendment and fresh review.
 
 ## Out of scope
 
@@ -170,7 +185,9 @@ candidate.
 
 ## Completion and stop conditions
 
-Preflight clears only with independent P0=0/P1=0. Implementation clears only with RED/GREEN,
+The original `REV-0074/result.md` remains an immutable `ACCEPT-WITH-CHANGES` finding. Preflight
+clears only when a fresh reviewer accepts the exact remediation candidate with P0=0/P1=0.
+Implementation clears only with RED/GREEN,
 failure-capable mutations, focused/static/full/governance evidence, exact scope, a clean committed
 candidate, and a fresh implementation review with P0=0/P1=0. Changed DDL may be designed and
 hashed, but SQLite execution stops at its exact human gate.
