@@ -1192,3 +1192,45 @@ authoring surface. It does not authorize DDL installation, SQLite-bearing tests,
 composition, configured or in-memory database access, credentials, broker/network calls, orders,
 promotion, merge, M2-I4, or M3 work; the normal REV-0075 review and exact changed-DDL human gate
 remain mandatory.
+
+## R13 owner-state wire closure and phased-build correction
+
+**Status: draft — documentation only; no new owner-state, outer-checkpoint,
+unit-of-work, DDL-installation, or SQLite authority.**
+
+Fresh source reconnaissance confirms that R12 correctly names the five owner-local M2 state and
+proof seams, but sections 4.2, 4.3, and 4.5 do not yet freeze the exact fixed member rows,
+canonical ordering, direct-proof selection, or constructor equivalence for venue, authority, and
+acquisition. The existing source consequently has no safe way to make a full kind-`0x02` document:
+`VenueRecoveryBook`, `ExecutionAuthorityState`, and `AcquisitionControllerState` remain opaque
+history-shaped reference owners. Treating their existing private maps, a generic record, or a
+partial proof as a checkpoint would create the prohibited second engine or a forged hydration path.
+
+This correction does not change M2 semantics, safety invariants, the eight-operation union, or the
+six R12 schema families. It only makes the existing owner-local construction route buildable and
+reviewable in coherent increments:
+
+1. **R13-S — static substrate.** R12 durable-input, receipt/outcome, outbox, semantic-key,
+   reverse-edge, and write-capability source may be completed and independently reviewed as a
+   static candidate. Its structural checkpoint record accepts only a canonical kind-`0x02` header
+   whose row coordinates agree with the document. It must not claim full owner hydration.
+2. **R13-H — owner-state wire closure.** A successor work-order supplement must freeze one exact
+   typed fixed-array row and sealed direct-proof input for each of `_M2VenueState`,
+   `_M2AuthorityState`, and `_M2AcquisitionState`, including every active/current/unresolved
+   reference, ordering rule, row-selection bound, and owning constructor equivalence. It must
+   explicitly define the complete proof tuple for the existing execution/protection components as
+   well. No generic object, reflected dataclass, audit replay, or caller-shaped tuple is allowed.
+3. **R13-C — anchored outer codec.** Only after R13-H has a fresh P0=0/P1=0 review may the
+   owner codecs issue `RuntimeCheckpointEnvelope`, implement
+   `encode_runtime_checkpoint` / `decode_runtime_checkpoint`, bind all selected proofs to the
+   current head, and prove the required byte/order/mutation controls. An incomplete owner state is
+   refused rather than approximated.
+4. **DDL gate sequencing.** The changed-DDL human gate remains exact and independent. It is not
+   opened until R13-C supplies a real typed payload fixture and its committed candidate names the
+   DDL digest, byte length, and temporary-file-only test command. The catalog checksum is derived
+   only during that authorized fresh-file installation; it is never guessed from source text.
+
+The existing `WO-0168a` remains active for the R13-S source surface only. R13-H and R13-C require
+fresh work-order/review identities after this amendment is independently accepted with P0=0/P1=0.
+This is a scope-tightening implementation partition, not an authorization to start M2-I4,
+runtime composition, a configured database, external activity, or a merge.

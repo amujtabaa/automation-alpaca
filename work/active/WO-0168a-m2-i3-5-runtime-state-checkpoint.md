@@ -396,6 +396,21 @@ all SQLite-bearing tests remain stopped at the exact human digest/candidate/tree
 This acceptance adds no configured/in-memory database, runtime composition, credential, network,
 broker, order, promotion, merge, M2-I4, or M3 authority.
 
+## R13 owner-state wire closure checkpoint
+
+A fresh-context feasibility review on 2026-08-23 confirmed that the accepted R12 architecture is
+implementable without a second engine or audit-history replay, but identified a genuine work-size
+boundary: the current source has neither the named M2 venue/authority/acquisition state and proof
+seams nor the outer kind-`0x02` codec. The existing execution/protection component helpers are not
+a persisted-payload decoder by themselves.
+
+The companion contract's R13 draft partitions the remaining work so this active order can finish
+the static durable substrate without treating a structural checkpoint header as a complete runtime
+state. R13-H will freeze the exact owner-state wire rows and sealed proof tuple; R13-C will then
+implement the anchored outer codec. Neither successor source increment begins until a fresh
+documentation review accepts R13 with P0=0/P1=0. The normal REV-0075 implementation review and
+the unchanged DDL human gate remain independent.
+
 ## 2026-08-23 pre-gate execution deviation record
 
 During an otherwise static verification pass, Codex mistakenly included

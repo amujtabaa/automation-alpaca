@@ -50,7 +50,7 @@ source remains held pending fresh acceptance.
 | WO-0165 / M2-I1 | `CLOSED` | Durable values/profile codecs | Accepted exact head retained |
 | WO-0166 / M2-I2 | `CLOSED` | Schema/direct proof foundation | Accepted exact DDL retained |
 | WO-0167 / M2-I3 | `CLOSED` | Typed direct repository projections | REV-0073 R5 ACCEPT retained |
-| WO-0168a / M2-I3.5 | `READY-PREFLIGHT` | Bounded canonical runtime-state hydration plus durable input/outcome/receipt substrate | Exact state/input matrix, independently accepted implementation, and any changed DDL separately human-gated before execution |
+| WO-0168a / M2-I3.5 | `ACTIVE — R13-S static substrate` | Durable input/outcome/receipt, semantic-key, capability, and reverse-edge static foundation; R13-H/C retain owner-state wire closure and anchored checkpoint codec | R13 documentation acceptance; R13-S fresh implementation review; R13-H exact wire/proof successor; R13-C typed checkpoint candidate; then separately human-gated changed DDL execution |
 | WO-0168b / M2-I4 | `PREPARED-BLOCKED` | Atomic reducer/unit-of-work and post-commit effect eligibility | WO-0168a accepted; regenerated exact work order and independent P0=0/P1=0 review |
 | WO-0169 / M2-I5 | `READY-BLOCKED` | Owner lock, startup, reconciliation, ADR-023 cold recovery | WO-0168b accepted and activation reconciliation passes |
 | WO-0170 / M2-I6 | `READY-BLOCKED` | Fault, restore, boundedness, soak/R16 truth, M2 closeout | WO-0169 accepted and activation reconciliation passes |
