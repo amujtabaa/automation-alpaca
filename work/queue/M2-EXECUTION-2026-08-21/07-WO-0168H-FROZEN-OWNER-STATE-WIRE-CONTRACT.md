@@ -112,7 +112,7 @@ Only these owner/value pairs are admitted by rows in this contract:
 - `m1.venue.ResolvedProjectionKind`: `REGISTRY_ADVANCE`,
   `RECONCILIATION_CURSOR_ADVANCE`;
 - `m2.protection.AuthorityClass`: `NORMAL`, `HARD_BAIL`;
-- `m1.position.BasisAuthority`: `AVAILABLE`, `BASIS_RECONCILIATION_PENDING`;
+- `m2.position.BasisAuthority`: `AVAILABLE`, `BASIS_RECONCILIATION_PENDING`;
 - `m1.fills.ExecutionSide`: `BUY`, `SELL`;
 - `m1.fills.FirstObservationClassification`: `APPLIED_AVAILABLE`,
   `APPLIED_BASIS_PENDING`, `APPLIED_OVERFILL_QUARANTINE`,
@@ -121,6 +121,11 @@ Only these owner/value pairs are admitted by rows in this contract:
 - `m1.fills.FactKind`: `FILL`, `TRADE_CORRECT`, `TRADE_BUST`;
 - `m1.fills.ExecutionAuthority`: `BROKER_AUTHORITATIVE`, `HUMAN_ATTESTED`; and
 - `m1.protection.MarketSequenceMode`: `SEQUENCED`, `SOURCE_TIME`;
+- `m2.persistence.InputDedupeKind`: `UNSEEN`, `EXACT_REPLAY`, `IDENTITY_CONFLICT`;
+- `m2.persistence.InputSemanticKeyKind`: `VENUE_COMMAND_V2`, `VENUE_EXECUTION_FACT_V1`,
+  `VENUE_COVERAGE_ROOT_V1`, `VENUE_COVERAGE_INTERVAL_V1`, `VENUE_BROKER_FACT_V1`,
+  `AUTHORITY_QUERY_CLAIM_V1`, `AUTHORITY_MANUAL_FLATTEN_V1`,
+  `AUTHORITY_EMERGENCY_GRANT_CONSUMPTION_V1`; and
 - every other enum appearing inside a reused semantic array is restricted to the exact closed
   encoder/decoder pair named in section 2.2.
 
@@ -129,9 +134,14 @@ Unknown owner tags, aliases, case changes, integer substitutes, and unknown valu
 ### 2.4 Collection limits and ordering
 
 Every variable collection uses `C(tag, rows)`. The declared count must equal the array length.
-Rows are strictly increasing by the stated canonical key and duplicate keys fail. Comparison is
-unsigned lexicographic comparison of the concatenated canonical identity bytes, with each component
-encoded as `uint32-be(length) || UTF-8`; integer components use unsigned `uint64-be`.
+Rows are strictly increasing by the stated canonical key and duplicate keys fail. Every key member
+first uses its section-2 canonical value (`N`, `B`, `I`, `Z`, `T`, `X`, `A`, `E`, or a fully tagged
+fixed array). `order_component(v) = uint64-be(len(canonical_json_utf8(v))) ||
+canonical_json_utf8(v)` and a composite order key is the concatenation of its ordered components.
+Because each canonical value carries its type/tag and every component is length-framed, this is
+injective for nulls, booleans, signed/unsigned integers, text, arbitrary bytes, durable atoms,
+enums, and nested arrays. No Python comparison, `repr`, locale collation, implicit text conversion,
+or digest surrogate is permitted.
 
 Global hard limits are:
 
@@ -140,6 +150,14 @@ Global hard limits are:
 - at most one directly targeted retired generation per scope;
 - at most 256 children per persistent-map witness node; and
 - at most `len(key_bytes) + 1` witness nodes.
+
+Wire resource limits are also exact: `A` and `T` UTF-8 payloads are at most 4,096 bytes; `X` is at
+most 1,048,576 bytes; `I` is `0..2^63-1`; `Z` is `-2^63..2^63-1`; one canonical semantic/direct/
+predicate row is at most 2,097,152 bytes; one collection wrapper is at most 67,108,864 bytes; and
+each owner state or owner proof is at most 67,108,864 canonical bytes. R13-C caps the complete outer
+payload at 268,435,456 bytes. Limits apply before allocation where the declared length is known and
+again after canonical encoding. Oversize input refuses issuance/decoding; it is never truncated,
+hashed as a substitute, paginated, or partially retained.
 
 These are refusal limits, not truncation instructions. A selected family above its limit cannot
 produce a serving checkpoint. Pagination, partial snapshots, and silent dropping are forbidden.
@@ -157,7 +175,7 @@ The closed new domains are:
 | --- | --- |
 | venue direct selection / state / transition proof / observation proof | `execution-core/m2-venue/direct-selection/v1`; `execution-core/m2-venue/state/v1`; `execution-core/m2-venue/transition-proof/v1`; `execution-core/m2-venue/observation-proof/v1` |
 | authority direct selection / state / observation proof | `execution-core/m2-authority/direct-selection/v1`; `execution-core/m2-authority/state/v1`; `execution-core/m2-authority/observation-proof/v1` |
-| acquisition direct selection / bounded registry / bounded lineage / state / observation proof | `execution-core/m2-acquisition/direct-selection/v1`; `execution-core/m2-acquisition/bounded-registry/v1`; `execution-core/m2-acquisition/bounded-lineage/v1`; `execution-core/m2-acquisition/state/v1`; `execution-core/m2-acquisition/observation-proof/v1` |
+| acquisition direct selection / bounded registry / bounded lineage / targeted operation / state / observation proof | `execution-core/m2-acquisition/direct-selection/v1`; `execution-core/m2-acquisition/bounded-registry/v1`; `execution-core/m2-acquisition/bounded-lineage/v1`; `execution-core/m2-acquisition/targeted-operation/v1`; `execution-core/m2-acquisition/state/v1`; `execution-core/m2-acquisition/observation-proof/v1` |
 
 Existing M1 commitments, execution proof commitments, protection proof commitments, and exact
 private-row seals keep their current owner domains and constructors. A digest is checked only after
@@ -480,7 +498,8 @@ The three omitted maps are replaced only at an explicit behavioral boundary, not
 The M2 authority kernel is callable only with an opaque repository-minted
 `_AuthorityInputDedupeFact`; the publicly constructible WO-0167 `InputDedupeFact` is transport data
 and is not sufficient authority. The opaque fact contains the exact primary classification and
-semantic matches plus `request_kind`, `request_commitment`, `connection_snapshot_id`, and a private
+semantic matches plus `request_kind`, `request_commitment`, predecessor coordinates, an operation
+snapshot token, and a private
 seal over all those members. Its constructor remains private. Repository issuance and the pure
 legacy adapter call the same private mint after independently deriving the same canonical rows;
 the kernel re-derives and checks the seal immediately before any decision. Forging, copying across
@@ -508,6 +527,52 @@ decided by `_input_by_id`; query claim owns uniqueness formerly decided by `_que
 consumption owns one-use state formerly decided by `_consumed_grant_ids`. The kernel must not run
 when the primary fact or any required match is absent, unsealed, duplicated, or extra. Thus no
 hydrated owner can bypass or repeat those decisions, and no second replay algorithm is introduced.
+
+The private operation boundary is exact. `_AuthorityOperationContext` is constructor-hidden and
+contains the exact length-4 row
+`["m2.authority.OperationContext/v1",H(predecessor_state_commitment),
+I(predecessor_currentness_head_ordinal),H(operation_snapshot_token)]`, where the token is fresh
+32-byte authority. Its seal is
+`K("execution-core/m2-authority/operation-context/v1", exact_context_row)`. The repository
+creates it only after opening the caller-owned transaction and verifying the connection snapshot;
+the pure adapter creates the same exact type immediately before its legacy-map lookups. Neither
+token nor context is serializable as public authority.
+
+`_AuthorityInputDedupeFact` has this exact semantic row (its private seal is not a member):
+
+```text
+["m2.authority.InputDedupeFact/v1",E("m2.persistence.InputDedupeKind",kind),
+ T(input_domain),H(input_identity_sha256),H(payload_sha256),
+ H(retained_outcome_sha256)|N,
+ C("m2.authority.SemanticLookups/v1",
+   [["m2.authority.SemanticLookup/v1",E("m2.persistence.InputSemanticKeyKind",kind),
+     X(canonical_key_bytes),InputSemanticKey|N],...]),
+ T(request_kind),X(canonical_command_bytes),H(request_commitment),
+ H(predecessor_state_commitment),I(predecessor_currentness_head_ordinal),
+ H(operation_snapshot_token)]
+```
+
+This is length 13. Lookup rows follow the matrix's column order, then canonical key order; required
+absent lookups are explicit null and undeclared rows fail. `request_kind` is exactly one of
+`CreateBrokerEffect`, `CreateAcquisitionEffect`, `ClaimAcquisitionEffect`,
+`BeginAcquisitionPreemption`, `CreateAcquisitionProtectionExit`, `ClaimEffect`,
+`RegisterAcquisitionCurrentness`, `ClaimBrokerQuery`, `EngageKill`, `BeginManualFlatten`,
+`AdvanceManualFlatten`, or `AcquisitionFactPreemption`; the private bootstrap registration has its
+own exact kind and is never caller-selectable. `canonical_command_bytes` is canonical JSON of
+`["m2.authority.Command/v1",T(request_kind),command_semantic_array]`, where the semantic array is
+the exact dataclass field order with section-2 owner encodings and the exact opaque permit/
+registration arrays in this contract. A closed handwritten branch exists per kind; reflection,
+unknown kinds, and omitted or derived-only command members fail. `request_commitment` is
+`K("execution-core/m2-authority/command/v1",canonical_command_bytes)`.
+
+The fact seal is
+`K("execution-core/m2-authority/input-dedupe-fact/v1",canonical_fact_row)`. The sole kernel entry
+accepts `(state, command, operation_context, dedupe_fact, ...)` and, before replay or dispatch,
+re-derives command bytes/commitment, authenticates both private seals, and requires exact equality
+between state commitment/currentness, context predecessor members, fact predecessor members, and
+the context/fact operation token. An applied transition changes state commitment/currentness, so
+its prior `UNSEEN` fact becomes stale. Exact-replay/refusal reuse is legal only while all predecessor
+coordinates remain identical. No public API accepts the WO-0167 transport fact directly.
 
 ### 4.2 Exact authority state and rows
 
@@ -645,21 +710,23 @@ inside its matching authorization row exactly once; both claim indexes are then 
 | bounded semantic rows | `registry`; `lineage` |
 | derived | `commitment`; `_seal` |
 
-The owner-state registry wire contains only the LIVE generation and its active stream route. The
-owner-state lineage wire contains only current/active/unresolved routes. A directly targeted retired
-generation, historical stream route, and late-fact lineage chain belong only to the sealed operation
-proof and are never installed as standing owner state. The owner's existing full-history
+The owner-state registry wire contains the LIVE generation/stream plus every retired generation/
+stream still referenced by a current active or unresolved route. The owner-state lineage wire
+contains only current/active/unresolved routes. A directly targeted resolved-history generation,
+stream, and late-fact lineage chain belongs to the sealed operation proof; it enters standing state
+after reduction only if the result remains active/unresolved. The owner's existing full-history
 registry/lineage seals are not reused as bounded state commitments.
 
 ### 5.2 Exact acquisition state
 
-`_M2AcquisitionState` is the exact 16-member array:
+`_M2AcquisitionState` is the exact 18-member array:
 
 ```text
 ["m2.acquisition.State/v1", A(application_generation_id), PositionScope,
  H(scope_execution_commitment), H(venue_commitment), H(authority_context_commitment),
  H(protection_commitment)|N, Controller, AcquisitionMandate,
  GenerationLive, MarketStreamRouteLive,
+ UnresolvedGenerationRows, UnresolvedMarketStreamRouteRows,
  LineageRows, H(direct_selection_commitment), H(bounded_registry_commitment),
  H(bounded_lineage_commitment), H(state_commitment)]
 ```
@@ -693,17 +760,32 @@ route must resolve to that current generation. The current-role row's serving cl
 `NORMAL` or `MIXED_GENERATION_RECOVERY` requires current serving class `LIVE`.
 The active stream route is
 `["m2.acquisition.MarketStreamRoute/v1",A(stream_generation_id),A(generation_id),H(commitment)]`
-and must resolve to the LIVE row. The bounded standing registry therefore always has exactly one
-route for its one selected generation and passes the owner's record/route cardinality and binding
-checks. A targeted retired row is carried only by `TARGETED_LATE_FACT_V1`, has serving class exactly
-`RETIRED_UNSERVING`, differs from LIVE, and is paired there with its exact historical stream route.
+and must resolve to the LIVE row. `UnresolvedGenerationRows` is
+`C("m2.acquisition.UnresolvedGenerations/v1",rows)` and
+`UnresolvedMarketStreamRouteRows` is
+`C("m2.acquisition.UnresolvedMarketStreamRoutes/v1",rows)`; both are strictly ordered by
+generation ID, have identical generation-ID sets, and use `[tag,0,[]]` as the sole empty form.
+Every unresolved generation differs from LIVE, is exactly `RETIRED_UNSERVING`, has one matching
+route, and is referenced by at least one selected unresolved lineage/effect. Every referenced
+retired generation appears exactly once. A targeted resolved-history row is carried only by
+`TARGETED_LATE_FACT_V1` and is paired with its exact historical stream route.
 
-Each lineage row is length 5:
+Each lineage row is length 6:
 `["m2.acquisition.LineageRoute/v1",E("m1.acquisition.GenerationRouteKind",kind),Identity,A(generation_id),
-H(commitment)]`. `Identity` is `A(request_occurrence_id)`, `A(effect_id)`, `A(venue_leg_key)`,
+LineageSourceBinding,H(commitment)]`. `Identity` is `A(request_occurrence_id)`, `A(effect_id)`, `A(venue_leg_key)`,
 `A(root_fill_key)`, or `A(execution_fact_key)` according to family. Family order is exactly REQUEST,
 EFFECT, OWNER, ROOT, FACT; within a family it is the canonical identity-byte order from section
 2.4. Python `repr` is never wire authority.
+
+`LineageSourceBinding` is exact: REQUEST and EFFECT use
+`["m2.acquisition.LineageEffectSource/v1",A(effect_id)]`; OWNER uses
+`["m2.acquisition.LineageOwnerSource/v1",A(scope_id),A(owner_id)]`; ROOT uses
+`["m2.acquisition.LineageRootSource/v1",A(root_fill_key_id)]`; and FACT uses
+`["m2.acquisition.LineageFactSource/v1",A(fact_id)]`. One selected venue-effect direct row derives
+exactly its REQUEST and EFFECT routes and their common generation. Owner, root-route, and fact
+direct rows each derive exactly their like-named route; their joins through effect/owner/root must
+resolve once and name the same generation. This fixed two-routes-per-effect projection is the only
+case where lineage-row count differs from source direct-row count.
 
 `bounded_registry_commitment`, `bounded_lineage_commitment`, and `state_commitment` use the new
 domains `execution-core/m2-acquisition/bounded-registry/v1`,
@@ -730,7 +812,8 @@ Their exact preimages are:
 
 ```text
 BoundedRegistry = ["m2.acquisition.BoundedRegistry/v1",
- GenerationLive, MarketStreamRouteLive]
+ GenerationLive, MarketStreamRouteLive,
+ UnresolvedGenerationRows, UnresolvedMarketStreamRouteRows]
 
 BoundedLineage = ["m2.acquisition.BoundedLineage/v1",
  C("m2.acquisition.LineageRoutes/v1",lineage_rows)]
@@ -740,14 +823,37 @@ BoundedLineage = ["m2.acquisition.BoundedLineage/v1",
 BoundedRegistry)`; `bounded_lineage_commitment =
 K("execution-core/m2-acquisition/bounded-lineage/v1",BoundedLineage)`. Child generation and route
 commitment members remain present exactly as shown in their rows; lineage child commitments remain
-present exactly as shown. Targeted retired rows are excluded from this standing commitment and are
-committed by the owner observation proof instead.
+present exactly as shown. Targeted resolved-history rows are excluded from this standing commitment
+and are committed by the owner observation proof instead. Active/unresolved retired rows remain in
+the standing commitment.
 
 `LineageRows` is therefore exactly
 `C("m2.acquisition.LineageRoutes/v1",rows)`, ordered first by the closed family order REQUEST,
 EFFECT, OWNER, ROOT, FACT and then by canonical identity bytes. Its sole empty form is
 `["m2.acquisition.LineageRoutes/v1",0,[]]`. The fixed generation and stream-role members are not
-variable wrappers; their explicit position in `BoundedRegistry` is their role and cardinality.
+variable wrappers; their explicit position in `BoundedRegistry` is their role and cardinality. The
+two unresolved wrappers are the only variable registry members.
+
+Standing lineage selection is independently derived from direct current state: select every
+acquisition effect for this scope whose disposition is not `CLOSED` or which has a late owner;
+include REQUEST+EFFECT for each, every reachable OWNER, every reachable ROOT, and each current FACT
+head. Also include the effect currently referenced by the authority acquisition slot and its
+reachable chain. No lineage row outside that union is standing state. Generation/stream unresolved
+sets are the exact non-LIVE generation IDs referenced by that lineage union. The direct source
+families are `LINEAGE_EFFECT_SOURCE`, `LINEAGE_OWNER_SOURCE`, `LINEAGE_ROOT_SOURCE`, and
+`LINEAGE_FACT_SOURCE`; their rows are respectively VenueEffect, VenueOwner,
+AcquisitionRootRoute, and ExecutionFact. Their proof counts equal source-row counts; the derived
+lineage count is `2*effect_source_count + owner_source_count + root_source_count +
+fact_source_count`. Missing, extra, cross-generation, or substituted routes fail.
+
+Resolved-history late facts require durable mutable generation state that the accepted immutable
+generation identity row does not contain. R13-C must therefore add, in its exact human-gated DDL
+candidate, one current `acquisition_generation_state` family keyed by
+`(scope_id,acquisition_generation_id)` with monotonic `state_ordinal` and all semantic members of
+the Generation row above. R13-H defines the pure exact type
+`m2.direct.AcquisitionGenerationState/v1`; no table, repository operation, or SQLite execution is
+authorized here. R13-C may not install or test that DDL until Ameen approves its exact candidate
+commit/tree/digest/bytes and named fresh-file test plan.
 
 ## 6. Execution proof encoding
 
@@ -854,18 +960,24 @@ Each owner proof is an opaque exact type. Its canonical row is:
  C(FAMILY_COUNTS_TAG, [[family_tag,count,predicate_tag,PredicateCoordinates,
                         family_rows_commitment],...]),
  C(DIRECT_ROWS_TAG, exact_direct_rows),
+ TargetedAcquisitionRows,
  TargetedExecutionProofRows,
  H(proof_commitment)]
 ```
 
-This is exact length 13. `AccountScopeVector` is
+This is exact length 14. `AccountScopeVector` is
 `C("m2.owner.AccountScopes/v1",rows)`, where each row is
 `["m2.owner.AccountScope/v1",I(scope_id),PositionScope,
  A(live_generation_id)|N,I(controller_currentness_head_ordinal)]`. It is strictly ordered by
 `(scope_id,canonical PositionScope bytes)`, duplicate-free, and exactly equals
-`ExecutionScopeRows` plus each scope's current controller row. A non-null live generation requires
-exactly one matching LIVE-generation direct row and one LIVE-stream direct row. Null is the sole
-legal pre-generation form and forbids both rows; it is never replaced by an invented identity.
+the independent `ACCOUNT_SCOPE_SET_V1` SCOPE-family result plus each scope's current controller
+join. That predicate is keyed only by the header application generation, execution profile, and
+the execution profile's broker/environment/account identity; it does not accept the vector as an
+input. Its direct count, returned scope-key set, and vector key set must be identical before any
+per-scope/effect predicate is evaluated. A non-null live generation requires exactly one matching
+LIVE-generation row and, where that owner declares a stream family, one LIVE-stream row. Null is
+the sole legal pre-generation form, produces no generation/stream lookup coordinate, and is never
+replaced by an invented identity.
 
 `TargetedExecutionProofRows` is
 `C("m2.position.TargetedObservationProofs/v1",rows)`; each row is
@@ -874,6 +986,47 @@ ExecutionObservationProof]`. It is strictly key-ordered and has count zero for a
 checkpoint or exactly one for the currently targeted broker operation/late fact. The proof's fact
 key must equal its row key. The wrapper is a direct member of the owner-proof commitment; omitted,
 duplicate, extra, or wrong-key targeted proofs fail.
+
+`TargetedAcquisitionRows` is
+`C("m2.acquisition.TargetedOperationSlices/v1",rows)`. It is empty for venue/authority proofs and
+ordinary acquisition checkpoints, or contains exactly one row for a targeted late-fact operation:
+
+```text
+["m2.acquisition.TargetedOperationSlice/v1",
+ AcquisitionGenerationState, MarketStreamRoute,
+ C("m2.acquisition.TargetedLineageRoutes/v1",
+   [RequestRoute,EffectRoute,OwnerRoute,RootRoute]),
+ H(targeted_operation_commitment)]
+```
+
+This row is length 5. The four prerequisite route rows are the exact LineageRoute form from section
+5.2 in fixed REQUEST, EFFECT, OWNER, ROOT order; each direct source binding matches the targeted
+context. The incoming FACT route must be absent in predecessor state and has one committed false
+`TARGETED_LATE_FACT_V1` point coordinate; `TargetedExecutionProofRows` authenticates the incoming
+fact itself. An applied reduction adds exactly that FACT route to the result.
+Generation ID, stream generation, mandate, effect, owner, root, fact, request, and source-event
+coordinates equal `TargetedLateFactContext`. `AcquisitionGenerationState` is the exact flat direct
+row and member order in section 8.1 tagged `m2.direct.AcquisitionGenerationState/v1`;
+`state_ordinal >= 1`. Its semantic members equal the Generation row above. Its commitment and the stream/
+lineage commitments are re-derived. `targeted_operation_commitment` is
+`K("execution-core/m2-acquisition/targeted-operation/v1",row_without_final_commitment)`.
+For the legacy full-state adapter, `state_ordinal` is exactly one plus the count of authentic FACT
+lineage routes naming that generation; genesis is one. R13-C initializes the durable row to that
+value, increments it exactly once per applied generation fact, and requires equality with the
+proof before update. Thus the pure and durable adapters derive the same monotonic value without a
+second counter or timestamp.
+
+R13-H freezes one reducer seam rather than a second reducer:
+`reduce_acquisition_controller(..., operation_proof: _AcquisitionOperationProof | None = None)`.
+The existing pure adapter privately derives the same proof from its authentic full registry/
+lineage immediately before calling the single reducer core. A hydrated owner requires the exact
+sealed proof whenever the target is absent from standing bounded state. The reducer validates the
+proof, overlays its one generation/stream/five routes into ephemeral working registry/lineage,
+runs the existing reduction once, then projects the result: active/unresolved target state enters
+the bounded standing collections; resolved history remains omitted; and the advanced generation
+state is returned to R13-C for same-transaction persistence with `state_ordinal + 1`. Missing proof,
+stale ordinal, mismatched target, duplicate standing/target row, or an output not persisted by
+R13-C fails the operation. No alternate decision path is introduced.
 
 Currentness is at least zero and checkpoint version is at least one. The
 three profile/application coordinates must equal the future outer envelope exactly.
@@ -885,11 +1038,14 @@ already sealed owner state/proof bytes into the outer payload and derives the ou
 The three tags are `m2.venue.ObservationProof/v1`,
 `m2.authority.ObservationProof/v1`, and `m2.acquisition.ObservationProof/v1`. Family-count rows are
 strictly ordered by the family order declared in this contract. `predicate_tag` is one of:
-`HEADER_IDENTITY_V1`, `CURRENT_SCOPE_V1`, `ACCOUNT_ACTIVE_OR_UNRESOLVED_EFFECT_V1`,
+`HEADER_IDENTITY_V1`, `ACCOUNT_SCOPE_SET_V1`, `CURRENT_SCOPE_V1`,
+`ACCOUNT_ACTIVE_OR_UNRESOLVED_EFFECT_V1`,
 `REACHABLE_OWNER_V1`,
 `CURRENT_HEAD_V1`, `TARGETED_LATE_FACT_V1`, `ACTIVE_AUTHORITY_V1`,
 `LIVE_GENERATION_V1`, `ACTIVE_LINEAGE_V1`, or `SOURCE_ATTRIBUTION_V1`. Direct rows use the exact
-accepted typed persistence record arrays frozen in WO-0167/R13-S, not caller dictionaries.
+accepted typed persistence record arrays frozen in WO-0167/R13-S, not caller dictionaries, except
+the explicitly future `AcquisitionGenerationState` pure type whose R13-C persistence row and DDL
+remain held behind the exact human gate.
 
 The symbolic wrapper names in the shape above resolve to these exact literal tags:
 
@@ -921,11 +1077,14 @@ Family order is exact and closed:
   `ACQUISITION_CURRENT`, `SYMBOL_CONTROLLER`, `LIVE_GENERATION`, `VENUE_EFFECT`, `DISPATCH_CLAIM`,
   `DURABLE_INPUT`, `DURABLE_INPUT_SEMANTIC_KEY`, `DURABLE_INPUT_OUTCOME`; and
 - acquisition: `APPLICATION_GENERATION`, `EXECUTION_PROFILE`, `MARKET_SOURCE_PROFILE`, `SCOPE`,
-  `ACQUISITION_CURRENT`, `SYMBOL_CONTROLLER`, `LIVE_GENERATION`,
-  `TARGETED_RETIRED_GENERATION`, `LIVE_MARKET_STREAM_AUTHORITY`,
-  `TARGETED_RETIRED_MARKET_STREAM_AUTHORITY`, `VENUE_EFFECT`,
-  `VENUE_OWNER`, `ACQUISITION_ROOT_ROUTE`, `ROOT_FILL`, `EXECUTION_FACT_HEAD`,
-  `EXECUTION_FACT`.
+  `ACQUISITION_CURRENT`, `SYMBOL_CONTROLLER`, `LIVE_GENERATION`, `LIVE_GENERATION_STATE`,
+  `LIVE_MARKET_STREAM_AUTHORITY`, `UNRESOLVED_GENERATION`, `UNRESOLVED_GENERATION_STATE`,
+  `UNRESOLVED_MARKET_STREAM_AUTHORITY`, `LINEAGE_EFFECT_SOURCE`, `LINEAGE_OWNER_SOURCE`,
+  `LINEAGE_ROOT_SOURCE`, `LINEAGE_FACT_SOURCE`, `TARGETED_RETIRED_GENERATION`,
+  `TARGETED_RETIRED_GENERATION_STATE`, `TARGETED_RETIRED_MARKET_STREAM_AUTHORITY`,
+  `TARGETED_EFFECT_SOURCE`, `TARGETED_OWNER_SOURCE`, `TARGETED_ROOT_SOURCE`,
+  `TARGETED_ROOT_FILL`, `TARGETED_EXECUTION_FACT_HEAD`, `TARGETED_PRIOR_FACT_ROUTE`,
+  `TARGETED_FACT_SOURCE`.
 
 ### 8.1 Closed direct-row union
 
@@ -941,6 +1100,7 @@ section-2 scalar forms; enum-like persisted text is still validated by the exact
 | `m2.direct.MarketSourceProfile/v1` | `market_source_profile_id, provider, environment_or_feed, source_origin, entitlement_class, normalization_contract_version, data_capability_profile_sha256, source_profile_commitment_sha256` |
 | `m2.direct.Scope/v1` | `scope_id, application_generation_id, execution_profile_id, symbol` |
 | `m2.direct.AcquisitionGeneration/v1` | `acquisition_generation_id, scope_id, status, successor_ordinal, predecessor_generation_id, mandate_commitment_sha256, emergency_compatibility_sha256` |
+| `m2.direct.AcquisitionGenerationState/v1` | `scope_id, acquisition_generation_id, state_ordinal, application_generation_id, position_scope, successor_ordinal, dual_mandate_binding_commitment, predecessor_or_genesis_head_commitment, emergency_compatibility_commitment, economics_head_commitment, serving_class, closure_summary_commitment, generation_commitment` |
 | `m2.direct.AcquisitionCurrent/v1` | `acquisition_generation_id, scope_id, current_economics_head_ordinal, unresolved_effect_count, active_protection_count` |
 | `m2.direct.SymbolController/v1` | `scope_id, application_generation_id, execution_profile_id, live_acquisition_generation_id, aggregate_quantity, integrity_state, currentness_head_ordinal, controller_version_ordinal, emergency_compatibility_sha256` |
 | `m2.direct.VenueEffect/v1` | `effect_id, effect_external, scope_id, application_generation_id, execution_profile_id, acquisition_generation_id, generation_mandate_commitment_sha256, expected_controller_head_ordinal, expected_protection_version_ordinal, authority_class, request_occurrence_id, mandate_id, effect_kind, client_order_id, target_order_id, side, quantity, economic_scope, lifecycle_state, disposition, closure_proof_kind, closure_proof_digest, closure_proof_evidence_id, closure_proof_claim_id, created_ordinal` |
@@ -960,20 +1120,39 @@ section-2 scalar forms; enum-like persisted text is still validated by the exact
 | `m2.direct.DurableInputOutcome/v1` | `application_generation_id, input_domain, input_identity_sha256, owner_domain, owner_disposition, terminal_technical_state, result_sha256, checkpoint_currentness_head_ordinal, checkpoint_version_ordinal, checkpoint_payload_sha256, receipt_ordinal, receipt_sha256, canonical_outcome_bytes, outcome_length, outcome_sha256` |
 
 Every positive array is decoded by constructing that exact accepted class (or exact profile owner),
-then re-encoded and byte-compared. Profile secrets are absent by design. A field not present in the
-accepted class cannot be added to its direct row.
+then re-encoded and byte-compared. `AcquisitionGenerationState` uses its R13-H owner-pure exact
+class until R13-C adds the corresponding persistence record. Profile secrets are absent by design.
+A field not present in the named exact class cannot be added to its direct row.
 
 Direct rows are grouped in the exact owner family order above. Each family appears once in
 `ProofFamilyCounts` even when its count is zero. It admits only the like-named direct tag
-(`TARGETED_RETIRED_GENERATION` uses `m2.direct.AcquisitionGeneration/v1`;
-`LIVE_GENERATION` uses the same tag in its distinct slot; both stream-role families use
-`m2.direct.MarketStreamAuthority/v1` in distinct slots). Within a family, rows are strictly
+(`LIVE_GENERATION`, `UNRESOLVED_GENERATION`, and `TARGETED_RETIRED_GENERATION` use
+`m2.direct.AcquisitionGeneration/v1`; their three state companions use
+`m2.direct.AcquisitionGenerationState/v1`; every stream-role family uses
+`m2.direct.MarketStreamAuthority/v1`; effect/owner/root/fact source families use their corresponding
+direct tags). `TARGETED_PRIOR_FACT_ROUTE` is the sole proof-only family: it has count zero, one
+false `[fact_id]` coordinate for a targeted operation, no direct rows, and an empty family
+commitment. Within a family, rows are strictly
 increasing by the exact direct uniqueness key listed below. Duplicate tag/key pairs fail.
 The number of positive direct rows with that family tag equals its family count and their complete
 wrapper hashes to `family_rows_commitment`. `exact_direct_rows` is the concatenation of these
-already sorted family groups. A row cannot appear in two families except the two distinct fixed
-generation roles and two distinct stream roles, whose identities must differ whenever both are
-present.
+already sorted family groups. A row may repeat only in explicitly distinct LIVE, unresolved, and
+targeted roles; its role predicate and exact key must agree, and LIVE identity must differ from
+every retired identity.
+
+The non-like-named acquisition family/direct-tag mapping is exact:
+
+| Families | Direct tag |
+| --- | --- |
+| `LIVE_GENERATION`, `UNRESOLVED_GENERATION`, `TARGETED_RETIRED_GENERATION` | `m2.direct.AcquisitionGeneration/v1` |
+| `LIVE_GENERATION_STATE`, `UNRESOLVED_GENERATION_STATE`, `TARGETED_RETIRED_GENERATION_STATE` | `m2.direct.AcquisitionGenerationState/v1` |
+| `LIVE_MARKET_STREAM_AUTHORITY`, `UNRESOLVED_MARKET_STREAM_AUTHORITY`, `TARGETED_RETIRED_MARKET_STREAM_AUTHORITY` | `m2.direct.MarketStreamAuthority/v1` |
+| `LINEAGE_EFFECT_SOURCE`, `TARGETED_EFFECT_SOURCE` | `m2.direct.VenueEffect/v1` |
+| `LINEAGE_OWNER_SOURCE`, `TARGETED_OWNER_SOURCE` | `m2.direct.VenueOwner/v1` |
+| `LINEAGE_ROOT_SOURCE`, `TARGETED_ROOT_SOURCE` | `m2.direct.AcquisitionRootRoute/v1` |
+| `LINEAGE_FACT_SOURCE`, `TARGETED_FACT_SOURCE` | `m2.direct.ExecutionFact/v1` |
+| `TARGETED_ROOT_FILL` | `m2.direct.RootFill/v1` |
+| `TARGETED_EXECUTION_FACT_HEAD` | `m2.direct.ExecutionFactHead/v1` |
 
 No `KernelCheckpointRecord` appears in an inner owner proof. Its `checkpoint_sha256` is the future
 outer payload digest, so including it here would be circular. R13-C seals owner states and proofs,
@@ -1030,40 +1209,62 @@ per direct tag; R13-C repository issuance re-runs the same validators after SQL 
 
 `PredicateCoordinates` is always the exact count-bearing wrapper
 `C("m2.owner.PredicateCoordinates/v1",rows)`. Each row is
-`["m2.owner.PredicateCoordinate/v1",T(predicate_tag),B(expected_present),
-C("m2.owner.ProofKey/v1",key_members)]`. It is strictly ordered by canonical key bytes and
-duplicate-free. `expected_present=true` requires exactly one matching direct row;
-`expected_present=false` requires zero. The family `count` equals the number of true coordinates,
-and the direct-row key set must equal the true-coordinate key set exactly. Therefore every
-positive and negative lookup has one committed coordinate and no absence list can be selectively
-omitted. A set-returning predicate also executes one count query in the bound snapshot; its count
-must equal both the true-coordinate count and returned row count. A zero-row family still carries
-the exact deterministic false coordinates described below, or the exact empty wrapper when the
-operation declares no lookup key.
+`["m2.owner.PredicateCoordinate/v1",T(predicate_tag),PredicateContext,
+C("m2.owner.ProofKey/v1",direct_uniqueness_key_members),B(expected_present)]`. It is strictly
+ordered by exact direct `ProofKey` bytes and duplicate-free. `PredicateContext` is separate from
+the direct key and identical across one family's rows. The `ProofKey` members are exactly that
+family's direct uniqueness key listed in section 8.1; no projection, prefix comparison, or context
+member participates in key equality. `expected_present=true` requires exactly one matching direct
+row; `expected_present=false` requires zero. The family `count` equals the number of true
+coordinates, and the direct-row key set equals the true-coordinate key set exactly. A set query
+also verifies that its snapshot count equals both values. A zero-row family carries its exact
+deterministic false point-lookups or the exact empty wrapper when no lookup key exists.
 
-The predicate-coordinate key preimages are:
+The exact `PredicateContext` arrays are:
 
-- `HEADER_IDENTITY_V1`: the exact fixed application/profile key, with header application,
-  execution-profile, market-profile, currentness and version appended as cross-check coordinates;
-- `CURRENT_SCOPE_V1`: one row per `AccountScopeVector` scope, containing scope ID, canonical
-  `PositionScope`, optional live generation, controller head, header currentness, and version;
-- `ACCOUNT_ACTIVE_OR_UNRESOLVED_EFFECT_V1`: one true row per result of the section-3.4 predicate,
-  keyed by effect ID and prefixed by the complete `VenueScope` and `AccountScopeVector`;
-- `REACHABLE_OWNER_V1`: one row per effect/owner key reachable from the account effect set;
-- `CURRENT_HEAD_V1`: one row per selected root/current-fact key for the reachable owner;
-- `TARGETED_LATE_FACT_V1`: rows use
-  `[scope_id,retired_generation_id,retired_stream_generation_id,request_occurrence_id,effect_id,
-  owner_id,root_fill_key_id,fact_id,source_event_id]`; all are true for a targeted operation and
-  the wrapper is empty for an ordinary checkpoint;
-- `ACTIVE_AUTHORITY_V1`: rows are keyed by the command-derived primary/semantic/outcome keys and
-  prefixed by session, kill state, exact request kind, and request commitment;
-- `LIVE_GENERATION_V1`: one row per scope with a non-null live generation, keyed by scope and
-  generation and binding its returned stream generation and mandate commitment; a null live
-  generation instead supplies one false generation coordinate and forbids a stream coordinate;
-- `ACTIVE_LINEAGE_V1`: one row per exact `(route_family,canonical_identity_bytes,generation_id)`;
-  the closed family order is REQUEST, EFFECT, OWNER, ROOT, FACT; and
-- `SOURCE_ATTRIBUTION_V1`: one row per retained venue source object keyed by its durable input or
-  semantic/outcome key and binding the source object's direct `created_ordinal`.
+```text
+HeaderContext = ["m2.owner.HeaderContext/v1",A(application_generation_id),
+ T(execution_profile_id),T(market_source_profile_id),I(currentness_head_ordinal),
+ I(checkpoint_version_ordinal)]
+AccountScopeContext = ["m2.owner.AccountScopeContext/v1",A(application_generation_id),
+ T(execution_profile_id),A(broker),A(environment),A(account),
+ I(currentness_head_ordinal),I(checkpoint_version_ordinal)]
+CurrentScopeContext = ["m2.owner.CurrentScopeContext/v1",HeaderContext,I(scope_id),
+ PositionScope,A(live_generation_id)|N,I(controller_currentness_head_ordinal)]
+AccountEffectContext = ["m2.owner.AccountEffectContext/v1",VenueScope,
+ AccountScopeVector,T("DISPOSITION_NOT_CLOSED_OR_LATE_OWNER")]
+ReachableOwnerContext = ["m2.owner.ReachableOwnerContext/v1",CurrentScopeContext,A(effect_id)]
+CurrentHeadContext = ["m2.owner.CurrentHeadContext/v1",CurrentScopeContext,A(owner_id),
+ A(root_fill_key_id),A(current_fact_id)]
+TargetedLateFactContext = ["m2.owner.TargetedLateFactContext/v1",CurrentScopeContext,
+ A(retired_generation_id),A(retired_stream_generation_id),A(request_occurrence_id),
+ A(effect_id),A(owner_id),A(root_fill_key_id),A(fact_id),A(source_event_id)]
+ActiveAuthorityContext = ["m2.owner.ActiveAuthorityContext/v1",A(session_id)|N,
+ B(kill_engaged),T(request_kind),H(request_commitment),H(predecessor_state_commitment),
+ I(predecessor_currentness_head_ordinal),H(operation_snapshot_token)]
+LiveGenerationContext = ["m2.owner.LiveGenerationContext/v1",CurrentScopeContext,
+ A(live_generation_id),H(mandate_commitment)]
+ActiveLineageContext = ["m2.owner.ActiveLineageContext/v1",CurrentScopeContext,
+ T("CURRENT_ACTIVE_OR_UNRESOLVED")]
+SourceAttributionContext = ["m2.owner.SourceAttributionContext/v1",VenueScope,
+ T(source_family)]
+```
+
+The matching predicate tags use their correspondingly named context. Header fixed families carry
+one true direct key. `ACCOUNT_SCOPE_SET_V1` runs the independent account query from section 8.
+Current scope has one coordinate per authenticated vector row. Account effect, reachable owner,
+current head, and active lineage are set queries and carry every returned direct key. Targeted late
+rows all share one operation context and are empty for an ordinary checkpoint. Active authority
+uses command-derived primary/semantic/outcome keys. Live generation has one generation or stream
+direct key per non-null vector generation and no coordinate when null.
+
+For `SOURCE_ATTRIBUTION_V1`, `DURABLE_INPUT` binds its own `created_ordinal`;
+`DURABLE_INPUT_SEMANTIC_KEY` binds its own `created_ordinal` and joins its retained
+`(input_application_generation_id,input_domain,input_identity_sha256)` to exactly one selected
+durable input; `DURABLE_INPUT_OUTCOME` binds its own `receipt_ordinal` and joins its identical
+`(application_generation_id,input_domain,input_identity_sha256)` to that selected durable input.
+Outcome checkpoint/digest/length fields must match their own canonical bytes. Missing,
+cross-input, or multiple joins fail.
 
 Identity values use `A(v)`; profile and predicate literals use `T`; numeric coordinates use `I`;
 booleans use `B`. The arrays themselves, not prose SQL or a digest-only summary, are the proof
@@ -1081,7 +1282,7 @@ The owner/family mapping is exhaustive and closed:
 | venue | `APPLICATION_GENERATION` | `HEADER_IDENTITY_V1` |
 | venue | `EXECUTION_PROFILE` | `HEADER_IDENTITY_V1` |
 | venue | `MARKET_SOURCE_PROFILE` | `HEADER_IDENTITY_V1` |
-| venue | `SCOPE` | `CURRENT_SCOPE_V1` |
+| venue | `SCOPE` | `ACCOUNT_SCOPE_SET_V1` |
 | venue | `ACQUISITION_CURRENT` | `CURRENT_SCOPE_V1` |
 | venue | `SYMBOL_CONTROLLER` | `CURRENT_SCOPE_V1` |
 | venue | `LIVE_GENERATION` | `LIVE_GENERATION_V1` |
@@ -1102,7 +1303,7 @@ The owner/family mapping is exhaustive and closed:
 | venue | `PROTECTION_AUTHORITY` | `CURRENT_SCOPE_V1` |
 | authority | `APPLICATION_GENERATION` | `HEADER_IDENTITY_V1` |
 | authority | `EXECUTION_PROFILE` | `HEADER_IDENTITY_V1` |
-| authority | `SCOPE` | `CURRENT_SCOPE_V1` |
+| authority | `SCOPE` | `ACCOUNT_SCOPE_SET_V1` |
 | authority | `ACQUISITION_CURRENT` | `CURRENT_SCOPE_V1` |
 | authority | `SYMBOL_CONTROLLER` | `CURRENT_SCOPE_V1` |
 | authority | `LIVE_GENERATION` | `LIVE_GENERATION_V1` |
@@ -1118,15 +1319,25 @@ The owner/family mapping is exhaustive and closed:
 | acquisition | `ACQUISITION_CURRENT` | `CURRENT_SCOPE_V1` |
 | acquisition | `SYMBOL_CONTROLLER` | `CURRENT_SCOPE_V1` |
 | acquisition | `LIVE_GENERATION` | `LIVE_GENERATION_V1` |
-| acquisition | `TARGETED_RETIRED_GENERATION` | `TARGETED_LATE_FACT_V1` |
+| acquisition | `LIVE_GENERATION_STATE` | `LIVE_GENERATION_V1` |
 | acquisition | `LIVE_MARKET_STREAM_AUTHORITY` | `LIVE_GENERATION_V1` |
+| acquisition | `UNRESOLVED_GENERATION` | `ACTIVE_LINEAGE_V1` |
+| acquisition | `UNRESOLVED_GENERATION_STATE` | `ACTIVE_LINEAGE_V1` |
+| acquisition | `UNRESOLVED_MARKET_STREAM_AUTHORITY` | `ACTIVE_LINEAGE_V1` |
+| acquisition | `LINEAGE_EFFECT_SOURCE` | `ACTIVE_LINEAGE_V1` |
+| acquisition | `LINEAGE_OWNER_SOURCE` | `ACTIVE_LINEAGE_V1` |
+| acquisition | `LINEAGE_ROOT_SOURCE` | `ACTIVE_LINEAGE_V1` |
+| acquisition | `LINEAGE_FACT_SOURCE` | `ACTIVE_LINEAGE_V1` |
+| acquisition | `TARGETED_RETIRED_GENERATION` | `TARGETED_LATE_FACT_V1` |
+| acquisition | `TARGETED_RETIRED_GENERATION_STATE` | `TARGETED_LATE_FACT_V1` |
 | acquisition | `TARGETED_RETIRED_MARKET_STREAM_AUTHORITY` | `TARGETED_LATE_FACT_V1` |
-| acquisition | `VENUE_EFFECT` | `TARGETED_LATE_FACT_V1` |
-| acquisition | `VENUE_OWNER` | `TARGETED_LATE_FACT_V1` |
-| acquisition | `ACQUISITION_ROOT_ROUTE` | `ACTIVE_LINEAGE_V1` |
-| acquisition | `ROOT_FILL` | `TARGETED_LATE_FACT_V1` |
-| acquisition | `EXECUTION_FACT_HEAD` | `TARGETED_LATE_FACT_V1` |
-| acquisition | `EXECUTION_FACT` | `TARGETED_LATE_FACT_V1` |
+| acquisition | `TARGETED_EFFECT_SOURCE` | `TARGETED_LATE_FACT_V1` |
+| acquisition | `TARGETED_OWNER_SOURCE` | `TARGETED_LATE_FACT_V1` |
+| acquisition | `TARGETED_ROOT_SOURCE` | `TARGETED_LATE_FACT_V1` |
+| acquisition | `TARGETED_ROOT_FILL` | `TARGETED_LATE_FACT_V1` |
+| acquisition | `TARGETED_EXECUTION_FACT_HEAD` | `TARGETED_LATE_FACT_V1` |
+| acquisition | `TARGETED_PRIOR_FACT_ROUTE` | `TARGETED_LATE_FACT_V1` |
+| acquisition | `TARGETED_FACT_SOURCE` | `TARGETED_LATE_FACT_V1` |
 
 A family/predicate pairing outside this table fails. For targeted acquisition proof, the retired
 generation and retired stream families are either both count one with exact generation/mandate
@@ -1187,10 +1398,11 @@ unit of work, or caller may allocate an opaque owner.
 - Optional pairs/groups are atomic; partial optional groups fail.
 - An unresolved predecessor-generation effect remains selected with its exact directly targeted
   retired generation and reachable routes.
-- One targeted late broker fact adds exactly one retired generation and the complete prerequisite
-  route chain used by the owner: its REQUEST and EFFECT routes plus the required OWNER, ROOT, and
-  FACT routes. All five must name the same selected retired generation and their identities must
-  match the effect/claim/owner/root/fact direct rows. It cannot admit unrelated retired rows.
+- One targeted late broker fact supplies exactly one retired generation and the complete predecessor
+  route chain used by the owner: REQUEST, EFFECT, OWNER, and ROOT. The incoming FACT route is proven
+  absent before reduction and is added exactly once afterward. All five identities name the same
+  selected retired generation and match the effect/claim/owner/root/incoming-fact evidence. It
+  cannot admit unrelated retired rows.
 - Header-only payloads, state commitment without bytes, proof commitment without direct rows,
   history-shaped maps, terminal unrelated rows, and truncated over-limit families are non-serving.
 
@@ -1221,7 +1433,13 @@ every direct/predicate wrapper tag and key order changed independently; a null-l
 scope changed to an invented generation; an authority dedupe fact copied across request/snapshot;
 one required or one forbidden authority semantic key changed; contradiction evidence ordinals
 swapped; the old history-bound acquisition commitment retained at one transition consumer; and the
-new outer checkpoint row inserted into its own inner owner proof.
+new outer checkpoint row inserted into its own inner owner proof. It also includes: one account
+scope omitted while its local vector remains self-consistent; predicate context substituted into a
+direct `ProofKey`; null/bytes/signed ordering collisions; each scalar/row/state/proof limit exceeded
+independently; outcome `receipt_ordinal` replaced by an input ordinal; one ordinary lineage source
+or its derived REQUEST route omitted; stale authority predecessor context reused; targeted retired
+generation state ordinal replayed; prior FACT route present; and applied target state neither
+persisted nor retained while unresolved.
 
 Positive proof includes exact genesis and nontrivial reducer-produced states with active effect,
 claim, owner attempt, closure head, coverage/reconciliation, execution/protection proofs, active
@@ -1233,6 +1451,7 @@ Imports remain inert. R13-H tests are pure and open no SQLite connection.
 R13-H ends with authentic typed owner projection/hydration and complete proof row encodings. It does
 not create `RuntimeCheckpointEnvelope`, payload persistence records, store/load methods, head
 eligibility, or transaction composition. R13-C must bind these accepted owner values into the exact
-kind-`0x02` document, add repository issuance on one connection, and return the exact changed-DDL
-candidate identity for Ameen Mujtabaa's fresh gate before any changed schema is installed or any
-SQLite-bearing test executes.
+kind-`0x02` document, add repository issuance on one connection, specify the held
+`acquisition_generation_state` current row, and return the exact changed-DDL candidate identity for
+Ameen Mujtabaa's fresh gate before any changed schema is installed or any SQLite-bearing test
+executes.

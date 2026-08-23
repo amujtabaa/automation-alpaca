@@ -67,8 +67,11 @@ profiles, currentness head, and checkpoint version. Owner-local constructors dec
 rebuild all derived indexes and commitments, and reject any missing, extra, stale, cross-owner, or
 noncanonical member.
 
-This is not a new table family and not a history replay. Audit/order ledgers remain omitted; direct
-repository lookup remains authoritative for targeted historical inputs and immutable facts.
+The owner wire is not a history replay. Audit/order ledgers remain omitted and direct repository
+lookup remains authoritative for targeted historical inputs. Fresh review proved that one mutable
+retired-generation semantic row is not represented by the accepted immutable generation identity
+table; the contract therefore records one narrowly scoped future R13-C current-state family behind
+the existing exact DDL human gate. R13-H creates no table or repository operation.
 
 ## Preflight deliverable
 
@@ -86,8 +89,9 @@ as one indivisible contract containing:
    coverage, reconciliations, execution bindings, bootstrap targets, and protection cursors;
 5. exact authority rows for effects/claims, manual flatten state, acquisition slots, budget,
    emergency grant, and the sealed venue reference;
-6. exact acquisition controller/mandate, standing LIVE generation/stream route and bounded active
-   lineage rows, plus a sealed operation-only targeted-retired generation/stream/lineage proof;
+6. exact acquisition controller/mandate, standing LIVE and unresolved generation/stream rows,
+   bounded active lineage, and a sealed operation-only targeted-retired generation/stream/lineage
+   proof with one reducer seam;
 7. complete fixed-array encodings for `_M2ExecutionObservationProof` and
    `_M2ProtectionAuthorityProof`;
 8. owner constructor equivalence, derived-index rebuild order, full authenticity checks, and
@@ -164,5 +168,8 @@ was corrected at the root: the new kernel head is now outer-only and payload-fir
 collection has one literal wrapper; one committed predicate-coordinate set covers positive and
 negative cardinality; authority facts are opaque and request/snapshot-bound; acquisition behavior
 uses one history-independent standing commitment; and retired generation/stream/lineage evidence
-is sealed operation proof rather than installed standing state. This clarification narrows item 6
-above and does not release the source hold or authorize SQLite/DDL work.
+is sealed operation proof and enters standing state only while unresolved. R3 review then proved
+the accepted schema lacks the mutable generation-state row needed to reload resolved-history
+targets without replay. The R13-H contract now defines that pure row and holds its future R13-C
+persistence/DDL behind Ameen's exact gate. These clarifications do not release the source hold or
+authorize SQLite/DDL work.
