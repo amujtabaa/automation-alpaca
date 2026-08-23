@@ -1667,6 +1667,8 @@ def _decode_m2_emergency_recovery_compatibility(
 def _encode_m2_protection_mandate(value: object) -> list[object]:
     if type(value) is not _protection.ProtectionMandate:
         raise TypeError("protection mandate must be exact ProtectionMandate")
+    if not _protection._protection_mandate_is_authentic(value):
+        raise ValueError("protection mandate is not authentic")
     return [
         "m1.protection.ProtectionMandate/v1",
         _encode_m2_m1_atom(value.mandate_id),
@@ -1710,6 +1712,8 @@ def _decode_m2_protection_mandate(value: object) -> _protection.ProtectionMandat
         _require_exact_int("protection mandate deadline", fields[14]),
         _decode_m2_emergency_recovery_compatibility(fields[15]),
     )
+    if not _protection._protection_mandate_is_authentic(decoded):
+        raise ValueError("decoded protection mandate is not authentic")
     if _encode_m2_protection_mandate(decoded) != value:
         raise ValueError("protection mandate is not canonical")
     return decoded

@@ -614,6 +614,7 @@ _LEGACY_PROTECTION_E2_FUNCTIONS = {
     "_project_acquisition_protection_exit_intent",
     "_project_protection_venue_owned",
     "_protection_mandate_commitment",
+    "_protection_mandate_is_authentic",
     "_protection_transition_is_authentic",
     "_protection_transition_seal",
     "_reduce_acquisition_mixed_recovery",
@@ -7154,6 +7155,7 @@ _ACQUISITION_R8_PRIVATE_OWNER_IMPORTS = {
     ("protection", "_project_acquisition_neutral_reprojection"),
     ("protection", "_project_acquisition_preemption_intent"),
     ("protection", "_project_acquisition_protection_exit_intent"),
+    ("protection", "_protection_mandate_is_authentic"),
     ("protection", "_reduce_acquisition_mixed_recovery"),
 }
 

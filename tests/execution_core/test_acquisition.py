@@ -5342,9 +5342,8 @@ def test_wo0151_protection_owner_authenticates_every_acquisition_field() -> None
     ) = _r10_semantic_rebase_fixture()
     protection = protection_fixtures._protection_module()
     assert applied.protection is not None
-    compatibility = (
-        applied.state._mandate.protection_mandate.emergency_recovery_compatibility
-    )
+    protection_mandate = applied.state._mandate.protection_mandate
+    compatibility = protection_mandate.emergency_recovery_compatibility
 
     _, _, waiting, _ = _r11_waiting_preemption_fixture()
     assert waiting.protection is not None
@@ -5384,6 +5383,7 @@ def test_wo0151_protection_owner_authenticates_every_acquisition_field() -> None
 
     cases = (
         (compatibility, protection._emergency_recovery_compatibility_is_authentic),
+        (protection_mandate, protection._protection_mandate_is_authentic),
         (applied.protection, protection._state_is_authentic),
         (predecessor_context, protection._acquisition_protection_context_is_authentic),
         (

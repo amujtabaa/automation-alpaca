@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import fields, replace
 from decimal import Decimal
 from fractions import Fraction
@@ -201,7 +202,7 @@ def _all_exact_operations() -> tuple[operations.M2Operation, ...]:
         ),
         execution_scope,
         identity.RootFillId("fill-root"),
-        values.Quantity(1),
+        values.Quantity(11),
         price,
     )
     correction_fact = fills.BrokerTradeCorrectFact(
@@ -214,7 +215,7 @@ def _all_exact_operations() -> tuple[operations.M2Operation, ...]:
         execution_scope,
         fill_fact.root_fill_id,
         fill_fact.key.source_event_id,
-        values.Quantity(1),
+        values.Quantity(13),
         price,
     )
     bust_fact = fills.BrokerTradeBustFact(
@@ -241,9 +242,9 @@ def _all_exact_operations() -> tuple[operations.M2Operation, ...]:
         leg_key,
         identity.RequestOccurrenceId("request"),
         identity.ClaimOccurrenceId("claim"),
-        values.Quantity(1),
-        values.Quantity(0),
-        values.Quantity(1),
+        values.Quantity(7),
+        values.Quantity(23),
+        values.Quantity(30),
         price,
         identity.ActorId("operator"),
         "attested",
@@ -314,7 +315,9 @@ def _all_exact_operations() -> tuple[operations.M2Operation, ...]:
                 leg_key,
                 venue.VenueAttemptState.WORKING,
                 identity.VenueObservationId("status-observation"),
-                values.Quantity(0),
+                values.Quantity(29),
+                identity.ClosureId("status-closure"),
+                identity.EvidenceReference("status-evidence"),
             ),
         ),
         operations.VenueRecoveryOperation(
@@ -345,10 +348,12 @@ def _all_exact_operations() -> tuple[operations.M2Operation, ...]:
                 identity.VenueInputId("broker-fill"),
                 identity.EffectId("effect"),
                 leg_key,
-                values.Quantity(0),
-                values.Quantity(1),
+                values.Quantity(37),
+                values.Quantity(48),
                 fill_fact,
                 b"f" * 32,
+                identity.ClosureId("fill-closure"),
+                identity.EvidenceReference("fill-evidence"),
             ),
         ),
         operations.VenueRecoveryOperation(
@@ -357,11 +362,13 @@ def _all_exact_operations() -> tuple[operations.M2Operation, ...]:
                 identity.VenueInputId("broker-revision"),
                 identity.EffectId("effect"),
                 leg_key,
-                values.Quantity(1),
-                values.Quantity(1),
-                values.Quantity(1),
+                values.Quantity(11),
+                values.Quantity(53),
+                values.Quantity(55),
                 correction_fact,
                 b"r" * 32,
+                identity.ClosureId("revision-closure"),
+                identity.EvidenceReference("revision-evidence"),
             ),
         ),
         operations.AuthorityOperation(
@@ -447,6 +454,31 @@ def _all_exact_operations() -> tuple[operations.M2Operation, ...]:
         ),
         operations.MarketOccurrenceOperation(market_coordinates, market_occurrence),
     )
+
+
+def _operation_document(operation: operations.M2Operation) -> list[object]:
+    document = operations._decode_m2_document(operations.encode_m2_operation(operation))
+    assert type(document) is list
+    return document
+
+
+def _decode_operation_document(document: list[object]) -> operations.M2Operation:
+    return operations.decode_m2_operation(operations._encode_m2_document(document))
+
+
+def _require_wire_list(value: object) -> list[object]:
+    assert type(value) is list
+    return value
+
+
+def _operation_for_payload_tag(payload_tag: str) -> operations.M2Operation:
+    for operation in _all_exact_operations():
+        document = _operation_document(operation)
+        payload = document[4]
+        assert type(payload) is list
+        if payload[0] == payload_tag:
+            return operation
+    raise AssertionError(f"no exact operation has payload tag {payload_tag}")
 
 
 @pytest.mark.parametrize(
@@ -1188,6 +1220,51 @@ def test_every_frozen_operation_payload_round_trips_through_exact_owner_codecs()
     assert observed_payload_tags == expected_payload_tags
 
 
+_EXPECTED_OPERATION_DOCUMENT_SHA256 = {
+    "m1.fills.BrokerFillFact/v1": "d789e71c24ad8a6bf92ad08d368f2d66c257336ea26c357bbbb5c7f140e4ee06",
+    "m1.fills.BrokerTradeCorrectFact/v1": "b0c7ab22a12f0cafb3768ec86cce1524af0c3c89fb9b54a692f48f52bf6a43e2",
+    "m1.fills.BrokerTradeBustFact/v1": "96178c862aee043819537a6a822cbf1a5158e46bd25ebf54516dd18d78608eef",
+    "m1.venue.RecordTransportOutcome/v1": "a2038760f420d2c3c51431ba66b3296877d70801a88c86d67aa0cfb1b82b04ef",
+    "m1.venue.RecoverClaimedEffect/v1": "da2a076cbde01b6764813ba9e4cd29b2bbbe91ac6c0387ee2f5882e3a6fdadf2",
+    "m1.venue.DiscoverVenueLeg/v1": "577b79f669d90d6cd10d5bfa009052a427a57f9e3bb0f7853ab4991d81608ca9",
+    "m1.venue.ObserveVenueStatus/v1": "88b66d7cbecd32f6b98e9deff14e6677e06af61f5eab899cd3ee2f2dba502528",
+    "m1.recovery.IngestHumanAttestedFill/v1": "1f63c65164d5ba7d2d7a2676b7ca076bf0460a410ea914ea7e61fcc0013940cd",
+    "m1.recovery.ReleaseVenueLeg/v1": "a96461eaf95409cf281e2ed9027fa3721ac0f7ba17d4d4c9ef0c23e5de710b30",
+    "m1.recovery.RecordBrokerFillEvidence/v1": "f8210db4a1df9508071cdb449f2685a77ef0e07a3aacc4e515f160ec22c76a18",
+    "m1.recovery.RecordBrokerRevisionEvidence/v1": "cb696f652d77557bb43674d7eab780b7ce866716b9cc818670440c2c6a956090",
+    "m1.authority.CreateBrokerEffect/v1": "cb1a22150d6d621543539676f5a571ad0fdd5afd23b8ab6fbf18ef95aeb34763",
+    "m1.authority.ClaimEffect/v1": "313ee42379ac15dd50463d9b00435cbf6ead7f028b90cabc0f25b5d3c953e848",
+    "m1.authority.ClaimBrokerQuery/v1": "ecea173353d6e5fe43153b8f8f1ff493082ef08f197a0dfc9e12a15229d7b405",
+    "m1.authority.EngageKill/v1": "3acc65e4335fa29f1dce005c0d4a4809316847432cd07fe329b5220eab9529c9",
+    "m1.authority.BeginManualFlatten/v1": "e0a2e1e21c3390c2cd0ff9ef75eebefe8465eed0f21fecee96ce64b20e42e694",
+    "m1.authority.AdvanceManualFlatten/v1": "1ec19b48b8b1d1a3640cc3a2e3522973df8c87fb3d20bbef33ebec6c46bbf2f4",
+    "m2.acquisition.BeginAcquisitionGeneration/v1": "fd49000ebbe7fbfef8ef426ce4a5fcbfe81322c98977e1d76a4b54f32005cd36",
+    "m2.acquisition.CreateAcquisitionEffect/v1": "bc56648a7761db4e18bb6a27a3dee432376543b3cc8576077603e6de7a0b4b3b",
+    "m2.acquisition.ClaimAcquisitionEffect/v1": "0e41c56022974f067d64fdba7f0ea885045bc37b028ac24d96b3e18973d5ed26",
+    "m2.acquisition.BeginAcquisitionPreemption/v1": "800dd66284e7b5f2ee1c628a17cd5d0b9f52fc7f2fd1a8c35af7c0cd72076e6e",
+    "m2.protection.MarketOccurrenceOperation/v1": "99fad9074825f7e4dd1e8c3a07e054e4ff000169e6518826ba46f7c8e2711036",
+}
+
+
+def test_every_frozen_operation_document_matches_its_known_answer_bytes() -> None:
+    observed_tags: set[str] = set()
+
+    for operation in _all_exact_operations():
+        encoded = operations.encode_m2_operation(operation)
+        document = operations._decode_m2_document(encoded)
+        payload = document[4]
+        assert type(payload) is list
+        payload_tag = payload[0]
+        assert type(payload_tag) is str
+        observed_tags.add(payload_tag)
+        assert (
+            sha256(encoded).hexdigest()
+            == _EXPECTED_OPERATION_DOCUMENT_SHA256[payload_tag]
+        )
+
+    assert observed_tags == set(_EXPECTED_OPERATION_DOCUMENT_SHA256)
+
+
 def test_operation_decode_refuses_domain_coordinate_payload_and_canonicality_mutants() -> (
     None
 ):
@@ -1227,6 +1304,306 @@ def test_operation_decode_refuses_domain_coordinate_payload_and_canonicality_mut
     )
     with pytest.raises(ValueError, match="canonical"):
         operations.decode_m2_operation(malformed_document)
+
+
+def test_every_frozen_payload_rejects_count_tag_and_position_mutants() -> None:
+    documents = tuple(
+        _operation_document(operation) for operation in _all_exact_operations()
+    )
+    payload_tags: list[str] = []
+    for document in documents:
+        payload = document[4]
+        assert type(payload) is list
+        payload_tag = payload[0]
+        assert type(payload_tag) is str
+        payload_tags.append(payload_tag)
+
+    for document in documents:
+        payload = document[4]
+        assert type(payload) is list
+        payload_tag = payload[0]
+        assert type(payload_tag) is str
+        alternate_tag = next(tag for tag in payload_tags if tag != payload_tag)
+
+        missing_field = deepcopy(document)
+        missing_payload = missing_field[4]
+        assert type(missing_payload) is list
+        missing_payload.pop()
+
+        extra_field = deepcopy(document)
+        extra_payload = extra_field[4]
+        assert type(extra_payload) is list
+        extra_payload.append("unexpected")
+
+        alternate_payload_tag = deepcopy(document)
+        alternate_payload = alternate_payload_tag[4]
+        assert type(alternate_payload) is list
+        alternate_payload[0] = alternate_tag
+
+        reordered = deepcopy(document)
+        reordered_payload = reordered[4]
+        assert type(reordered_payload) is list
+        if len(reordered_payload) > 2:
+            reordered_payload[1], reordered_payload[2] = (
+                reordered_payload[2],
+                reordered_payload[1],
+            )
+        else:
+            reordered[3], reordered[4] = reordered[4], reordered[3]
+
+        for mutant in (
+            missing_field,
+            extra_field,
+            alternate_payload_tag,
+            reordered,
+        ):
+            with pytest.raises((TypeError, ValueError)):
+                _decode_operation_document(mutant)
+
+
+def test_every_domain_rejects_foreign_closed_payloads_and_domain_substitutions() -> (
+    None
+):
+    documents = tuple(
+        _operation_document(operation) for operation in _all_exact_operations()
+    )
+    domains: set[str] = set()
+    document_domains: list[str] = []
+    for document in documents:
+        domain = document[2]
+        assert type(domain) is list
+        domain_value = domain[1]
+        assert type(domain_value) is str
+        domains.add(domain_value)
+        document_domains.append(domain_value)
+
+    for document, domain_value in zip(documents, document_domains, strict=True):
+        for foreign, foreign_domain in zip(documents, document_domains, strict=True):
+            if foreign_domain == domain_value:
+                continue
+            foreign_payload = foreign[4]
+            assert type(foreign_payload) is list
+            mutant = deepcopy(document)
+            mutant[4] = deepcopy(foreign_payload)
+            with pytest.raises((TypeError, ValueError)):
+                _decode_operation_document(mutant)
+
+        for alternate_domain in domains - {domain_value}:
+            mutant = deepcopy(document)
+            mutant_domain = mutant[2]
+            assert type(mutant_domain) is list
+            mutant_domain[1] = alternate_domain
+            with pytest.raises((TypeError, ValueError)):
+                _decode_operation_document(mutant)
+
+
+def test_every_domain_rejects_each_wrong_coordinate_family() -> None:
+    documents = tuple(
+        _operation_document(operation) for operation in _all_exact_operations()
+    )
+    representative_by_domain: dict[str, list[object]] = {}
+    coordinate_prototype_by_tag: dict[str, list[object]] = {}
+
+    for document in documents:
+        domain = document[2]
+        coordinates = document[3]
+        assert type(domain) is list
+        assert type(coordinates) is list
+        domain_value = domain[1]
+        coordinate_tag = coordinates[0]
+        assert type(domain_value) is str
+        assert type(coordinate_tag) is str
+        representative_by_domain.setdefault(domain_value, document)
+        coordinate_prototype_by_tag.setdefault(coordinate_tag, coordinates)
+
+    assert len(representative_by_domain) == 8
+    assert len(coordinate_prototype_by_tag) == 4
+
+    for document in representative_by_domain.values():
+        expected_coordinates = document[3]
+        assert type(expected_coordinates) is list
+        expected_tag = expected_coordinates[0]
+        assert type(expected_tag) is str
+        for coordinate_tag, foreign_coordinates in coordinate_prototype_by_tag.items():
+            if coordinate_tag == expected_tag:
+                continue
+            mutant = deepcopy(document)
+            mutant[3] = deepcopy(foreign_coordinates)
+            with pytest.raises((TypeError, ValueError)):
+                _decode_operation_document(mutant)
+
+
+def test_public_decode_rejects_noncanonical_atoms_enums_hex_and_fractions() -> None:
+    broker_document = _operation_document(_all_exact_operations()[0])
+    malformed_atom_version = deepcopy(broker_document)
+    malformed_atom_tag = deepcopy(broker_document)
+    reordered_atom_header = deepcopy(broker_document)
+    wrong_enum_owner = deepcopy(broker_document)
+
+    malformed_version_atom = _require_wire_list(
+        _require_wire_list(malformed_atom_version[4])[3]
+    )
+    malformed_tag_atom = _require_wire_list(
+        _require_wire_list(malformed_atom_tag[4])[3]
+    )
+    reordered_header_atom = _require_wire_list(
+        _require_wire_list(reordered_atom_header[4])[3]
+    )
+    enum_owner = _require_wire_list(
+        _require_wire_list(_require_wire_list(wrong_enum_owner[4])[2])[6]
+    )
+    malformed_version_atom[0] = "m0.value/v1"
+    malformed_tag_atom[1] = "not-a-root-fill-id"
+    reordered_header_atom[0], reordered_header_atom[1] = (
+        reordered_header_atom[1],
+        reordered_header_atom[0],
+    )
+    enum_owner[0] = "m1.venue.VenueAttemptState"
+
+    fill_evidence_document = _operation_document(
+        _operation_for_payload_tag("m1.recovery.RecordBrokerFillEvidence/v1")
+    )
+    uppercase_hex = deepcopy(fill_evidence_document)
+    whitespace_hex = deepcopy(fill_evidence_document)
+    uppercase_payload = _require_wire_list(uppercase_hex[4])
+    whitespace_payload = _require_wire_list(whitespace_hex[4])
+    assert type(uppercase_payload[7]) is str
+    assert type(whitespace_payload[7]) is str
+    uppercase_payload[7] = "AB" * 32
+    whitespace_payload[7] = f" {'ab' * 32}"
+
+    acquisition_document = _operation_document(
+        _operation_for_payload_tag("m2.acquisition.BeginAcquisitionGeneration/v1")
+    )
+    unreduced_fraction = deepcopy(acquisition_document)
+    boolean_fraction = deepcopy(acquisition_document)
+    invalid_fraction = deepcopy(acquisition_document)
+    unreduced_wire_fraction = _require_wire_list(
+        _require_wire_list(_require_wire_list(unreduced_fraction[4])[2])[6]
+    )
+    boolean_wire_fraction = _require_wire_list(
+        _require_wire_list(_require_wire_list(boolean_fraction[4])[2])[6]
+    )
+    invalid_wire_fraction = _require_wire_list(
+        _require_wire_list(_require_wire_list(invalid_fraction[4])[2])[6]
+    )
+    unreduced_wire_fraction[1] = 2_000
+    unreduced_wire_fraction[2] = 2
+    boolean_wire_fraction[1] = True
+    invalid_wire_fraction[2] = -1
+
+    for mutant in (
+        malformed_atom_version,
+        malformed_atom_tag,
+        reordered_atom_header,
+        wrong_enum_owner,
+        uppercase_hex,
+        whitespace_hex,
+        unreduced_fraction,
+        boolean_fraction,
+        invalid_fraction,
+    ):
+        with pytest.raises((TypeError, ValueError)):
+            _decode_operation_document(mutant)
+
+
+def test_optional_payload_slots_are_proven_for_populated_and_absent_forms() -> None:
+    populated_operation = _operation_for_payload_tag("m1.venue.ObserveVenueStatus/v1")
+    assert type(populated_operation) is operations.VenueRecoveryOperation
+    assert type(populated_operation.item) is venue.ObserveVenueStatus
+    populated_document = _operation_document(populated_operation)
+    populated_payload = populated_document[4]
+    assert type(populated_payload) is list
+    assert populated_payload[-2] is not None
+    assert populated_payload[-1] is not None
+
+    swapped_populated_optionals = deepcopy(populated_document)
+    swapped_payload = swapped_populated_optionals[4]
+    assert type(swapped_payload) is list
+    swapped_payload[-2], swapped_payload[-1] = swapped_payload[-1], swapped_payload[-2]
+    with pytest.raises((TypeError, ValueError)):
+        _decode_operation_document(swapped_populated_optionals)
+
+    _, _, passive_coordinates, _, _ = _operation_coordinates()
+    absent_operation = operations.VenueRecoveryOperation(
+        passive_coordinates,
+        venue.ObserveVenueStatus(
+            identity.VenueInputId("absent-status"),
+            populated_operation.item.leg_key,
+            venue.VenueAttemptState.WORKING,
+            identity.VenueObservationId("absent-status-observation"),
+            values.Quantity(31),
+        ),
+    )
+    absent_document = _operation_document(absent_operation)
+    absent_payload = absent_document[4]
+    assert type(absent_payload) is list
+    assert absent_payload[-2:] == [None, None]
+    assert _decode_operation_document(absent_document) == absent_operation
+
+    for payload_tag in (
+        "m1.recovery.RecordBrokerFillEvidence/v1",
+        "m1.recovery.RecordBrokerRevisionEvidence/v1",
+    ):
+        malformed_pair = _operation_document(_operation_for_payload_tag(payload_tag))
+        payload = malformed_pair[4]
+        assert type(payload) is list
+        payload[-2] = None
+        with pytest.raises((TypeError, ValueError)):
+            _decode_operation_document(malformed_pair)
+
+
+def test_nested_protection_mandate_tamper_is_refused_by_owner_and_public_codec() -> (
+    None
+):
+    mandate = _operation_mandate()
+    object.__setattr__(mandate.protection_mandate, "loss_fraction", Fraction(1, 4))
+
+    assert not protection._protection_mandate_is_authentic(mandate.protection_mandate)
+    assert not acquisition._acquisition_mandate_is_authentic(mandate)
+    with pytest.raises(ValueError, match="protection mandate is not authentic"):
+        acquisition.AcquisitionMandate(
+            mandate.acquisition_mandate_id,
+            mandate.position_scope,
+            mandate.session_id,
+            mandate.configuration_version,
+            mandate.maximum_quantity,
+            mandate.maximum_notional,
+            mandate.maximum_entry_price,
+            mandate.allowed_order_types,
+            mandate.expiry,
+            mandate.deadline,
+            mandate.fixed_child_cap,
+            mandate.certified_participation_cap,
+            mandate.cancel_reprice_budget,
+            mandate.protection_mandate,
+            mandate.binding,
+        )
+
+    operation = _operation_for_payload_tag(
+        "m2.acquisition.BeginAcquisitionGeneration/v1"
+    )
+    assert type(operation) is operations.BeginAcquisitionGenerationOperation
+    object.__setattr__(
+        operation.successor_mandate.protection_mandate,
+        "loss_fraction",
+        Fraction(1, 4),
+    )
+    with pytest.raises(ValueError, match="authentic"):
+        operations.encode_m2_operation(operation)
+
+
+def test_market_occurrence_tamper_is_refused_by_wrapper_and_public_codec() -> None:
+    operation = _operation_for_payload_tag("m2.protection.MarketOccurrenceOperation/v1")
+    assert type(operation) is operations.MarketOccurrenceOperation
+    object.__setattr__(operation.occurrence, "source_time", 102)
+
+    with pytest.raises(ValueError, match="authentic market occurrence"):
+        operations.MarketOccurrenceOperation(
+            operation.coordinates, operation.occurrence
+        )
+    with pytest.raises(ValueError, match="authentic market occurrence"):
+        operations.encode_m2_operation(operation)
 
 
 def test_acquisition_hydration_rebuilds_the_private_binding_from_terms_only() -> None:

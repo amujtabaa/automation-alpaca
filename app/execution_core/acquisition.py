@@ -83,6 +83,7 @@ from .protection import (
     _project_acquisition_neutral_reprojection,
     _project_acquisition_preemption_intent,
     _project_acquisition_protection_exit_intent,
+    _protection_mandate_is_authentic,
     _reduce_acquisition_mixed_recovery,
     project_acquisition_protection_context as _project_acquisition_protection_context,
     project_protection_venue as _project_protection_venue,
@@ -1415,6 +1416,8 @@ def _mint_dual_mandate_binding(
 
     if type(protection_mandate) is not _ProtectionMandate:
         raise TypeError("protection_mandate must be ProtectionMandate")
+    if not _protection_mandate_is_authentic(protection_mandate):
+        raise ValueError("protection mandate is not authentic")
     if (
         protection_mandate.position_scope != position_scope
         or protection_mandate.session_id != session_id
@@ -1550,6 +1553,8 @@ class AcquisitionMandate:
         )
         if type(self.protection_mandate) is not _ProtectionMandate:
             raise TypeError("protection_mandate must be ProtectionMandate")
+        if not _protection_mandate_is_authentic(self.protection_mandate):
+            raise ValueError("protection mandate is not authentic")
         if not _dual_mandate_binding_is_authentic(self.binding):
             raise ValueError("dual mandate binding is not authentic")
         if (

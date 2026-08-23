@@ -368,6 +368,27 @@ def _protection_mandate_commitment(mandate: ProtectionMandate) -> bytes:
     )
 
 
+def _protection_mandate_is_authentic(value: object) -> bool:
+    """Prove a mandate and its nested compatibility still match their commitments."""
+
+    if type(value) is not ProtectionMandate:
+        return False
+    try:
+        compatibility = value.emergency_recovery_compatibility
+        if not _emergency_recovery_compatibility_is_authentic(compatibility):
+            return False
+        if (
+            compatibility.position_scope != value.position_scope
+            or compatibility.session_id != value.session_id
+        ):
+            return False
+        if type(value.commitment) is not bytes or len(value.commitment) != 32:
+            return False
+        return value.commitment == _protection_mandate_commitment(value)
+    except (AttributeError, TypeError, ValueError):
+        return False
+
+
 @_dataclass(frozen=True, slots=True)
 class MarketOccurrence:
     occurrence_id: _MarketOccurrenceId = _field(init=False)
@@ -1989,19 +2010,9 @@ def _new_protection_venue_projection(
 
 
 def _commit_mandate(mandate: ProtectionMandate) -> bytes:
-    if type(mandate) is not ProtectionMandate:
+    if not _protection_mandate_is_authentic(mandate):
         return b""
-    compatibility = mandate.emergency_recovery_compatibility
-    if not _emergency_recovery_compatibility_is_authentic(compatibility):
-        return b""
-    if compatibility.position_scope != mandate.position_scope:
-        return b""
-    if compatibility.session_id != mandate.session_id:
-        return b""
-    expected = _protection_mandate_commitment(mandate)
-    if type(mandate.commitment) is not bytes or mandate.commitment != expected:
-        return b""
-    return expected
+    return mandate.commitment
 
 
 def _projection_commitment(
