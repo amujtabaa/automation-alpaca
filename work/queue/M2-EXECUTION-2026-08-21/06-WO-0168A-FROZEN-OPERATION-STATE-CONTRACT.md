@@ -76,9 +76,11 @@ are literal unions, not protocols or caller-extensible registries.
 | `MarketOperationCoordinates` | the acquisition members; `market_source_profile_id: str`; `stream_generation_id: MarketStreamGenerationId` |
 
 Integers and strings require exact runtime scalar types; profile strings are nonblank canonical
-identities already present in the accepted profile rows. Optional session is permitted only for a
-venue observation whose owning public type has no session coordinate. Every authority,
-acquisition, and market operation requires a non-null exact session matching current authority.
+identities already present in the accepted profile rows. `VenueOperationCoordinates.session_id` is
+`None` only for an exact `ObserveVenueStatus` payload; every other `VenueRecoveryOperation`, and
+every authority, acquisition, and market operation, requires a non-null exact session matching
+current authority. The missing-session status observation is passive evidence only: C2 must verify
+its profile/scope binding and it must never mint, default, or replace an authority session.
 
 ### 2.2 Technical input classification
 
@@ -137,6 +139,97 @@ The following current public inputs are deliberately **not** top-level durable o
 
 Passing any of those as a top-level operation, or passing a subclass/proxy, raises before a
 transaction begins.
+
+### 2.3.1 Exact operation wire table (R4 amendment)
+
+The operation document's canonical JSON top value is exactly:
+
+```text
+[1, "m2.operation/v1", ["m2.operations.OperationDomain", DOMAIN], COORDINATES, PAYLOAD]
+```
+
+`DOMAIN` is the exact `OperationDomain` enum value. `COORDINATES` is one of the four fixed arrays
+below; `PAYLOAD` is exactly one concrete aggregate from the closed table below. There is no generic
+dataclass encoder, tag interpolation, class-name lookup, module import, registration, or fallback
+decoder. Code writes one explicit `type(value) is ...` branch for every row and calls the owning
+constructor/hydration seam named here on decode.
+
+| Coordinates type | Exact canonical array |
+| --- | --- |
+| `ExecutionOperationCoordinates` | `["m2.operations.ExecutionOperationCoordinates/v1", application_generation_atom, execution_profile_id, scope_id]` |
+| `VenueOperationCoordinates` | `["m2.operations.VenueOperationCoordinates/v1", application_generation_atom, execution_profile_id, scope_id, session_atom_or_null]` |
+| `AcquisitionOperationCoordinates` | `["m2.operations.AcquisitionOperationCoordinates/v1", application_generation_atom, execution_profile_id, scope_id, session_atom, acquisition_generation_atom]` |
+| `MarketOperationCoordinates` | `["m2.operations.MarketOperationCoordinates/v1", application_generation_atom, execution_profile_id, scope_id, session_atom, acquisition_generation_atom, market_source_profile_id, stream_generation_atom]` |
+
+Every `*_atom` is the section-5 M1 durable atom array, never an identity string surrogate. Raw
+bytes are lowercase even-length hex text. A direct `Fraction` is exactly
+`["m2.scalar.Fraction/v1", numerator, denominator]`, with exact JSON integers, a positive
+denominator, and relatively-prime components. The only non-M1 collection is an approved mandate's
+order-type tuple, which is exactly
+`["m2.acquisition.AcquisitionOrderTypes/v1", ["m1.authority.AcquisitionOrderType", "LIMIT"]]`.
+No other collection length or order is admitted.
+
+The following owner tags are literal and closed. A row's fields are the listed order; an M1 value
+means its complete durable atom, an enum means the exact enum pair in the enum table, and `null`
+means the only permitted absence. Derived/cache/seal fields are omitted only where the last column
+explicitly says so and are re-derived/verified by the owner before encode and after decode.
+
+| Literal aggregate tag | Exact fields | Decode/verification rule |
+| --- | --- | --- |
+| `m1.fills.PositionScope/v1` | broker, environment, account, symbol_id | `PositionScope(...)` |
+| `m1.fills.ExecutionScope/v1` | broker, environment, account, order_id, symbol_id, side | `ExecutionScope(...)` |
+| `m1.fills.BrokerFillFact/v1` | key, scope, root_fill_id, quantity, price | `BrokerFillFact(...)` |
+| `m1.fills.BrokerTradeCorrectFact/v1` | key, scope, root_fill_id, predecessor_source_event_id, revised_quantity, revised_price | `BrokerTradeCorrectFact(...)` |
+| `m1.fills.BrokerTradeBustFact/v1` | key, scope, root_fill_id, predecessor_source_event_id, reported_price_or_null | `BrokerTradeBustFact(...)` |
+| `m1.fills.HumanAttestedFillFact/v1` | key, scope, root_fill_id, leg_key, request_occurrence_id, claim_occurrence_id, quantity, prior_cumulative_quantity, resulting_cumulative_quantity, price, actor, reason, evidence_reference | `HumanAttestedFillFact(...)` |
+| `m1.venue.RecordTransportOutcome/v1` | input_id, effect_id, state | `RecordTransportOutcome(...)` |
+| `m1.venue.RecoverClaimedEffect/v1` | input_id, effect_id | `RecoverClaimedEffect(...)` |
+| `m1.venue.DiscoverVenueLeg/v1` | input_id, effect_id, leg_key, observation_id | `DiscoverVenueLeg(...)` |
+| `m1.venue.ObserveVenueStatus/v1` | input_id, leg_key, status, observation_id, cumulative_quantity, closure_id_or_null, evidence_reference_or_null | `ObserveVenueStatus(...)` |
+| `m1.recovery.IngestHumanAttestedFill/v1` | input_id, effect_id, fact | `IngestHumanAttestedFill(...)` |
+| `m1.recovery.ReleaseVenueLeg/v1` | input_id, effect_id, leg_key, claim_occurrence_id, venue_cumulative_quantity, broker_terminal_state, actor, reason, evidence_reference, closure_id, evidence_digest | `ReleaseVenueLeg(...)` |
+| `m1.recovery.RecordBrokerFillEvidence/v1` | input_id, effect_id, leg_key, prior_cumulative_quantity, resulting_cumulative_quantity, fact, evidence_digest, closure_id_or_null, evidence_reference_or_null | `RecordBrokerFillEvidence(...)` |
+| `m1.recovery.RecordBrokerRevisionEvidence/v1` | input_id, effect_id, leg_key, prior_root_quantity, prior_venue_cumulative_quantity, resulting_venue_cumulative_quantity, fact, evidence_digest, closure_id_or_null, evidence_reference_or_null | `RecordBrokerRevisionEvidence(...)` |
+| `m1.authority.BrokerEffectRequest/v1` | effect_id, request_occurrence_id, mandate_id, kind, client_order_id_or_null, symbol_id, side, quantity, economic_scope, target_leg_key_or_null | `BrokerEffectRequest(...)` |
+| `m1.authority.CreateBrokerEffect/v1` | input_id, session_id, request, manual_flatten_id_or_null, emergency_grant_id_or_null | `CreateBrokerEffect(...)` |
+| `m1.authority.ClaimEffect/v1` | input_id, effect_id, claim_occurrence_id | `ClaimEffect(...)` |
+| `m1.authority.ClaimBrokerQuery/v1` | input_id, query_claim_id, symbol_id, kind | `ClaimBrokerQuery(...)` |
+| `m1.authority.EngageKill/v1` | input_id, actor, reason, evidence_reference | `EngageKill(...)` |
+| `m1.authority.BeginManualFlatten/v1` | input_id, flatten_id, session_id, symbol_id, actor, reason, evidence_reference, emergency_grant_id_or_null | `BeginManualFlatten(...)` |
+| `m1.authority.AdvanceManualFlatten/v1` | input_id, flatten_id | `AdvanceManualFlatten(...)` |
+| `m1.authority.AcquisitionEffectTerms/v1` | quantity, limit_price, order_type, evaluation_time | `AcquisitionEffectTerms(...)`; `commitment` is re-derived and must match owner authentication |
+| `m1.protection.ExecutionGuard/v1` | guard_id, policy_commitment | `ExecutionGuard(...)` |
+| `m1.protection.EvidencePolicy/v1` | source_id, stream_generation, sequence_mode, max_age, corroboration_window, max_step_fraction | `EvidencePolicy(...)` |
+| `m1.protection.EmergencyRecoveryCompatibility/v1` | compatibility_id, position_scope, session_id, configuration_version, configuration_commitment, emergency_guard, maximum_goal_rate, emergency_effect_budget, deadline, aggregate_emergency_quantity | `EmergencyRecoveryCompatibility(...)`; `commitment` is re-derived and owner-authenticated |
+| `m1.protection.ProtectionMandate/v1` | mandate_id, position_scope, session_id, configuration_version, loss_fraction, approved_gain, percent_trail_fraction, atr_multiple, tick, normal_guard, emergency_guard, evidence_policy, maximum_quantity, maximum_goal_rate, deadline, emergency_recovery_compatibility | `ProtectionMandate(...)`; `commitment` is re-derived and owner-authenticated |
+| `m1.acquisition.AcquisitionMandate/v1` | acquisition_mandate_id, position_scope, session_id, configuration_version, maximum_quantity, maximum_notional, maximum_entry_price, allowed_order_types, expiry, deadline, fixed_child_cap, certified_participation_cap_or_null, cancel_reprice_budget, protection_mandate | acquisition-owned `_m2_hydrate_acquisition_mandate(...)` must mint the sole `DualMandateBinding`, construct `AcquisitionMandate(...)`, and prove `_acquisition_mandate_is_authentic`; the supplied binding, commitments, and seals are never independently accepted |
+| `m1.protection.MarketOccurrence/v1` | source_id, stream_generation, position_scope, session_id, market_epoch, source_sequence_or_null, source_time, evaluation_time, kind, best_bid_or_null, best_ask_or_null, trade_price_or_null, atr_distance_or_null, structure_trail_or_null, halted | `MarketOccurrence(...)`; `occurrence_id` is re-derived and `_market_occurrence_is_authentic` must hold |
+
+| Exact enum pair owner tag | Admitted enum type |
+| --- | --- |
+| `m2.operations.OperationDomain` | `OperationDomain` |
+| `m1.fills.ExecutionSide` | `ExecutionSide` |
+| `m1.venue.EffectKind` | `EffectKind` |
+| `m1.venue.BrokerEffectState` | `BrokerEffectState` |
+| `m1.venue.VenueAttemptState` | `VenueAttemptState` |
+| `m1.authority.AuthorityQueryKind` | `AuthorityQueryKind` |
+| `m1.authority.AcquisitionOrderType` | `AcquisitionOrderType` |
+| `m1.protection.MarketKind` | `MarketKind` |
+| `m1.protection.MarketSequenceMode` | `MarketSequenceMode` |
+
+The domain-to-coordinate/payload closure is exact: `BROKER_EXECUTION` uses execution coordinates
+and one of the three broker fact tags; `VENUE_RECOVERY` uses venue coordinates and one of the eight
+venue/recovery tags; `AUTHORITY` uses execution coordinates and one of the six authority-command
+tags; `BEGIN_ACQUISITION_GENERATION` uses acquisition coordinates with
+`["m2.acquisition.BeginAcquisitionGeneration/v1", input_id, successor_mandate]`;
+`CREATE_ACQUISITION_EFFECT` uses acquisition coordinates with
+`["m2.acquisition.CreateAcquisitionEffect/v1", input_id, terms]`;
+`CLAIM_ACQUISITION_EFFECT` uses acquisition coordinates with
+`["m2.acquisition.ClaimAcquisitionEffect/v1", input_id, effect_id, claim_occurrence_id]`;
+`BEGIN_ACQUISITION_PREEMPTION` uses acquisition coordinates with
+`["m2.acquisition.BeginAcquisitionPreemption/v1", input_id]`; and `MARKET_OCCURRENCE` uses market
+coordinates with `["m2.protection.MarketOccurrenceOperation/v1", occurrence]`. No coordinate or
+payload tag may be shared across domains except the explicitly nested value rows above.
 
 ### 2.4 Exact alternate-key projection
 
@@ -371,6 +464,11 @@ missing/extra/reordered values, noncanonical integer/text/hex/enum/atom, subclas
 substitution, digest mismatch, or semantically unequal round trip fails. `pickle`, `marshal`,
 `repr`, reflection over dataclass fields, dynamic import, and generic object construction are
 forbidden and mutation-pinned.
+
+For an operation document, section 2.3.1 is the complete outer-array, coordinate, aggregate, enum,
+derived-field, and domain/payload authority. A field whose name ends `_or_null` has exactly the
+specified owner type or JSON `null`; no omitted element, default, inferred binding, or alternate
+tag is accepted.
 
 ## 6. Frozen schema and repository extension
 

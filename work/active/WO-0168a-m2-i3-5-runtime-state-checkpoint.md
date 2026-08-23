@@ -210,6 +210,21 @@ The initial source increment is a RED-first, pure operation/semantic-key codec f
 performs no SQLite activity and does not change DDL; the DDL-bearing portion remains static-only
 until a separate exact human gate.
 
+## R4 wire-contract amendment checkpoint
+
+A fresh-context checkpoint review of the initial foundation found a P1 forged-object bypass in
+retained `InputSemanticKey` values. Commit `2c0a58f` root-corrects it by reauthenticating every
+semantic match at the `InputDedupeFact` boundary and adds forged/post-construction-mutation tests.
+
+Independent codec reconnaissance also found that the preflight contract did not freeze the
+operation outer array, aggregate tags, enum owner tags, derived-field treatment, or the exact
+missing-session venue item. The companion contract's R4 amendment freezes that closed wire table
+and limits `VenueOperationCoordinates.session_id is None` to `ObserveVenueStatus`. No operation
+document codec, acquisition hydration seam, or corresponding source test may proceed until a fresh
+REV-0074 R4 documentation review accepts the exact amendment candidate with P0=0/P1=0. Existing
+pure semantic-key and wrapper work remains subject to the implementation review `REV-0075` and
+does not grant DDL execution.
+
 ## Out of scope
 
 - OS-1: The atomic transaction coordinator, commit, publication, and effect eligibility are
