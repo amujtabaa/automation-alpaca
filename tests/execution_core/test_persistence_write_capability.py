@@ -343,20 +343,26 @@ def _direct_mutator(expression: ast.expr) -> str | None:
 def _literal_rows(
     expression: ast.expr,
     assignments: dict[tuple[ast.AST, str], list[ast.expr]],
+    parents: dict[ast.AST, ast.AST],
     *,
     scope: ast.AST,
     before_line: int,
 ) -> tuple[ast.expr, ...] | None:
     if isinstance(expression, ast.Name):
-        candidates = [
-            candidate
-            for candidate in assignments.get((scope, expression.id), [])
-            if candidate.lineno < before_line
-        ]
-        if not candidates:
+        candidates = assignments.get((scope, expression.id), [])
+        if len(candidates) != 1 or candidates[0].lineno >= before_line:
             return None
-        expression = max(candidates, key=lambda candidate: candidate.lineno)
-    if isinstance(expression, (ast.Tuple, ast.List)):
+        binding = candidates[0]
+        if any(
+            isinstance(node, ast.Name)
+            and node.id == expression.id
+            and _lexical_scope(node, parents) is scope
+            and binding.lineno < node.lineno < before_line
+            for node in ast.walk(scope)
+        ):
+            return None
+        expression = binding
+    if isinstance(expression, ast.Tuple):
         return tuple(expression.elts)
     return None
 
@@ -390,6 +396,7 @@ def _canonical_mutator_loop(
     rows = _literal_rows(
         loop.iter,
         assignments,
+        parents,
         scope=scope,
         before_line=loop.lineno,
     )
@@ -551,6 +558,17 @@ def _has_dynamic_namespace_recovery(
     return False
 
 
+def _protected_helper_loads_are_direct(tree: ast.Module, name: str) -> bool:
+    parents = _parent_map(tree)
+    return all(
+        isinstance(parents[node], ast.Call) and parents[node].func is node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Name)
+        and isinstance(node.ctx, ast.Load)
+        and node.id == name
+    )
+
+
 def _fixture_mutator_capability_violations(source: str) -> tuple[str, ...]:
     """Enforce the three fixtures' closed, syntax-level mutator grammar."""
 
@@ -580,6 +598,10 @@ def _fixture_mutator_capability_violations(source: str) -> tuple[str, ...]:
         apply_helper is None or not _fixture_apply_helper_is_exact(tree)
     ):
         violations.append("invalid-apply-mutator")
+    if not _protected_helper_loads_are_direct(tree, "_apply_mutator"):
+        violations.append("escaped-apply-mutator")
+    if not _protected_helper_loads_are_direct(tree, "_setup_write_capability"):
+        violations.append("escaped-setup-helper")
 
     assignments: dict[tuple[ast.AST, str], list[ast.expr]] = {}
     for node in ast.walk(tree):
@@ -646,6 +668,8 @@ def _fixture_helper_shape_is_exact(source: str, *, require_apply_helper: bool) -
     )
     return (
         not _has_dynamic_namespace_recovery(tree, parents)
+        and _protected_helper_loads_are_direct(tree, "_setup_write_capability")
+        and _protected_helper_loads_are_direct(tree, "_apply_mutator")
         and _fixture_setup_helper_is_exact(tree)
         and (
             not (require_apply_helper or apply_route_exists)
@@ -897,6 +921,20 @@ from app.execution_core.persistence import repository
 other = namespace.vars()["repository"]
 other.store_scope(connection, record)
 """,
+        "mutable-loop-append": """
+from app.execution_core.persistence import repository
+operations = ((repository.store_scope, record),)
+operations.append((unsafe_writer, record))
+for operation, value in operations:
+    operation(connection, value, capability=_setup_write_capability(connection))
+""",
+        "mutable-loop-augment": """
+from app.execution_core.persistence import repository
+operations = ((repository.store_scope, record),)
+operations += ((unsafe_writer, record),)
+for operation, value in operations:
+    operation(connection, value, capability=_setup_write_capability(connection))
+""",
         "private-issuer": """
 from app.execution_core.persistence import repository
 repository._issue_setup_write_capability(connection)
@@ -941,6 +979,10 @@ def _apply_mutator(connection, operation, *arguments):
         valid
         + "\nfrom sys import modules as registry\n"
         + "registry['persistence_setup_support'].issue_setup_write_capability = fake\n",
+        valid
+        + "\nmonkeypatch.setitem("
+        + "_apply_mutator.__globals__, '_apply_mutator', unsafe_writer)\n",
+        valid + "\n_apply_mutator.__globals__.update(_apply_mutator=unsafe_writer)\n",
     )
     for mutant in mutants:
         assert not _fixture_helper_shape_is_exact(mutant, require_apply_helper=True)
