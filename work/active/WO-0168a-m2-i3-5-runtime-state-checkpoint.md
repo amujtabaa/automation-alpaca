@@ -276,6 +276,20 @@ REV-0074 R6 accepted the exact test-scope amendment candidate
 public protection reducer body in its legacy AST view. This acceptance does not relax REV-0075 or
 the changed-DDL human gate.
 
+## R7 owner-proof binding amendment checkpoint
+
+REV-0075 R1 identified three P1 findings in the first bounded owner-state increment. The required
+root correction is narrow: aggregate-bind the exact direct execution observation slice, replace the
+protection checkpoint's caller-shaped authority tuple with one sealed typed current-proof, and add
+behavioral parity/mutation coverage for the missed execution branches. The companion contract's R7
+amendment freezes those proof boundaries. It adds no new source or test path, operation, schema
+family, persistence write authority, DDL execution, runtime composition, credential, network,
+broker, order, promotion, merge, or safety relaxation.
+
+No source or test change implementing the R7 proof boundary may be made until a fresh REV-0074 R7
+documentation review accepts the exact amendment with `P0=0/P1=0`. Normal REV-0075
+implementation review and the changed-DDL human gate remain independently required.
+
 ## Out of scope
 
 - OS-1: The atomic transaction coordinator, commit, publication, and effect eligibility are

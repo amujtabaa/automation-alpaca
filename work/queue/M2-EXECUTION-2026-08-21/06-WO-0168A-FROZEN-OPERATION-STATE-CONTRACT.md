@@ -347,6 +347,18 @@ The package-internal owner types are `_M2ExecutionState` and `_M2ExecutionObserv
 `_m2_apply_broker_execution_fact` are the only construction/kernel seams. The existing public
 reducer must delegate its economic classification to `_m2_apply_broker_execution_fact`.
 
+### R7 direct-proof binding amendment
+
+`_M2ExecutionState` additionally retains the exact aggregate commitments of the current
+`root_heads` and `seen_facts` registries. `_M2ExecutionObservationProof` is an opaque,
+owner-constructed, fixed-field value: it binds the state commitment, both aggregate commitments,
+the exact broker fact, the direct prior-observation/current-root/predecessor rows, the root-claim
+bit, and its own re-derived commitment. A type-owned constructor may mint it only from one coherent
+`ExecutionSnapshot` after exact keyed lookup verifies each retained direct row and both aggregate
+commitments. The direct-proof seam re-derives that proof commitment and rejects a substituted,
+absent, cross-state, or stale aggregate slice before classification. No map, history replay,
+generic record, reflection, or caller-shaped tuple becomes proof.
+
 ### 4.2 Venue state
 
 Every `VenueRecoveryBook` member is classified below; a name not listed is a preflight failure.
@@ -393,9 +405,18 @@ The owner types/seams are `_M2AuthorityState`, `_M2AuthorityObservationProof`,
 `_exit_provenance`.
 
 `_m2_position_protection_from_checkpoint` in `protection.py` is an exact validating constructor;
-it re-derives and checks the owning commitment and the accepted `protection_authority` row. It may
-use `object.__new__` internally only as the owning class's verified constructor, never as a generic
-persistence decoder. The shared kernels are `_m2_reduce_position_protection`,
+it re-derives and checks the owning commitment and an opaque
+`_M2ProtectionAuthorityProof`, never a caller-supplied tuple. That fixed, owner-constructed proof
+binds the selected application generation, execution and market-source profiles, scope,
+controller-currentness head, live acquisition generation, and the exact protection-authority row.
+Its factory verifies that the authority's expected controller head equals the current head, its
+active acquisition generation equals the live generation, and its source/profile/session/stream,
+mandate, state-commitment, and version coordinates are exact. The hydrator re-derives the proof
+commitment and compares every state-relevant coordinate to the rebuilt protection state. A future
+checkpoint codec must use the proof's selected envelope coordinates exactly; it may not translate a
+bare row or independently select profiles/currentness. The constructor may use `object.__new__`
+internally only as the owning class's verified constructor, never as a generic persistence decoder.
+The shared kernels are `_m2_reduce_position_protection`,
 `_m2_reduce_position_protection_market`, and `_m2_invalidate_position_protection_market`; public
 reducers delegate to them.
 
@@ -601,6 +622,20 @@ runtime composition, or safety relaxation.
 No change to that test path is permitted until a fresh REV-0074 R6
 documentation review accepts this exact amendment with P0=0/P1=0.  The normal
 REV-0075 implementation review and changed-DDL human gate remain independent.
+
+### R7 owner-proof binding amendment
+
+The R1 interim implementation review identified that direct execution proof slices and the
+protection checkpoint authority input were self-consistent but not fully bound to retained current
+state. This amendment freezes the two narrow owner-proof constructions described in sections 4.1
+and 4.4: aggregate-bound execution observation proof and typed, sealed protection-currentness
+proof. It adds no source or test path, operation, schema family, persistence write authority, DDL
+execution, runtime composition, external activity, or safety relaxation. It prohibits bare tuples
+at either proof boundary and requires mutation tests for every previously unbound coordinate.
+
+No source or test change implementing this amendment may be made until a fresh REV-0074 R7
+documentation review accepts this exact amendment with P0=0/P1=0. The normal REV-0075
+implementation review and any changed-DDL human gate remain independent.
 
 Governance paths are the queue/active/completed WO-0168a file, this frozen contract, the additive
 post-I3 map, `work/ledger.jsonl`, and `work/review/REV-0074/**` plus the separately assigned
