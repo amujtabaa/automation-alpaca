@@ -197,6 +197,9 @@ CREATE TABLE acquisition_scope (
         )
 );
 
+CREATE INDEX ix_acquisition_scope_checkpoint
+ON acquisition_scope (application_generation_id, execution_profile_id, scope_id);
+
 CREATE TABLE acquisition_generation (
     acquisition_generation_id TEXT PRIMARY KEY
         CHECK (length(acquisition_generation_id) = 64 AND acquisition_generation_id NOT GLOB '*[^0-9a-f]*'),
@@ -235,13 +238,21 @@ CREATE TABLE acquisition_generation_current (
         REFERENCES acquisition_generation (acquisition_generation_id, scope_id)
 );
 
+CREATE INDEX ix_acquisition_generation_current_checkpoint_effect
+ON acquisition_generation_current (scope_id, acquisition_generation_id)
+WHERE unresolved_effect_count > 0;
+
+CREATE INDEX ix_acquisition_generation_current_checkpoint_protection
+ON acquisition_generation_current (scope_id, acquisition_generation_id)
+WHERE active_protection_count > 0;
+
 CREATE TABLE kernel_checkpoint (
     application_generation_id TEXT PRIMARY KEY
         REFERENCES application_generation (application_generation_id),
     currentness_head_ordinal INTEGER NOT NULL CHECK (currentness_head_ordinal >= 0),
     checkpoint_sha256 TEXT NOT NULL
         CHECK (length(checkpoint_sha256) = 64 AND checkpoint_sha256 NOT GLOB '*[^0-9a-f]*'),
-    checkpoint_version_ordinal INTEGER NOT NULL UNIQUE CHECK (checkpoint_version_ordinal >= 1)
+    checkpoint_version_ordinal INTEGER NOT NULL CHECK (checkpoint_version_ordinal >= 1)
 );
 
 CREATE TABLE symbol_controller (
@@ -715,6 +726,10 @@ CREATE INDEX ix_venue_identity_owner_effect
         execution_profile_id, owner_external
     );
 
+CREATE INDEX ix_venue_owner_checkpoint_late
+ON venue_identity_owner (owner_generation_id, effect_id, owner_external)
+WHERE admitted_after_effect_closed = 1;
+
 CREATE INDEX ix_venue_effect_generation_disposition
     ON venue_effect (acquisition_generation_id, disposition, effect_id);
 
@@ -906,6 +921,9 @@ CREATE TABLE market_stream_authority (
             application_generation_id, selected_market_source_profile_id
         )
 );
+
+CREATE INDEX ix_market_stream_authority_checkpoint_generation
+ON market_stream_authority (acquisition_generation_id, scope_id, stream_generation_id);
 
 CREATE TABLE market_cursor (
     stream_generation_id TEXT PRIMARY KEY,
