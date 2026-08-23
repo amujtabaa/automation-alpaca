@@ -6,6 +6,7 @@ from dataclasses import fields
 from hashlib import sha256
 import json
 import struct
+from typing import get_args
 
 import pytest
 
@@ -380,17 +381,132 @@ def test_coordinate_values_are_exact_ordered_slotted_and_not_subclassable() -> N
             pass
 
 
-def test_foundation_public_exports_are_exact_and_inert() -> None:
+@pytest.mark.parametrize(
+    ("name", "expected_fields"),
+    [
+        ("BrokerExecutionOperation", ["coordinates", "fact"]),
+        ("VenueRecoveryOperation", ["coordinates", "item"]),
+        ("AuthorityOperation", ["coordinates", "command"]),
+        (
+            "BeginAcquisitionGenerationOperation",
+            ["coordinates", "input_id", "successor_mandate"],
+        ),
+        (
+            "CreateAcquisitionEffectOperation",
+            ["coordinates", "input_id", "terms"],
+        ),
+        (
+            "ClaimAcquisitionEffectOperation",
+            ["coordinates", "input_id", "effect_id", "claim_occurrence_id"],
+        ),
+        ("BeginAcquisitionPreemptionOperation", ["coordinates", "input_id"]),
+        ("MarketOccurrenceOperation", ["coordinates", "occurrence"]),
+    ],
+)
+def test_admitted_operation_wrappers_have_exact_members_and_reject_subclasses(
+    name: str,
+    expected_fields: list[str],
+) -> None:
+    operation_type = getattr(operations, name)
+
+    assert [field.name for field in fields(operation_type)] == expected_fields
+    with pytest.raises(TypeError, match="cannot be subclassed"):
+        type(f"Derived{name}", (operation_type,), {})
+
+
+def test_operation_union_is_closed_over_the_eight_admitted_top_level_types() -> None:
+    assert set(get_args(operations.M2Operation)) == {
+        operations.BrokerExecutionOperation,
+        operations.VenueRecoveryOperation,
+        operations.AuthorityOperation,
+        operations.BeginAcquisitionGenerationOperation,
+        operations.CreateAcquisitionEffectOperation,
+        operations.ClaimAcquisitionEffectOperation,
+        operations.BeginAcquisitionPreemptionOperation,
+        operations.MarketOccurrenceOperation,
+    }
+
+
+def test_operation_wrappers_refuse_foreign_payloads_before_any_reducer_work() -> None:
+    application_generation_id = identity.ApplicationGenerationId("ab" * 32)
+    acquisition_generation_id = identity.AcquisitionGenerationId("cd" * 32)
+    market_stream_generation_id = identity.MarketStreamGenerationId("ef" * 32)
+    session_id = identity.SessionId("session-1")
+    execution_coordinates = operations.ExecutionOperationCoordinates(
+        application_generation_id,
+        "11" * 32,
+        7,
+    )
+    venue_coordinates = operations.VenueOperationCoordinates(
+        application_generation_id,
+        "11" * 32,
+        7,
+        session_id,
+    )
+    acquisition_coordinates = operations.AcquisitionOperationCoordinates(
+        application_generation_id,
+        "11" * 32,
+        7,
+        session_id,
+        acquisition_generation_id,
+    )
+    market_coordinates = operations.MarketOperationCoordinates(
+        application_generation_id,
+        "11" * 32,
+        7,
+        session_id,
+        acquisition_generation_id,
+        "22" * 32,
+        market_stream_generation_id,
+    )
+
+    invalid_cases = (
+        (operations.BrokerExecutionOperation, (execution_coordinates, object())),
+        (operations.VenueRecoveryOperation, (venue_coordinates, object())),
+        (operations.AuthorityOperation, (execution_coordinates, object())),
+        (
+            operations.BeginAcquisitionGenerationOperation,
+            (acquisition_coordinates, object(), object()),
+        ),
+        (
+            operations.CreateAcquisitionEffectOperation,
+            (acquisition_coordinates, object(), object()),
+        ),
+        (
+            operations.ClaimAcquisitionEffectOperation,
+            (acquisition_coordinates, object(), object(), object()),
+        ),
+        (
+            operations.BeginAcquisitionPreemptionOperation,
+            (acquisition_coordinates, object()),
+        ),
+        (operations.MarketOccurrenceOperation, (market_coordinates, object())),
+    )
+    for operation_type, arguments in invalid_cases:
+        with pytest.raises(TypeError):
+            operation_type(*arguments)
+
+
+def test_operation_foundation_public_exports_are_exact_and_inert() -> None:
     expected = {
         "AcquisitionOperationCoordinates",
+        "AuthorityOperation",
+        "BeginAcquisitionGenerationOperation",
+        "BeginAcquisitionPreemptionOperation",
+        "BrokerExecutionOperation",
+        "ClaimAcquisitionEffectOperation",
+        "CreateAcquisitionEffectOperation",
         "ExecutionOperationCoordinates",
         "InputDedupeFact",
         "InputDedupeKind",
         "InputSemanticKey",
         "InputSemanticKeyKind",
+        "M2Operation",
+        "MarketOccurrenceOperation",
         "MarketOperationCoordinates",
         "OperationDomain",
         "VenueOperationCoordinates",
+        "VenueRecoveryOperation",
         "decode_m2_semantic_key",
         "encode_m2_semantic_key",
     }

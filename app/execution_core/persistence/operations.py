@@ -1,12 +1,12 @@
 """Pure, exact codec primitives for the WO-0168a operation boundary.
 
 This opening implementation slice establishes the canonical semantic-key
-grammar, retained alternate-key proof, technical-dedupe fact, and exact
-coordinate values.  It intentionally performs no database work, reducer work,
-runtime composition, or caller-supplied operation dispatch.  The eight concrete
-operation wrappers and their document codec are added only alongside their
-explicit owner encoders and decoders; this module does not use reflection or a
-generic payload registry as a shortcut.
+grammar, retained alternate-key proof, technical-dedupe fact, exact coordinate
+values, and the closed eight-operation type union. It intentionally performs no
+database work, reducer work, runtime composition, or caller-supplied operation
+dispatch. The operation document codec is added only alongside explicit owner
+encoders and decoders; this module does not use reflection or a generic payload
+registry as a shortcut.
 """
 
 from __future__ import annotations as _annotations
@@ -16,20 +16,36 @@ import json as _json
 import struct as _struct
 from dataclasses import dataclass as _dataclass
 from enum import Enum as _Enum
+from typing import TypeAlias as _TypeAlias
 
+from .. import acquisition as _acquisition
+from .. import authority as _authority
+from .. import fills as _fills
 from .. import identity as _identity
+from .. import protection as _protection
+from .. import recovery as _recovery
+from .. import venue as _venue
 
 
 __all__ = (
     "AcquisitionOperationCoordinates",
+    "AuthorityOperation",
+    "BeginAcquisitionGenerationOperation",
+    "BeginAcquisitionPreemptionOperation",
+    "BrokerExecutionOperation",
+    "ClaimAcquisitionEffectOperation",
+    "CreateAcquisitionEffectOperation",
     "ExecutionOperationCoordinates",
     "InputDedupeFact",
     "InputDedupeKind",
     "InputSemanticKey",
     "InputSemanticKeyKind",
+    "M2Operation",
+    "MarketOccurrenceOperation",
     "MarketOperationCoordinates",
     "OperationDomain",
     "VenueOperationCoordinates",
+    "VenueRecoveryOperation",
     "decode_m2_semantic_key",
     "encode_m2_semantic_key",
 )
@@ -267,12 +283,6 @@ _VENUE_SEMANTIC_KEY_KINDS = (
     InputSemanticKeyKind.VENUE_BROKER_FACT_V1,
 )
 
-_AUTHORITY_SEMANTIC_KEY_KINDS = (
-    InputSemanticKeyKind.AUTHORITY_QUERY_CLAIM_V1,
-    InputSemanticKeyKind.AUTHORITY_MANUAL_FLATTEN_V1,
-    InputSemanticKeyKind.AUTHORITY_EMERGENCY_GRANT_CONSUMPTION_V1,
-)
-
 
 def _validate_semantic_coordinates(
     kind: InputSemanticKeyKind,
@@ -290,10 +300,6 @@ def _validate_semantic_coordinates(
         _require_exact_text("coordinates[1]", raw[1]),
         _require_exact_int("coordinates[2]", raw[2]),
     )
-
-
-def _validate_exact_source_text(name: str, value: object) -> str:
-    return _require_exact_text(name, value)
 
 
 def _validate_semantic_source(
@@ -316,30 +322,30 @@ def _validate_semantic_source(
             raise ValueError("execution-fact semantic key source is malformed")
         return (
             "execution-fact-key",
-            _validate_exact_source_text("source[1]", raw[1]),
-            _validate_exact_source_text("source[2]", raw[2]),
-            _validate_exact_source_text("source[3]", raw[3]),
-            _validate_exact_source_text("source[4]", raw[4]),
+            _require_exact_text("source[1]", raw[1]),
+            _require_exact_text("source[2]", raw[2]),
+            _require_exact_text("source[3]", raw[3]),
+            _require_exact_text("source[4]", raw[4]),
         )
     if kind is InputSemanticKeyKind.VENUE_COVERAGE_ROOT_V1:
         if len(raw) != 5 or raw[0] != "root-fill-key":
             raise ValueError("coverage-root semantic key source is malformed")
         return (
             "root-fill-key",
-            _validate_exact_source_text("source[1]", raw[1]),
-            _validate_exact_source_text("source[2]", raw[2]),
-            _validate_exact_source_text("source[3]", raw[3]),
-            _validate_exact_source_text("source[4]", raw[4]),
+            _require_exact_text("source[1]", raw[1]),
+            _require_exact_text("source[2]", raw[2]),
+            _require_exact_text("source[3]", raw[3]),
+            _require_exact_text("source[4]", raw[4]),
         )
     if kind is InputSemanticKeyKind.VENUE_COVERAGE_INTERVAL_V1:
         if len(raw) != 7 or raw[0] != "coverage-interval":
             raise ValueError("coverage-interval semantic key source is malformed")
         return (
             "coverage-interval",
-            _validate_exact_source_text("source[1]", raw[1]),
-            _validate_exact_source_text("source[2]", raw[2]),
-            _validate_exact_source_text("source[3]", raw[3]),
-            _validate_exact_source_text("source[4]", raw[4]),
+            _require_exact_text("source[1]", raw[1]),
+            _require_exact_text("source[2]", raw[2]),
+            _require_exact_text("source[3]", raw[3]),
+            _require_exact_text("source[4]", raw[4]),
             _require_exact_int("source[5]", raw[5]),
             _require_exact_int("source[6]", raw[6]),
         )
@@ -353,7 +359,7 @@ def _validate_semantic_source(
         raise TypeError("semantic key kind is not admitted")
     if len(raw) != 2 or raw[0] != expected_tag:
         raise ValueError("authority semantic key source is malformed")
-    return (expected_tag, _validate_exact_source_text("source[1]", raw[1]))
+    return (expected_tag, _require_exact_text("source[1]", raw[1]))
 
 
 def encode_m2_semantic_key(
@@ -500,3 +506,247 @@ class InputDedupeFact:
     def __init_subclass__(cls, **kwargs: object) -> None:
         del cls, kwargs
         raise TypeError("InputDedupeFact cannot be subclassed")
+
+
+@_dataclass(frozen=True, slots=True)
+class BrokerExecutionOperation:
+    """One broker-authoritative canonical execution fact operation."""
+
+    coordinates: ExecutionOperationCoordinates
+    fact: (
+        _fills.BrokerFillFact
+        | _fills.BrokerTradeCorrectFact
+        | _fills.BrokerTradeBustFact
+    )
+
+    def __post_init__(self) -> None:
+        if type(self) is not BrokerExecutionOperation:
+            raise TypeError("BrokerExecutionOperation rejects subclass instances")
+        if type(self.coordinates) is not ExecutionOperationCoordinates:
+            raise TypeError("coordinates must be ExecutionOperationCoordinates")
+        if type(self.fact) not in (
+            _fills.BrokerFillFact,
+            _fills.BrokerTradeCorrectFact,
+            _fills.BrokerTradeBustFact,
+        ):
+            raise TypeError("fact must be one exact broker execution fact type")
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        del cls, kwargs
+        raise TypeError("BrokerExecutionOperation cannot be subclassed")
+
+
+@_dataclass(frozen=True, slots=True)
+class VenueRecoveryOperation:
+    """One admitted venue/recovery input, never an arbitrary venue command."""
+
+    coordinates: VenueOperationCoordinates
+    item: (
+        _venue.RecordTransportOutcome
+        | _venue.RecoverClaimedEffect
+        | _venue.DiscoverVenueLeg
+        | _venue.ObserveVenueStatus
+        | _recovery.IngestHumanAttestedFill
+        | _recovery.ReleaseVenueLeg
+        | _recovery.RecordBrokerFillEvidence
+        | _recovery.RecordBrokerRevisionEvidence
+    )
+
+    def __post_init__(self) -> None:
+        if type(self) is not VenueRecoveryOperation:
+            raise TypeError("VenueRecoveryOperation rejects subclass instances")
+        if type(self.coordinates) is not VenueOperationCoordinates:
+            raise TypeError("coordinates must be VenueOperationCoordinates")
+        if type(self.item) not in (
+            _venue.RecordTransportOutcome,
+            _venue.RecoverClaimedEffect,
+            _venue.DiscoverVenueLeg,
+            _venue.ObserveVenueStatus,
+            _recovery.IngestHumanAttestedFill,
+            _recovery.ReleaseVenueLeg,
+            _recovery.RecordBrokerFillEvidence,
+            _recovery.RecordBrokerRevisionEvidence,
+        ):
+            raise TypeError("item must be one exact admitted venue recovery input")
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        del cls, kwargs
+        raise TypeError("VenueRecoveryOperation cannot be subclassed")
+
+
+@_dataclass(frozen=True, slots=True)
+class AuthorityOperation:
+    """One admitted authority command, with no derivative top-level escape hatch."""
+
+    coordinates: ExecutionOperationCoordinates
+    command: (
+        _authority.CreateBrokerEffect
+        | _authority.ClaimEffect
+        | _authority.ClaimBrokerQuery
+        | _authority.EngageKill
+        | _authority.BeginManualFlatten
+        | _authority.AdvanceManualFlatten
+    )
+
+    def __post_init__(self) -> None:
+        if type(self) is not AuthorityOperation:
+            raise TypeError("AuthorityOperation rejects subclass instances")
+        if type(self.coordinates) is not ExecutionOperationCoordinates:
+            raise TypeError("coordinates must be ExecutionOperationCoordinates")
+        if type(self.command) not in (
+            _authority.CreateBrokerEffect,
+            _authority.ClaimEffect,
+            _authority.ClaimBrokerQuery,
+            _authority.EngageKill,
+            _authority.BeginManualFlatten,
+            _authority.AdvanceManualFlatten,
+        ):
+            raise TypeError("command must be one exact admitted authority command")
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        del cls, kwargs
+        raise TypeError("AuthorityOperation cannot be subclassed")
+
+
+@_dataclass(frozen=True, slots=True)
+class BeginAcquisitionGenerationOperation:
+    """Begin one exact acquisition generation with its approved successor mandate."""
+
+    coordinates: AcquisitionOperationCoordinates
+    input_id: _identity.AuthorityInputId
+    successor_mandate: _acquisition.AcquisitionMandate
+
+    def __post_init__(self) -> None:
+        if type(self) is not BeginAcquisitionGenerationOperation:
+            raise TypeError(
+                "BeginAcquisitionGenerationOperation rejects subclass instances"
+            )
+        if type(self.coordinates) is not AcquisitionOperationCoordinates:
+            raise TypeError("coordinates must be AcquisitionOperationCoordinates")
+        if type(self.input_id) is not _identity.AuthorityInputId:
+            raise TypeError("input_id must be AuthorityInputId")
+        _identity.AuthorityInputId(self.input_id.value)
+        if type(self.successor_mandate) is not _acquisition.AcquisitionMandate:
+            raise TypeError("successor_mandate must be AcquisitionMandate")
+        if not _acquisition._acquisition_mandate_is_authentic(self.successor_mandate):
+            raise ValueError(
+                "successor_mandate must be an authentic acquisition mandate"
+            )
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        del cls, kwargs
+        raise TypeError("BeginAcquisitionGenerationOperation cannot be subclassed")
+
+
+@_dataclass(frozen=True, slots=True)
+class CreateAcquisitionEffectOperation:
+    """Create one exact acquisition effect from exact immutable terms."""
+
+    coordinates: AcquisitionOperationCoordinates
+    input_id: _identity.AuthorityInputId
+    terms: _authority.AcquisitionEffectTerms
+
+    def __post_init__(self) -> None:
+        if type(self) is not CreateAcquisitionEffectOperation:
+            raise TypeError(
+                "CreateAcquisitionEffectOperation rejects subclass instances"
+            )
+        if type(self.coordinates) is not AcquisitionOperationCoordinates:
+            raise TypeError("coordinates must be AcquisitionOperationCoordinates")
+        if type(self.input_id) is not _identity.AuthorityInputId:
+            raise TypeError("input_id must be AuthorityInputId")
+        _identity.AuthorityInputId(self.input_id.value)
+        if type(self.terms) is not _authority.AcquisitionEffectTerms:
+            raise TypeError("terms must be AcquisitionEffectTerms")
+        if not _authority._acquisition_effect_terms_is_authentic(self.terms):
+            raise ValueError("terms must be authentic acquisition effect terms")
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        del cls, kwargs
+        raise TypeError("CreateAcquisitionEffectOperation cannot be subclassed")
+
+
+@_dataclass(frozen=True, slots=True)
+class ClaimAcquisitionEffectOperation:
+    """Claim one previously created acquisition effect at one exact occurrence."""
+
+    coordinates: AcquisitionOperationCoordinates
+    input_id: _identity.AuthorityInputId
+    effect_id: _identity.EffectId
+    claim_occurrence_id: _identity.ClaimOccurrenceId
+
+    def __post_init__(self) -> None:
+        if type(self) is not ClaimAcquisitionEffectOperation:
+            raise TypeError(
+                "ClaimAcquisitionEffectOperation rejects subclass instances"
+            )
+        if type(self.coordinates) is not AcquisitionOperationCoordinates:
+            raise TypeError("coordinates must be AcquisitionOperationCoordinates")
+        if type(self.input_id) is not _identity.AuthorityInputId:
+            raise TypeError("input_id must be AuthorityInputId")
+        _identity.AuthorityInputId(self.input_id.value)
+        if type(self.effect_id) is not _identity.EffectId:
+            raise TypeError("effect_id must be EffectId")
+        _identity.EffectId(self.effect_id.value)
+        if type(self.claim_occurrence_id) is not _identity.ClaimOccurrenceId:
+            raise TypeError("claim_occurrence_id must be ClaimOccurrenceId")
+        _identity.ClaimOccurrenceId(self.claim_occurrence_id.value)
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        del cls, kwargs
+        raise TypeError("ClaimAcquisitionEffectOperation cannot be subclassed")
+
+
+@_dataclass(frozen=True, slots=True)
+class BeginAcquisitionPreemptionOperation:
+    """Begin one exact acquisition preemption using a durable input identity."""
+
+    coordinates: AcquisitionOperationCoordinates
+    input_id: _identity.AuthorityInputId
+
+    def __post_init__(self) -> None:
+        if type(self) is not BeginAcquisitionPreemptionOperation:
+            raise TypeError(
+                "BeginAcquisitionPreemptionOperation rejects subclass instances"
+            )
+        if type(self.coordinates) is not AcquisitionOperationCoordinates:
+            raise TypeError("coordinates must be AcquisitionOperationCoordinates")
+        if type(self.input_id) is not _identity.AuthorityInputId:
+            raise TypeError("input_id must be AuthorityInputId")
+        _identity.AuthorityInputId(self.input_id.value)
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        del cls, kwargs
+        raise TypeError("BeginAcquisitionPreemptionOperation cannot be subclassed")
+
+
+@_dataclass(frozen=True, slots=True)
+class MarketOccurrenceOperation:
+    """Reduce one exact market occurrence against its authenticated stream state."""
+
+    coordinates: MarketOperationCoordinates
+    occurrence: _protection.MarketOccurrence
+
+    def __post_init__(self) -> None:
+        if type(self) is not MarketOccurrenceOperation:
+            raise TypeError("MarketOccurrenceOperation rejects subclass instances")
+        if type(self.coordinates) is not MarketOperationCoordinates:
+            raise TypeError("coordinates must be MarketOperationCoordinates")
+        if type(self.occurrence) is not _protection.MarketOccurrence:
+            raise TypeError("occurrence must be MarketOccurrence")
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        del cls, kwargs
+        raise TypeError("MarketOccurrenceOperation cannot be subclassed")
+
+
+M2Operation: _TypeAlias = (
+    BrokerExecutionOperation
+    | VenueRecoveryOperation
+    | AuthorityOperation
+    | BeginAcquisitionGenerationOperation
+    | CreateAcquisitionEffectOperation
+    | ClaimAcquisitionEffectOperation
+    | BeginAcquisitionPreemptionOperation
+    | MarketOccurrenceOperation
+)
