@@ -17,11 +17,14 @@ from typing import cast as _cast
 from weakref import ReferenceType as _ReferenceType
 from weakref import ref as _weakref_ref
 
+from .. import acquisition as _acquisition
+from .. import authority as _authority
 from .. import durable_codec as _durable_codec
 from .. import identity as _identity
 from .. import position as _position
 from .. import protection as _protection
 from .. import values as _values
+from .. import venue as _venue
 from . import operations as _operations
 from . import records as _records
 
@@ -95,6 +98,16 @@ class _RuntimeCheckpointOwnerPreimage:
     venue_owner_commitment: bytes
     authority_owner_commitment: bytes
     scope_owner_commitments: tuple[tuple[int, bytes, bytes, bytes], ...]
+
+
+@_dataclass(frozen=True, slots=True)
+class _RuntimeCheckpointScopeOwners:
+    """Exact ordered serving owners admitted only as projection inputs."""
+
+    scope_id: int
+    acquisition: _acquisition.AcquisitionControllerState
+    execution: _position.ExecutionSnapshot
+    protection: _protection.PositionProtectionState
 
 
 @_dataclass(frozen=True, slots=True, weakref_slot=True, init=False)
@@ -630,6 +643,372 @@ _COMPONENT_MEMBER_COUNTS = {
     _M2_POSITION_SCOPE_TAG: 5,
 }
 
+_CHECKPOINT_COLLECTION_TAGS = {
+    "m2.venue.AuthorityEpochs/v1",
+    "m2.venue.Effects/v1",
+    "m2.venue.Claims/v1",
+    "m2.venue.OwnerAttempts/v1",
+    "m2.venue.AcquisitionCorrelations/v1",
+    "m2.venue.ClosureHeads/v1",
+    "m2.venue.EconomicHighWaters/v1",
+    "m2.venue.HumanCoverages/v1",
+    "m2.venue.BrokerCoverages/v1",
+    "m2.venue.CoverageProvenances/v1",
+    "m2.venue.Reconciliations/v1",
+    "m2.venue.ExecutionReconciliations/v1",
+    "m2.venue.ExecutionScopes/v1",
+    "m2.venue.BootstrapTargets/v1",
+    "m2.venue.ProtectionCursors/v1",
+    "m2.venue.Contradictions/v1",
+    "m2.venue.CoveredRoots/v1",
+    "m2.venue.StandDownEffects/v1",
+    "m2.venue.CancellableBuyLegs/v1",
+    "m2.venue.CancelPendingBuyLegs/v1",
+    "m2.authority.EffectAuthorizations/v1",
+    "m2.authority.ManualFlattens/v1",
+    "m2.authority.CancelEffects/v1",
+    "m2.authority.AcquisitionDescriptors/v1",
+    "m2.authority.AcquisitionSlots/v1",
+    "m2.acquisition.UnresolvedGenerations/v1",
+    "m2.acquisition.UnresolvedMarketStreamRoutes/v1",
+    "m2.acquisition.LineageRoutes/v1",
+}
+
+_CHECKPOINT_FIXED_ROW_LENGTHS = {
+    "m2.venue.Scope/v1": 5,
+    "m2.venue.AuthorityEpoch/v1": 3,
+    "m2.venue.EffectCurrent/v1": 10,
+    "m2.venue.EffectScope/v1": 15,
+    "m2.venue.AcceptanceProof/v1": 6,
+    "m2.venue.AcceptanceContradiction/v1": 4,
+    "m2.venue.DispatchClaim/v1": 3,
+    "m2.venue.OwnerAttempt/v1": 6,
+    "m2.venue.Attempt/v1": 6,
+    "m2.venue.AcquisitionCorrelation/v1": 7,
+    "m2.venue.TerminalClosure/v1": 17,
+    "m2.venue.EconomicHighWater/v1": 3,
+    "m2.venue.HumanCoverage/v1": 9,
+    "m2.venue.BrokerCoverage/v1": 12,
+    "m2.venue.CoverageProvenance/v1": 4,
+    "m2.venue.CoveredRoot/v1": 3,
+    "m2.venue.FillReconciliation/v1": 9,
+    "m2.venue.RevisionReconciliation/v1": 11,
+    "m2.venue.ExecutionScopeCurrent/v1": 3,
+    "m2.venue.ExecutionCheckpoint/v1": 10,
+    "m2.venue.ExecutionBinding/v1": 5,
+    "m2.venue.ResolvedRegistryProjection/v1": 9,
+    "m2.venue.UnresolvedRegistryAdvance/v1": 11,
+    "m2.venue.ProtectionCursor/v1": 7,
+    "m2.venue.BootstrapTargetActive/v1": 25,
+    "m2.venue.BootstrapTargetConsumed/v1": 6,
+    "m2.venue.ProtectionTransitionProof/v1": 25,
+    "m2.venue.ProtectionTransitionCursor/v1": 6,
+    "m2.venue.SymbolAuthoritySummary/v1": 10,
+    "m2.authority.RequestBudget/v1": 3,
+    "m2.authority.VenueRef/v1": 6,
+    "m2.authority.EffectAuthorization/v1": 6,
+    "m2.authority.ClaimEffect/v1": 4,
+    "m2.authority.ClaimAcquisitionEffect/v1": 5,
+    "m2.authority.AcquisitionClaimPermit/v1": 22,
+    "m2.authority.ManualFlatten/v1": 5,
+    "m2.authority.EmergencyGrant/v1": 8,
+    "m2.authority.AcquisitionDescriptor/v1": 3,
+    "m2.authority.AcquisitionSlot/v1": 4,
+    "m2.authority.AcquisitionSlotEmpty/v1": 1,
+    "m2.authority.AcquisitionSlotActive/v1": 3,
+    "m2.authority.AcquisitionSlotInactive/v1": 4,
+    "m2.authority.AcquisitionCurrentness/v1": 16,
+    "m2.authority.AcquisitionEffectPermit/v1": 22,
+    "m2.acquisition.Controller/v1": 14,
+    "m2.acquisition.Generation/v1": 12,
+    "m2.acquisition.MarketStreamRoute/v1": 4,
+    "m2.acquisition.LineageRoute/v1": 6,
+    "m2.acquisition.LineageEffectSource/v1": 2,
+    "m2.acquisition.LineageOwnerSource/v1": 3,
+    "m2.acquisition.LineageRootSource/v1": 2,
+    "m2.acquisition.LineageFactSource/v1": 2,
+    "m2.acquisition.BoundedRegistry/v1": 5,
+    "m2.acquisition.BoundedLineage/v1": 2,
+    _M2_TAIL_FOLD_INPUT_TAG: 7,
+}
+
+_CHECKPOINT_ENUM_OWNERS = {
+    "m1.authority.EnginePhase",
+    "m1.authority.TradingMode",
+    "m1.authority.SupervisorFence",
+    "m1.authority.FlattenPhase",
+    "m1.authority.AcquisitionCurrentnessSourceKind",
+    "m1.acquisition.AcquisitionRecoveryClass",
+    "m1.acquisition.GenerationRouteKind",
+    "m1.acquisition.GenerationServingClass",
+    "m1.venue.EffectKind",
+    "m1.venue.BrokerEffectState",
+    "m1.venue.AcceptanceSetState",
+    "m1.venue.AcceptanceProofKind",
+    "m1.venue.VenueAttemptState",
+    "m1.venue.PendingVenueOperation",
+    "m1.venue.VenueClosureKind",
+    "m1.venue.VenueRecoveryDisposition",
+    "m1.venue.ProtectionTransitionSourceKind",
+    "m1.venue.BootstrapSourceKind",
+    "m1.venue.ResolvedProjectionKind",
+    "m2.protection.AuthorityClass",
+    "m2.protection.ProtectionPolicy",
+    "m2.position.BasisAuthority",
+    "m1.fills.ExecutionSide",
+    "m1.fills.FirstObservationClassification",
+    "m1.fills.FactKind",
+    "m1.fills.ExecutionAuthority",
+    "m1.protection.MarketSequenceMode",
+}
+
+
+def _validate_checkpoint_collection(value: object, expected_tag: str) -> None:
+    if (
+        type(value) is not list
+        or len(value) != 3
+        or value[0] != expected_tag
+        or type(value[1]) is not int
+        or value[1] < 0
+        or type(value[2]) is not list
+        or value[1] != len(value[2])
+    ):
+        raise ValueError(f"{expected_tag} has the wrong exact shape")
+    if len(value[2]) > 65_535:
+        raise OverflowError(f"{expected_tag} exceeds its row limit")
+    for row in value[2]:
+        _validate_checkpoint_nested_value(row)
+
+
+def _validate_checkpoint_nested_value(value: object) -> None:
+    """Reject unknown nested tags, lengths, scalar aliases, and collection counts."""
+
+    if value is None or type(value) in {bool, int, str}:
+        return
+    if type(value) is not list or not value or type(value[0]) is not str:
+        raise ValueError("checkpoint nested value has no admitted tagged shape")
+    tag = value[0]
+    if tag == "1":
+        if (
+            len(value) != 3
+            or type(value[1]) is not str
+            or type(value[2]) is not list
+            or any(type(field) is not str for field in value[2])
+        ):
+            raise ValueError("checkpoint durable atom has the wrong exact shape")
+        return
+    if tag in _CHECKPOINT_ENUM_OWNERS:
+        if len(value) != 2 or type(value[1]) is not str:
+            raise ValueError(f"{tag} enum has the wrong exact shape")
+        return
+    if tag in _CHECKPOINT_COLLECTION_TAGS:
+        _validate_checkpoint_collection(value, tag)
+        return
+    expected_length = _CHECKPOINT_FIXED_ROW_LENGTHS.get(tag)
+    if expected_length is None or len(value) != expected_length:
+        raise ValueError(f"{tag} is not an admitted exact nested row")
+    for member in value[1:]:
+        _validate_checkpoint_nested_value(member)
+
+
+def _validate_runtime_checkpoint_venue_wire(value: list[object]) -> None:
+    scope = value[1]
+    if type(scope) is not list or len(scope) != 5 or scope[0] != "m2.venue.Scope/v1":
+        raise ValueError("venue scope has the wrong exact shape")
+    for name, member, expected_type in (
+        ("venue generation", scope[1], _identity.ApplicationGenerationId),
+        ("venue broker", scope[2], _identity.BrokerId),
+        ("venue environment", scope[3], _identity.EnvironmentId),
+        ("venue account", scope[4], _identity.AccountId),
+    ):
+        _operations._decode_m2_m1_as(name, member, expected_type)
+    for index in (2, 3):
+        _require_nonnegative_int("venue ordinal/count", value[index])
+    if (value[4] is None) != (value[5] is None):
+        raise ValueError("venue registry count and commitment are partial")
+    if value[4] is not None:
+        _require_nonnegative_int("venue registry count", value[4])
+        _require_sha256_text("venue registry commitment", value[5])
+    if value[6] is not None:
+        _require_sha256_text("venue transition head", value[6])
+    tags = (
+        "m2.venue.AuthorityEpochs/v1",
+        "m2.venue.Effects/v1",
+        "m2.venue.Claims/v1",
+        "m2.venue.OwnerAttempts/v1",
+        "m2.venue.AcquisitionCorrelations/v1",
+        "m2.venue.ClosureHeads/v1",
+        "m2.venue.EconomicHighWaters/v1",
+        "m2.venue.HumanCoverages/v1",
+        "m2.venue.BrokerCoverages/v1",
+        "m2.venue.CoverageProvenances/v1",
+        "m2.venue.Reconciliations/v1",
+        "m2.venue.ExecutionReconciliations/v1",
+        "m2.venue.ExecutionScopes/v1",
+        "m2.venue.BootstrapTargets/v1",
+        "m2.venue.ProtectionCursors/v1",
+    )
+    for member, tag in zip(value[7:22], tags, strict=True):
+        _validate_checkpoint_collection(member, tag)
+    retained = _require_sha256_text("venue checkpoint commitment", value[22])
+    expected = _checkpoint_row_commitment(
+        b"execution-core/m2-venue/state/v1", value[:22]
+    ).hex()
+    if retained != expected:
+        raise ValueError("venue checkpoint commitment does not match its row")
+
+
+def _validate_runtime_checkpoint_authority_wire(value: list[object]) -> None:
+    for member, owner in zip(
+        value[1:4],
+        (
+            "m1.authority.EnginePhase",
+            "m1.authority.TradingMode",
+            "m1.authority.SupervisorFence",
+        ),
+        strict=True,
+    ):
+        if type(member) is not list or member[0] != owner:
+            raise ValueError("authority enum owner tag is not admitted")
+        _validate_checkpoint_nested_value(member)
+    for member, enum_type in zip(
+        value[1:4],
+        (_authority.EnginePhase, _authority.TradingMode, _authority.SupervisorFence),
+        strict=True,
+    ):
+        enum_type(_cast(list[object], member)[1])
+    if type(value[4]) is not bool:
+        raise TypeError("authority kill flag must be exact bool")
+    if value[5] is not None:
+        _validate_checkpoint_nested_value(value[5])
+    budget = value[6]
+    if (
+        type(budget) is not list
+        or len(budget) != 3
+        or budget[0] != "m2.authority.RequestBudget/v1"
+    ):
+        raise ValueError("authority request budget has the wrong exact shape")
+    _require_nonnegative_int("authority remaining budget", budget[1])
+    _require_nonnegative_int("authority safety reserve", budget[2])
+    venue_ref = value[7]
+    if (
+        type(venue_ref) is not list
+        or len(venue_ref) != 6
+        or venue_ref[0] != "m2.authority.VenueRef/v1"
+    ):
+        raise ValueError("authority venue reference has the wrong exact shape")
+    for name, member, expected_type in (
+        ("authority venue generation", venue_ref[1], _identity.ApplicationGenerationId),
+        ("authority venue broker", venue_ref[2], _identity.BrokerId),
+        ("authority venue environment", venue_ref[3], _identity.EnvironmentId),
+        ("authority venue account", venue_ref[4], _identity.AccountId),
+    ):
+        _operations._decode_m2_m1_as(name, member, expected_type)
+    _require_sha256_text("authority venue commitment", venue_ref[5])
+    if value[8] is not None:
+        _validate_checkpoint_nested_value(value[8])
+    for member, tag in zip(
+        value[9:13],
+        (
+            "m2.authority.EffectAuthorizations/v1",
+            "m2.authority.ManualFlattens/v1",
+            "m2.authority.AcquisitionDescriptors/v1",
+            "m2.authority.AcquisitionSlots/v1",
+        ),
+        strict=True,
+    ):
+        _validate_checkpoint_collection(member, tag)
+    retained = _require_sha256_text("authority checkpoint commitment", value[13])
+    expected = _checkpoint_row_commitment(
+        b"execution-core/m2-authority/state/v1", value[:13]
+    ).hex()
+    if retained != expected:
+        raise ValueError("authority checkpoint commitment does not match its row")
+
+
+def _validate_runtime_checkpoint_acquisition_wire(value: list[object]) -> None:
+    _validate_checkpoint_nested_value(value[1])
+    _operations._decode_m2_position_scope(value[2])
+    for index in (3, 4, 5):
+        _require_sha256_text("acquisition commitment", value[index])
+    if value[6] is not None:
+        _require_sha256_text("acquisition protection commitment", value[6])
+    for member in value[7:14]:
+        _validate_checkpoint_nested_value(member)
+    registry = _require_sha256_text("acquisition registry commitment", value[14])
+    lineage = _require_sha256_text("acquisition lineage commitment", value[15])
+    expected_registry = _checkpoint_row_commitment(
+        b"execution-core/m2-acquisition/bounded-registry/v1",
+        ["m2.acquisition.BoundedRegistry/v1", *value[9:13]],
+    ).hex()
+    expected_lineage = _checkpoint_row_commitment(
+        b"execution-core/m2-acquisition/bounded-lineage/v1",
+        ["m2.acquisition.BoundedLineage/v1", value[13]],
+    ).hex()
+    if registry != expected_registry or lineage != expected_lineage:
+        raise ValueError("acquisition bounded commitment does not match its rows")
+    retained = _require_sha256_text("acquisition checkpoint commitment", value[16])
+    expected = _checkpoint_row_commitment(
+        b"execution-core/m2-acquisition/state/v1", value[:16]
+    ).hex()
+    if retained != expected:
+        raise ValueError("acquisition checkpoint commitment does not match its row")
+
+
+def _validate_runtime_checkpoint_execution_wire(value: list[object]) -> None:
+    _operations._decode_m2_position_scope(value[1])
+    if type(value[2]) is not int:
+        raise TypeError("execution quantity must be exact int")
+    if type(value[3]) is not list or value[3][0] != "m2.position.BasisAuthority":
+        raise ValueError("execution basis authority tag is not admitted")
+    _validate_checkpoint_nested_value(value[3])
+    for member in value[4:7]:
+        if member is not None:
+            _validate_checkpoint_nested_value(member)
+    for index in (7, 8):
+        if type(value[index]) is not list:
+            raise ValueError("execution integrity row is not admitted")
+        _validate_checkpoint_nested_value(value[index])
+    if type(value[9]) is not bool:
+        raise TypeError("execution reconciliation flag must be exact bool")
+    for index in (10, 12):
+        _require_nonnegative_int("execution count", value[index])
+    for index in (11, 13, 14, 15, 16, 17, 18, 19, 20):
+        _require_sha256_text("execution commitment", value[index])
+
+
+def _validate_runtime_checkpoint_protection_wire(value: list[object]) -> None:
+    if type(value[1]) is not list or value[1][0] != "m2.protection.ProtectionPolicy":
+        raise ValueError("protection policy tag is not admitted")
+    _validate_checkpoint_nested_value(value[1])
+    _validate_checkpoint_nested_value(value[2])
+    if type(value[3]) is not int:
+        raise TypeError("protection quantity must be exact int")
+    _require_sha256_text("protection execution commitment", value[4])
+    if type(value[5]) is not bool or type(value[10]) is not bool:
+        raise TypeError("protection flags must be exact bool")
+    for member in value[6:10]:
+        if member is not None:
+            _validate_checkpoint_nested_value(member)
+    _require_sha256_text("protection state commitment", value[11])
+    _require_nonnegative_int("protection cursor ordinal", value[12])
+    _require_sha256_text("protection cursor head", value[13])
+    for index in range(14, 20):
+        if value[index] is not None:
+            _require_nonnegative_int("protection market coordinate", value[index])
+    if value[20] is not None:
+        _validate_checkpoint_nested_value(value[20])
+    for index in (21, 22, 23):
+        if type(value[index]) is not bool:
+            raise TypeError("protection market flag must be exact bool")
+    for index in (24, 25, 27, 29):
+        if value[index] is not None:
+            _validate_checkpoint_nested_value(value[index])
+    for index in (26, 28, 30):
+        if value[index] is not None:
+            _require_nonnegative_int("protection source time", value[index])
+    _require_sha256_text("protection exit provenance", value[31])
+
 
 def _decode_component(
     value: object, expected_tag: str
@@ -641,6 +1020,18 @@ def _decode_component(
         or value[0] != expected_tag
     ):
         raise ValueError(f"{expected_tag} has the wrong exact shape")
+    if expected_tag == _M2_POSITION_SCOPE_TAG:
+        _operations._decode_m2_position_scope(value)
+    elif expected_tag == _M2_VENUE_STATE_TAG:
+        _validate_runtime_checkpoint_venue_wire(value)
+    elif expected_tag == _M2_AUTHORITY_CHECKPOINT_TAG:
+        _validate_runtime_checkpoint_authority_wire(value)
+    elif expected_tag == _M2_ACQUISITION_STATE_TAG:
+        _validate_runtime_checkpoint_acquisition_wire(value)
+    elif expected_tag == _M2_EXECUTION_STATE_TAG:
+        _validate_runtime_checkpoint_execution_wire(value)
+    elif expected_tag == _M2_PROTECTION_CHECKPOINT_TAG:
+        _validate_runtime_checkpoint_protection_wire(value)
     canonical = _encode_canonical_json(value)
     if len(canonical) > _MAX_RUNTIME_CHECKPOINT_COMPONENT_BYTES:
         raise OverflowError("checkpoint component exceeds its byte limit")
@@ -799,21 +1190,474 @@ def _issue_projected_runtime_checkpoint(
     )
 
 
-def _project_runtime_checkpoint(
-    selection_proof: object,
-    venue: object,
-    authority: object,
-    scope_owners: tuple[object, ...],
-) -> RuntimeCheckpointEnvelope:
-    """Contract-defined owner projector; unavailable until its records API lands."""
+def _checkpoint_collection(tag: str, rows: list[object]) -> list[object]:
+    """Build one literal count-bearing checkpoint collection."""
 
-    proof_type = getattr(_records, "RuntimeCheckpointSelectionProof", None)
-    if proof_type is None:
-        raise RuntimeError("RuntimeCheckpointSelectionProof is not installed")
-    if type(selection_proof) is not proof_type:
+    return [tag, len(rows), rows]
+
+
+def _checkpoint_row_commitment(domain: bytes, row: list[object]) -> bytes:
+    """Commit one already canonical explicit row under its frozen owner domain."""
+
+    return _commit_runtime_parts(domain, _encode_canonical_json(row))
+
+
+def _checkpoint_enum(owner: str, value: object) -> list[str]:
+    """Encode an exact enum only where the caller supplies its literal owner tag."""
+
+    member = getattr(value, "value", None)
+    if type(member) is not str:
+        raise TypeError("checkpoint enum must expose one exact text member")
+    return [owner, member]
+
+
+def _encode_runtime_checkpoint_venue(
+    book: _venue.VenueRecoveryBook,
+) -> tuple[list[object], bytes]:
+    """Encode the frozen venue top row without serializing audit history."""
+
+    if type(book) is not _venue.VenueRecoveryBook:
+        raise TypeError("venue owner must be exact VenueRecoveryBook")
+    book._validate_full()
+    payload_maps = (
+        book._authority_epoch_by_scope,
+        book._effect_by_id,
+        book._claim_by_effect,
+        book._owner_by_leg,
+        book._acquisition_correlation_by_root,
+        book._closure_head_by_leg,
+        book._economic_high_water_by_leg,
+        book._human_coverage_by_root,
+        book._broker_coverage_by_root,
+        book._coverage_provenance_by_scope,
+        book._reconciliation_by_input,
+        book._execution_reconciliation_by_input,
+        book._execution_snapshot_by_scope,
+        book._bootstrap_bound_target_by_scope,
+        book._protection_cursor_by_scope,
+    )
+    if any(retained.size for retained in payload_maps):
+        raise ValueError("nonempty venue checkpoint rows are not admitted by this projector")
+    if book._effect_order.length or book._owner_order.length:
+        raise ValueError("venue source order is not represented by selected rows")
+    registry_count = book.execution_registry_count
+    registry_commitment = book.execution_registry_commitment
+    row: list[object] = [
+        _M2_VENUE_STATE_TAG,
+        [
+            "m2.venue.Scope/v1",
+            _operations._encode_m2_m1_atom(book.scope.generation),
+            _operations._encode_m2_m1_atom(book.scope.broker),
+            _operations._encode_m2_m1_atom(book.scope.environment),
+            _operations._encode_m2_m1_atom(book.scope.account),
+        ],
+        book._account_authority_epoch,
+        book._unresolved_account_execution_reconciliation_count,
+        registry_count,
+        (
+            None
+            if registry_commitment is None
+            else _operations._encode_m2_bytes(registry_commitment)
+        ),
+        (
+            None
+            if book._registry_transition_head_commitment is None
+            else _operations._encode_m2_bytes(
+                book._registry_transition_head_commitment
+            )
+        ),
+        _checkpoint_collection("m2.venue.AuthorityEpochs/v1", []),
+        _checkpoint_collection("m2.venue.Effects/v1", []),
+        _checkpoint_collection("m2.venue.Claims/v1", []),
+        _checkpoint_collection("m2.venue.OwnerAttempts/v1", []),
+        _checkpoint_collection("m2.venue.AcquisitionCorrelations/v1", []),
+        _checkpoint_collection("m2.venue.ClosureHeads/v1", []),
+        _checkpoint_collection("m2.venue.EconomicHighWaters/v1", []),
+        _checkpoint_collection("m2.venue.HumanCoverages/v1", []),
+        _checkpoint_collection("m2.venue.BrokerCoverages/v1", []),
+        _checkpoint_collection("m2.venue.CoverageProvenances/v1", []),
+        _checkpoint_collection("m2.venue.Reconciliations/v1", []),
+        _checkpoint_collection("m2.venue.ExecutionReconciliations/v1", []),
+        _checkpoint_collection("m2.venue.ExecutionScopes/v1", []),
+        _checkpoint_collection("m2.venue.BootstrapTargets/v1", []),
+        _checkpoint_collection("m2.venue.ProtectionCursors/v1", []),
+    ]
+    commitment = _checkpoint_row_commitment(
+        b"execution-core/m2-venue/state/v1", row
+    )
+    row.append(_operations._encode_m2_bytes(commitment))
+    return row, commitment
+
+
+def _encode_runtime_checkpoint_authority(
+    state: _authority.ExecutionAuthorityState,
+    venue_commitment: bytes,
+) -> tuple[list[object], bytes]:
+    """Encode the corrected R2 authority top row and its exact empty collections."""
+
+    if type(state) is not _authority.ExecutionAuthorityState:
+        raise TypeError("authority owner must be exact ExecutionAuthorityState")
+    _authority._validate_authority_state(state)
+    payload_maps = (
+        state._effect_authority_by_id,
+        state._manual_by_id,
+        state._acquisition_descriptor_by_effect,
+        state._acquisition_currentness_by_scope,
+        state._acquisition_descriptor_by_scope,
+        state._acquisition_active_by_scope,
+    )
+    if any(retained.size for retained in payload_maps):
+        raise ValueError("nonempty authority checkpoint rows are not admitted")
+    if state._emergency_grant is not None:
+        raise ValueError("emergency authority checkpoint row is not admitted")
+    scope = state.venue.scope
+    row: list[object] = [
+        _M2_AUTHORITY_CHECKPOINT_TAG,
+        _checkpoint_enum("m1.authority.EnginePhase", state.phase),
+        _checkpoint_enum("m1.authority.TradingMode", state.mode),
+        _checkpoint_enum("m1.authority.SupervisorFence", state.supervisor_fence),
+        state.kill_engaged,
+        (
+            None
+            if state.session_id is None
+            else _operations._encode_m2_m1_atom(state.session_id)
+        ),
+        [
+            "m2.authority.RequestBudget/v1",
+            state.budget.remaining,
+            state.budget.safety_reserve,
+        ],
+        [
+            "m2.authority.VenueRef/v1",
+            _operations._encode_m2_m1_atom(scope.generation),
+            _operations._encode_m2_m1_atom(scope.broker),
+            _operations._encode_m2_m1_atom(scope.environment),
+            _operations._encode_m2_m1_atom(scope.account),
+            _operations._encode_m2_bytes(venue_commitment),
+        ],
+        None,
+        _checkpoint_collection("m2.authority.EffectAuthorizations/v1", []),
+        _checkpoint_collection("m2.authority.ManualFlattens/v1", []),
+        _checkpoint_collection("m2.authority.AcquisitionDescriptors/v1", []),
+        _checkpoint_collection("m2.authority.AcquisitionSlots/v1", []),
+    ]
+    commitment = _checkpoint_row_commitment(
+        b"execution-core/m2-authority/state/v1", row
+    )
+    row.append(_operations._encode_m2_bytes(commitment))
+    return row, commitment
+
+
+def _encode_runtime_checkpoint_generation(
+    record: _acquisition.GenerationRecordView,
+) -> list[object]:
+    binding = record.binding
+    commitment = _acquisition._generation_record_view_commitment(
+        binding,
+        record.economics_head_commitment,
+        record.serving_class,
+        record.closure_summary_commitment,
+    )
+    return [
+        "m2.acquisition.Generation/v1",
+        _operations._encode_m2_m1_atom(binding.generation_id),
+        _operations._encode_m2_m1_atom(binding.application_generation_id),
+        _operations._encode_m2_position_scope(binding.position_scope),
+        binding.successor_ordinal,
+        _operations._encode_m2_bytes(binding.dual_mandate_binding_commitment),
+        _operations._encode_m2_bytes(
+            binding.predecessor_or_genesis_head_commitment
+        ),
+        _operations._encode_m2_bytes(
+            binding.emergency_recovery_compatibility_commitment
+        ),
+        _operations._encode_m2_bytes(record.economics_head_commitment),
+        _checkpoint_enum(
+            "m1.acquisition.GenerationServingClass", record.serving_class
+        ),
+        _operations._encode_m2_bytes(record.closure_summary_commitment),
+        _operations._encode_m2_bytes(commitment),
+    ]
+
+
+def _encode_runtime_checkpoint_acquisition(
+    state: _acquisition.AcquisitionControllerState,
+) -> tuple[list[object], bytes]:
+    """Encode one authentic bounded acquisition owner without generic traversal."""
+
+    if not _acquisition._controller_state_is_authentic(state):
+        raise ValueError("acquisition owner is not authentic")
+    controller = state._controller
+    generation_id = controller.live_generation_id
+    if generation_id is None:
+        raise ValueError("acquisition owner has no live generation")
+    live = state.registry.record(generation_id)
+    route = _acquisition._registry_market_stream_route(
+        state.registry,
+        state._mandate.protection_mandate.evidence_policy.stream_generation,
+    )
+    if live is None or route is None or route.binding != live.binding:
+        raise ValueError("acquisition live generation route is incomplete")
+    if (
+        state.registry._records.size != 1
+        or state.registry._market_stream_routes.size != 1
+        or any(
+            routes.size
+            for routes in (
+                state.lineage._request_routes,
+                state.lineage._effect_routes,
+                state.lineage._owner_routes,
+                state.lineage._root_routes,
+                state.lineage._fact_routes,
+            )
+        )
+    ):
+        raise ValueError("nonempty unresolved acquisition rows are not admitted")
+    controller_wire = [
+        "m2.acquisition.Controller/v1",
+        _operations._encode_m2_m1_atom(controller.application_generation_id),
+        _operations._encode_m2_position_scope(controller.position_scope),
+        _operations._encode_m2_bytes(controller.controller_head),
+        controller.successor_ordinal,
+        _operations._encode_m2_m1_atom(generation_id),
+        _checkpoint_enum(
+            "m1.acquisition.AcquisitionRecoveryClass", controller.recovery_class
+        ),
+        _operations._encode_m2_bytes(controller.scope_execution_commitment),
+        _operations._encode_m2_bytes(controller.venue_commitment),
+        _operations._encode_m2_bytes(controller.authority_context_commitment),
+        (
+            None
+            if controller.protection_commitment is None
+            else _operations._encode_m2_bytes(controller.protection_commitment)
+        ),
+        _operations._encode_m2_bytes(controller._binding_commitment),
+        _operations._encode_m2_bytes(controller._compatibility_commitment),
+        _operations._encode_m2_bytes(controller.commitment),
+    ]
+    live_wire = _encode_runtime_checkpoint_generation(live)
+    route_commitment = _acquisition._market_stream_generation_route_commitment(
+        route.stream_generation, route.binding
+    )
+    route_wire = [
+        "m2.acquisition.MarketStreamRoute/v1",
+        _operations._encode_m2_m1_atom(route.stream_generation),
+        _operations._encode_m2_m1_atom(generation_id),
+        _operations._encode_m2_bytes(route_commitment),
+    ]
+    unresolved_generations = _checkpoint_collection(
+        "m2.acquisition.UnresolvedGenerations/v1", []
+    )
+    unresolved_routes = _checkpoint_collection(
+        "m2.acquisition.UnresolvedMarketStreamRoutes/v1", []
+    )
+    lineage = _checkpoint_collection("m2.acquisition.LineageRoutes/v1", [])
+    bounded_registry: list[object] = [
+        "m2.acquisition.BoundedRegistry/v1",
+        live_wire,
+        route_wire,
+        unresolved_generations,
+        unresolved_routes,
+    ]
+    bounded_lineage: list[object] = [
+        "m2.acquisition.BoundedLineage/v1",
+        lineage,
+    ]
+    registry_commitment = _checkpoint_row_commitment(
+        b"execution-core/m2-acquisition/bounded-registry/v1", bounded_registry
+    )
+    lineage_commitment = _checkpoint_row_commitment(
+        b"execution-core/m2-acquisition/bounded-lineage/v1", bounded_lineage
+    )
+    row: list[object] = [
+        _M2_ACQUISITION_STATE_TAG,
+        _operations._encode_m2_m1_atom(state.application_generation_id),
+        _operations._encode_m2_position_scope(state.position_scope),
+        _operations._encode_m2_bytes(state.scope_execution_commitment),
+        _operations._encode_m2_bytes(state.venue_commitment),
+        _operations._encode_m2_bytes(state.authority_context_commitment),
+        (
+            None
+            if state.protection_commitment is None
+            else _operations._encode_m2_bytes(state.protection_commitment)
+        ),
+        controller_wire,
+        _operations._encode_m2_acquisition_mandate(state._mandate),
+        live_wire,
+        route_wire,
+        unresolved_generations,
+        unresolved_routes,
+        lineage,
+        _operations._encode_m2_bytes(registry_commitment),
+        _operations._encode_m2_bytes(lineage_commitment),
+    ]
+    commitment = _checkpoint_row_commitment(
+        b"execution-core/m2-acquisition/state/v1", row
+    )
+    row.append(_operations._encode_m2_bytes(commitment))
+    return row, commitment
+
+
+def _project_runtime_checkpoint(
+    selection_proof: _records.RuntimeCheckpointSelectionProof,
+    venue: _venue.VenueRecoveryBook,
+    authority: _authority.ExecutionAuthorityState,
+    scope_owners: tuple[_RuntimeCheckpointScopeOwners, ...],
+) -> RuntimeCheckpointEnvelope:
+    """Project authentic owners into one canonical, explicitly inert envelope."""
+
+    if type(selection_proof) is not _records.RuntimeCheckpointSelectionProof:
         raise TypeError("selection_proof must be exact RuntimeCheckpointSelectionProof")
-    del venue, authority, scope_owners
-    raise RuntimeError("runtime checkpoint owner projection is not installed")
+    if not _records.RuntimeCheckpointSelectionProof._is_authentic(selection_proof):
+        raise ValueError("selection_proof is not repository-authentic")
+    if type(venue) is not _venue.VenueRecoveryBook:
+        raise TypeError("venue must be exact VenueRecoveryBook")
+    if type(authority) is not _authority.ExecutionAuthorityState:
+        raise TypeError("authority must be exact ExecutionAuthorityState")
+    if type(scope_owners) is not tuple:
+        raise TypeError("scope_owners must be an exact tuple")
+
+    venue._validate_full()
+    _authority._validate_authority_state(authority)
+    if authority.venue is not venue:
+        raise ValueError("authority does not retain the selected venue owner")
+
+    selected_scopes = selection_proof._selection.scopes
+    selected_scope_ids = tuple(scope.scope_id for scope in selected_scopes)
+    owner_scope_ids = tuple(
+        owner.scope_id
+        for owner in scope_owners
+        if type(owner) is _RuntimeCheckpointScopeOwners
+    )
+    if len(owner_scope_ids) != len(scope_owners):
+        raise TypeError("scope owner must be exact _RuntimeCheckpointScopeOwners")
+    if (
+        owner_scope_ids != tuple(sorted(owner_scope_ids))
+        or len(owner_scope_ids) != len(set(owner_scope_ids))
+    ):
+        raise ValueError("scope owners must be strictly scope-ID ordered")
+    if selected_scope_ids != owner_scope_ids:
+        raise ValueError("selected scope coordinates do not match scope owners")
+
+    request = selection_proof.request
+    venue_scope = venue.scope
+    if venue_scope.generation != request.application_generation_id:
+        raise ValueError("top owner coordinates do not match selection proof")
+
+    venue_wire, venue_commitment = _encode_runtime_checkpoint_venue(venue)
+    authority_wire, authority_commitment = _encode_runtime_checkpoint_authority(
+        authority, venue_commitment
+    )
+    scope_wires: list[
+        tuple[int, list[object], list[object], list[object], list[object]]
+    ] = []
+    owner_commitments: list[tuple[int, bytes, bytes, bytes]] = []
+    for selected, owners in zip(selected_scopes, scope_owners, strict=True):
+        acquisition = owners.acquisition
+        execution = owners.execution
+        protection = owners.protection
+        if type(acquisition) is not _acquisition.AcquisitionControllerState:
+            raise TypeError("acquisition owner must be exact AcquisitionControllerState")
+        if type(execution) is not _position.ExecutionSnapshot:
+            raise TypeError("execution owner must be exact ExecutionSnapshot")
+        if type(protection) is not _protection.PositionProtectionState:
+            raise TypeError("protection owner must be exact PositionProtectionState")
+        if not _acquisition._controller_state_is_authentic(acquisition):
+            raise ValueError("acquisition owner is not authentic")
+        execution_state = _position._m2_execution_state_from_snapshot(execution)
+        if not _protection._state_is_authentic(protection):
+            raise ValueError("protection owner is not authentic")
+        position_scope = execution.position.scope
+        if (
+            selected.application_generation_id != request.application_generation_id
+            or selected.execution_profile_id != request.execution_profile_id
+            or selected.symbol != position_scope.symbol_id
+            or acquisition.application_generation_id != request.application_generation_id
+            or acquisition.position_scope != position_scope
+            or protection.mandate.position_scope != position_scope
+            or venue_scope.broker != position_scope.broker
+            or venue_scope.environment != position_scope.environment
+            or venue_scope.account != position_scope.account
+        ):
+            raise ValueError("selected scope coordinates do not agree with owners")
+        if (
+            acquisition.scope_execution_commitment != execution.commitment
+            or acquisition.venue_commitment != venue._protection_commitment
+            or (
+                acquisition.protection_commitment is not None
+                and acquisition.protection_commitment != protection.commitment
+            )
+        ):
+            raise ValueError("scope owner commitments are spliced")
+
+        acquisition_wire, _ = _encode_runtime_checkpoint_acquisition(acquisition)
+        execution_wire = _encode_m2_execution_state_component(execution_state)
+        checkpoint = _protection._M2ProtectionCheckpoint(
+            protection.policy,
+            protection.mandate,
+            protection.raw_quantity,
+            protection.execution_commitment,
+            protection.formula_available,
+            protection.armed_hard_bail_trigger,
+            protection.activation_price,
+            protection.high_watermark,
+            protection.trail,
+            protection.waiting_buy_resolution,
+            protection.commitment,
+            protection._cursor_ordinal,
+            protection._cursor_head,
+            protection._market_occurrence_epoch,
+            protection._market_committed_epoch,
+            protection._market_expected_epoch,
+            protection._market_source_sequence,
+            protection._market_source_time,
+            protection._market_evaluation_time,
+            protection._market_occurrence_identity,
+            protection._market_halted,
+            protection._market_baseline_required,
+            protection._market_exhausted,
+            protection._market_last_primary,
+            protection._hard_bid_identity,
+            protection._hard_bid_source_time,
+            protection._trade_identity,
+            protection._trade_source_time,
+            protection._trail_bid_identity,
+            protection._trail_bid_source_time,
+            protection._exit_provenance,
+        )
+        protection_wire = _encode_m2_protection_checkpoint_component(checkpoint)
+        scope_wires.append(
+            (
+                owners.scope_id,
+                _operations._encode_m2_position_scope(position_scope),
+                acquisition_wire,
+                execution_wire,
+                protection_wire,
+            )
+        )
+        owner_commitments.append(
+            (
+                owners.scope_id,
+                acquisition.commitment,
+                execution.commitment,
+                protection.commitment,
+            )
+        )
+
+    return _issue_projected_runtime_checkpoint(
+        selection_proof_binding=selection_proof._binding,
+        application_generation_id=request.application_generation_id,
+        execution_profile_id=request.execution_profile_id,
+        market_source_profile_id=request.market_source_profile_id,
+        currentness_head_ordinal=selection_proof.target_currentness_head_ordinal,
+        checkpoint_version_ordinal=selection_proof.target_checkpoint_version_ordinal,
+        venue_wire=venue_wire,
+        authority_wire=authority_wire,
+        scope_wires=tuple(scope_wires),
+        venue_owner_commitment=venue._protection_commitment,
+        authority_owner_commitment=authority_commitment,
+        scope_owner_commitments=tuple(owner_commitments),
+    )
 
 
 def encode_runtime_checkpoint(envelope: RuntimeCheckpointEnvelope) -> bytes:

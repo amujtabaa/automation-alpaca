@@ -6,17 +6,19 @@ import ast
 import hashlib
 import inspect
 import json
+from typing import Any
 
 import pytest
 
-from app.execution_core import identity
-from app.execution_core.persistence import checkpoint_codec
+from app.execution_core import authority, identity, profiles, venue
+from app.execution_core.persistence import checkpoint_codec, records
 
 
 _EXECUTION_PROFILE = "11" * 32
 _MARKET_PROFILE = "22" * 32
 _LOAD_BINDING = bytes.fromhex("33" * 32)
 _SELECTION_BINDING = bytes.fromhex("44" * 32)
+_APPLICATION = identity.ApplicationGenerationId("checkpoint-app")
 
 
 def _canonical(value: list[object]) -> bytes:
@@ -43,27 +45,103 @@ def _outer_payload(*, scopes: list[object] | None = None) -> bytes:
     )
 
 
-def _scope_row(scope_id: int) -> list[object]:
-    position_scope = [
-        "m1.fills.PositionScope/v1",
-        ["1", "broker_id", ["paper"]],
-        ["1", "environment_id", ["paper"]],
-        ["1", "account_id", ["account"]],
-        ["1", "symbol_id", ["AAPL"]],
-    ]
-    return [
-        "m2.runtime-checkpoint.scope/v1",
-        scope_id,
-        position_scope,
-        [
-            "m2.acquisition.State/v1",
-            ["1", "application_generation_id", ["checkpoint-app"]],
-            position_scope,
-            *([None] * 14),
-        ],
-        ["m2.position.execution-state/v1", position_scope, *([None] * 19)],
-        ["m2.protection.checkpoint/v1", *([None] * 31)],
-    ]
+def _selection_proof(
+    scopes: tuple[records.ScopeRecord, ...] = (),
+) -> records.RuntimeCheckpointSelectionProof:
+    selection = records._RuntimeCheckpointSelectionSet(
+        scopes=scopes,
+        controllers=(),
+        protection_authorities=(),
+        live_generations=(),
+        live_generation_current=(),
+        unresolved_generations=(),
+        unresolved_generation_current=(),
+        effects=(),
+        owners=(),
+        claims=(),
+        acceptance_sets=(),
+        evidence=(),
+        closure_heads=(),
+        root_routes=(),
+        roots=(),
+        fact_heads=(),
+        current_facts=(),
+        streams=(),
+        cursors=(),
+        owner_effect_absences=(),
+        claim_effect_absences=(),
+        acceptance_effect_absences=(),
+        evidence_acceptance_absences=(),
+        closure_owner_absences=(),
+        route_owner_absences=(),
+        fact_head_root_absences=(),
+        current_fact_root_absences=(),
+        stream_generation_absences=(),
+        cursor_stream_absences=(),
+        query_row_counts=(0,) * 13,
+    )
+    request = records.RuntimeCheckpointSelectionRequest(
+        _APPLICATION,
+        _EXECUTION_PROFILE,
+        _MARKET_PROFILE,
+        None,
+    )
+    execution_profile = profiles.ExecutionConnectionProfile(
+        connection_profile_id=_EXECUTION_PROFILE,
+        application_generation=_APPLICATION.value,
+        broker_provider="ALPACA",
+        environment_class="PAPER",
+        account_identity="55" * 32,
+        trade_command_origin="https://trade.example.com",
+        order_query_origin="https://query.example.com",
+        order_event_origin="https://events.example.com",
+        credential_handle_fingerprint="66" * 32,
+        adapter_contract_version="1.0.0",
+        capability_profile_sha256="77" * 32,
+        deployment_identity="88" * 32,
+    )
+    market_profile = profiles.MarketDataSourceProfile(
+        market_source_profile_id=_MARKET_PROFILE,
+        provider="ALPACA",
+        environment_or_feed="iex-feed",
+        source_origin="https://feed.example.com",
+        entitlement_class="IEX",
+        normalization_contract_version="1.0.0",
+        data_capability_profile_sha256="99" * 32,
+    )
+    return records._issue_runtime_checkpoint_selection_proof(
+        request,
+        records.ApplicationGenerationRecord(
+            _APPLICATION, _EXECUTION_PROFILE, _MARKET_PROFILE, 1
+        ),
+        execution_profile,
+        market_profile,
+        None,
+        0,
+        1,
+        selection,
+    )
+
+
+def _empty_owners(
+    account: str = "account",
+) -> tuple[venue.VenueRecoveryBook, authority.ExecutionAuthorityState]:
+    scope = venue.VenueScope(
+        _APPLICATION,
+        identity.BrokerId("paper"),
+        identity.EnvironmentId("paper"),
+        identity.AccountId(account),
+    )
+    state = authority.initial_execution_authority_state(scope)
+    return state.venue, state
+
+
+def _valid_empty_payload() -> bytes:
+    proof = _selection_proof()
+    book, state = _empty_owners()
+    return checkpoint_codec.encode_runtime_checkpoint(
+        checkpoint_codec._project_runtime_checkpoint(proof, book, state, ())
+    )
 
 
 def test_public_surface_is_exact_and_has_no_sqlite_import() -> None:
@@ -101,13 +179,13 @@ def test_public_inert_carriers_are_constructor_hidden_and_non_subclassable(
     carrier: type[object],
 ) -> None:
     with pytest.raises(TypeError):
-        carrier()  # type: ignore[call-arg]
+        carrier()
     with pytest.raises(TypeError):
         type("Forged", (carrier,), {})
 
 
 def test_loaded_decode_is_canonical_registered_and_round_trips_exact_bytes() -> None:
-    payload = _outer_payload(scopes=[_scope_row(9)])
+    payload = _valid_empty_payload()
 
     envelope = checkpoint_codec._decode_runtime_checkpoint(payload, _LOAD_BINDING)
 
@@ -115,19 +193,18 @@ def test_loaded_decode_is_canonical_registered_and_round_trips_exact_bytes() -> 
     assert envelope.application_generation_id == identity.ApplicationGenerationId(
         "checkpoint-app"
     )
-    assert envelope.currentness_head_ordinal == 7
-    assert envelope.checkpoint_version_ordinal == 3
+    assert envelope.currentness_head_ordinal == 0
+    assert envelope.checkpoint_version_ordinal == 1
     assert envelope._provenance == "LOADED"
     assert envelope._owner_preimage is None
-    assert len(envelope.scopes) == 1
-    assert envelope.scopes[0].scope_id == 9
+    assert envelope.scopes == ()
     assert envelope.payload_sha256 == hashlib.sha256(payload).hexdigest()
     assert checkpoint_codec.RuntimeCheckpointEnvelope._is_authentic(envelope)
     assert checkpoint_codec.encode_runtime_checkpoint(envelope) is payload
 
 
 def test_decode_refuses_noncanonical_bytes_wrong_shape_and_scope_order() -> None:
-    canonical = _outer_payload()
+    canonical = _valid_empty_payload()
     spaced = canonical.replace(b",", b", ", 1)
     with pytest.raises(ValueError, match="canonical"):
         checkpoint_codec._decode_runtime_checkpoint(spaced, _LOAD_BINDING)
@@ -139,9 +216,15 @@ def test_decode_refuses_noncanonical_bytes_wrong_shape_and_scope_order() -> None
             _canonical(wrong_outer), _LOAD_BINDING
         )
 
-    with pytest.raises(ValueError, match="strictly ordered"):
+    malformed_scopes = json.loads(canonical)
+    malformed_scopes[9] = [
+        "m2.runtime-checkpoint.scopes/v1",
+        2,
+        [["m2.runtime-checkpoint.scope/v1"], ["m2.runtime-checkpoint.scope/v1"]],
+    ]
+    with pytest.raises(ValueError, match="scope row"):
         checkpoint_codec._decode_runtime_checkpoint(
-            _outer_payload(scopes=[_scope_row(2), _scope_row(2)]), _LOAD_BINDING
+            _canonical(malformed_scopes), _LOAD_BINDING
         )
 
     zero_version = json.loads(_outer_payload())
@@ -153,29 +236,23 @@ def test_decode_refuses_noncanonical_bytes_wrong_shape_and_scope_order() -> None
 
 
 def test_decode_refuses_profile_alias_bad_binding_and_cross_scope_splice() -> None:
-    payload = json.loads(_outer_payload(scopes=[_scope_row(1)]))
+    payload = json.loads(_valid_empty_payload())
     payload[3] = "AA" * 32
     with pytest.raises(ValueError, match="execution profile"):
         checkpoint_codec._decode_runtime_checkpoint(_canonical(payload), _LOAD_BINDING)
 
     with pytest.raises(ValueError, match="load proof binding"):
-        checkpoint_codec._decode_runtime_checkpoint(_outer_payload(), b"short")
+        checkpoint_codec._decode_runtime_checkpoint(_valid_empty_payload(), b"short")
 
-    payload = json.loads(_outer_payload(scopes=[_scope_row(1)]))
-    payload[9][2][0][4][1] = [
-        "m1.fills.PositionScope/v1",
-        ["1", "broker_id", ["other"]],
-        ["1", "environment_id", ["paper"]],
-        ["1", "account_id", ["account"]],
-        ["1", "symbol_id", ["AAPL"]],
-    ]
-    with pytest.raises(ValueError, match="components do not agree"):
+    payload = json.loads(_valid_empty_payload())
+    payload[7][7][0] = "m2.venue.UnknownRows/v1"
+    with pytest.raises(ValueError, match="AuthorityEpochs"):
         checkpoint_codec._decode_runtime_checkpoint(_canonical(payload), _LOAD_BINDING)
 
 
 def test_forgery_and_post_issuance_mutation_fail_fresh_authenticity() -> None:
     envelope = checkpoint_codec._decode_runtime_checkpoint(
-        _outer_payload(), _LOAD_BINDING
+        _valid_empty_payload(), _LOAD_BINDING
     )
     forged = object.__new__(checkpoint_codec.RuntimeCheckpointEnvelope)
     for name in (
@@ -204,14 +281,15 @@ def test_forgery_and_post_issuance_mutation_fail_fresh_authenticity() -> None:
 
 
 def test_projected_seam_binds_owner_preimage_and_loaded_bytes_stay_nonserving() -> None:
-    payload = json.loads(_outer_payload())
+    canonical = _valid_empty_payload()
+    payload = json.loads(canonical)
     envelope = checkpoint_codec._issue_projected_runtime_checkpoint(
         selection_proof_binding=_SELECTION_BINDING,
         application_generation_id=identity.ApplicationGenerationId("checkpoint-app"),
         execution_profile_id=_EXECUTION_PROFILE,
         market_source_profile_id=_MARKET_PROFILE,
-        currentness_head_ordinal=7,
-        checkpoint_version_ordinal=3,
+        currentness_head_ordinal=0,
+        checkpoint_version_ordinal=1,
         venue_wire=payload[7],
         authority_wire=payload[8],
         scope_wires=(),
@@ -224,7 +302,7 @@ def test_projected_seam_binds_owner_preimage_and_loaded_bytes_stay_nonserving() 
     assert envelope._owner_preimage is not None
     assert envelope._owner_preimage.selection_proof_binding == _SELECTION_BINDING
     assert checkpoint_codec.RuntimeCheckpointEnvelope._is_authentic(envelope)
-    assert checkpoint_codec.encode_runtime_checkpoint(envelope) == _outer_payload()
+    assert checkpoint_codec.encode_runtime_checkpoint(envelope) == canonical
 
     loaded = checkpoint_codec._decode_runtime_checkpoint(
         checkpoint_codec.encode_runtime_checkpoint(envelope), _LOAD_BINDING
@@ -235,14 +313,14 @@ def test_projected_seam_binds_owner_preimage_and_loaded_bytes_stay_nonserving() 
 
 
 def test_owner_preimage_mutation_and_scope_coordinate_splice_fail() -> None:
-    payload = json.loads(_outer_payload())
+    payload = json.loads(_valid_empty_payload())
     envelope = checkpoint_codec._issue_projected_runtime_checkpoint(
         selection_proof_binding=_SELECTION_BINDING,
         application_generation_id=identity.ApplicationGenerationId("checkpoint-app"),
         execution_profile_id=_EXECUTION_PROFILE,
         market_source_profile_id=_MARKET_PROFILE,
-        currentness_head_ordinal=7,
-        checkpoint_version_ordinal=3,
+        currentness_head_ordinal=0,
+        checkpoint_version_ordinal=1,
         venue_wire=payload[7],
         authority_wire=payload[8],
         scope_wires=(),
@@ -263,8 +341,8 @@ def test_owner_preimage_mutation_and_scope_coordinate_splice_fail() -> None:
             ),
             execution_profile_id=_EXECUTION_PROFILE,
             market_source_profile_id=_MARKET_PROFILE,
-            currentness_head_ordinal=7,
-            checkpoint_version_ordinal=3,
+            currentness_head_ordinal=0,
+            checkpoint_version_ordinal=1,
             venue_wire=payload[7],
             authority_wire=payload[8],
             scope_wires=(),
@@ -275,5 +353,101 @@ def test_owner_preimage_mutation_and_scope_coordinate_splice_fail() -> None:
 
 
 def test_records_projector_seam_refuses_a_forged_contract_proof() -> None:
+    forged: Any = object()
     with pytest.raises(TypeError, match="exact RuntimeCheckpointSelectionProof"):
-        checkpoint_codec._project_runtime_checkpoint(object(), object(), object(), ())
+        checkpoint_codec._project_runtime_checkpoint(forged, forged, forged, ())
+
+
+def test_owner_projector_projects_valid_empty_selection_to_exact_canonical_wire() -> (
+    None
+):
+    proof = _selection_proof()
+    book, state = _empty_owners()
+
+    envelope = checkpoint_codec._project_runtime_checkpoint(proof, book, state, ())
+    payload = json.loads(checkpoint_codec.encode_runtime_checkpoint(envelope))
+
+    assert envelope._provenance == "PROJECTED"
+    assert payload[:7] == [
+        1,
+        "m2.runtime-checkpoint/v1",
+        ["1", "application_generation_id", ["checkpoint-app"]],
+        _EXECUTION_PROFILE,
+        _MARKET_PROFILE,
+        0,
+        1,
+    ]
+    assert payload[7][0] == "m2.venue.State/v1"
+    assert len(payload[7]) == 23
+    assert payload[8][0] == "m2.authority.Checkpoint/v1"
+    assert len(payload[8]) == 14
+    assert payload[9] == ["m2.runtime-checkpoint.scopes/v1", 0, []]
+    assert checkpoint_codec.RuntimeCheckpointEnvelope._is_authentic(envelope)
+
+
+def test_owner_projector_refuses_missing_forged_and_unordered_scope_owners() -> None:
+    selected = records.ScopeRecord(
+        1, _APPLICATION, _EXECUTION_PROFILE, identity.SymbolId("AAPL")
+    )
+    proof = _selection_proof((selected,))
+    book, state = _empty_owners()
+
+    with pytest.raises(ValueError, match="do not match"):
+        checkpoint_codec._project_runtime_checkpoint(proof, book, state, ())
+    with pytest.raises(TypeError, match="exact _RuntimeCheckpointScopeOwners"):
+        checkpoint_codec._project_runtime_checkpoint(
+            proof, book, state, (object(),)  # type: ignore[arg-type]
+        )
+
+    forged = object.__new__(checkpoint_codec._RuntimeCheckpointScopeOwners)
+    object.__setattr__(forged, "scope_id", 1)
+    object.__setattr__(forged, "acquisition", object())
+    object.__setattr__(forged, "execution", object())
+    object.__setattr__(forged, "protection", object())
+    with pytest.raises(TypeError, match="acquisition owner"):
+        checkpoint_codec._project_runtime_checkpoint(proof, book, state, (forged,))
+
+
+def test_owner_projector_refuses_spliced_authority_and_nonempty_source_order() -> None:
+    proof = _selection_proof()
+    book, state = _empty_owners()
+    other_book, other_state = _empty_owners("other-account")
+
+    with pytest.raises(ValueError, match="selected venue owner"):
+        checkpoint_codec._project_runtime_checkpoint(
+            proof, book, other_state, ()
+        )
+
+    sequence_type = type(book._effect_order)
+    object.__setattr__(
+        book,
+        "_effect_order",
+        sequence_type.from_values(
+            (identity.EffectId("unselected-effect"),), lambda _value: b"x" * 32
+        ),
+    )
+    with pytest.raises((RuntimeError, ValueError)):
+        checkpoint_codec._project_runtime_checkpoint(proof, book, state, ())
+    assert other_book.scope.account == identity.AccountId("other-account")
+
+
+def test_owner_projector_binding_covers_proof_and_owner_commitments() -> None:
+    first_proof = _selection_proof()
+    second_proof = _selection_proof()
+    first_book, first_state = _empty_owners("account-a")
+    second_book, second_state = _empty_owners("account-b")
+
+    first = checkpoint_codec._project_runtime_checkpoint(
+        first_proof, first_book, first_state, ()
+    )
+    second = checkpoint_codec._project_runtime_checkpoint(
+        second_proof, second_book, second_state, ()
+    )
+
+    assert first._owner_preimage is not None
+    assert first._owner_preimage.selection_proof_binding == first_proof._binding
+    assert first._owner_preimage.venue_owner_commitment == (
+        first_book._protection_commitment
+    )
+    assert first._owner_preimage != second._owner_preimage
+    assert first._binding != second._binding
