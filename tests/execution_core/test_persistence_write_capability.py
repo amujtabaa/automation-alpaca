@@ -99,9 +99,19 @@ def _name_is_rebound(
     name: str,
     *,
     permitted_function: ast.FunctionDef | None = None,
+    permitted_import: ast.alias | None = None,
 ) -> bool:
     for node in ast.walk(tree):
-        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                bound_name = alias.asname or (
+                    alias.name.split(".", 1)[0]
+                    if isinstance(node, ast.Import)
+                    else alias.name
+                )
+                if bound_name == name and alias is not permitted_import:
+                    return True
+        elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
             if node.id == name:
                 return True
         elif isinstance(node, ast.arg) and node.arg == name:
@@ -152,7 +162,7 @@ def _parent_map(tree: ast.AST) -> dict[ast.AST, ast.AST]:
 
 
 def _canonical_support_import(tree: ast.Module) -> bool:
-    imports: list[tuple[bool, str | None, str, str | None]] = []
+    imports: list[tuple[bool, str | None, ast.alias]] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
@@ -160,7 +170,7 @@ def _canonical_support_import(tree: ast.Module) -> bool:
                     alias.name == "persistence_setup_support"
                     or alias.asname == "setup_support"
                 ):
-                    imports.append((node in tree.body, None, alias.name, alias.asname))
+                    imports.append((node in tree.body, None, alias))
         elif isinstance(node, ast.ImportFrom):
             for alias in node.names:
                 if (
@@ -168,12 +178,17 @@ def _canonical_support_import(tree: ast.Module) -> bool:
                     or alias.name == "persistence_setup_support"
                     or alias.asname == "setup_support"
                 ):
-                    imports.append(
-                        (node in tree.body, node.module, alias.name, alias.asname)
-                    )
-    return imports == [
-        (True, None, "persistence_setup_support", "setup_support")
-    ] and not _name_is_rebound(tree, "setup_support")
+                    imports.append((node in tree.body, node.module, alias))
+    if len(imports) != 1:
+        return False
+    top_level, module, alias = imports[0]
+    return bool(
+        top_level
+        and module is None
+        and alias.name == "persistence_setup_support"
+        and alias.asname == "setup_support"
+        and not _name_is_rebound(tree, "setup_support", permitted_import=alias)
+    )
 
 
 def _fixture_setup_helper_is_exact(tree: ast.Module) -> bool:
@@ -270,7 +285,7 @@ def _fixture_apply_helper_is_exact(tree: ast.Module) -> bool:
 
 
 def _repository_import_is_canonical(tree: ast.Module) -> bool:
-    bindings: list[str] = []
+    imports: list[tuple[bool, str | None, ast.alias]] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
@@ -278,26 +293,36 @@ def _repository_import_is_canonical(tree: ast.Module) -> bool:
                     "app.execution_core.persistence",
                     "app.execution_core.persistence.repository",
                 }:
-                    bindings.append(
-                        "repository"
-                        if node in tree.body
-                        and alias.name.endswith(".repository")
-                        and alias.asname == "repository"
-                        else "forbidden"
-                    )
+                    imports.append((node in tree.body, None, alias))
         elif isinstance(node, ast.ImportFrom):
             if node.module == "app.execution_core.persistence.repository":
-                bindings.append("forbidden")
+                for alias in node.names:
+                    imports.append((node in tree.body, node.module, alias))
             elif node.module == "app.execution_core.persistence":
                 for alias in node.names:
                     if alias.name == "repository":
-                        bindings.append(
-                            "repository"
-                            if node in tree.body
-                            and alias.asname in {None, "repository"}
-                            else "forbidden"
-                        )
-    return bindings == ["repository"] and not _name_is_rebound(tree, "repository")
+                        imports.append((node in tree.body, node.module, alias))
+    if len(imports) != 1:
+        return False
+    top_level, module, alias = imports[0]
+    canonical = bool(
+        top_level
+        and (
+            (
+                module is None
+                and alias.name == "app.execution_core.persistence.repository"
+                and alias.asname == "repository"
+            )
+            or (
+                module == "app.execution_core.persistence"
+                and alias.name == "repository"
+                and alias.asname in {None, "repository"}
+            )
+        )
+    )
+    return canonical and not _name_is_rebound(
+        tree, "repository", permitted_import=alias
+    )
 
 
 def _direct_mutator(expression: ast.expr) -> str | None:
@@ -332,11 +357,23 @@ def _literal_rows(
     return None
 
 
+def _lexical_scope(
+    node: ast.AST,
+    parents: dict[ast.AST, ast.AST],
+) -> ast.AST:
+    scope = node
+    while not isinstance(
+        scope, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.Module)
+    ):
+        scope = parents[scope]
+    return scope
+
+
 def _canonical_mutator_loop(
     loop: ast.For,
     assignments: dict[tuple[ast.AST, str], list[ast.expr]],
     parents: dict[ast.AST, ast.AST],
-) -> set[ast.Attribute] | None:
+) -> tuple[set[ast.Attribute], set[ast.Name], ast.AST] | None:
     if not (
         isinstance(loop.target, (ast.Tuple, ast.List))
         and loop.target.elts
@@ -344,9 +381,7 @@ def _canonical_mutator_loop(
         and loop.target.elts[0].id == "operation"
     ):
         return None
-    scope: ast.AST = loop
-    while not isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Module)):
-        scope = parents[scope]
+    scope = _lexical_scope(loop, parents)
     rows = _literal_rows(
         loop.iter,
         assignments,
@@ -356,6 +391,7 @@ def _canonical_mutator_loop(
     if not rows:
         return None
     allowed: set[ast.Attribute] = set()
+    allowed_operation_names: set[ast.Name] = {loop.target.elts[0]}
     for row in rows:
         if not isinstance(row, (ast.Tuple, ast.List)) or not row.elts:
             return None
@@ -365,17 +401,19 @@ def _canonical_mutator_loop(
         allowed.add(row.elts[0])
 
     for node in ast.walk(loop):
-        if not (
-            isinstance(node, ast.Name)
-            and isinstance(node.ctx, ast.Load)
-            and node.id == "operation"
-        ):
+        if not isinstance(node, ast.Name) or node.id != "operation":
             continue
+        if isinstance(node.ctx, ast.Store):
+            if node is loop.target.elts[0]:
+                continue
+            return None
         parent = parents[node]
         if isinstance(parent, ast.Attribute) and parent.attr == "__name__":
+            allowed_operation_names.add(node)
             continue
         if isinstance(parent, ast.Call) and parent.func is node:
             if _call_has_exact_capability(parent):
+                allowed_operation_names.add(node)
                 continue
         if isinstance(parent, ast.Call) and isinstance(parent.func, ast.Name):
             if (
@@ -383,9 +421,10 @@ def _canonical_mutator_loop(
                 and len(parent.args) > 1
                 and parent.args[1] is node
             ):
+                allowed_operation_names.add(node)
                 continue
         return None
-    return allowed
+    return allowed, allowed_operation_names, scope
 
 
 def _repository_escape_violations(
@@ -426,6 +465,63 @@ def _repository_escape_violations(
     return violations
 
 
+def _has_dynamic_namespace_recovery(
+    tree: ast.Module,
+    parents: dict[ast.AST, ast.AST],
+) -> bool:
+    """Reject module/global recovery outside the one public-export assertion."""
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            if any(alias.name == "importlib" for alias in node.names):
+                return True
+        elif isinstance(node, ast.ImportFrom) and node.module == "importlib":
+            return True
+        elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+            if node.id == "__builtins__":
+                return True
+            if node.id in {"__import__", "globals", "locals", "vars"}:
+                parent = parents[node]
+                if not (
+                    node.id == "vars"
+                    and isinstance(parent, ast.Call)
+                    and parent.func is node
+                    and len(parent.args) == 1
+                    and not parent.keywords
+                    and isinstance(parent.args[0], ast.Name)
+                    and parent.args[0].id in {"records", "repository"}
+                    and isinstance(parents.get(parent), ast.comprehension)
+                ):
+                    return True
+        elif isinstance(node, ast.Attribute) and node.attr == "modules":
+            return True
+        elif isinstance(node, ast.Subscript):
+            if isinstance(node.value, ast.Attribute) and node.value.attr == "modules":
+                return True
+        elif isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Name) and node.func.id in {
+                "__import__",
+                "globals",
+                "locals",
+            }:
+                return True
+            if isinstance(node.func, ast.Attribute) and node.func.attr in {
+                "__import__",
+                "import_module",
+            }:
+                return True
+            if isinstance(node.func, ast.Name) and node.func.id == "vars":
+                if not (
+                    len(node.args) == 1
+                    and not node.keywords
+                    and isinstance(node.args[0], ast.Name)
+                    and node.args[0].id in {"records", "repository"}
+                    and isinstance(parents.get(node), ast.comprehension)
+                ):
+                    return True
+    return False
+
+
 def _fixture_mutator_capability_violations(source: str) -> tuple[str, ...]:
     """Enforce the three fixtures' closed, syntax-level mutator grammar."""
 
@@ -434,6 +530,8 @@ def _fixture_mutator_capability_violations(source: str) -> tuple[str, ...]:
     violations: list[str] = []
     if not _repository_import_is_canonical(tree):
         violations.append("repository-import-or-alias")
+    if _has_dynamic_namespace_recovery(tree, parents):
+        violations.append("dynamic-namespace-recovery")
 
     assignments: dict[tuple[ast.AST, str], list[ast.expr]] = {}
     for node in ast.walk(tree):
@@ -442,17 +540,26 @@ def _fixture_mutator_capability_violations(source: str) -> tuple[str, ...]:
             and len(node.targets) == 1
             and isinstance(node.targets[0], ast.Name)
         ):
-            scope: ast.AST = node
-            while not isinstance(
-                scope, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Module)
-            ):
-                scope = parents[scope]
+            scope = _lexical_scope(node, parents)
             assignments.setdefault((scope, node.targets[0].id), []).append(node.value)
     loop_attributes: set[ast.Attribute] = set()
+    allowed_operation_names_by_scope: dict[ast.AST, set[ast.Name]] = {}
     for loop in (node for node in ast.walk(tree) if isinstance(node, ast.For)):
         candidate = _canonical_mutator_loop(loop, assignments, parents)
         if candidate is not None:
-            loop_attributes.update(candidate)
+            attributes, names, scope = candidate
+            loop_attributes.update(attributes)
+            allowed_operation_names_by_scope.setdefault(scope, set()).update(names)
+
+    for scope, allowed_names in allowed_operation_names_by_scope.items():
+        for node in ast.walk(scope):
+            if (
+                isinstance(node, ast.Name)
+                and node.id == "operation"
+                and _lexical_scope(node, parents) is scope
+                and node not in allowed_names
+            ):
+                violations.append("loop-operation-escape")
 
     for node in ast.walk(tree):
         mutator = _direct_mutator(node) if isinstance(node, ast.expr) else None
@@ -473,8 +580,11 @@ def _fixture_mutator_capability_violations(source: str) -> tuple[str, ...]:
 
 def _fixture_helper_shape_is_exact(source: str, *, require_apply_helper: bool) -> bool:
     tree = ast.parse(source)
-    return _fixture_setup_helper_is_exact(tree) and (
-        not require_apply_helper or _fixture_apply_helper_is_exact(tree)
+    parents = _parent_map(tree)
+    return (
+        not _has_dynamic_namespace_recovery(tree, parents)
+        and _fixture_setup_helper_is_exact(tree)
+        and (not require_apply_helper or _fixture_apply_helper_is_exact(tree))
     )
 
 
@@ -653,6 +763,29 @@ from app.execution_core.persistence import repository
 for operation, value in ((repository.store_scope, record),):
     dispatch(connection, writer=operation)
 """,
+        "loop-after-scope": """
+from app.execution_core.persistence import repository
+for operation, value in ((repository.store_scope, record),):
+    pass
+operation(connection, value, capability=_setup_write_capability(connection))
+""",
+        "loop-rebinding": """
+from app.execution_core.persistence import repository
+for operation, value in ((repository.store_scope, record),):
+    operation = unsafe_writer
+    operation(connection, value, capability=_setup_write_capability(connection))
+""",
+        "dynamic-import": """
+import importlib
+from app.execution_core.persistence import repository
+other = importlib.import_module("app.execution_core.persistence.repository")
+other.store_scope(connection, record)
+""",
+        "globals-recovery": """
+from app.execution_core.persistence import repository
+other = globals()["repository"]
+vars(other)["store_scope"](connection, record)
+""",
         "private-issuer": """
 from app.execution_core.persistence import repository
 repository._issue_setup_write_capability(connection)
@@ -689,6 +822,11 @@ def _apply_mutator(connection, operation, *arguments):
             "connection, operation, *arguments",
             "connection, operation, extra, *arguments",
         ),
+        "from fixture_helpers import apply as _apply_mutator\n" + valid,
+        valid
+        + "\nimport importlib\n"
+        + "other = importlib.import_module('persistence_setup_support')\n"
+        + "other.issue_setup_write_capability = fake\n",
     )
     for mutant in mutants:
         assert not _fixture_helper_shape_is_exact(mutant, require_apply_helper=True)
