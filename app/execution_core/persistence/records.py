@@ -13,7 +13,9 @@ import enum as _enum
 from dataclasses import dataclass as _dataclass
 from typing import Generic as _Generic
 from typing import TypeVar as _TypeVar
+from typing import cast as _cast
 
+from .. import durable_codec as _durable_codec
 from .. import identity as _identity
 from .. import profiles as _profiles
 from .. import values as _values
@@ -438,6 +440,402 @@ def _current_proof_optional_stream_binding(
     )
 
 
+def _current_proof_durable_atom_binding(atom: _durable_codec.DurableAtom) -> bytes:
+    """Encode one exact M1 atom without reflection or a generic record codec."""
+
+    if (
+        type(atom) is not _durable_codec.DurableAtom
+        or type(atom.contract_version) is not str
+        or type(atom.type_tag) is not str
+        or type(atom.fields) is not tuple
+    ):
+        raise ValueError("current proof durable atom is invalid")
+    fields: list[bytes] = []
+    for field in atom.fields:
+        if type(field) is str:
+            fields.append(
+                _commit_parts(
+                    b"execution-core/current-proof/atom-text/v1",
+                    _encode_text(field),
+                )
+            )
+        elif type(field) is _durable_codec.DurableAtom:
+            fields.append(_current_proof_durable_atom_binding(field))
+        else:
+            raise ValueError("current proof durable atom field is invalid")
+    return _commit_parts(
+        b"execution-core/current-proof/durable-atom/v1",
+        _encode_text(atom.contract_version),
+        _encode_text(atom.type_tag),
+        _encode_int(len(fields)),
+        *fields,
+    )
+
+
+def _current_proof_m1_value_binding(value: object) -> bytes:
+    """Bind one exact M1 value or identity through its owner codec."""
+
+    try:
+        atom = _durable_codec.encode_m1_value(_cast(_durable_codec._OwningValue, value))
+    except (TypeError, ValueError, OverflowError) as error:
+        raise ValueError("current proof record has an invalid M1 value") from error
+    return _commit_parts(
+        b"execution-core/current-proof/m1-value/v1",
+        _current_proof_durable_atom_binding(atom),
+    )
+
+
+def _current_proof_record_field_binding(value: object) -> bytes:
+    """Bind one closed record field with an exact scalar or owned M1 encoding."""
+
+    if value is None:
+        return _commit_parts(b"execution-core/current-proof/field/absent/v1")
+    if type(value) is bool:
+        return _commit_parts(
+            b"execution-core/current-proof/field/bool/v1",
+            b"\x01" if value else b"\x00",
+        )
+    if type(value) is int:
+        return _commit_parts(
+            b"execution-core/current-proof/field/int/v1",
+            _encode_int(value),
+        )
+    if type(value) is str:
+        return _commit_parts(
+            b"execution-core/current-proof/field/text/v1",
+            _encode_text(value),
+        )
+    if type(value) is bytes:
+        return _commit_parts(b"execution-core/current-proof/field/bytes/v1", value)
+    return _current_proof_m1_value_binding(value)
+
+
+def _current_proof_record_binding(
+    tag: bytes,
+    fields: tuple[object, ...],
+) -> bytes:
+    """Bind one explicitly enumerated record without dataclass reflection."""
+
+    if type(tag) is not bytes or type(fields) is not tuple:
+        raise ValueError("current proof record binding shape is invalid")
+    return _commit_parts(
+        b"execution-core/current-proof/record/v1",
+        tag,
+        _encode_int(len(fields)),
+        *(_current_proof_record_field_binding(field) for field in fields),
+    )
+
+
+def _current_proof_optional_record_binding(record: object) -> bytes:
+    """Bind every exact optional direct row carried by ``CurrentProofSlice``."""
+
+    if record is None:
+        return _commit_parts(b"execution-core/current-proof/record/absent/v1")
+    if type(record) is RootFillRecord:
+        return _current_proof_record_binding(
+            b"root-fill/v1",
+            (
+                record.root_fill_key_id,
+                record.scope_id,
+                record.application_generation_id,
+                record.execution_profile_id,
+                record.owner_generation_id,
+                record.root_fill_id,
+                record.current_fact_id,
+                record.current_kind,
+                record.current_authority,
+                record.current_side,
+                record.current_quantity,
+                record.current_price,
+                record.economics_head_ordinal,
+            ),
+        )
+    if type(record) is AcquisitionRootRouteRecord:
+        return _current_proof_record_binding(
+            b"acquisition-root-route/v1",
+            (
+                record.root_fill_key_id,
+                record.scope_id,
+                record.application_generation_id,
+                record.execution_profile_id,
+                record.acquisition_generation_id,
+                record.effect_id,
+                record.owner_id,
+                record.observation_id,
+            ),
+        )
+    if type(record) is ExecutionFactHeadRecord:
+        return _current_proof_record_binding(
+            b"execution-fact-head/v1",
+            (record.root_fill_key_id, record.fact_id, record.fact_ordinal),
+        )
+    if type(record) is ExecutionFactRecord:
+        return _current_proof_record_binding(
+            b"execution-fact/v1",
+            (
+                record.fact_id,
+                record.scope_id,
+                record.application_generation_id,
+                record.execution_profile_id,
+                record.root_fill_key_id,
+                record.source_event_id,
+                record.order_id,
+                record.side,
+                record.kind,
+                record.authority,
+                record.quantity,
+                record.price,
+                record.request_occurrence_id,
+                record.claim_occurrence_id,
+                record.prior_cumulative_quantity,
+                record.resulting_cumulative_quantity,
+                record.actor_id,
+                record.reason_text,
+                record.evidence_reference,
+                record.predecessor_fact_id,
+                record.fact_ordinal,
+            ),
+        )
+    if type(record) is VenueEffectRecord:
+        return _current_proof_record_binding(
+            b"venue-effect/v1",
+            (
+                record.effect_id,
+                record.effect_external,
+                record.scope_id,
+                record.application_generation_id,
+                record.execution_profile_id,
+                record.acquisition_generation_id,
+                record.generation_mandate_commitment_sha256,
+                record.expected_controller_head_ordinal,
+                record.expected_protection_version_ordinal,
+                record.authority_class,
+                record.request_occurrence_id,
+                record.mandate_id,
+                record.effect_kind,
+                record.client_order_id,
+                record.target_order_id,
+                record.side,
+                record.quantity,
+                record.economic_scope,
+                record.lifecycle_state,
+                record.disposition,
+                record.closure_proof_kind,
+                record.closure_proof_digest,
+                record.closure_proof_evidence_id,
+                record.closure_proof_claim_id,
+                record.created_ordinal,
+            ),
+        )
+    if type(record) is DispatchClaimRecord:
+        return _current_proof_record_binding(
+            b"dispatch-claim/v1",
+            (
+                record.claim_id,
+                record.effect_id,
+                record.execution_profile_id,
+                record.claim_occurrence_id,
+                record.claim_ordinal,
+            ),
+        )
+    if type(record) is VenueIdentityOwnerRecord:
+        return _current_proof_record_binding(
+            b"venue-identity-owner/v1",
+            (
+                record.scope_id,
+                record.execution_profile_id,
+                record.owner_id,
+                record.observation_id,
+                record.effect_id,
+                record.root_fill_key_id,
+                record.owner_generation_id,
+                record.admitted_after_effect_closed,
+            ),
+        )
+    if type(record) is AcceptanceSetRecord:
+        return _current_proof_record_binding(
+            b"acceptance-set/v1",
+            (record.acceptance_set_id, record.effect_id),
+        )
+    if type(record) is AcceptanceEvidenceRecord:
+        return _current_proof_record_binding(
+            b"acceptance-evidence/v1",
+            (
+                record.evidence_id,
+                record.acceptance_set_id,
+                record.effect_id,
+                record.evidence_kind,
+                record.proof_kind,
+                record.evidence_digest,
+                record.evidence_ordinal,
+                record.contradiction_owner_id,
+                record.contradiction_observation_id,
+            ),
+        )
+    if type(record) is ClosureChainRecord:
+        return _current_proof_record_binding(
+            b"closure-chain/v1",
+            (
+                record.closure_id,
+                record.scope_id,
+                record.owner_id,
+                record.ordinal,
+                record.effect_id,
+                record.closure_kind,
+                record.predecessor_closure_id,
+            ),
+        )
+    raise ValueError("current proof has an unknown optional record")
+
+
+def _current_proof_optional_rows_binding(proof: CurrentProofSlice) -> bytes:
+    """Validate and bind the full direct-row selection carried by one proof."""
+
+    request = proof.request
+    application = proof.application_generation
+    scope = proof.scope
+    acquisition = proof.acquisition_generation
+    controller = proof.symbol_controller
+    authority = proof.protection_authority
+    root = proof.root_fill
+    route = proof.acquisition_root_route
+    fact_head = proof.execution_fact_head
+    current_fact = proof.current_execution_fact
+    effect = proof.venue_effect
+    claim = proof.dispatch_claim
+    owner = proof.venue_owner
+    acceptance = proof.acceptance_set
+    evidence = proof.acceptance_evidence
+    closure = proof.closure_head
+
+    if request.root_fill_key_id is None:
+        if any(value is not None for value in (root, route, fact_head, current_fact)):
+            raise ValueError("current proof has unrequested root rows")
+    else:
+        if (
+            type(root) is not RootFillRecord
+            or type(route) is not AcquisitionRootRouteRecord
+            or type(fact_head) is not ExecutionFactHeadRecord
+            or type(current_fact) is not ExecutionFactRecord
+            or root.root_fill_key_id != request.root_fill_key_id
+            or root.scope_id != scope.scope_id
+            or root.application_generation_id != application.application_generation_id
+            or root.execution_profile_id != scope.execution_profile_id
+            or root.owner_generation_id != acquisition.acquisition_generation_id
+            or route.root_fill_key_id != root.root_fill_key_id
+            or route.scope_id != scope.scope_id
+            or route.application_generation_id != application.application_generation_id
+            or route.execution_profile_id != scope.execution_profile_id
+            or route.acquisition_generation_id != acquisition.acquisition_generation_id
+            or root.current_fact_id != fact_head.fact_id
+            or root.economics_head_ordinal != fact_head.fact_ordinal
+            or current_fact.root_fill_key_id != root.root_fill_key_id
+            or current_fact.scope_id != scope.scope_id
+            or current_fact.application_generation_id
+            != application.application_generation_id
+            or current_fact.execution_profile_id != scope.execution_profile_id
+            or current_fact.fact_id != fact_head.fact_id
+            or current_fact.fact_ordinal != fact_head.fact_ordinal
+            or root.current_kind != current_fact.kind
+            or root.current_authority != current_fact.authority
+            or root.current_side != current_fact.side
+            or root.current_quantity != current_fact.quantity
+            or root.current_price != current_fact.price
+        ):
+            raise ValueError("current proof root rows do not agree")
+
+    if request.effect_id is None:
+        if effect is not None or claim is not None:
+            raise ValueError("current proof has unrequested effect rows")
+    else:
+        if (
+            type(effect) is not VenueEffectRecord
+            or effect.effect_id != request.effect_id
+            or effect.scope_id != scope.scope_id
+            or effect.application_generation_id != application.application_generation_id
+            or effect.execution_profile_id != scope.execution_profile_id
+            or effect.acquisition_generation_id != acquisition.acquisition_generation_id
+            or effect.generation_mandate_commitment_sha256
+            != acquisition.mandate_commitment_sha256
+            or effect.authority_class != authority.authority_class
+            or effect.expected_controller_head_ordinal
+            != controller.currentness_head_ordinal
+            or effect.expected_protection_version_ordinal != authority.version_ordinal
+        ):
+            raise ValueError("current proof effect row does not agree")
+        if effect.lifecycle_state in ("REQUESTED", "CANCELED_BEFORE_DISPATCH"):
+            if claim is not None:
+                raise ValueError("current proof has an unexpected dispatch claim")
+        elif (
+            type(claim) is not DispatchClaimRecord
+            or claim.effect_id != effect.effect_id
+            or claim.execution_profile_id != effect.execution_profile_id
+        ):
+            raise ValueError("current proof dispatch claim does not agree")
+        if route is not None and route.effect_id != effect.effect_id:
+            raise ValueError("current proof root route does not match effect")
+
+    if request.owner_id is None:
+        if owner is not None:
+            raise ValueError("current proof has an unrequested owner row")
+    else:
+        if (
+            type(effect) is not VenueEffectRecord
+            or type(owner) is not VenueIdentityOwnerRecord
+            or owner.owner_id != request.owner_id
+            or owner.scope_id != scope.scope_id
+            or owner.execution_profile_id != scope.execution_profile_id
+            or owner.effect_id != effect.effect_id
+            or owner.owner_generation_id != acquisition.acquisition_generation_id
+        ):
+            raise ValueError("current proof owner row does not agree")
+        if route is not None and (
+            route.owner_id != owner.owner_id
+            or route.observation_id != owner.observation_id
+        ):
+            raise ValueError("current proof root route does not match owner")
+
+    if request.require_acceptance:
+        if (
+            type(effect) is not VenueEffectRecord
+            or type(acceptance) is not AcceptanceSetRecord
+            or type(evidence) is not AcceptanceEvidenceRecord
+            or acceptance.effect_id != effect.effect_id
+            or evidence.acceptance_set_id != acceptance.acceptance_set_id
+            or evidence.effect_id != effect.effect_id
+        ):
+            raise ValueError("current proof acceptance rows do not agree")
+    elif acceptance is not None or evidence is not None:
+        raise ValueError("current proof has unrequested acceptance rows")
+
+    if request.require_closure:
+        if (
+            type(effect) is not VenueEffectRecord
+            or type(owner) is not VenueIdentityOwnerRecord
+            or type(closure) is not ClosureChainRecord
+            or closure.scope_id != scope.scope_id
+            or closure.owner_id != owner.owner_id
+            or closure.effect_id != effect.effect_id
+        ):
+            raise ValueError("current proof closure row does not agree")
+    elif closure is not None:
+        raise ValueError("current proof has an unrequested closure row")
+
+    return _commit_parts(
+        b"execution-core/current-proof/optional-rows/v1",
+        _current_proof_optional_record_binding(root),
+        _current_proof_optional_record_binding(route),
+        _current_proof_optional_record_binding(fact_head),
+        _current_proof_optional_record_binding(current_fact),
+        _current_proof_optional_record_binding(effect),
+        _current_proof_optional_record_binding(claim),
+        _current_proof_optional_record_binding(owner),
+        _current_proof_optional_record_binding(acceptance),
+        _current_proof_optional_record_binding(evidence),
+        _current_proof_optional_record_binding(closure),
+    )
+
+
 def _current_proof_slice_binding(proof: CurrentProofSlice) -> bytes:
     """Validate and bind the exact currentness envelope consumed by the codec."""
 
@@ -533,6 +931,7 @@ def _current_proof_slice_binding(proof: CurrentProofSlice) -> bytes:
     active_source_profile_id = authority.active_source_profile_id
     active_session_id = authority.active_session_id
     active_sequence_mode = authority.active_sequence_mode
+    optional_rows_binding = _current_proof_optional_rows_binding(proof)
     return _commit_parts(
         b"execution-core/current-proof/slice/v1",
         _current_proof_request_binding(request),
@@ -575,6 +974,7 @@ def _current_proof_slice_binding(proof: CurrentProofSlice) -> bytes:
         _encode_text(authority.state_commitment_sha256),
         _encode_int(authority.version_ordinal),
         stream_binding,
+        optional_rows_binding,
     )
 
 

@@ -639,6 +639,50 @@ def test_all_remaining_families_and_total_current_proof_round_trip(connection) -
     assert root_proof.kind is records.RepositoryOutcomeKind.FOUND
     assert root_proof.record is not None
     assert root_proof.record.current_execution_fact == _fact()
+    assert records.CurrentProofSlice._is_authentic(root_proof.record)
+    assert root_proof.record.root_fill is not None
+    assert root_proof.record.acquisition_root_route is not None
+    assert root_proof.record.execution_fact_head is not None
+    assert root_proof.record.current_execution_fact is not None
+    root_mutations = (
+        (
+            "root_fill",
+            dataclasses.replace(
+                root_proof.record.root_fill,
+                current_kind="TAMPERED",
+            ),
+        ),
+        (
+            "acquisition_root_route",
+            dataclasses.replace(
+                root_proof.record.acquisition_root_route,
+                owner_id=identity.OrderId("tampered-route-owner"),
+            ),
+        ),
+        (
+            "execution_fact_head",
+            dataclasses.replace(
+                root_proof.record.execution_fact_head,
+                fact_ordinal=root_proof.record.execution_fact_head.fact_ordinal + 1,
+            ),
+        ),
+        (
+            "current_execution_fact",
+            dataclasses.replace(
+                root_proof.record.current_execution_fact,
+                reason_text="tampered",
+            ),
+        ),
+    )
+    for field_name, replacement in root_mutations:
+        candidate = repository.load_current_proof(
+            connection,
+            records.CurrentProofRequest(APP_ID, 1, root_fill_key_id=1),
+        )
+        assert candidate.kind is records.RepositoryOutcomeKind.FOUND
+        assert candidate.record is not None
+        object.__setattr__(candidate.record, field_name, replacement)
+        assert not records.CurrentProofSlice._is_authentic(candidate.record)
 
     effect_proof = repository.load_current_proof(
         connection,
@@ -655,6 +699,72 @@ def test_all_remaining_families_and_total_current_proof_round_trip(connection) -
     assert effect_proof.record is not None
     assert effect_proof.record.dispatch_claim == claim
     assert effect_proof.record.closure_head == closure
+    assert records.CurrentProofSlice._is_authentic(effect_proof.record)
+    assert effect_proof.record.venue_effect is not None
+    assert effect_proof.record.dispatch_claim is not None
+    assert effect_proof.record.venue_owner is not None
+    assert effect_proof.record.acceptance_set is not None
+    assert effect_proof.record.acceptance_evidence is not None
+    assert effect_proof.record.closure_head is not None
+    effect_mutations = (
+        (
+            "venue_effect",
+            dataclasses.replace(
+                effect_proof.record.venue_effect, disposition="TAMPERED"
+            ),
+        ),
+        (
+            "dispatch_claim",
+            dataclasses.replace(
+                effect_proof.record.dispatch_claim,
+                claim_ordinal=effect_proof.record.dispatch_claim.claim_ordinal + 1,
+            ),
+        ),
+        (
+            "venue_owner",
+            dataclasses.replace(
+                effect_proof.record.venue_owner,
+                admitted_after_effect_closed=True,
+            ),
+        ),
+        (
+            "acceptance_set",
+            dataclasses.replace(
+                effect_proof.record.acceptance_set,
+                acceptance_set_id=effect_proof.record.acceptance_set.acceptance_set_id
+                + 1,
+            ),
+        ),
+        (
+            "acceptance_evidence",
+            dataclasses.replace(
+                effect_proof.record.acceptance_evidence,
+                evidence_kind="TAMPERED",
+            ),
+        ),
+        (
+            "closure_head",
+            dataclasses.replace(
+                effect_proof.record.closure_head, closure_kind="TAMPERED"
+            ),
+        ),
+    )
+    for field_name, replacement in effect_mutations:
+        candidate = repository.load_current_proof(
+            connection,
+            records.CurrentProofRequest(
+                APP_ID,
+                1,
+                effect_id=2,
+                owner_id=owner.owner_id,
+                require_acceptance=True,
+                require_closure=True,
+            ),
+        )
+        assert candidate.kind is records.RepositoryOutcomeKind.FOUND
+        assert candidate.record is not None
+        object.__setattr__(candidate.record, field_name, replacement)
+        assert not records.CurrentProofSlice._is_authentic(candidate.record)
 
     spliced = repository.load_current_proof(
         connection,

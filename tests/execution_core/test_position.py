@@ -327,6 +327,40 @@ def test_persistent_map_witness_covers_both_prefix_nonmembership_cases() -> None
     assert present_prefix._matches(with_prefix.commitment, b"prefix", b"b" * 32)
     assert not present_prefix._matches(with_prefix.commitment, b"prefix", None)
 
+    multi_child = (
+        fills_module._PersistentKeyMap.empty()
+        .insert_new(b"aa", "first", b"c" * 32)
+        .insert_new(b"ba", "second", b"d" * 32)
+    )
+    ordered_witness = multi_child._witness_for(b"aa")
+    root = ordered_witness.nodes[0]
+    assert len(root.children) == 2
+
+    reordered_witness = replace(
+        ordered_witness,
+        nodes=(
+            replace(root, children=tuple(reversed(root.children))),
+            *ordered_witness.nodes[1:],
+        ),
+    )
+    duplicated_child_witness = replace(
+        ordered_witness,
+        nodes=(
+            replace(
+                root,
+                children=(root.children[0], root.children[0], *root.children),
+            ),
+            *ordered_witness.nodes[1:],
+        ),
+    )
+
+    assert not reordered_witness._matches(multi_child.commitment, b"aa", b"c" * 32)
+    assert not duplicated_child_witness._matches(
+        multi_child.commitment,
+        b"aa",
+        b"c" * 32,
+    )
+
 
 def test_m2_execution_direct_proof_rejects_a_resigned_wrong_key_witness() -> None:
     first = _fill("fill-1", "root-1")

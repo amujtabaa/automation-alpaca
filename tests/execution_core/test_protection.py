@@ -9729,6 +9729,15 @@ def test_m2_checkpoint_hydrator_rebuilds_only_an_authentic_protection_state() ->
         state._trail_bid_source_time,
         state._exit_provenance,
     )
+    issuer_tampered_proof = _m2_current_proof(module, state, "issuer-tampered")
+    object.__setattr__(issuer_tampered_proof, "_issuer", object())
+    assert not records.CurrentProofSlice._is_authentic(issuer_tampered_proof)
+    with pytest.raises(ValueError, match="repository-authentic"):
+        checkpoint_codec._m2_protection_authority_proof_from_current_proof(
+            checkpoint,
+            issuer_tampered_proof,
+        )
+
     current_proof = _m2_current_proof(module, state, "hydrator")
     authority_proof = (
         checkpoint_codec._m2_protection_authority_proof_from_current_proof(
