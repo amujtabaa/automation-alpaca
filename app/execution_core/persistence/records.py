@@ -23,6 +23,7 @@ from .. import values as _values
 from ..fills import _commit_parts as _commit_parts
 from ..fills import _encode_int as _encode_int
 from ..fills import _encode_text as _encode_text
+from . import operations as _operations
 
 
 class RepositoryOutcomeKind(_enum.Enum):
@@ -149,6 +150,135 @@ class RuntimeCheckpointPayloadRecord:
         _require_sha256_text("checkpoint payload SHA-256", self.payload_sha256)
         if self.payload_sha256 != _sha256(self.payload_bytes).hexdigest():
             raise ValueError("checkpoint payload SHA-256 does not match payload bytes")
+
+
+@_dataclass(frozen=True, slots=True)
+class DurableInputRecord:
+    """Immutable technical input claim with its exact coordinate envelope."""
+
+    application_generation_id: _identity.ApplicationGenerationId
+    execution_profile_id: str
+    scope_id: int
+    input_domain: _operations.OperationDomain
+    session_id: _identity.SessionId | None
+    acquisition_generation_id: _identity.AcquisitionGenerationId | None
+    market_source_profile_id: str | None
+    stream_generation_id: _identity.MarketStreamGenerationId | None
+    input_identity_sha256: str
+    operation_contract_version: int
+    canonical_payload_bytes: bytes
+    payload_sha256: str
+    technical_state: str
+    created_ordinal: int
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.application_generation_id)
+            is not _identity.ApplicationGenerationId
+        ):
+            raise TypeError("durable input application generation must be exact")
+        _identity.ApplicationGenerationId(self.application_generation_id.value)
+        _require_sha256_text(
+            "durable input execution profile", self.execution_profile_id
+        )
+        if type(self.scope_id) is not int:
+            raise TypeError("durable input scope id must be an exact integer")
+        if self.scope_id < 1:
+            raise ValueError("durable input scope id must be positive")
+        if type(self.input_domain) is not _operations.OperationDomain:
+            raise TypeError("durable input domain must be exact OperationDomain")
+        _require_optional_exact_identity(
+            "durable input session", self.session_id, _identity.SessionId
+        )
+        _require_optional_exact_identity(
+            "durable input acquisition generation",
+            self.acquisition_generation_id,
+            _identity.AcquisitionGenerationId,
+        )
+        if self.market_source_profile_id is not None:
+            _require_sha256_text(
+                "durable input market-source profile", self.market_source_profile_id
+            )
+        _require_optional_exact_identity(
+            "durable input stream generation",
+            self.stream_generation_id,
+            _identity.MarketStreamGenerationId,
+        )
+        _validate_durable_input_coordinates(self)
+        _require_sha256_text("durable input identity", self.input_identity_sha256)
+        if type(self.operation_contract_version) is not int:
+            raise TypeError("durable input operation version must be an exact integer")
+        if self.operation_contract_version != 1:
+            raise ValueError("durable input operation version must be literal 1")
+        if type(self.canonical_payload_bytes) is not bytes:
+            raise TypeError("durable input payload bytes must be exact bytes")
+        if not self.canonical_payload_bytes:
+            raise ValueError("durable input payload bytes must be nonempty")
+        _require_sha256_text("durable input payload SHA-256", self.payload_sha256)
+        if self.payload_sha256 != _sha256(self.canonical_payload_bytes).hexdigest():
+            raise ValueError(
+                "durable input payload SHA-256 does not match payload bytes"
+            )
+        if type(self.technical_state) is not str:
+            raise TypeError("durable input technical state must be exact text")
+        if self.technical_state not in {
+            "CLAIMED",
+            "TERMINAL",
+            "RECONCILIATION_PENDING",
+        }:
+            raise ValueError("durable input technical state is not admitted")
+        if type(self.created_ordinal) is not int:
+            raise TypeError("durable input created ordinal must be an exact integer")
+        if self.created_ordinal < 1:
+            raise ValueError("durable input created ordinal must be positive")
+
+
+def _require_optional_exact_identity(
+    name: str,
+    value: object,
+    owner: type[object],
+) -> None:
+    """Require an exact immutable identity when one coordinate is present."""
+
+    if value is not None and type(value) is not owner:
+        raise TypeError(f"{name} must be exact {owner.__name__} or None")
+
+
+def _validate_durable_input_coordinates(record: DurableInputRecord) -> None:
+    """Enforce the four frozen operation-coordinate shapes without inference."""
+
+    domain = record.input_domain
+    has_session = record.session_id is not None
+    has_acquisition = record.acquisition_generation_id is not None
+    has_market = record.market_source_profile_id is not None
+    has_stream = record.stream_generation_id is not None
+    if domain is _operations.OperationDomain.MARKET_OCCURRENCE:
+        if not (has_session and has_acquisition and has_market and has_stream):
+            raise ValueError(
+                "market coordinates require session, acquisition, profile, and stream"
+            )
+        return
+    if domain in {
+        _operations.OperationDomain.BEGIN_ACQUISITION_GENERATION,
+        _operations.OperationDomain.CREATE_ACQUISITION_EFFECT,
+        _operations.OperationDomain.CLAIM_ACQUISITION_EFFECT,
+        _operations.OperationDomain.BEGIN_ACQUISITION_PREEMPTION,
+    }:
+        if not (has_session and has_acquisition) or has_market or has_stream:
+            raise ValueError(
+                "acquisition coordinates require session and acquisition only"
+            )
+        return
+    if domain is _operations.OperationDomain.VENUE_RECOVERY:
+        if has_acquisition or has_market or has_stream:
+            raise ValueError(
+                "venue coordinates cannot retain acquisition or market coordinates"
+            )
+        return
+    if has_session or has_acquisition or has_market or has_stream:
+        raise ValueError(
+            "execution coordinates cannot retain session or derived coordinates"
+        )
 
 
 @_dataclass(frozen=True, slots=True)
@@ -1103,6 +1233,7 @@ __all__ = (
     "ClosureChainRecord",
     "CurrentProofRequest",
     "CurrentProofSlice",
+    "DurableInputRecord",
     "DispatchClaimRecord",
     "ExecutionFactHeadRecord",
     "ExecutionFactRecord",
