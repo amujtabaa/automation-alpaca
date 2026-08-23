@@ -43,7 +43,7 @@ from typing import Protocol as _Protocol
 from typing import Sequence as _Sequence
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 SCHEMA_DDL = """
 CREATE TABLE schema_meta (
@@ -3735,6 +3735,867 @@ CREATE TRIGGER trg_market_cursor_no_delete
     BEFORE DELETE ON market_cursor
 BEGIN
     SELECT RAISE (ABORT, 'market_cursor rows are retained');
+END;
+
+-- M2-I3.5 retains checkpoint payload history separately from the mutable
+-- serving head.  The reverse-edge triggers below make a head unusable unless
+-- the exact immutable bytes were staged first in the same caller-owned
+-- transaction.
+CREATE TABLE runtime_checkpoint_payload (
+    application_generation_id TEXT NOT NULL,
+    execution_profile_id TEXT NOT NULL,
+    market_source_profile_id TEXT NOT NULL,
+    currentness_head_ordinal INTEGER NOT NULL
+        CHECK (currentness_head_ordinal >= 0),
+    checkpoint_version_ordinal INTEGER NOT NULL
+        CHECK (checkpoint_version_ordinal >= 1),
+    payload_bytes BLOB NOT NULL
+        CHECK (length(payload_bytes) >= 1),
+    payload_length INTEGER NOT NULL
+        CHECK (
+            payload_length >= 1
+            AND payload_length = length(payload_bytes)
+        ),
+    payload_sha256 TEXT NOT NULL
+        CHECK (
+            length(payload_sha256) = 64
+            AND payload_sha256 NOT GLOB '*[^0-9a-f]*'
+        ),
+    PRIMARY KEY (application_generation_id, checkpoint_version_ordinal),
+    UNIQUE (
+        application_generation_id,
+        currentness_head_ordinal,
+        checkpoint_version_ordinal,
+        payload_sha256
+    ),
+    FOREIGN KEY (application_generation_id, execution_profile_id)
+        REFERENCES application_generation (
+            application_generation_id, selected_execution_profile_id
+        ),
+    FOREIGN KEY (application_generation_id, market_source_profile_id)
+        REFERENCES application_generation (
+            application_generation_id, selected_market_source_profile_id
+        )
+);
+
+CREATE TABLE durable_input (
+    application_generation_id TEXT NOT NULL,
+    execution_profile_id TEXT NOT NULL,
+    scope_id INTEGER NOT NULL,
+    input_domain TEXT NOT NULL
+        CHECK (
+            input_domain IN (
+                'BROKER_EXECUTION',
+                'VENUE_RECOVERY',
+                'AUTHORITY',
+                'BEGIN_ACQUISITION_GENERATION',
+                'CREATE_ACQUISITION_EFFECT',
+                'CLAIM_ACQUISITION_EFFECT',
+                'BEGIN_ACQUISITION_PREEMPTION',
+                'MARKET_OCCURRENCE'
+            )
+    ),
+    session_external TEXT,
+    acquisition_generation_id TEXT,
+    market_source_profile_id TEXT,
+    stream_generation_id TEXT,
+    input_identity_sha256 TEXT NOT NULL
+        CHECK (
+            length(input_identity_sha256) = 64
+            AND input_identity_sha256 NOT GLOB '*[^0-9a-f]*'
+        ),
+    operation_contract_version INTEGER NOT NULL
+        CHECK (operation_contract_version = 1),
+    canonical_payload_bytes BLOB NOT NULL
+        CHECK (length(canonical_payload_bytes) >= 1),
+    payload_sha256 TEXT NOT NULL
+        CHECK (
+            length(payload_sha256) = 64
+            AND payload_sha256 NOT GLOB '*[^0-9a-f]*'
+        ),
+    technical_state TEXT NOT NULL
+        CHECK (
+            technical_state IN (
+                'CLAIMED', 'TERMINAL', 'RECONCILIATION_PENDING'
+            )
+        ),
+    created_ordinal INTEGER NOT NULL UNIQUE CHECK (created_ordinal >= 1),
+    PRIMARY KEY (
+        application_generation_id, input_domain, input_identity_sha256
+    ),
+    CHECK (
+        (
+            input_domain = 'MARKET_OCCURRENCE'
+            AND session_external IS NOT NULL
+            AND acquisition_generation_id IS NOT NULL
+            AND market_source_profile_id IS NOT NULL
+            AND stream_generation_id IS NOT NULL
+        )
+        OR (
+            input_domain IN (
+                'BEGIN_ACQUISITION_GENERATION',
+                'CREATE_ACQUISITION_EFFECT',
+                'CLAIM_ACQUISITION_EFFECT',
+                'BEGIN_ACQUISITION_PREEMPTION'
+            )
+            AND session_external IS NOT NULL
+            AND acquisition_generation_id IS NOT NULL
+            AND market_source_profile_id IS NULL
+            AND stream_generation_id IS NULL
+        )
+        OR (
+            input_domain = 'VENUE_RECOVERY'
+            AND acquisition_generation_id IS NULL
+            AND market_source_profile_id IS NULL
+            AND stream_generation_id IS NULL
+        )
+        OR (
+            input_domain IN ('BROKER_EXECUTION', 'AUTHORITY')
+            AND session_external IS NULL
+            AND acquisition_generation_id IS NULL
+            AND market_source_profile_id IS NULL
+            AND stream_generation_id IS NULL
+        )
+    ),
+    CHECK (session_external IS NULL OR length(session_external) >= 1),
+    FOREIGN KEY (application_generation_id, execution_profile_id)
+        REFERENCES application_generation (
+            application_generation_id, selected_execution_profile_id
+        ),
+    FOREIGN KEY (scope_id, application_generation_id, execution_profile_id)
+        REFERENCES acquisition_scope (
+            scope_id, application_generation_id, execution_profile_id
+        ),
+    FOREIGN KEY (acquisition_generation_id, scope_id)
+        REFERENCES acquisition_generation (acquisition_generation_id, scope_id),
+    FOREIGN KEY (application_generation_id, market_source_profile_id)
+        REFERENCES application_generation (
+            application_generation_id, selected_market_source_profile_id
+        ),
+    FOREIGN KEY (stream_generation_id)
+        REFERENCES market_stream_authority (stream_generation_id)
+);
+
+CREATE TABLE durable_input_semantic_key (
+    key_kind TEXT NOT NULL
+        CHECK (
+            key_kind IN (
+                'VENUE_COMMAND_V2',
+                'VENUE_EXECUTION_FACT_V1',
+                'VENUE_COVERAGE_ROOT_V1',
+                'VENUE_COVERAGE_INTERVAL_V1',
+                'VENUE_BROKER_FACT_V1',
+                'AUTHORITY_QUERY_CLAIM_V1',
+                'AUTHORITY_MANUAL_FLATTEN_V1',
+                'AUTHORITY_EMERGENCY_GRANT_CONSUMPTION_V1'
+            )
+        ),
+    key_application_generation_id TEXT,
+    execution_profile_id TEXT NOT NULL,
+    key_scope_id INTEGER,
+    canonical_key_bytes BLOB NOT NULL
+        CHECK (length(canonical_key_bytes) >= 1),
+    key_sha256 TEXT NOT NULL
+        CHECK (
+            length(key_sha256) = 64
+            AND key_sha256 NOT GLOB '*[^0-9a-f]*'
+        ),
+    input_application_generation_id TEXT NOT NULL,
+    input_domain TEXT NOT NULL
+        CHECK (
+            input_domain IN (
+                'BROKER_EXECUTION',
+                'VENUE_RECOVERY',
+                'AUTHORITY',
+                'BEGIN_ACQUISITION_GENERATION',
+                'CREATE_ACQUISITION_EFFECT',
+                'CLAIM_ACQUISITION_EFFECT',
+                'BEGIN_ACQUISITION_PREEMPTION',
+                'MARKET_OCCURRENCE'
+            )
+        ),
+    input_identity_sha256 TEXT NOT NULL
+        CHECK (
+            length(input_identity_sha256) = 64
+            AND input_identity_sha256 NOT GLOB '*[^0-9a-f]*'
+        ),
+    created_ordinal INTEGER NOT NULL UNIQUE CHECK (created_ordinal >= 1),
+    UNIQUE (
+        input_application_generation_id,
+        input_domain,
+        input_identity_sha256,
+        key_kind,
+        canonical_key_bytes
+    ),
+    CHECK (
+        (
+            key_kind IN (
+                'VENUE_COMMAND_V2',
+                'VENUE_EXECUTION_FACT_V1',
+                'VENUE_COVERAGE_ROOT_V1',
+                'VENUE_COVERAGE_INTERVAL_V1',
+                'VENUE_BROKER_FACT_V1'
+            )
+            AND key_application_generation_id IS NULL
+            AND key_scope_id IS NULL
+        )
+        OR (
+            key_kind IN (
+                'AUTHORITY_QUERY_CLAIM_V1',
+                'AUTHORITY_MANUAL_FLATTEN_V1',
+                'AUTHORITY_EMERGENCY_GRANT_CONSUMPTION_V1'
+            )
+            AND key_application_generation_id IS NOT NULL
+            AND key_scope_id IS NOT NULL
+        )
+    ),
+    FOREIGN KEY (
+        input_application_generation_id,
+        input_domain,
+        input_identity_sha256
+    ) REFERENCES durable_input (
+        application_generation_id, input_domain, input_identity_sha256
+    ),
+    FOREIGN KEY (
+        key_scope_id, key_application_generation_id, execution_profile_id
+    ) REFERENCES acquisition_scope (
+        scope_id, application_generation_id, execution_profile_id
+    )
+);
+
+CREATE UNIQUE INDEX uq_durable_input_semantic_key_venue
+    ON durable_input_semantic_key (
+        execution_profile_id, key_kind, canonical_key_bytes
+    )
+    WHERE key_kind IN (
+        'VENUE_COMMAND_V2',
+        'VENUE_EXECUTION_FACT_V1',
+        'VENUE_COVERAGE_ROOT_V1',
+        'VENUE_COVERAGE_INTERVAL_V1',
+        'VENUE_BROKER_FACT_V1'
+    );
+
+CREATE UNIQUE INDEX uq_durable_input_semantic_key_authority
+    ON durable_input_semantic_key (
+        key_application_generation_id,
+        execution_profile_id,
+        key_scope_id,
+        key_kind,
+        canonical_key_bytes
+    )
+    WHERE key_kind IN (
+        'AUTHORITY_QUERY_CLAIM_V1',
+        'AUTHORITY_MANUAL_FLATTEN_V1',
+        'AUTHORITY_EMERGENCY_GRANT_CONSUMPTION_V1'
+    );
+
+CREATE TABLE decision_receipt (
+    receipt_ordinal INTEGER PRIMARY KEY CHECK (receipt_ordinal >= 1),
+    application_generation_id TEXT NOT NULL,
+    input_domain TEXT NOT NULL,
+    input_identity_sha256 TEXT NOT NULL
+        CHECK (
+            length(input_identity_sha256) = 64
+            AND input_identity_sha256 NOT GLOB '*[^0-9a-f]*'
+        ),
+    owner_domain TEXT NOT NULL
+        CHECK (
+            owner_domain IN (
+                'POSITION', 'VENUE_RECOVERY', 'AUTHORITY', 'ACQUISITION',
+                'PROTECTION'
+            )
+        ),
+    owner_disposition TEXT NOT NULL CHECK (length(owner_disposition) >= 1),
+    terminal_technical_state TEXT NOT NULL
+        CHECK (terminal_technical_state IN ('TERMINAL', 'RECONCILIATION_PENDING')),
+    result_sha256 TEXT NOT NULL
+        CHECK (
+            length(result_sha256) = 64
+            AND result_sha256 NOT GLOB '*[^0-9a-f]*'
+        ),
+    checkpoint_currentness_head_ordinal INTEGER,
+    checkpoint_version_ordinal INTEGER,
+    checkpoint_payload_sha256 TEXT
+        CHECK (
+            checkpoint_payload_sha256 IS NULL
+            OR (
+                length(checkpoint_payload_sha256) = 64
+                AND checkpoint_payload_sha256 NOT GLOB '*[^0-9a-f]*'
+            )
+        ),
+    canonical_receipt_bytes BLOB NOT NULL
+        CHECK (length(canonical_receipt_bytes) >= 1),
+    receipt_length INTEGER NOT NULL
+        CHECK (
+            receipt_length >= 1
+            AND receipt_length = length(canonical_receipt_bytes)
+        ),
+    receipt_sha256 TEXT NOT NULL
+        CHECK (
+            length(receipt_sha256) = 64
+            AND receipt_sha256 NOT GLOB '*[^0-9a-f]*'
+        ),
+    UNIQUE (application_generation_id, input_domain, input_identity_sha256),
+    UNIQUE (
+        application_generation_id,
+        input_domain,
+        input_identity_sha256,
+        receipt_ordinal,
+        receipt_sha256
+    ),
+    CHECK (
+        (checkpoint_currentness_head_ordinal IS NULL)
+        = (checkpoint_version_ordinal IS NULL)
+        AND (checkpoint_version_ordinal IS NULL)
+        = (checkpoint_payload_sha256 IS NULL)
+    ),
+    FOREIGN KEY (
+        application_generation_id, input_domain, input_identity_sha256
+    ) REFERENCES durable_input (
+        application_generation_id, input_domain, input_identity_sha256
+    ),
+    FOREIGN KEY (
+        application_generation_id,
+        checkpoint_currentness_head_ordinal,
+        checkpoint_version_ordinal,
+        checkpoint_payload_sha256
+    ) REFERENCES runtime_checkpoint_payload (
+        application_generation_id,
+        currentness_head_ordinal,
+        checkpoint_version_ordinal,
+        payload_sha256
+    )
+);
+
+CREATE TABLE durable_input_outcome (
+    application_generation_id TEXT NOT NULL,
+    input_domain TEXT NOT NULL,
+    input_identity_sha256 TEXT NOT NULL
+        CHECK (
+            length(input_identity_sha256) = 64
+            AND input_identity_sha256 NOT GLOB '*[^0-9a-f]*'
+        ),
+    owner_domain TEXT NOT NULL
+        CHECK (
+            owner_domain IN (
+                'POSITION', 'VENUE_RECOVERY', 'AUTHORITY', 'ACQUISITION',
+                'PROTECTION'
+            )
+        ),
+    owner_disposition TEXT NOT NULL CHECK (length(owner_disposition) >= 1),
+    terminal_technical_state TEXT NOT NULL
+        CHECK (terminal_technical_state IN ('TERMINAL', 'RECONCILIATION_PENDING')),
+    result_sha256 TEXT NOT NULL
+        CHECK (
+            length(result_sha256) = 64
+            AND result_sha256 NOT GLOB '*[^0-9a-f]*'
+        ),
+    checkpoint_currentness_head_ordinal INTEGER,
+    checkpoint_version_ordinal INTEGER,
+    checkpoint_payload_sha256 TEXT
+        CHECK (
+            checkpoint_payload_sha256 IS NULL
+            OR (
+                length(checkpoint_payload_sha256) = 64
+                AND checkpoint_payload_sha256 NOT GLOB '*[^0-9a-f]*'
+            )
+        ),
+    receipt_ordinal INTEGER NOT NULL,
+    receipt_sha256 TEXT NOT NULL
+        CHECK (
+            length(receipt_sha256) = 64
+            AND receipt_sha256 NOT GLOB '*[^0-9a-f]*'
+        ),
+    canonical_outcome_bytes BLOB NOT NULL
+        CHECK (length(canonical_outcome_bytes) >= 1),
+    outcome_length INTEGER NOT NULL
+        CHECK (
+            outcome_length >= 1
+            AND outcome_length = length(canonical_outcome_bytes)
+        ),
+    outcome_sha256 TEXT NOT NULL
+        CHECK (
+            length(outcome_sha256) = 64
+            AND outcome_sha256 NOT GLOB '*[^0-9a-f]*'
+        ),
+    PRIMARY KEY (
+        application_generation_id, input_domain, input_identity_sha256
+    ),
+    CHECK (
+        (checkpoint_currentness_head_ordinal IS NULL)
+        = (checkpoint_version_ordinal IS NULL)
+        AND (checkpoint_version_ordinal IS NULL)
+        = (checkpoint_payload_sha256 IS NULL)
+    ),
+    FOREIGN KEY (
+        application_generation_id, input_domain, input_identity_sha256
+    ) REFERENCES durable_input (
+        application_generation_id, input_domain, input_identity_sha256
+    ),
+    FOREIGN KEY (
+        application_generation_id,
+        input_domain,
+        input_identity_sha256,
+        receipt_ordinal,
+        receipt_sha256
+    ) REFERENCES decision_receipt (
+        application_generation_id,
+        input_domain,
+        input_identity_sha256,
+        receipt_ordinal,
+        receipt_sha256
+    ),
+    FOREIGN KEY (
+        application_generation_id,
+        checkpoint_currentness_head_ordinal,
+        checkpoint_version_ordinal,
+        checkpoint_payload_sha256
+    ) REFERENCES runtime_checkpoint_payload (
+        application_generation_id,
+        currentness_head_ordinal,
+        checkpoint_version_ordinal,
+        payload_sha256
+    )
+);
+
+CREATE TABLE broker_outbox (
+    outbox_sequence INTEGER PRIMARY KEY CHECK (outbox_sequence >= 1),
+    application_generation_id TEXT NOT NULL,
+    execution_profile_id TEXT NOT NULL,
+    scope_id INTEGER NOT NULL,
+    acquisition_generation_id TEXT NOT NULL,
+    input_domain TEXT NOT NULL
+        CHECK (input_domain IN ('AUTHORITY', 'CLAIM_ACQUISITION_EFFECT')),
+    input_identity_sha256 TEXT NOT NULL
+        CHECK (
+            length(input_identity_sha256) = 64
+            AND input_identity_sha256 NOT GLOB '*[^0-9a-f]*'
+        ),
+    effect_id INTEGER NOT NULL,
+    claim_id INTEGER NOT NULL,
+    canonical_payload_bytes BLOB NOT NULL
+        CHECK (length(canonical_payload_bytes) >= 1),
+    payload_length INTEGER NOT NULL
+        CHECK (
+            payload_length >= 1
+            AND payload_length = length(canonical_payload_bytes)
+        ),
+    payload_sha256 TEXT NOT NULL
+        CHECK (
+            length(payload_sha256) = 64
+            AND payload_sha256 NOT GLOB '*[^0-9a-f]*'
+        ),
+    UNIQUE (effect_id, claim_id),
+    FOREIGN KEY (
+        application_generation_id, input_domain, input_identity_sha256
+    ) REFERENCES durable_input (
+        application_generation_id, input_domain, input_identity_sha256
+    ),
+    FOREIGN KEY (
+        effect_id,
+        scope_id,
+        application_generation_id,
+        execution_profile_id,
+        acquisition_generation_id
+    ) REFERENCES venue_effect (
+        effect_id,
+        scope_id,
+        application_generation_id,
+        execution_profile_id,
+        acquisition_generation_id
+    ),
+    FOREIGN KEY (effect_id, claim_id)
+        REFERENCES dispatch_claim (effect_id, claim_id)
+);
+
+CREATE TRIGGER trg_runtime_checkpoint_payload_no_conflict_replace
+    BEFORE INSERT ON runtime_checkpoint_payload
+    FOR EACH ROW
+    WHEN EXISTS (
+            SELECT 1 FROM runtime_checkpoint_payload AS retained
+             WHERE retained.application_generation_id =
+                    NEW.application_generation_id
+               AND retained.checkpoint_version_ordinal =
+                    NEW.checkpoint_version_ordinal
+        )
+BEGIN
+    SELECT RAISE (
+        ABORT, 'runtime checkpoint payload identity is already retained'
+    );
+END;
+
+CREATE TRIGGER trg_runtime_checkpoint_payload_immutable
+    BEFORE UPDATE ON runtime_checkpoint_payload
+BEGIN
+    SELECT RAISE (ABORT, 'runtime checkpoint payload rows are immutable');
+END;
+
+CREATE TRIGGER trg_runtime_checkpoint_payload_no_delete
+    BEFORE DELETE ON runtime_checkpoint_payload
+BEGIN
+    SELECT RAISE (ABORT, 'runtime checkpoint payload rows are retained');
+END;
+
+CREATE TRIGGER trg_kernel_checkpoint_payload_required_insert
+    BEFORE INSERT ON kernel_checkpoint
+    FOR EACH ROW
+    WHEN NOT EXISTS (
+            SELECT 1 FROM runtime_checkpoint_payload AS payload
+             WHERE payload.application_generation_id =
+                    NEW.application_generation_id
+               AND payload.currentness_head_ordinal =
+                    NEW.currentness_head_ordinal
+               AND payload.checkpoint_version_ordinal =
+                    NEW.checkpoint_version_ordinal
+               AND payload.payload_sha256 = NEW.checkpoint_sha256
+        )
+BEGIN
+    SELECT RAISE (
+        ABORT, 'kernel checkpoint requires an exact retained payload'
+    );
+END;
+
+CREATE TRIGGER trg_kernel_checkpoint_payload_required_advance
+    BEFORE UPDATE OF currentness_head_ordinal, checkpoint_sha256,
+        checkpoint_version_ordinal ON kernel_checkpoint
+    FOR EACH ROW
+    WHEN NOT EXISTS (
+            SELECT 1 FROM runtime_checkpoint_payload AS payload
+             WHERE payload.application_generation_id =
+                    NEW.application_generation_id
+               AND payload.currentness_head_ordinal =
+                    NEW.currentness_head_ordinal
+               AND payload.checkpoint_version_ordinal =
+                    NEW.checkpoint_version_ordinal
+               AND payload.payload_sha256 = NEW.checkpoint_sha256
+        )
+BEGIN
+    SELECT RAISE (
+        ABORT, 'kernel checkpoint requires an exact retained payload'
+    );
+END;
+
+CREATE TRIGGER trg_durable_input_initial_state
+    BEFORE INSERT ON durable_input
+    FOR EACH ROW
+    WHEN NEW.technical_state <> 'CLAIMED'
+BEGIN
+    SELECT RAISE (ABORT, 'durable input must initially be claimed');
+END;
+
+CREATE TRIGGER trg_durable_input_immutable
+    BEFORE UPDATE ON durable_input
+    FOR EACH ROW
+    WHEN NEW.application_generation_id IS NOT OLD.application_generation_id
+      OR NEW.execution_profile_id IS NOT OLD.execution_profile_id
+      OR NEW.scope_id IS NOT OLD.scope_id
+      OR NEW.input_domain IS NOT OLD.input_domain
+      OR NEW.session_external IS NOT OLD.session_external
+      OR NEW.acquisition_generation_id IS NOT OLD.acquisition_generation_id
+      OR NEW.market_source_profile_id IS NOT OLD.market_source_profile_id
+      OR NEW.stream_generation_id IS NOT OLD.stream_generation_id
+      OR NEW.input_identity_sha256 IS NOT OLD.input_identity_sha256
+      OR NEW.operation_contract_version IS NOT OLD.operation_contract_version
+      OR NEW.canonical_payload_bytes IS NOT OLD.canonical_payload_bytes
+      OR NEW.payload_sha256 IS NOT OLD.payload_sha256
+      OR NEW.created_ordinal IS NOT OLD.created_ordinal
+BEGIN
+    SELECT RAISE (ABORT, 'durable input identity is immutable');
+END;
+
+CREATE TRIGGER trg_durable_input_finalization_requires_outcome
+    BEFORE UPDATE OF technical_state ON durable_input
+    FOR EACH ROW
+    WHEN NOT (
+            OLD.technical_state = 'CLAIMED'
+            AND NEW.technical_state IN ('TERMINAL', 'RECONCILIATION_PENDING')
+            AND EXISTS (
+                SELECT 1
+                  FROM durable_input_outcome AS outcome
+                  JOIN decision_receipt AS receipt
+                    ON receipt.application_generation_id =
+                           outcome.application_generation_id
+                   AND receipt.input_domain = outcome.input_domain
+                   AND receipt.input_identity_sha256 =
+                           outcome.input_identity_sha256
+                   AND receipt.receipt_ordinal = outcome.receipt_ordinal
+                   AND receipt.receipt_sha256 = outcome.receipt_sha256
+                 WHERE outcome.application_generation_id =
+                           NEW.application_generation_id
+                   AND outcome.input_domain = NEW.input_domain
+                   AND outcome.input_identity_sha256 =
+                           NEW.input_identity_sha256
+                   AND outcome.terminal_technical_state = NEW.technical_state
+                   AND receipt.owner_domain IS outcome.owner_domain
+                   AND receipt.owner_disposition IS outcome.owner_disposition
+                   AND receipt.terminal_technical_state IS
+                           outcome.terminal_technical_state
+                   AND receipt.result_sha256 IS outcome.result_sha256
+                   AND receipt.checkpoint_currentness_head_ordinal IS
+                           outcome.checkpoint_currentness_head_ordinal
+                   AND receipt.checkpoint_version_ordinal IS
+                           outcome.checkpoint_version_ordinal
+                   AND receipt.checkpoint_payload_sha256 IS
+                           outcome.checkpoint_payload_sha256
+            )
+        )
+BEGIN
+    SELECT RAISE (
+        ABORT, 'durable input finalization requires one coherent outcome receipt'
+    );
+END;
+
+CREATE TRIGGER trg_durable_input_no_delete
+    BEFORE DELETE ON durable_input
+BEGIN
+    SELECT RAISE (ABORT, 'durable input rows are retained');
+END;
+
+CREATE TRIGGER trg_durable_input_semantic_key_binding
+    BEFORE INSERT ON durable_input_semantic_key
+    FOR EACH ROW
+    WHEN NOT (
+            (
+                NEW.key_kind IN (
+                    'VENUE_COMMAND_V2',
+                    'VENUE_EXECUTION_FACT_V1',
+                    'VENUE_COVERAGE_ROOT_V1',
+                    'VENUE_COVERAGE_INTERVAL_V1',
+                    'VENUE_BROKER_FACT_V1'
+                )
+                AND NEW.key_application_generation_id IS NULL
+                AND NEW.key_scope_id IS NULL
+                AND EXISTS (
+                    SELECT 1 FROM durable_input AS input
+                     WHERE input.application_generation_id =
+                            NEW.input_application_generation_id
+                       AND input.input_domain = NEW.input_domain
+                       AND input.input_identity_sha256 =
+                            NEW.input_identity_sha256
+                       AND input.execution_profile_id =
+                            NEW.execution_profile_id
+                       AND input.input_domain = 'VENUE_RECOVERY'
+                )
+            )
+            OR (
+                NEW.key_kind IN (
+                    'AUTHORITY_QUERY_CLAIM_V1',
+                    'AUTHORITY_MANUAL_FLATTEN_V1',
+                    'AUTHORITY_EMERGENCY_GRANT_CONSUMPTION_V1'
+                )
+                AND NEW.key_application_generation_id IS NOT NULL
+                AND NEW.key_scope_id IS NOT NULL
+                AND NEW.key_application_generation_id =
+                        NEW.input_application_generation_id
+                AND EXISTS (
+                    SELECT 1 FROM durable_input AS input
+                     WHERE input.application_generation_id =
+                            NEW.input_application_generation_id
+                       AND input.input_domain = NEW.input_domain
+                       AND input.input_identity_sha256 =
+                            NEW.input_identity_sha256
+                       AND input.execution_profile_id =
+                            NEW.execution_profile_id
+                       AND input.scope_id = NEW.key_scope_id
+                       AND input.input_domain = 'AUTHORITY'
+                )
+            )
+        )
+BEGIN
+    SELECT RAISE (
+        ABORT, 'durable input semantic key must bind its exact input domain'
+    );
+END;
+
+CREATE TRIGGER trg_durable_input_semantic_key_immutable
+    BEFORE UPDATE ON durable_input_semantic_key
+BEGIN
+    SELECT RAISE (ABORT, 'durable input semantic key rows are immutable');
+END;
+
+CREATE TRIGGER trg_durable_input_semantic_key_no_delete
+    BEFORE DELETE ON durable_input_semantic_key
+BEGIN
+    SELECT RAISE (ABORT, 'durable input semantic key rows are retained');
+END;
+
+CREATE TRIGGER trg_decision_receipt_owner_binding
+    BEFORE INSERT ON decision_receipt
+    FOR EACH ROW
+    WHEN NOT EXISTS (
+            SELECT 1 FROM durable_input AS input
+             WHERE input.application_generation_id =
+                    NEW.application_generation_id
+               AND input.input_domain = NEW.input_domain
+               AND input.input_identity_sha256 = NEW.input_identity_sha256
+               AND (
+                    (
+                        input.input_domain = 'BROKER_EXECUTION'
+                        AND NEW.owner_domain = 'POSITION'
+                        AND NEW.owner_disposition IN (
+                            'APPLIED', 'EXACT_REPLAY', 'FACT_CONFLICT',
+                            'RECONCILIATION_REQUIRED'
+                        )
+                    )
+                    OR (
+                        input.input_domain = 'VENUE_RECOVERY'
+                        AND NEW.owner_domain = 'VENUE_RECOVERY'
+                        AND NEW.owner_disposition IN (
+                            'APPLIED', 'EXACT_REPLAY', 'CONFLICT',
+                            'RECONCILIATION_REQUIRED', 'REFUSED'
+                        )
+                    )
+                    OR (
+                        input.input_domain = 'AUTHORITY'
+                        AND NEW.owner_domain = 'AUTHORITY'
+                        AND NEW.owner_disposition IN (
+                            'APPLIED', 'REFUSED', 'EXACT_REPLAY', 'CONFLICT'
+                        )
+                    )
+                    OR (
+                        input.input_domain IN (
+                            'BEGIN_ACQUISITION_GENERATION',
+                            'CREATE_ACQUISITION_EFFECT',
+                            'CLAIM_ACQUISITION_EFFECT',
+                            'BEGIN_ACQUISITION_PREEMPTION'
+                        )
+                        AND NEW.owner_domain = 'ACQUISITION'
+                        AND NEW.owner_disposition IN (
+                            'APPLIED', 'EXACT_REPLAY', 'REFUSED'
+                        )
+                    )
+                    OR (
+                        input.input_domain = 'MARKET_OCCURRENCE'
+                        AND NEW.owner_domain = 'PROTECTION'
+                        AND NEW.owner_disposition IN (
+                            'APPLIED', 'EXACT_REPLAY', 'STALE', 'REFUSED'
+                        )
+                    )
+               )
+               AND (
+                    (
+                        NEW.owner_disposition = 'RECONCILIATION_REQUIRED'
+                        AND NEW.terminal_technical_state =
+                            'RECONCILIATION_PENDING'
+                    )
+                    OR (
+                        NEW.owner_disposition <> 'RECONCILIATION_REQUIRED'
+                        AND NEW.terminal_technical_state = 'TERMINAL'
+                    )
+               )
+        )
+BEGIN
+    SELECT RAISE (
+        ABORT, 'decision receipt must bind its input owner disposition'
+    );
+END;
+
+CREATE TRIGGER trg_decision_receipt_no_conflict_replace
+    BEFORE INSERT ON decision_receipt
+    FOR EACH ROW
+    WHEN EXISTS (
+            SELECT 1 FROM decision_receipt AS retained
+             WHERE retained.receipt_ordinal = NEW.receipt_ordinal
+                OR (
+                    retained.application_generation_id =
+                        NEW.application_generation_id
+                    AND retained.input_domain = NEW.input_domain
+                    AND retained.input_identity_sha256 =
+                        NEW.input_identity_sha256
+                )
+        )
+BEGIN
+    SELECT RAISE (ABORT, 'decision receipt identity is already retained');
+END;
+
+CREATE TRIGGER trg_decision_receipt_immutable
+    BEFORE UPDATE ON decision_receipt
+BEGIN
+    SELECT RAISE (ABORT, 'decision receipt rows are immutable');
+END;
+
+CREATE TRIGGER trg_decision_receipt_no_delete
+    BEFORE DELETE ON decision_receipt
+BEGIN
+    SELECT RAISE (ABORT, 'decision receipt rows are retained');
+END;
+
+CREATE TRIGGER trg_durable_input_outcome_matches_receipt
+    BEFORE INSERT ON durable_input_outcome
+    FOR EACH ROW
+    WHEN NOT EXISTS (
+            SELECT 1 FROM decision_receipt AS receipt
+             WHERE receipt.application_generation_id =
+                    NEW.application_generation_id
+               AND receipt.input_domain = NEW.input_domain
+               AND receipt.input_identity_sha256 = NEW.input_identity_sha256
+               AND receipt.receipt_ordinal = NEW.receipt_ordinal
+               AND receipt.receipt_sha256 = NEW.receipt_sha256
+               AND receipt.owner_domain IS NEW.owner_domain
+               AND receipt.owner_disposition IS NEW.owner_disposition
+               AND receipt.terminal_technical_state IS
+                    NEW.terminal_technical_state
+               AND receipt.result_sha256 IS NEW.result_sha256
+               AND receipt.checkpoint_currentness_head_ordinal IS
+                    NEW.checkpoint_currentness_head_ordinal
+               AND receipt.checkpoint_version_ordinal IS
+                    NEW.checkpoint_version_ordinal
+               AND receipt.checkpoint_payload_sha256 IS
+                    NEW.checkpoint_payload_sha256
+        )
+BEGIN
+    SELECT RAISE (
+        ABORT, 'durable input outcome must exactly match its decision receipt'
+    );
+END;
+
+CREATE TRIGGER trg_durable_input_outcome_immutable
+    BEFORE UPDATE ON durable_input_outcome
+BEGIN
+    SELECT RAISE (ABORT, 'durable input outcome rows are immutable');
+END;
+
+CREATE TRIGGER trg_durable_input_outcome_no_delete
+    BEFORE DELETE ON durable_input_outcome
+BEGIN
+    SELECT RAISE (ABORT, 'durable input outcome rows are retained');
+END;
+
+CREATE TRIGGER trg_broker_outbox_next_sequence
+    BEFORE INSERT ON broker_outbox
+    FOR EACH ROW
+    WHEN NEW.outbox_sequence <> COALESCE(
+            (SELECT MAX(outbox_sequence) + 1 FROM broker_outbox), 1
+        )
+BEGIN
+    SELECT RAISE (ABORT, 'broker outbox sequence must be the next global ordinal');
+END;
+
+CREATE TRIGGER trg_broker_outbox_no_conflict_replace
+    BEFORE INSERT ON broker_outbox
+    FOR EACH ROW
+    WHEN EXISTS (
+            SELECT 1 FROM broker_outbox AS retained
+             WHERE retained.outbox_sequence = NEW.outbox_sequence
+                OR (
+                    retained.effect_id = NEW.effect_id
+                    AND retained.claim_id = NEW.claim_id
+                )
+        )
+BEGIN
+    SELECT RAISE (ABORT, 'broker outbox identity is already retained');
+END;
+
+CREATE TRIGGER trg_broker_outbox_immutable
+    BEFORE UPDATE ON broker_outbox
+BEGIN
+    SELECT RAISE (ABORT, 'broker outbox rows are immutable');
+END;
+
+CREATE TRIGGER trg_broker_outbox_no_delete
+    BEFORE DELETE ON broker_outbox
+BEGIN
+    SELECT RAISE (ABORT, 'broker outbox rows are retained');
 END;
 """
 

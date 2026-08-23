@@ -90,7 +90,7 @@ def _require_sha256_text(name: str, value: object) -> str:
 
 @_dataclass(frozen=True, slots=True)
 class RepositoryOutcome(_Generic[_RecordT]):
-    """Explicit result; no outcome implies serving eligibility by itself."""
+    """Explicit result; a classified write may carry its typed local proof."""
 
     kind: RepositoryOutcomeKind
     record: _RecordT | None = None
@@ -98,8 +98,16 @@ class RepositoryOutcome(_Generic[_RecordT]):
     def __post_init__(self) -> None:
         if type(self.kind) is not RepositoryOutcomeKind:
             raise TypeError("repository outcome kind must be exact")
-        if (self.kind is RepositoryOutcomeKind.FOUND) != (self.record is not None):
-            raise ValueError("only FOUND outcomes may carry one complete record")
+        if self.kind is RepositoryOutcomeKind.FOUND and self.record is None:
+            raise ValueError("FOUND outcomes must carry one complete record")
+        if self.record is not None and self.kind not in {
+            RepositoryOutcomeKind.APPLIED,
+            RepositoryOutcomeKind.FOUND,
+            RepositoryOutcomeKind.CONFLICT,
+        }:
+            raise ValueError(
+                "only APPLIED, FOUND, or CONFLICT outcomes may carry one record"
+            )
 
 
 @_dataclass(frozen=True, slots=True)
@@ -144,51 +152,6 @@ class KernelCheckpointRecord:
     currentness_head_ordinal: int
     checkpoint_sha256: str
     checkpoint_version_ordinal: int
-
-
-@_dataclass(frozen=True, slots=True)
-class RuntimeCheckpointPayloadRecord:
-    """One exact retained canonical checkpoint payload and its bound coordinates."""
-
-    application_generation_id: _identity.ApplicationGenerationId
-    execution_profile_id: str
-    market_source_profile_id: str
-    currentness_head_ordinal: int
-    checkpoint_version_ordinal: int
-    payload_bytes: bytes
-    payload_length: int
-    payload_sha256: str
-
-    def __post_init__(self) -> None:
-        if (
-            type(self.application_generation_id)
-            is not _identity.ApplicationGenerationId
-        ):
-            raise TypeError("checkpoint application generation must be exact")
-        _identity.ApplicationGenerationId(self.application_generation_id.value)
-        _require_sha256_text("checkpoint execution profile", self.execution_profile_id)
-        _require_sha256_text(
-            "checkpoint market-source profile", self.market_source_profile_id
-        )
-        if type(self.currentness_head_ordinal) is not int:
-            raise TypeError("checkpoint head ordinal must be an exact integer")
-        if self.currentness_head_ordinal < 0:
-            raise ValueError("checkpoint head ordinal must be non-negative")
-        if type(self.checkpoint_version_ordinal) is not int:
-            raise TypeError("checkpoint version ordinal must be an exact integer")
-        if self.checkpoint_version_ordinal < 1:
-            raise ValueError("checkpoint version ordinal must be positive")
-        if type(self.payload_bytes) is not bytes:
-            raise TypeError("checkpoint payload bytes must be exact bytes")
-        if not self.payload_bytes:
-            raise ValueError("checkpoint payload bytes must be nonempty")
-        if type(self.payload_length) is not int:
-            raise TypeError("checkpoint payload length must be an exact integer")
-        if self.payload_length != len(self.payload_bytes):
-            raise ValueError("checkpoint payload length does not match payload bytes")
-        _require_sha256_text("checkpoint payload SHA-256", self.payload_sha256)
-        if self.payload_sha256 != _sha256(self.payload_bytes).hexdigest():
-            raise ValueError("checkpoint payload SHA-256 does not match payload bytes")
 
 
 @_dataclass(frozen=True, slots=True)
@@ -1016,6 +979,82 @@ def _validate_broker_outbox_document(
         _identity.ClaimOccurrenceId,
     )
     _require_document_positive_int("broker outbox claim ordinal", document[25])
+
+
+def _decode_broker_outbox_snapshot(
+    record: BrokerOutboxRecord,
+) -> tuple[
+    _identity.EffectId,
+    _identity.RequestOccurrenceId,
+    _identity.MandateId,
+    str,
+    int,
+    int,
+    str,
+    _venue.EffectKind,
+    _identity.ClientOrderId | None,
+    _identity.OrderId | None,
+    _fills.ExecutionSide,
+    _values.Quantity,
+    bytes,
+    _identity.ClaimOccurrenceId,
+    int,
+]:
+    """Re-decode the immutable outbox snapshot for repository cross-row binding."""
+
+    if type(record) is not BrokerOutboxRecord:
+        raise TypeError("broker outbox snapshot requires an exact record")
+    document = _validate_canonical_document_bytes(
+        "broker outbox",
+        record.canonical_payload_bytes,
+        record.payload_length,
+        record.payload_sha256,
+        _M2_BROKER_OUTBOX_DOCUMENT_KIND,
+    )
+    _validate_broker_outbox_document(record, document)
+    return (
+        _operations._decode_m2_m1_as(
+            "broker outbox effect external", document[10], _identity.EffectId
+        ),
+        _operations._decode_m2_m1_as(
+            "broker outbox request occurrence",
+            document[11],
+            _identity.RequestOccurrenceId,
+        ),
+        _operations._decode_m2_m1_as(
+            "broker outbox mandate", document[12], _identity.MandateId
+        ),
+        _require_sha256_text("broker outbox mandate commitment", document[13]),
+        _require_document_nonnegative_int(
+            "broker outbox expected controller head", document[14]
+        ),
+        _require_document_positive_int(
+            "broker outbox expected protection version", document[15]
+        ),
+        _operations._require_exact_text("broker outbox authority class", document[16]),
+        _operations._decode_m2_enum_as(
+            "broker outbox effect kind", document[17], _venue.EffectKind
+        ),
+        _operations._decode_m2_optional_m1_as(
+            "broker outbox client order", document[18], _identity.ClientOrderId
+        ),
+        _operations._decode_m2_optional_m1_as(
+            "broker outbox target order", document[19], _identity.OrderId
+        ),
+        _operations._decode_m2_enum_as(
+            "broker outbox side", document[20], _fills.ExecutionSide
+        ),
+        _operations._decode_m2_m1_as(
+            "broker outbox quantity", document[21], _values.Quantity
+        ),
+        _operations._decode_m2_bytes("broker outbox economic scope", document[22]),
+        _operations._decode_m2_m1_as(
+            "broker outbox claim occurrence",
+            document[24],
+            _identity.ClaimOccurrenceId,
+        ),
+        _require_document_positive_int("broker outbox claim ordinal", document[25]),
+    )
 
 
 def _validate_durable_input_semantic_key_coordinates(
@@ -2032,7 +2071,6 @@ __all__ = (
     "RepositoryOutcome",
     "RepositoryOutcomeKind",
     "RootFillRecord",
-    "RuntimeCheckpointPayloadRecord",
     "ScopeRecord",
     "SymbolControllerRecord",
     "VenueEffectRecord",

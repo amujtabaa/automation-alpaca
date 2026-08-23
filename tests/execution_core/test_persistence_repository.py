@@ -18,6 +18,7 @@ from app.execution_core import identity, profiles, values
 from app.execution_core.persistence import records
 import app.execution_core.persistence.repository as repository
 from app.execution_core.persistence.schema import install_schema, schema_ddl_digest
+from persistence_setup_support import issue_setup_write_capability
 
 
 APP_ID = identity.ApplicationGenerationId("generation-1")
@@ -288,6 +289,26 @@ def _expect_applied(outcome: records.RepositoryOutcome[Any]) -> None:
     assert outcome == records.RepositoryOutcome(records.RepositoryOutcomeKind.APPLIED)
 
 
+def _setup_write_capability(connection: sqlite3.Connection) -> object:
+    """Issue a connection-bound setup token at the named fixture boundary."""
+
+    return issue_setup_write_capability(connection)
+
+
+def _apply_mutator(
+    connection: sqlite3.Connection,
+    operation: Any,
+    *arguments: object,
+) -> Any:
+    """Call a real repository mutator with fixture-only setup authority."""
+
+    return operation(
+        connection,
+        *arguments,
+        capability=_setup_write_capability(connection),
+    )
+
+
 def _foundation(connection: sqlite3.Connection) -> None:
     for operation, value in (
         (repository.store_execution_profile, _execution_profile()),
@@ -295,13 +316,18 @@ def _foundation(connection: sqlite3.Connection) -> None:
         (repository.store_application_generation, _application()),
         (repository.store_scope, _scope()),
         (repository.store_acquisition_generation, _acquisition()),
-        (repository.store_kernel_checkpoint, _checkpoint()),
         (repository.store_symbol_controller, _controller()),
         (repository.store_market_stream_authority, _market_stream()),
         (repository.store_market_cursor, _cursor()),
         (repository.store_protection_authority, _protection()),
     ):
-        _expect_applied(operation(connection, value))
+        _expect_applied(
+            operation(
+                connection,
+                value,
+                capability=_setup_write_capability(connection),
+            )
+        )
 
 
 def _assert_found(outcome: records.RepositoryOutcome[Any], expected: Any) -> None:
@@ -362,11 +388,12 @@ def test_current_proof_optional_record_binding_covers_every_declared_field() -> 
 
 def test_exact_exports_and_outcome_invariants() -> None:
     expected_repository_exports = (
-        "advance_kernel_checkpoint",
         "advance_market_cursor",
         "advance_protection_authority",
         "advance_symbol_controller",
         "advance_venue_effect",
+        "claim_durable_input",
+        "finalize_durable_input",
         "load_acceptance_evidence",
         "load_acceptance_set",
         "load_acceptance_set_for_effect",
@@ -374,15 +401,20 @@ def test_exact_exports_and_outcome_invariants() -> None:
         "load_acquisition_generation_current",
         "load_acquisition_root_route",
         "load_application_generation",
+        "load_broker_outbox",
         "load_closure_head",
         "load_current_proof",
+        "load_decision_receipt",
         "load_dispatch_claim",
         "load_dispatch_claim_for_effect",
+        "load_durable_input",
+        "load_durable_input_by_semantic_key",
+        "load_durable_input_outcome",
+        "load_durable_input_semantic_key",
         "load_execution_fact",
         "load_execution_fact_by_source",
         "load_execution_fact_head",
         "load_execution_profile",
-        "load_kernel_checkpoint",
         "load_latest_acceptance_evidence",
         "load_live_acquisition_generation",
         "load_market_cursor",
@@ -403,11 +435,14 @@ def test_exact_exports_and_outcome_invariants() -> None:
         "store_acquisition_generation",
         "store_acquisition_root_route",
         "store_application_generation",
+        "store_broker_outbox",
         "store_closure",
         "store_dispatch_claim",
+        "store_decision_receipt",
+        "store_durable_input_outcome",
+        "store_durable_input_semantic_key",
         "store_execution_fact",
         "store_execution_profile",
-        "store_kernel_checkpoint",
         "store_market_cursor",
         "store_market_source_profile",
         "store_market_stream_authority",
@@ -443,7 +478,6 @@ def test_exact_exports_and_outcome_invariants() -> None:
         "RepositoryOutcome",
         "RepositoryOutcomeKind",
         "RootFillRecord",
-        "RuntimeCheckpointPayloadRecord",
         "ScopeRecord",
         "SymbolControllerRecord",
         "VenueEffectRecord",
@@ -565,7 +599,6 @@ def test_profiles_application_scope_generation_and_current_round_trip(
             _acquisition(),
         ),
         (repository.load_live_acquisition_generation(connection, 1), _acquisition()),
-        (repository.load_kernel_checkpoint(connection, APP_ID), _checkpoint()),
         (repository.load_symbol_controller(connection, 1), _controller()),
         (
             repository.load_market_stream_authority(connection, STREAM_ID),
@@ -587,12 +620,24 @@ def test_profiles_application_scope_generation_and_current_round_trip(
 
 def test_all_remaining_families_and_total_current_proof_round_trip(connection) -> None:
     _foundation(connection)
-    _expect_applied(repository.store_root_fill(connection, _root()))
+    _expect_applied(
+        repository.store_root_fill(
+            connection, _root(), capability=_setup_write_capability(connection)
+        )
+    )
 
     first_effect = _effect(1, controller_head=0, protection_version=1)
     first_owner = _owner(1, root_fill_key_id=1)
-    _expect_applied(repository.store_venue_effect(connection, first_effect))
-    _expect_applied(repository.store_venue_identity_owner(connection, first_owner))
+    _expect_applied(
+        repository.store_venue_effect(
+            connection, first_effect, capability=_setup_write_capability(connection)
+        )
+    )
+    _expect_applied(
+        repository.store_venue_identity_owner(
+            connection, first_owner, capability=_setup_write_capability(connection)
+        )
+    )
     route = records.AcquisitionRootRouteRecord(
         1,
         1,
@@ -603,17 +648,31 @@ def test_all_remaining_families_and_total_current_proof_round_trip(connection) -
         first_owner.owner_id,
         first_owner.observation_id,
     )
-    _expect_applied(repository.store_acquisition_root_route(connection, route))
-    _expect_applied(repository.store_execution_fact(connection, _fact()))
+    _expect_applied(
+        repository.store_acquisition_root_route(
+            connection, route, capability=_setup_write_capability(connection)
+        )
+    )
+    _expect_applied(
+        repository.store_execution_fact(
+            connection, _fact(), capability=_setup_write_capability(connection)
+        )
+    )
 
     controller = repository.load_symbol_controller(connection, 1).record
     assert isinstance(controller, records.SymbolControllerRecord)
     assert controller.currentness_head_ordinal == 1
     checkpoint_v2 = _checkpoint(head=1, version=2)
-    _expect_applied(repository.advance_kernel_checkpoint(connection, 1, checkpoint_v2))
+    _expect_applied(
+        repository.advance_kernel_checkpoint(
+            connection, 1, checkpoint_v2, capability=_setup_write_capability(connection)
+        )
+    )
     protection_v2 = _protection(controller_head=1, version=2)
     _expect_applied(
-        repository.advance_protection_authority(connection, 1, protection_v2)
+        repository.advance_protection_authority(
+            connection, 1, protection_v2, capability=_setup_write_capability(connection)
+        )
     )
 
     effect = _effect(2, controller_head=1, protection_version=2)
@@ -648,7 +707,7 @@ def test_all_remaining_families_and_total_current_proof_round_trip(connection) -
         (repository.store_acceptance_evidence, evidence),
         (repository.store_closure, closure),
     ):
-        _expect_applied(operation(connection, value))
+        _expect_applied(_apply_mutator(connection, operation, value))
 
     claimed_effect = dataclasses.replace(effect, lifecycle_state="DISPATCH_CLAIMED")
     root_after_fact = repository.load_root_fill(connection, 1).record
@@ -863,7 +922,7 @@ def test_repository_loads_cross_the_accepted_codec_boundary(
         (repository.store_dispatch_claim, _claim(1)),
         (repository.store_execution_fact, _fact()),
     ):
-        _expect_applied(operation(connection, value))
+        _expect_applied(_apply_mutator(connection, operation, value))
 
     decoded_tags: list[str] = []
     accepted_decoder = repository._decode_m1_value
@@ -915,19 +974,36 @@ def test_mutable_rows_use_expected_version_and_caller_owns_rollback(connection) 
     connection.execute("BEGIN")
     _expect_applied(
         repository.advance_kernel_checkpoint(
-            connection, 1, _checkpoint(head=1, version=2)
+            connection,
+            1,
+            _checkpoint(head=1, version=2),
+            capability=_setup_write_capability(connection),
         )
     )
     _expect_applied(
         repository.advance_market_cursor(
-            connection, 0, 0, _cursor(fixed=1, published=1)
+            connection,
+            0,
+            0,
+            _cursor(fixed=1, published=1),
+            capability=_setup_write_capability(connection),
         )
     )
     _expect_applied(
-        repository.advance_symbol_controller(connection, 1, _controller(version=2))
+        repository.advance_symbol_controller(
+            connection,
+            1,
+            _controller(version=2),
+            capability=_setup_write_capability(connection),
+        )
     )
     _expect_applied(
-        repository.advance_protection_authority(connection, 1, _protection(version=2))
+        repository.advance_protection_authority(
+            connection,
+            1,
+            _protection(version=2),
+            capability=_setup_write_capability(connection),
+        )
     )
     connection.rollback()
     _assert_found(repository.load_kernel_checkpoint(connection, APP_ID), _checkpoint())
@@ -936,7 +1012,10 @@ def test_mutable_rows_use_expected_version_and_caller_owns_rollback(connection) 
     _assert_found(repository.load_protection_authority(connection, 1), _protection())
 
     stale = repository.advance_kernel_checkpoint(
-        connection, 9, _checkpoint(head=1, version=2)
+        connection,
+        9,
+        _checkpoint(head=1, version=2),
+        capability=_setup_write_capability(connection),
     )
     assert stale.kind is records.RepositoryOutcomeKind.CONFLICT
 
@@ -1023,6 +1102,7 @@ def test_retirement_changes_state_and_remains_caller_rollback_owned(connection) 
                 EXECUTION_PROFILE_ID,
                 identity.SymbolId("MSFT"),
             ),
+            capability=_setup_write_capability(connection),
         )
     )
     generation = dataclasses.replace(
@@ -1030,10 +1110,18 @@ def test_retirement_changes_state_and_remains_caller_rollback_owned(connection) 
         acquisition_generation_id=successor,
         scope_id=2,
     )
-    _expect_applied(repository.store_acquisition_generation(connection, generation))
+    _expect_applied(
+        repository.store_acquisition_generation(
+            connection, generation, capability=_setup_write_capability(connection)
+        )
+    )
     connection.commit()
     connection.execute("BEGIN")
-    _expect_applied(repository.retire_acquisition_generation(connection, successor))
+    _expect_applied(
+        repository.retire_acquisition_generation(
+            connection, successor, capability=_setup_write_capability(connection)
+        )
+    )
     retired = dataclasses.replace(generation, status="RETIRED_UNSERVING")
     _assert_found(
         repository.load_acquisition_generation(connection, successor), retired
@@ -1047,7 +1135,11 @@ def test_retirement_changes_state_and_remains_caller_rollback_owned(connection) 
 def test_advances_reject_contradictory_immutable_authority(connection) -> None:
     _foundation(connection)
     effect = _effect(1, controller_head=0, protection_version=1)
-    _expect_applied(repository.store_venue_effect(connection, effect))
+    _expect_applied(
+        repository.store_venue_effect(
+            connection, effect, capability=_setup_write_capability(connection)
+        )
+    )
 
     wrong_application = identity.ApplicationGenerationId("wrong-generation")
     controller = dataclasses.replace(
@@ -1075,13 +1167,18 @@ def test_advances_reject_contradictory_immutable_authority(connection) -> None:
     )
 
     outcomes = (
-        repository.advance_symbol_controller(connection, 1, controller),
-        repository.advance_market_cursor(connection, 0, 0, cursor),
+        repository.advance_symbol_controller(
+            connection, 1, controller, capability=_setup_write_capability(connection)
+        ),
+        repository.advance_market_cursor(
+            connection, 0, 0, cursor, capability=_setup_write_capability(connection)
+        ),
         repository.advance_venue_effect(
             connection,
             "REQUESTED",
             "OPEN",
             contradictory_effect,
+            capability=_setup_write_capability(connection),
         ),
     )
     assert {outcome.kind for outcome in outcomes} == {
@@ -1095,8 +1192,16 @@ def test_advances_reject_contradictory_immutable_authority(connection) -> None:
 def test_effect_transition_uses_expected_state(connection) -> None:
     _foundation(connection)
     effect = _effect(1, controller_head=0, protection_version=1)
-    _expect_applied(repository.store_venue_effect(connection, effect))
-    _expect_applied(repository.store_dispatch_claim(connection, _claim(1)))
+    _expect_applied(
+        repository.store_venue_effect(
+            connection, effect, capability=_setup_write_capability(connection)
+        )
+    )
+    _expect_applied(
+        repository.store_dispatch_claim(
+            connection, _claim(1), capability=_setup_write_capability(connection)
+        )
+    )
     claimed = dataclasses.replace(effect, lifecycle_state="DISPATCH_CLAIMED")
     acknowledged = dataclasses.replace(claimed, lifecycle_state="ACKNOWLEDGED")
     _expect_applied(
@@ -1105,6 +1210,7 @@ def test_effect_transition_uses_expected_state(connection) -> None:
             "DISPATCH_CLAIMED",
             "OPEN",
             acknowledged,
+            capability=_setup_write_capability(connection),
         )
     )
     stale = repository.advance_venue_effect(
@@ -1112,6 +1218,7 @@ def test_effect_transition_uses_expected_state(connection) -> None:
         "DISPATCH_CLAIMED",
         "OPEN",
         acknowledged,
+        capability=_setup_write_capability(connection),
     )
     assert stale.kind is records.RepositoryOutcomeKind.CONFLICT
     _assert_found(repository.load_venue_effect(connection, 1), acknowledged)
@@ -1119,7 +1226,9 @@ def test_effect_transition_uses_expected_state(connection) -> None:
 
 def test_duplicate_is_conflict_but_malformed_authority_is_integrity(connection) -> None:
     _foundation(connection)
-    duplicate = repository.store_scope(connection, _scope())
+    duplicate = repository.store_scope(
+        connection, _scope(), capability=_setup_write_capability(connection)
+    )
     assert duplicate.kind is records.RepositoryOutcomeKind.CONFLICT
 
     _expect_applied(
@@ -1128,6 +1237,7 @@ def test_duplicate_is_conflict_but_malformed_authority_is_integrity(connection) 
             records.ScopeRecord(
                 2, APP_ID, EXECUTION_PROFILE_ID, identity.SymbolId("MSFT")
             ),
+            capability=_setup_write_capability(connection),
         )
     )
     malformed = dataclasses.replace(
@@ -1136,28 +1246,56 @@ def test_duplicate_is_conflict_but_malformed_authority_is_integrity(connection) 
         scope_id=2,
         mandate_commitment_sha256="not-a-digest",
     )
-    refused = repository.store_acquisition_generation(connection, malformed)
+    refused = repository.store_acquisition_generation(
+        connection, malformed, capability=_setup_write_capability(connection)
+    )
     assert refused.kind is records.RepositoryOutcomeKind.INTEGRITY_FAILURE
     assert refused.record is None
 
     wrong_type = dataclasses.replace(_scope(), symbol="AAPL")  # type: ignore[arg-type]
-    refused_before_sql = repository.store_scope(connection, wrong_type)
+    refused_before_sql = repository.store_scope(
+        connection, wrong_type, capability=_setup_write_capability(connection)
+    )
     assert refused_before_sql.kind is records.RepositoryOutcomeKind.INTEGRITY_FAILURE
 
 
 def test_every_insert_owned_family_reports_duplicate_contention(connection) -> None:
     _foundation(connection)
     foundation_duplicates = (
-        repository.store_execution_profile(connection, _execution_profile()),
-        repository.store_market_source_profile(connection, _market_profile()),
-        repository.store_application_generation(connection, _application()),
-        repository.store_scope(connection, _scope()),
-        repository.store_acquisition_generation(connection, _acquisition()),
-        repository.store_kernel_checkpoint(connection, _checkpoint()),
-        repository.store_symbol_controller(connection, _controller()),
-        repository.store_market_stream_authority(connection, _market_stream()),
-        repository.store_market_cursor(connection, _cursor()),
-        repository.store_protection_authority(connection, _protection()),
+        repository.store_execution_profile(
+            connection,
+            _execution_profile(),
+            capability=_setup_write_capability(connection),
+        ),
+        repository.store_market_source_profile(
+            connection,
+            _market_profile(),
+            capability=_setup_write_capability(connection),
+        ),
+        repository.store_application_generation(
+            connection, _application(), capability=_setup_write_capability(connection)
+        ),
+        repository.store_scope(
+            connection, _scope(), capability=_setup_write_capability(connection)
+        ),
+        repository.store_acquisition_generation(
+            connection, _acquisition(), capability=_setup_write_capability(connection)
+        ),
+        repository.store_kernel_checkpoint(
+            connection, _checkpoint(), capability=_setup_write_capability(connection)
+        ),
+        repository.store_symbol_controller(
+            connection, _controller(), capability=_setup_write_capability(connection)
+        ),
+        repository.store_market_stream_authority(
+            connection, _market_stream(), capability=_setup_write_capability(connection)
+        ),
+        repository.store_market_cursor(
+            connection, _cursor(), capability=_setup_write_capability(connection)
+        ),
+        repository.store_protection_authority(
+            connection, _protection(), capability=_setup_write_capability(connection)
+        ),
     )
     assert {outcome.kind for outcome in foundation_duplicates} == {
         records.RepositoryOutcomeKind.CONFLICT
@@ -1210,8 +1348,8 @@ def test_every_insert_owned_family_reports_duplicate_contention(connection) -> N
         (repository.store_closure, closure),
     )
     for operation, value in owned:
-        _expect_applied(operation(connection, value))
-        duplicate = operation(connection, value)
+        _expect_applied(_apply_mutator(connection, operation, value))
+        duplicate = _apply_mutator(connection, operation, value)
         assert duplicate.kind is records.RepositoryOutcomeKind.CONFLICT, (
             operation.__name__
         )
@@ -1282,7 +1420,7 @@ def test_every_insert_owned_family_rejects_primary_identity_mismatch(
         ),
     )
     for operation, mismatched in foundation_mismatches:
-        outcome = operation(connection, mismatched)
+        outcome = _apply_mutator(connection, operation, mismatched)
         assert outcome.kind is records.RepositoryOutcomeKind.INTEGRITY_FAILURE, (
             operation.__name__
         )
@@ -1377,8 +1515,8 @@ def test_every_insert_owned_family_rejects_primary_identity_mismatch(
         ),
     )
     for operation, retained, mismatched in owned:
-        _expect_applied(operation(connection, retained))
-        outcome = operation(connection, mismatched)
+        _expect_applied(_apply_mutator(connection, operation, retained))
+        outcome = _apply_mutator(connection, operation, mismatched)
         assert outcome.kind is records.RepositoryOutcomeKind.INTEGRITY_FAILURE, (
             operation.__name__
         )
@@ -1411,45 +1549,68 @@ def test_insert_conflict_probes_cover_alternate_and_ambiguous_identities(
         ),
     )
     for operation, alternate in alternate_foundation:
-        outcome = operation(connection, alternate)
+        outcome = _apply_mutator(connection, operation, alternate)
         assert outcome.kind is records.RepositoryOutcomeKind.INTEGRITY_FAILURE, (
             operation.__name__
         )
 
     root = _root()
-    _expect_applied(repository.store_root_fill(connection, root))
+    _expect_applied(
+        repository.store_root_fill(
+            connection, root, capability=_setup_write_capability(connection)
+        )
+    )
     alternate_root = dataclasses.replace(root, root_fill_key_id=2)
     assert (
-        repository.store_root_fill(connection, alternate_root).kind
+        repository.store_root_fill(
+            connection, alternate_root, capability=_setup_write_capability(connection)
+        ).kind
         is records.RepositoryOutcomeKind.INTEGRITY_FAILURE
     )
 
     effect = _effect(1, controller_head=0, protection_version=1)
-    _expect_applied(repository.store_venue_effect(connection, effect))
+    _expect_applied(
+        repository.store_venue_effect(
+            connection, effect, capability=_setup_write_capability(connection)
+        )
+    )
     alternate_effect = dataclasses.replace(
         effect,
         effect_id=2,
         created_ordinal=2,
     )
     assert (
-        repository.store_venue_effect(connection, alternate_effect).kind
+        repository.store_venue_effect(
+            connection, alternate_effect, capability=_setup_write_capability(connection)
+        ).kind
         is records.RepositoryOutcomeKind.INTEGRITY_FAILURE
     )
 
     claim = _claim(1)
-    _expect_applied(repository.store_dispatch_claim(connection, claim))
+    _expect_applied(
+        repository.store_dispatch_claim(
+            connection, claim, capability=_setup_write_capability(connection)
+        )
+    )
     alternate_claim = dataclasses.replace(claim, claim_id=2, claim_ordinal=2)
     assert (
-        repository.store_dispatch_claim(connection, alternate_claim).kind
+        repository.store_dispatch_claim(
+            connection, alternate_claim, capability=_setup_write_capability(connection)
+        ).kind
         is records.RepositoryOutcomeKind.INTEGRITY_FAILURE
     )
 
     acceptance = records.AcceptanceSetRecord(1, 1)
-    _expect_applied(repository.store_acceptance_set(connection, acceptance))
+    _expect_applied(
+        repository.store_acceptance_set(
+            connection, acceptance, capability=_setup_write_capability(connection)
+        )
+    )
     assert (
         repository.store_acceptance_set(
             connection,
             records.AcceptanceSetRecord(2, 1),
+            capability=_setup_write_capability(connection),
         ).kind
         is records.RepositoryOutcomeKind.INTEGRITY_FAILURE
     )
@@ -1465,15 +1626,27 @@ def test_insert_conflict_probes_cover_alternate_and_ambiguous_identities(
         None,
         None,
     )
-    _expect_applied(repository.store_acceptance_evidence(connection, evidence))
+    _expect_applied(
+        repository.store_acceptance_evidence(
+            connection, evidence, capability=_setup_write_capability(connection)
+        )
+    )
     alternate_evidence = dataclasses.replace(evidence, evidence_id=2)
     assert (
-        repository.store_acceptance_evidence(connection, alternate_evidence).kind
+        repository.store_acceptance_evidence(
+            connection,
+            alternate_evidence,
+            capability=_setup_write_capability(connection),
+        ).kind
         is records.RepositoryOutcomeKind.INTEGRITY_FAILURE
     )
 
     owner = _owner(1, root_fill_key_id=1)
-    _expect_applied(repository.store_venue_identity_owner(connection, owner))
+    _expect_applied(
+        repository.store_venue_identity_owner(
+            connection, owner, capability=_setup_write_capability(connection)
+        )
+    )
     closure = records.ClosureChainRecord(
         1,
         1,
@@ -1483,10 +1656,18 @@ def test_insert_conflict_probes_cover_alternate_and_ambiguous_identities(
         "TERMINAL_LEG",
         None,
     )
-    _expect_applied(repository.store_closure(connection, closure))
+    _expect_applied(
+        repository.store_closure(
+            connection, closure, capability=_setup_write_capability(connection)
+        )
+    )
     alternate_closure = dataclasses.replace(closure, closure_id=2)
     assert (
-        repository.store_closure(connection, alternate_closure).kind
+        repository.store_closure(
+            connection,
+            alternate_closure,
+            capability=_setup_write_capability(connection),
+        ).kind
         is records.RepositoryOutcomeKind.INTEGRITY_FAILURE
     )
 
@@ -1496,13 +1677,19 @@ def test_insert_conflict_probes_cover_alternate_and_ambiguous_identities(
         EXECUTION_PROFILE_ID,
         identity.SymbolId("MSFT"),
     )
-    _expect_applied(repository.store_scope(connection, scope_two))
+    _expect_applied(
+        repository.store_scope(
+            connection, scope_two, capability=_setup_write_capability(connection)
+        )
+    )
     ambiguous_scope = dataclasses.replace(
         scope_two,
         scope_id=1,
     )
     assert (
-        repository.store_scope(connection, ambiguous_scope).kind
+        repository.store_scope(
+            connection, ambiguous_scope, capability=_setup_write_capability(connection)
+        ).kind
         is records.RepositoryOutcomeKind.INTEGRITY_FAILURE
     )
 
@@ -1668,11 +1855,21 @@ def test_duplicate_probe_cannot_hide_broken_claim_authority(connection) -> None:
     _foundation(connection)
     effect = _effect(1, controller_head=0, protection_version=1)
     claim = _claim(1)
-    _expect_applied(repository.store_venue_effect(connection, effect))
-    _expect_applied(repository.store_dispatch_claim(connection, claim))
+    _expect_applied(
+        repository.store_venue_effect(
+            connection, effect, capability=_setup_write_capability(connection)
+        )
+    )
+    _expect_applied(
+        repository.store_dispatch_claim(
+            connection, claim, capability=_setup_write_capability(connection)
+        )
+    )
 
     broken = dataclasses.replace(claim, effect_id=999)
-    outcome = repository.store_dispatch_claim(connection, broken)
+    outcome = repository.store_dispatch_claim(
+        connection, broken, capability=_setup_write_capability(connection)
+    )
     assert outcome.kind is records.RepositoryOutcomeKind.INTEGRITY_FAILURE
     _assert_found(repository.load_dispatch_claim(connection, claim.claim_id), claim)
 
@@ -1688,12 +1885,26 @@ def test_duplicate_probe_cannot_hide_broken_execution_fact_authority(
         root_fill_id=identity.RootFillId("root-2"),
     )
     fact = _fact()
-    _expect_applied(repository.store_root_fill(connection, root))
-    _expect_applied(repository.store_root_fill(connection, alternate_root))
-    _expect_applied(repository.store_execution_fact(connection, fact))
+    _expect_applied(
+        repository.store_root_fill(
+            connection, root, capability=_setup_write_capability(connection)
+        )
+    )
+    _expect_applied(
+        repository.store_root_fill(
+            connection, alternate_root, capability=_setup_write_capability(connection)
+        )
+    )
+    _expect_applied(
+        repository.store_execution_fact(
+            connection, fact, capability=_setup_write_capability(connection)
+        )
+    )
 
     assert (
-        repository.store_execution_fact(connection, fact).kind
+        repository.store_execution_fact(
+            connection, fact, capability=_setup_write_capability(connection)
+        ).kind
         is records.RepositoryOutcomeKind.CONFLICT
     )
     broken = dataclasses.replace(
@@ -1702,7 +1913,9 @@ def test_duplicate_probe_cannot_hide_broken_execution_fact_authority(
         root_fill_key_id=2,
         fact_ordinal=2,
     )
-    outcome = repository.store_execution_fact(connection, broken)
+    outcome = repository.store_execution_fact(
+        connection, broken, capability=_setup_write_capability(connection)
+    )
     assert outcome.kind is records.RepositoryOutcomeKind.INTEGRITY_FAILURE
     _assert_found(repository.load_execution_fact(connection, fact.fact_id), fact)
 
@@ -1710,7 +1923,11 @@ def test_duplicate_probe_cannot_hide_broken_execution_fact_authority(
 def test_requested_effect_proof_propagates_claim_read_failure(connection) -> None:
     _foundation(connection)
     effect = _effect(1, controller_head=0, protection_version=1)
-    _expect_applied(repository.store_venue_effect(connection, effect))
+    _expect_applied(
+        repository.store_venue_effect(
+            connection, effect, capability=_setup_write_capability(connection)
+        )
+    )
 
     baseline = repository.load_current_proof(
         connection,
@@ -1783,12 +2000,13 @@ def test_current_proof_refuses_checkpoint_behind_controller_head(connection) -> 
         (repository.store_acquisition_root_route, route),
         (repository.store_execution_fact, _fact()),
     ):
-        _expect_applied(operation(connection, value))
+        _expect_applied(_apply_mutator(connection, operation, value))
     _expect_applied(
         repository.advance_protection_authority(
             connection,
             1,
             _protection(controller_head=1, version=2),
+            capability=_setup_write_capability(connection),
         )
     )
 
@@ -1802,6 +2020,7 @@ def test_current_proof_refuses_checkpoint_behind_controller_head(connection) -> 
             connection,
             1,
             _checkpoint(head=1, version=2),
+            capability=_setup_write_capability(connection),
         )
     )
     fresh = repository.load_current_proof(connection, proof_request)

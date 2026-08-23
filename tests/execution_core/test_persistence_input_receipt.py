@@ -29,7 +29,8 @@ from app.execution_core.identity import (
     VenueLegKey,
     VenueObservationId,
 )
-from app.execution_core.persistence import operations, records
+from app.execution_core.persistence import operations, records, repository
+import persistence_setup_support as setup_support
 
 
 _EXPECTED_OWNER_RESULT_SHA256 = (
@@ -305,6 +306,191 @@ def _with_mismatched_document_length(document_bytes: bytes) -> bytes:
         + (declared_length + 1).to_bytes(8, "big")
         + document_bytes[length_start + 8 :]
     )
+
+
+def test_repository_outcomes_carry_only_authenticated_dedupe_facts() -> None:
+    fact = operations.InputDedupeFact(
+        operations.InputDedupeKind.UNSEEN,
+        operations.OperationDomain.AUTHORITY.value,
+        "a1" * 32,
+        "b2" * 32,
+        None,
+        (),
+    )
+
+    applied = records.RepositoryOutcome(records.RepositoryOutcomeKind.APPLIED, fact)
+    conflict = records.RepositoryOutcome(records.RepositoryOutcomeKind.CONFLICT, fact)
+
+    assert applied.record is fact
+    assert conflict.record is fact
+    with pytest.raises(ValueError, match="only APPLIED"):
+        records.RepositoryOutcome(records.RepositoryOutcomeKind.ABSENT, fact)
+
+
+class _Rows:
+    """Tiny no-I/O cursor stand-in for repository classification tests."""
+
+    def __init__(self, *rows: tuple[object, ...]) -> None:
+        self._rows = list(rows)
+
+    def fetchone(self) -> tuple[object, ...] | None:
+        return None if not self._rows else self._rows.pop(0)
+
+
+class _RetainedInputConnection:
+    """Pure query responder; it neither imports nor opens SQLite."""
+
+    def __init__(
+        self,
+        input_row: tuple[object, ...],
+        outcome_row: tuple[object, ...] | None,
+    ) -> None:
+        self._input_row = input_row
+        self._outcome_row = outcome_row
+
+    def execute(
+        self,
+        sql: str,
+        parameters: object = (),
+    ) -> _Rows:
+        del parameters
+        if "FROM durable_input_outcome" in sql:
+            return _Rows(*(() if self._outcome_row is None else (self._outcome_row,)))
+        if "FROM durable_input" in sql:
+            return _Rows(self._input_row)
+        raise AssertionError(f"unexpected repository statement: {sql}")
+
+
+def _outcome_for_retained_input(
+    record: records.DurableInputRecord,
+) -> records.DurableInputOutcomeRecord:
+    owner_domain = "VENUE_RECOVERY"
+    owner_disposition = "APPLIED"
+    terminal_state = "TERMINAL"
+    result_sha256 = records._derive_owner_result_sha256(
+        owner_domain,
+        owner_disposition,
+        terminal_state,
+        None,
+    )
+    receipt_sha256 = "3c" * 32
+    document = [
+        1,
+        "m2.durable-input-outcome/v1",
+        operations._encode_m2_m1_atom(record.application_generation_id),
+        operations._encode_m2_enum(record.input_domain),
+        record.input_identity_sha256,
+        owner_domain,
+        owner_disposition,
+        terminal_state,
+        result_sha256,
+        None,
+        1,
+        receipt_sha256,
+    ]
+    payload = operations._encode_m2_document_kind(0x03, document)
+    return records.DurableInputOutcomeRecord(
+        record.application_generation_id,
+        record.input_domain,
+        record.input_identity_sha256,
+        owner_domain,
+        owner_disposition,
+        terminal_state,
+        result_sha256,
+        None,
+        None,
+        None,
+        1,
+        receipt_sha256,
+        payload,
+        len(payload),
+        sha256(payload).hexdigest(),
+    )
+
+
+def test_claim_durable_input_classifies_exact_replay_without_sqlite(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candidate = _durable_input_record(
+        _passive_venue_operation(),
+        technical_state="CLAIMED",
+        created_ordinal=1,
+    )
+    retained = _durable_input_record(
+        _passive_venue_operation(),
+        technical_state="TERMINAL",
+        created_ordinal=7,
+    )
+    outcome = _outcome_for_retained_input(retained)
+    connection = _RetainedInputConnection(
+        repository._durable_input_parameters(retained),
+        repository._durable_input_outcome_parameters(outcome),
+    )
+    capability = setup_support.issue_setup_write_capability(connection)
+    monkeypatch.setattr(repository, "_verify_schema_connection", lambda _: 2)
+
+    result = repository.claim_durable_input(
+        connection,
+        candidate,
+        capability=capability,
+    )
+
+    assert result.kind is records.RepositoryOutcomeKind.FOUND
+    assert type(result.record) is operations.InputDedupeFact
+    assert result.record.kind is operations.InputDedupeKind.EXACT_REPLAY
+    assert result.record.retained_outcome_sha256 == outcome.outcome_sha256
+
+
+def test_claim_durable_input_classifies_same_primary_different_bytes_as_conflict(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candidate = _durable_input_record(
+        _passive_venue_operation(),
+        technical_state="CLAIMED",
+        created_ordinal=1,
+    )
+    changed_observation = venue.ObserveVenueStatus(
+        VenueInputId("passive-observation"),
+        VenueLegKey(
+            BrokerId("broker"),
+            EnvironmentId("paper"),
+            AccountId("account"),
+            OrderId("order"),
+        ),
+        venue.VenueAttemptState.WORKING,
+        VenueObservationId("changed-observation-id"),
+        values.Quantity(1),
+    )
+    retained = _durable_input_record(
+        operations.VenueRecoveryOperation(
+            operations.VenueOperationCoordinates(
+                ApplicationGenerationId("venue-input-app"),
+                "03" * 32,
+                8,
+                None,
+            ),
+            changed_observation,
+        ),
+        technical_state="CLAIMED",
+        created_ordinal=7,
+    )
+    connection = _RetainedInputConnection(
+        repository._durable_input_parameters(retained),
+        None,
+    )
+    capability = setup_support.issue_setup_write_capability(connection)
+    monkeypatch.setattr(repository, "_verify_schema_connection", lambda _: 2)
+
+    result = repository.claim_durable_input(
+        connection,
+        candidate,
+        capability=capability,
+    )
+
+    assert result.kind is records.RepositoryOutcomeKind.CONFLICT
+    assert type(result.record) is operations.InputDedupeFact
+    assert result.record.kind is operations.InputDedupeKind.IDENTITY_CONFLICT
+    assert result.record.retained_outcome_sha256 is None
 
 
 def _set_document_member(

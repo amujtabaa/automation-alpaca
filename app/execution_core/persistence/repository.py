@@ -21,6 +21,7 @@ from .. import values as _values
 from ..durable_codec import DurableAtom as _DurableAtom
 from ..durable_codec import decode_m1_value as _decode_m1_value
 from ..durable_codec import encode_m1_value as _encode_m1_value
+from . import operations as _operations
 from . import records as _records
 from .schema import SQLiteConnectionProtocol as _SQLiteConnectionProtocol
 from .schema import verify_schema_connection as _verify_schema_connection
@@ -28,6 +29,81 @@ from .schema import verify_schema_connection as _verify_schema_connection
 
 _RecordT = _TypeVar("_RecordT")
 _CONTRACT_VERSION = "1"
+_SETUP_WRITE_CAPABILITY_SEAL = object()
+_RUNTIME_WRITE_CAPABILITY_SEAL = object()
+
+
+class _RuntimeWriteCapability:
+    """Connection- and transaction-bound authority issued only by unit_of_work."""
+
+    __slots__ = ("_connection", "_seal")
+    _connection: _SQLiteConnectionProtocol
+    _seal: object
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise TypeError("runtime write capability is factory-issued")
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        del cls, kwargs
+        raise TypeError("runtime write capability cannot be subclassed")
+
+
+class _SetupWriteCapability:
+    """Connection-bound fixture authority; never a runtime composition token."""
+
+    __slots__ = ("_connection", "_seal")
+    _connection: _SQLiteConnectionProtocol
+    _seal: object
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise TypeError("setup write capability is factory-issued")
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        del cls, kwargs
+        raise TypeError("setup write capability cannot be subclassed")
+
+
+_WriteCapability = _RuntimeWriteCapability | _SetupWriteCapability
+
+
+def _issue_setup_write_capability(
+    connection: _SQLiteConnectionProtocol,
+) -> _SetupWriteCapability:
+    """Mint one private setup token for the named test-support boundary only."""
+
+    capability = object.__new__(_SetupWriteCapability)
+    object.__setattr__(capability, "_connection", connection)
+    object.__setattr__(capability, "_seal", _SETUP_WRITE_CAPABILITY_SEAL)
+    return capability
+
+
+def _require_write_capability(
+    connection: _SQLiteConnectionProtocol,
+    capability: object,
+) -> None:
+    """Refuse absent, forged, stale, cross-connection, or subclassed authority."""
+
+    capability_type = type(capability)
+    if capability_type is _RuntimeWriteCapability:
+        runtime_capability = _cast(_RuntimeWriteCapability, capability)
+        if (
+            runtime_capability._seal is not _RUNTIME_WRITE_CAPABILITY_SEAL
+            or runtime_capability._connection is not connection
+            or getattr(connection, "in_transaction", False) is not True
+        ):
+            raise ValueError("runtime write capability is not current for connection")
+        return
+    if capability_type is _SetupWriteCapability:
+        setup_capability = _cast(_SetupWriteCapability, capability)
+        if (
+            setup_capability._seal is not _SETUP_WRITE_CAPABILITY_SEAL
+            or setup_capability._connection is not connection
+        ):
+            raise ValueError("setup write capability is not current for connection")
+        return
+    raise TypeError("write capability is not admitted")
 
 
 def _outcome(
@@ -75,6 +151,7 @@ def _classify_sqlite_failure(
 
 
 def _insert(
+    capability: _WriteCapability,
     connection: _SQLiteConnectionProtocol,
     sql: str,
     prepare: _Callable[[], tuple[_Any, ...]],
@@ -85,8 +162,9 @@ def _insert(
         _Callable[[tuple[_Any, ...]], tuple[_Any, ...]],
     ],
 ) -> _records.RepositoryOutcome[_Any]:
-    _verify_schema_connection(connection)
     try:
+        _require_write_capability(connection, capability)
+        _verify_schema_connection(connection)
         parameters = prepare()
     except (TypeError, ValueError, OverflowError):
         return _integrity()
@@ -114,12 +192,14 @@ def _insert(
 
 
 def _advance(
+    capability: _WriteCapability,
     connection: _SQLiteConnectionProtocol,
     sql: str,
     prepare: _Callable[[], tuple[_Any, ...]],
 ) -> _records.RepositoryOutcome[_Any]:
-    _verify_schema_connection(connection)
     try:
+        _require_write_capability(connection, capability)
+        _verify_schema_connection(connection)
         parameters = prepare()
     except (TypeError, ValueError, OverflowError):
         return _integrity()
@@ -485,6 +565,8 @@ def _build_execution_profile(
 def store_execution_profile(
     connection: _SQLiteConnectionProtocol,
     profile: _profiles.ExecutionConnectionProfile,
+    *,
+    capability: _WriteCapability,
 ) -> _records.RepositoryOutcome[_Any]:
     def prepare() -> tuple[_Any, ...]:
         if type(profile) is not _profiles.ExecutionConnectionProfile:
@@ -506,6 +588,7 @@ def store_execution_profile(
         )
 
     return _insert(
+        capability,
         connection,
         f"INSERT INTO execution_connection_profile ({_EXECUTION_PROFILE_COLUMNS})"
         " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -550,6 +633,8 @@ def _build_market_profile(row: tuple[_Any, ...]) -> _profiles.MarketDataSourcePr
 def store_market_source_profile(
     connection: _SQLiteConnectionProtocol,
     profile: _profiles.MarketDataSourceProfile,
+    *,
+    capability: _WriteCapability,
 ) -> _records.RepositoryOutcome[_Any]:
     def prepare() -> tuple[_Any, ...]:
         if type(profile) is not _profiles.MarketDataSourceProfile:
@@ -566,6 +651,7 @@ def store_market_source_profile(
         )
 
     return _insert(
+        capability,
         connection,
         f"INSERT INTO market_data_source_profile ({_MARKET_PROFILE_COLUMNS})"
         " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -611,8 +697,11 @@ def _build_application(row: tuple[_Any, ...]) -> _records.ApplicationGenerationR
 def store_application_generation(
     connection: _SQLiteConnectionProtocol,
     record: _records.ApplicationGenerationRecord,
+    *,
+    capability: _WriteCapability,
 ) -> _records.RepositoryOutcome[_Any]:
     return _insert(
+        capability,
         connection,
         f"INSERT INTO application_generation ({_APPLICATION_COLUMNS})"
         " VALUES (?, ?, ?, ?)",
@@ -669,8 +758,11 @@ def _build_scope(row: tuple[_Any, ...]) -> _records.ScopeRecord:
 def store_scope(
     connection: _SQLiteConnectionProtocol,
     record: _records.ScopeRecord,
+    *,
+    capability: _WriteCapability,
 ) -> _records.RepositoryOutcome[_Any]:
     return _insert(
+        capability,
         connection,
         f"INSERT INTO acquisition_scope ({_SCOPE_COLUMNS}) VALUES (?, ?, ?, ?)",
         lambda: (
@@ -732,8 +824,11 @@ def _build_acquisition(row: tuple[_Any, ...]) -> _records.AcquisitionGenerationR
 def store_acquisition_generation(
     connection: _SQLiteConnectionProtocol,
     record: _records.AcquisitionGenerationRecord,
+    *,
+    capability: _WriteCapability,
 ) -> _records.RepositoryOutcome[_Any]:
     return _insert(
+        capability,
         connection,
         f"INSERT INTO acquisition_generation ({_ACQUISITION_COLUMNS})"
         " VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -783,8 +878,11 @@ def load_acquisition_generation(
 def retire_acquisition_generation(
     connection: _SQLiteConnectionProtocol,
     acquisition_generation_id: _identity.AcquisitionGenerationId,
+    *,
+    capability: _WriteCapability,
 ) -> _records.RepositoryOutcome[_Any]:
     return _advance(
+        capability,
         connection,
         "UPDATE acquisition_generation SET status = 'RETIRED_UNSERVING'"
         " WHERE acquisition_generation_id = ? AND status = 'LIVE'",
@@ -843,64 +941,1032 @@ def _build_checkpoint(row: tuple[_Any, ...]) -> _records.KernelCheckpointRecord:
     )
 
 
-def store_kernel_checkpoint(
-    connection: _SQLiteConnectionProtocol,
-    record: _records.KernelCheckpointRecord,
-) -> _records.RepositoryOutcome[_Any]:
-    return _insert(
-        connection,
-        f"INSERT INTO kernel_checkpoint ({_CHECKPOINT_COLUMNS}) VALUES (?, ?, ?, ?)",
-        lambda: (
-            _application_id(record.application_generation_id),
-            _exact_int(record.currentness_head_ordinal),
-            _exact_text(record.checkpoint_sha256),
-            _exact_int(record.checkpoint_version_ordinal),
+def _decode_operation_domain(value: object) -> _operations.OperationDomain:
+    text = _exact_text(value)
+    try:
+        decoded = _operations.OperationDomain(text)
+    except ValueError as error:
+        raise ValueError("operation domain is not admitted") from error
+    if decoded.value != text:
+        raise ValueError("operation domain is not canonical")
+    return decoded
+
+
+def _decode_semantic_key_kind(value: object) -> _operations.InputSemanticKeyKind:
+    text = _exact_text(value)
+    try:
+        decoded = _operations.InputSemanticKeyKind(text)
+    except ValueError as error:
+        raise ValueError("semantic key kind is not admitted") from error
+    if decoded.value != text:
+        raise ValueError("semantic key kind is not canonical")
+    return decoded
+
+
+def _validated_durable_input(record: object) -> _records.DurableInputRecord:
+    if type(record) is not _records.DurableInputRecord:
+        raise TypeError("durable input must be an exact record")
+    return _records.DurableInputRecord(
+        record.application_generation_id,
+        record.execution_profile_id,
+        record.scope_id,
+        record.input_domain,
+        record.session_id,
+        record.acquisition_generation_id,
+        record.market_source_profile_id,
+        record.stream_generation_id,
+        record.input_identity_sha256,
+        record.operation_contract_version,
+        record.canonical_payload_bytes,
+        record.payload_sha256,
+        record.technical_state,
+        record.created_ordinal,
+    )
+
+
+_DURABLE_INPUT_COLUMNS = (
+    "application_generation_id, execution_profile_id, scope_id, input_domain,"
+    " session_external, acquisition_generation_id, market_source_profile_id,"
+    " stream_generation_id, input_identity_sha256, operation_contract_version,"
+    " canonical_payload_bytes, payload_sha256, technical_state, created_ordinal"
+)
+
+
+def _durable_input_parameters(record: object) -> tuple[_Any, ...]:
+    validated = _validated_durable_input(record)
+    return (
+        _application_id(validated.application_generation_id),
+        _exact_text(validated.execution_profile_id),
+        _exact_int(validated.scope_id),
+        validated.input_domain.value,
+        _optional_identity_text(
+            validated.session_id, _identity.SessionId, "session_id"
         ),
-        conflict_trigger_messages=("kernel checkpoint identity is already retained",),
-        conflict_probe=(
-            f"SELECT {_CHECKPOINT_COLUMNS} FROM kernel_checkpoint"
-            " WHERE application_generation_id = ?",
-            lambda parameters: (parameters[0],),
+        _optional_identity_text(
+            validated.acquisition_generation_id,
+            _identity.AcquisitionGenerationId,
+            "acquisition_generation_id",
+        ),
+        _exact_optional_text(validated.market_source_profile_id),
+        _optional_identity_text(
+            validated.stream_generation_id,
+            _identity.MarketStreamGenerationId,
+            "market_stream_generation_id",
+        ),
+        _exact_text(validated.input_identity_sha256),
+        _exact_int(validated.operation_contract_version),
+        _exact_bytes(validated.canonical_payload_bytes),
+        _exact_text(validated.payload_sha256),
+        _exact_text(validated.technical_state),
+        _exact_int(validated.created_ordinal),
+    )
+
+
+def _build_durable_input(row: tuple[_Any, ...]) -> _records.DurableInputRecord:
+    return _records.DurableInputRecord(
+        _decode_application_id(row[0]),
+        _exact_text(row[1]),
+        _exact_int(row[2]),
+        _decode_operation_domain(row[3]),
+        _decode_optional_identity(row[4], _identity.SessionId, "session_id"),
+        _decode_optional_identity(
+            row[5],
+            _identity.AcquisitionGenerationId,
+            "acquisition_generation_id",
+        ),
+        _exact_optional_text(row[6]),
+        _decode_optional_identity(
+            row[7],
+            _identity.MarketStreamGenerationId,
+            "market_stream_generation_id",
+        ),
+        _exact_text(row[8]),
+        _exact_int(row[9]),
+        _exact_bytes(row[10]),
+        _exact_text(row[11]),
+        _exact_text(row[12]),
+        _exact_int(row[13]),
+    )
+
+
+def _durable_input_primary_parameters(
+    record: _records.DurableInputRecord,
+) -> tuple[str, str, str]:
+    """Return the exact primary durable-input coordinate for one validated row."""
+
+    return (
+        _application_id(record.application_generation_id),
+        record.input_domain.value,
+        _exact_text(record.input_identity_sha256),
+    )
+
+
+def _load_durable_input_primary_unchecked(
+    connection: _SQLiteConnectionProtocol,
+    record: _records.DurableInputRecord,
+) -> _records.RepositoryOutcome[_records.DurableInputRecord]:
+    """Load one primary input after the caller has already verified the connection."""
+
+    return _select_one_unchecked(
+        connection,
+        f"SELECT {_DURABLE_INPUT_COLUMNS} FROM durable_input"
+        " WHERE application_generation_id = ? AND input_domain = ?"
+        " AND input_identity_sha256 = ?",
+        _durable_input_primary_parameters(record),
+        _build_durable_input,
+    )
+
+
+def _same_durable_input_claim(
+    retained: _records.DurableInputRecord,
+    candidate: _records.DurableInputRecord,
+) -> bool:
+    """Compare the immutable operation claim, excluding lifecycle bookkeeping.
+
+    ``created_ordinal`` is a global technical ordering coordinate, and
+    ``technical_state`` advances after a coherent outcome/receipt pair exists.
+    Neither changes whether a retried canonical operation is the same claimed
+    input.  Every operation-derived coordinate and byte remains exact.
+    """
+
+    return (
+        retained.application_generation_id == candidate.application_generation_id
+        and retained.execution_profile_id == candidate.execution_profile_id
+        and retained.scope_id == candidate.scope_id
+        and retained.input_domain is candidate.input_domain
+        and retained.session_id == candidate.session_id
+        and retained.acquisition_generation_id == candidate.acquisition_generation_id
+        and retained.market_source_profile_id == candidate.market_source_profile_id
+        and retained.stream_generation_id == candidate.stream_generation_id
+        and retained.input_identity_sha256 == candidate.input_identity_sha256
+        and retained.operation_contract_version == candidate.operation_contract_version
+        and retained.canonical_payload_bytes == candidate.canonical_payload_bytes
+        and retained.payload_sha256 == candidate.payload_sha256
+    )
+
+
+def _durable_input_dedupe_fact(
+    kind: _operations.InputDedupeKind,
+    record: _records.DurableInputRecord,
+    retained_outcome_sha256: str | None = None,
+) -> _operations.InputDedupeFact:
+    """Build the exact primary classification without caller-shaped proof data."""
+
+    return _operations.InputDedupeFact(
+        kind,
+        record.input_domain.value,
+        record.input_identity_sha256,
+        record.payload_sha256,
+        retained_outcome_sha256,
+        (),
+    )
+
+
+def _classify_retained_durable_input(
+    connection: _SQLiteConnectionProtocol,
+    candidate: _records.DurableInputRecord,
+    retained: _records.DurableInputRecord,
+) -> _records.RepositoryOutcome[_operations.InputDedupeFact]:
+    """Classify an already-retained primary input without invoking a reducer."""
+
+    if not _same_durable_input_claim(retained, candidate):
+        return _outcome(
+            _records.RepositoryOutcomeKind.CONFLICT,
+            _durable_input_dedupe_fact(
+                _operations.InputDedupeKind.IDENTITY_CONFLICT,
+                candidate,
+            ),
+        )
+    if retained.technical_state not in {"TERMINAL", "RECONCILIATION_PENDING"}:
+        return _integrity()
+    outcome = _select_one_unchecked(
+        connection,
+        f"SELECT {_DURABLE_INPUT_OUTCOME_COLUMNS} FROM durable_input_outcome"
+        " WHERE application_generation_id = ? AND input_domain = ?"
+        " AND input_identity_sha256 = ?",
+        _durable_input_primary_parameters(retained),
+        _build_durable_input_outcome,
+    )
+    if outcome.kind is _records.RepositoryOutcomeKind.ABSENT:
+        return _integrity()
+    if outcome.kind is not _records.RepositoryOutcomeKind.FOUND:
+        return _outcome(outcome.kind)
+    if outcome.record is None:
+        return _integrity()
+    if (
+        outcome.record.terminal_technical_state != retained.technical_state
+        or outcome.record.application_generation_id
+        != retained.application_generation_id
+        or outcome.record.input_domain is not retained.input_domain
+        or outcome.record.input_identity_sha256 != retained.input_identity_sha256
+    ):
+        return _integrity()
+    return _outcome(
+        _records.RepositoryOutcomeKind.FOUND,
+        _durable_input_dedupe_fact(
+            _operations.InputDedupeKind.EXACT_REPLAY,
+            candidate,
+            outcome.record.outcome_sha256,
         ),
     )
 
 
-def advance_kernel_checkpoint(
+def claim_durable_input(
     connection: _SQLiteConnectionProtocol,
-    expected_version_ordinal: int,
-    record: _records.KernelCheckpointRecord,
+    record: _records.DurableInputRecord,
+    *,
+    capability: _WriteCapability,
+) -> _records.RepositoryOutcome[_operations.InputDedupeFact]:
+    """Claim one canonical input or return its exact retained primary fact.
+
+    The unit-of-work later supplies the separate authenticated alternate-key
+    matches.  This lower repository primitive never accepts a caller-shaped
+    semantic match, and it never maps a duplicate to a generic SQLite error.
+    """
+
+    try:
+        _require_write_capability(connection, capability)
+        _verify_schema_connection(connection)
+        candidate = _validated_durable_input(record)
+        if candidate.technical_state != "CLAIMED":
+            raise ValueError("durable input claim must start in CLAIMED state")
+        parameters = _durable_input_parameters(candidate)
+    except (TypeError, ValueError, OverflowError):
+        return _integrity()
+
+    retained = _load_durable_input_primary_unchecked(connection, candidate)
+    if retained.kind is _records.RepositoryOutcomeKind.FOUND:
+        if retained.record is None:
+            return _integrity()
+        return _classify_retained_durable_input(connection, candidate, retained.record)
+    if retained.kind is not _records.RepositoryOutcomeKind.ABSENT:
+        return _outcome(retained.kind)
+
+    try:
+        connection.execute(
+            f"INSERT INTO durable_input ({_DURABLE_INPUT_COLUMNS})"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            parameters,
+        )
+    except Exception as caught:
+        classified = _classify_sqlite_failure(
+            caught,
+            conflict_trigger_messages=("durable input identity is already retained",),
+        )
+        if classified.kind is not _records.RepositoryOutcomeKind.CONFLICT:
+            return classified
+        retained_after_conflict = _load_durable_input_primary_unchecked(
+            connection,
+            candidate,
+        )
+        if retained_after_conflict.kind is not _records.RepositoryOutcomeKind.FOUND:
+            return _outcome(retained_after_conflict.kind)
+        if retained_after_conflict.record is None:
+            return _integrity()
+        return _classify_retained_durable_input(
+            connection,
+            candidate,
+            retained_after_conflict.record,
+        )
+    return _outcome(
+        _records.RepositoryOutcomeKind.APPLIED,
+        _durable_input_dedupe_fact(_operations.InputDedupeKind.UNSEEN, candidate),
+    )
+
+
+def finalize_durable_input(
+    connection: _SQLiteConnectionProtocol,
+    record: _records.DurableInputRecord,
+    *,
+    capability: _WriteCapability,
 ) -> _records.RepositoryOutcome[_Any]:
+    try:
+        _require_write_capability(connection, capability)
+        _verify_schema_connection(connection)
+        validated = _validated_durable_input(record)
+        if validated.technical_state not in {"TERMINAL", "RECONCILIATION_PENDING"}:
+            raise ValueError("durable input finalization requires a terminal state")
+        claimed = _records.DurableInputRecord(
+            validated.application_generation_id,
+            validated.execution_profile_id,
+            validated.scope_id,
+            validated.input_domain,
+            validated.session_id,
+            validated.acquisition_generation_id,
+            validated.market_source_profile_id,
+            validated.stream_generation_id,
+            validated.input_identity_sha256,
+            validated.operation_contract_version,
+            validated.canonical_payload_bytes,
+            validated.payload_sha256,
+            "CLAIMED",
+            validated.created_ordinal,
+        )
+    except (TypeError, ValueError, OverflowError):
+        return _integrity()
+    retained = _select_one_unchecked(
+        connection,
+        f"SELECT {_DURABLE_INPUT_COLUMNS} FROM durable_input"
+        " WHERE application_generation_id = ? AND input_domain = ?"
+        " AND input_identity_sha256 = ?",
+        (
+            _application_id(claimed.application_generation_id),
+            claimed.input_domain.value,
+            claimed.input_identity_sha256,
+        ),
+        _build_durable_input,
+    )
+    if retained.kind is _records.RepositoryOutcomeKind.ABSENT:
+        return _outcome(_records.RepositoryOutcomeKind.CONFLICT)
+    if retained.kind is not _records.RepositoryOutcomeKind.FOUND:
+        return _outcome(retained.kind)
+    if retained.record != claimed:
+        return _integrity()
     return _advance(
+        capability,
         connection,
-        "UPDATE kernel_checkpoint SET currentness_head_ordinal = ?,"
-        " checkpoint_sha256 = ?, checkpoint_version_ordinal = ?"
-        " WHERE application_generation_id = ? AND checkpoint_version_ordinal = ?",
+        "UPDATE durable_input SET technical_state = ?"
+        " WHERE application_generation_id = ? AND input_domain = ?"
+        " AND input_identity_sha256 = ? AND technical_state = 'CLAIMED'",
         lambda: (
-            _exact_int(record.currentness_head_ordinal),
-            _exact_text(record.checkpoint_sha256),
-            _exact_int(record.checkpoint_version_ordinal),
-            _application_id(record.application_generation_id),
-            _exact_int(expected_version_ordinal),
+            validated.technical_state,
+            _application_id(validated.application_generation_id),
+            validated.input_domain.value,
+            validated.input_identity_sha256,
         ),
     )
 
 
-def load_kernel_checkpoint(
+def load_durable_input(
     connection: _SQLiteConnectionProtocol,
     application_generation_id: _identity.ApplicationGenerationId,
-) -> _records.RepositoryOutcome[_records.KernelCheckpointRecord]:
+    input_domain: _operations.OperationDomain,
+    input_identity_sha256: str,
+) -> _records.RepositoryOutcome[_records.DurableInputRecord]:
     try:
-        key = _application_id(application_generation_id)
+        if type(input_domain) is not _operations.OperationDomain:
+            raise TypeError("input domain must be exact OperationDomain")
+        parameters = (
+            _application_id(application_generation_id),
+            input_domain.value,
+            _exact_text(input_identity_sha256),
+        )
     except (TypeError, ValueError):
         _verify_schema_connection(connection)
         return _integrity()
     return _load(
         connection,
-        f"SELECT {_CHECKPOINT_COLUMNS} FROM kernel_checkpoint"
-        " WHERE application_generation_id = ?",
-        (key,),
-        _build_checkpoint,
+        f"SELECT {_DURABLE_INPUT_COLUMNS} FROM durable_input"
+        " WHERE application_generation_id = ? AND input_domain = ?"
+        " AND input_identity_sha256 = ?",
+        parameters,
+        _build_durable_input,
     )
+
+
+_DURABLE_INPUT_SEMANTIC_KEY_COLUMNS = (
+    "key_kind, key_application_generation_id, execution_profile_id, key_scope_id,"
+    " canonical_key_bytes, key_sha256, input_application_generation_id,"
+    " input_domain, input_identity_sha256, created_ordinal"
+)
+
+
+def _validated_durable_input_semantic_key(
+    record: object,
+) -> _records.DurableInputSemanticKeyRecord:
+    if type(record) is not _records.DurableInputSemanticKeyRecord:
+        raise TypeError("durable input semantic key must be an exact record")
+    return _records.DurableInputSemanticKeyRecord(
+        record.key_kind,
+        record.key_application_generation_id,
+        record.execution_profile_id,
+        record.key_scope_id,
+        record.canonical_key_bytes,
+        record.key_sha256,
+        record.input_application_generation_id,
+        record.input_domain,
+        record.input_identity_sha256,
+        record.created_ordinal,
+    )
+
+
+def _durable_input_semantic_key_parameters(record: object) -> tuple[_Any, ...]:
+    validated = _validated_durable_input_semantic_key(record)
+    return (
+        validated.key_kind.value,
+        None
+        if validated.key_application_generation_id is None
+        else _application_id(validated.key_application_generation_id),
+        _exact_text(validated.execution_profile_id),
+        _exact_optional_int(validated.key_scope_id),
+        _exact_bytes(validated.canonical_key_bytes),
+        _exact_text(validated.key_sha256),
+        _application_id(validated.input_application_generation_id),
+        validated.input_domain.value,
+        _exact_text(validated.input_identity_sha256),
+        _exact_int(validated.created_ordinal),
+    )
+
+
+def _build_durable_input_semantic_key(
+    row: tuple[_Any, ...],
+) -> _records.DurableInputSemanticKeyRecord:
+    return _records.DurableInputSemanticKeyRecord(
+        _decode_semantic_key_kind(row[0]),
+        _decode_optional_identity(
+            row[1], _identity.ApplicationGenerationId, "application_generation_id"
+        ),
+        _exact_text(row[2]),
+        _exact_optional_int(row[3]),
+        _exact_bytes(row[4]),
+        _exact_text(row[5]),
+        _decode_application_id(row[6]),
+        _decode_operation_domain(row[7]),
+        _exact_text(row[8]),
+        _exact_int(row[9]),
+    )
+
+
+def store_durable_input_semantic_key(
+    connection: _SQLiteConnectionProtocol,
+    record: _records.DurableInputSemanticKeyRecord,
+    *,
+    capability: _WriteCapability,
+) -> _records.RepositoryOutcome[_Any]:
+    return _insert(
+        capability,
+        connection,
+        f"INSERT INTO durable_input_semantic_key ({_DURABLE_INPUT_SEMANTIC_KEY_COLUMNS})"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        lambda: _durable_input_semantic_key_parameters(record),
+        conflict_trigger_messages=(
+            "durable input semantic key must bind its exact input domain",
+        ),
+        conflict_probe=(
+            f"SELECT {_DURABLE_INPUT_SEMANTIC_KEY_COLUMNS}"
+            " FROM durable_input_semantic_key"
+            " WHERE input_application_generation_id = ? AND input_domain = ?"
+            " AND input_identity_sha256 = ? AND key_kind = ?"
+            " AND canonical_key_bytes = ?",
+            lambda parameters: (
+                parameters[6],
+                parameters[7],
+                parameters[8],
+                parameters[0],
+                parameters[4],
+            ),
+        ),
+    )
+
+
+def _semantic_key_lookup_parameters(
+    key_kind: _operations.InputSemanticKeyKind,
+    key_application_generation_id: _identity.ApplicationGenerationId | None,
+    execution_profile_id: str,
+    key_scope_id: int | None,
+    canonical_key_bytes: bytes,
+) -> tuple[_Any, ...]:
+    if type(key_kind) is not _operations.InputSemanticKeyKind:
+        raise TypeError("semantic key kind must be exact")
+    decoded_kind, coordinates, _ = _operations.decode_m2_semantic_key(
+        canonical_key_bytes
+    )
+    if decoded_kind is not key_kind:
+        raise ValueError("semantic key kind does not match canonical bytes")
+    profile_id = _exact_text(execution_profile_id)
+    if key_kind.value.startswith("VENUE_"):
+        if key_application_generation_id is not None or key_scope_id is not None:
+            raise ValueError("venue semantic keys have no application or scope")
+        if coordinates != (profile_id,):
+            raise ValueError("venue semantic key coordinates do not match")
+        application_id = None
+        scope_id = None
+    else:
+        if (
+            type(key_application_generation_id) is not _identity.ApplicationGenerationId
+            or type(key_scope_id) is not int
+        ):
+            raise TypeError("authority semantic key coordinates are incomplete")
+        application_id = _application_id(key_application_generation_id)
+        scope_id = _exact_int(key_scope_id)
+        if coordinates != (application_id, profile_id, scope_id):
+            raise ValueError("authority semantic key coordinates do not match")
+    return (
+        key_kind.value,
+        application_id,
+        profile_id,
+        scope_id,
+        _exact_bytes(canonical_key_bytes),
+    )
+
+
+def load_durable_input_semantic_key(
+    connection: _SQLiteConnectionProtocol,
+    key_kind: _operations.InputSemanticKeyKind,
+    key_application_generation_id: _identity.ApplicationGenerationId | None,
+    execution_profile_id: str,
+    key_scope_id: int | None,
+    canonical_key_bytes: bytes,
+) -> _records.RepositoryOutcome[_records.DurableInputSemanticKeyRecord]:
+    try:
+        parameters = _semantic_key_lookup_parameters(
+            key_kind,
+            key_application_generation_id,
+            execution_profile_id,
+            key_scope_id,
+            canonical_key_bytes,
+        )
+    except (TypeError, ValueError):
+        _verify_schema_connection(connection)
+        return _integrity()
+    return _load(
+        connection,
+        f"SELECT {_DURABLE_INPUT_SEMANTIC_KEY_COLUMNS}"
+        " FROM durable_input_semantic_key"
+        " WHERE key_kind = ?"
+        " AND key_application_generation_id IS ?"
+        " AND execution_profile_id = ?"
+        " AND key_scope_id IS ?"
+        " AND canonical_key_bytes = ?",
+        parameters,
+        _build_durable_input_semantic_key,
+    )
+
+
+def load_durable_input_by_semantic_key(
+    connection: _SQLiteConnectionProtocol,
+    key_kind: _operations.InputSemanticKeyKind,
+    key_application_generation_id: _identity.ApplicationGenerationId | None,
+    execution_profile_id: str,
+    key_scope_id: int | None,
+    canonical_key_bytes: bytes,
+) -> _records.RepositoryOutcome[_records.DurableInputRecord]:
+    semantic_key = load_durable_input_semantic_key(
+        connection,
+        key_kind,
+        key_application_generation_id,
+        execution_profile_id,
+        key_scope_id,
+        canonical_key_bytes,
+    )
+    if semantic_key.kind is not _records.RepositoryOutcomeKind.FOUND:
+        return _outcome(semantic_key.kind)
+    if semantic_key.record is None:
+        return _integrity()
+    return load_durable_input(
+        connection,
+        semantic_key.record.input_application_generation_id,
+        semantic_key.record.input_domain,
+        semantic_key.record.input_identity_sha256,
+    )
+
+
+_DECISION_RECEIPT_COLUMNS = (
+    "receipt_ordinal, application_generation_id, input_domain,"
+    " input_identity_sha256, owner_domain, owner_disposition,"
+    " terminal_technical_state, result_sha256,"
+    " checkpoint_currentness_head_ordinal, checkpoint_version_ordinal,"
+    " checkpoint_payload_sha256, canonical_receipt_bytes, receipt_length,"
+    " receipt_sha256"
+)
+
+
+def _validated_decision_receipt(record: object) -> _records.DecisionReceiptRecord:
+    if type(record) is not _records.DecisionReceiptRecord:
+        raise TypeError("decision receipt must be an exact record")
+    return _records.DecisionReceiptRecord(
+        record.receipt_ordinal,
+        record.application_generation_id,
+        record.input_domain,
+        record.input_identity_sha256,
+        record.owner_domain,
+        record.owner_disposition,
+        record.terminal_technical_state,
+        record.result_sha256,
+        record.checkpoint_currentness_head_ordinal,
+        record.checkpoint_version_ordinal,
+        record.checkpoint_payload_sha256,
+        record.canonical_receipt_bytes,
+        record.receipt_length,
+        record.receipt_sha256,
+    )
+
+
+def _decision_receipt_parameters(record: object) -> tuple[_Any, ...]:
+    validated = _validated_decision_receipt(record)
+    return (
+        _exact_int(validated.receipt_ordinal),
+        _application_id(validated.application_generation_id),
+        validated.input_domain.value,
+        _exact_text(validated.input_identity_sha256),
+        _exact_text(validated.owner_domain),
+        _exact_text(validated.owner_disposition),
+        _exact_text(validated.terminal_technical_state),
+        _exact_text(validated.result_sha256),
+        _exact_optional_int(validated.checkpoint_currentness_head_ordinal),
+        _exact_optional_int(validated.checkpoint_version_ordinal),
+        _exact_optional_text(validated.checkpoint_payload_sha256),
+        _exact_bytes(validated.canonical_receipt_bytes),
+        _exact_int(validated.receipt_length),
+        _exact_text(validated.receipt_sha256),
+    )
+
+
+def _build_decision_receipt(row: tuple[_Any, ...]) -> _records.DecisionReceiptRecord:
+    return _records.DecisionReceiptRecord(
+        _exact_int(row[0]),
+        _decode_application_id(row[1]),
+        _decode_operation_domain(row[2]),
+        _exact_text(row[3]),
+        _exact_text(row[4]),
+        _exact_text(row[5]),
+        _exact_text(row[6]),
+        _exact_text(row[7]),
+        _exact_optional_int(row[8]),
+        _exact_optional_int(row[9]),
+        _exact_optional_text(row[10]),
+        _exact_bytes(row[11]),
+        _exact_int(row[12]),
+        _exact_text(row[13]),
+    )
+
+
+def store_decision_receipt(
+    connection: _SQLiteConnectionProtocol,
+    record: _records.DecisionReceiptRecord,
+    *,
+    capability: _WriteCapability,
+) -> _records.RepositoryOutcome[_Any]:
+    return _insert(
+        capability,
+        connection,
+        f"INSERT INTO decision_receipt ({_DECISION_RECEIPT_COLUMNS})"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        lambda: _decision_receipt_parameters(record),
+        conflict_trigger_messages=("decision receipt identity is already retained",),
+        conflict_probe=(
+            f"SELECT {_DECISION_RECEIPT_COLUMNS} FROM decision_receipt"
+            " WHERE receipt_ordinal = ?"
+            " OR (application_generation_id = ? AND input_domain = ?"
+            " AND input_identity_sha256 = ?)",
+            lambda parameters: (
+                parameters[0],
+                parameters[1],
+                parameters[2],
+                parameters[3],
+            ),
+        ),
+    )
+
+
+def load_decision_receipt(
+    connection: _SQLiteConnectionProtocol,
+    application_generation_id: _identity.ApplicationGenerationId,
+    input_domain: _operations.OperationDomain,
+    input_identity_sha256: str,
+) -> _records.RepositoryOutcome[_records.DecisionReceiptRecord]:
+    try:
+        if type(input_domain) is not _operations.OperationDomain:
+            raise TypeError("input domain must be exact OperationDomain")
+        parameters = (
+            _application_id(application_generation_id),
+            input_domain.value,
+            _exact_text(input_identity_sha256),
+        )
+    except (TypeError, ValueError):
+        _verify_schema_connection(connection)
+        return _integrity()
+    return _load(
+        connection,
+        f"SELECT {_DECISION_RECEIPT_COLUMNS} FROM decision_receipt"
+        " WHERE application_generation_id = ? AND input_domain = ?"
+        " AND input_identity_sha256 = ?",
+        parameters,
+        _build_decision_receipt,
+    )
+
+
+_DURABLE_INPUT_OUTCOME_COLUMNS = (
+    "application_generation_id, input_domain, input_identity_sha256,"
+    " owner_domain, owner_disposition, terminal_technical_state, result_sha256,"
+    " checkpoint_currentness_head_ordinal, checkpoint_version_ordinal,"
+    " checkpoint_payload_sha256, receipt_ordinal, receipt_sha256,"
+    " canonical_outcome_bytes, outcome_length, outcome_sha256"
+)
+
+
+def _validated_durable_input_outcome(
+    record: object,
+) -> _records.DurableInputOutcomeRecord:
+    if type(record) is not _records.DurableInputOutcomeRecord:
+        raise TypeError("durable input outcome must be an exact record")
+    return _records.DurableInputOutcomeRecord(
+        record.application_generation_id,
+        record.input_domain,
+        record.input_identity_sha256,
+        record.owner_domain,
+        record.owner_disposition,
+        record.terminal_technical_state,
+        record.result_sha256,
+        record.checkpoint_currentness_head_ordinal,
+        record.checkpoint_version_ordinal,
+        record.checkpoint_payload_sha256,
+        record.receipt_ordinal,
+        record.receipt_sha256,
+        record.canonical_outcome_bytes,
+        record.outcome_length,
+        record.outcome_sha256,
+    )
+
+
+def _durable_input_outcome_parameters(record: object) -> tuple[_Any, ...]:
+    validated = _validated_durable_input_outcome(record)
+    return (
+        _application_id(validated.application_generation_id),
+        validated.input_domain.value,
+        _exact_text(validated.input_identity_sha256),
+        _exact_text(validated.owner_domain),
+        _exact_text(validated.owner_disposition),
+        _exact_text(validated.terminal_technical_state),
+        _exact_text(validated.result_sha256),
+        _exact_optional_int(validated.checkpoint_currentness_head_ordinal),
+        _exact_optional_int(validated.checkpoint_version_ordinal),
+        _exact_optional_text(validated.checkpoint_payload_sha256),
+        _exact_int(validated.receipt_ordinal),
+        _exact_text(validated.receipt_sha256),
+        _exact_bytes(validated.canonical_outcome_bytes),
+        _exact_int(validated.outcome_length),
+        _exact_text(validated.outcome_sha256),
+    )
+
+
+def _build_durable_input_outcome(
+    row: tuple[_Any, ...],
+) -> _records.DurableInputOutcomeRecord:
+    return _records.DurableInputOutcomeRecord(
+        _decode_application_id(row[0]),
+        _decode_operation_domain(row[1]),
+        _exact_text(row[2]),
+        _exact_text(row[3]),
+        _exact_text(row[4]),
+        _exact_text(row[5]),
+        _exact_text(row[6]),
+        _exact_optional_int(row[7]),
+        _exact_optional_int(row[8]),
+        _exact_optional_text(row[9]),
+        _exact_int(row[10]),
+        _exact_text(row[11]),
+        _exact_bytes(row[12]),
+        _exact_int(row[13]),
+        _exact_text(row[14]),
+    )
+
+
+def store_durable_input_outcome(
+    connection: _SQLiteConnectionProtocol,
+    record: _records.DurableInputOutcomeRecord,
+    *,
+    capability: _WriteCapability,
+) -> _records.RepositoryOutcome[_Any]:
+    return _insert(
+        capability,
+        connection,
+        f"INSERT INTO durable_input_outcome ({_DURABLE_INPUT_OUTCOME_COLUMNS})"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        lambda: _durable_input_outcome_parameters(record),
+        conflict_trigger_messages=(
+            "durable input outcome must exactly match its decision receipt",
+        ),
+        conflict_probe=(
+            f"SELECT {_DURABLE_INPUT_OUTCOME_COLUMNS}"
+            " FROM durable_input_outcome"
+            " WHERE application_generation_id = ? AND input_domain = ?"
+            " AND input_identity_sha256 = ?",
+            lambda parameters: (parameters[0], parameters[1], parameters[2]),
+        ),
+    )
+
+
+def load_durable_input_outcome(
+    connection: _SQLiteConnectionProtocol,
+    application_generation_id: _identity.ApplicationGenerationId,
+    input_domain: _operations.OperationDomain,
+    input_identity_sha256: str,
+) -> _records.RepositoryOutcome[_records.DurableInputOutcomeRecord]:
+    try:
+        if type(input_domain) is not _operations.OperationDomain:
+            raise TypeError("input domain must be exact OperationDomain")
+        parameters = (
+            _application_id(application_generation_id),
+            input_domain.value,
+            _exact_text(input_identity_sha256),
+        )
+    except (TypeError, ValueError):
+        _verify_schema_connection(connection)
+        return _integrity()
+    return _load(
+        connection,
+        f"SELECT {_DURABLE_INPUT_OUTCOME_COLUMNS} FROM durable_input_outcome"
+        " WHERE application_generation_id = ? AND input_domain = ?"
+        " AND input_identity_sha256 = ?",
+        parameters,
+        _build_durable_input_outcome,
+    )
+
+
+_BROKER_OUTBOX_COLUMNS = (
+    "outbox_sequence, application_generation_id, execution_profile_id, scope_id,"
+    " acquisition_generation_id, input_domain, input_identity_sha256, effect_id,"
+    " claim_id, canonical_payload_bytes, payload_length, payload_sha256"
+)
+
+
+def _validated_broker_outbox(record: object) -> _records.BrokerOutboxRecord:
+    if type(record) is not _records.BrokerOutboxRecord:
+        raise TypeError("broker outbox must be an exact record")
+    return _records.BrokerOutboxRecord(
+        record.outbox_sequence,
+        record.application_generation_id,
+        record.execution_profile_id,
+        record.scope_id,
+        record.acquisition_generation_id,
+        record.input_domain,
+        record.input_identity_sha256,
+        record.effect_id,
+        record.claim_id,
+        record.canonical_payload_bytes,
+        record.payload_length,
+        record.payload_sha256,
+    )
+
+
+def _broker_outbox_parameters(record: object) -> tuple[_Any, ...]:
+    validated = _validated_broker_outbox(record)
+    return (
+        _exact_int(validated.outbox_sequence),
+        _application_id(validated.application_generation_id),
+        _exact_text(validated.execution_profile_id),
+        _exact_int(validated.scope_id),
+        _acquisition_id(validated.acquisition_generation_id),
+        validated.input_domain.value,
+        _exact_text(validated.input_identity_sha256),
+        _exact_int(validated.effect_id),
+        _exact_int(validated.claim_id),
+        _exact_bytes(validated.canonical_payload_bytes),
+        _exact_int(validated.payload_length),
+        _exact_text(validated.payload_sha256),
+    )
+
+
+def _build_broker_outbox(row: tuple[_Any, ...]) -> _records.BrokerOutboxRecord:
+    return _records.BrokerOutboxRecord(
+        _exact_int(row[0]),
+        _decode_application_id(row[1]),
+        _exact_text(row[2]),
+        _exact_int(row[3]),
+        _decode_acquisition_id(row[4]),
+        _decode_operation_domain(row[5]),
+        _exact_text(row[6]),
+        _exact_int(row[7]),
+        _exact_int(row[8]),
+        _exact_bytes(row[9]),
+        _exact_int(row[10]),
+        _exact_text(row[11]),
+    )
+
+
+def _validate_broker_outbox_effect_claim_binding(
+    connection: _SQLiteConnectionProtocol,
+    record: _records.BrokerOutboxRecord,
+) -> _records.RepositoryOutcome[_Any] | None:
+    """Bind every immutable outbox document field to its effect and claim rows."""
+
+    try:
+        validated = _validated_broker_outbox(record)
+        snapshot = _records._decode_broker_outbox_snapshot(validated)
+    except (TypeError, ValueError, OverflowError):
+        return _integrity()
+    effect = _select_one_unchecked(
+        connection,
+        f"SELECT {_EFFECT_COLUMNS} FROM venue_effect WHERE effect_id = ?",
+        (_exact_int(validated.effect_id),),
+        _build_effect,
+    )
+    if effect.kind is _records.RepositoryOutcomeKind.ABSENT:
+        return _outcome(_records.RepositoryOutcomeKind.CONFLICT)
+    if effect.kind is not _records.RepositoryOutcomeKind.FOUND:
+        return _outcome(effect.kind)
+    claim = _select_one_unchecked(
+        connection,
+        f"SELECT {_CLAIM_COLUMNS} FROM dispatch_claim"
+        " WHERE effect_id = ? AND claim_id = ?",
+        (_exact_int(validated.effect_id), _exact_int(validated.claim_id)),
+        _build_claim,
+    )
+    if claim.kind is _records.RepositoryOutcomeKind.ABSENT:
+        return _outcome(_records.RepositoryOutcomeKind.CONFLICT)
+    if claim.kind is not _records.RepositoryOutcomeKind.FOUND:
+        return _outcome(claim.kind)
+    if effect.record is None or claim.record is None:
+        return _integrity()
+    (
+        effect_external,
+        request_occurrence_id,
+        mandate_id,
+        generation_mandate_commitment_sha256,
+        expected_controller_head_ordinal,
+        expected_protection_version_ordinal,
+        authority_class,
+        effect_kind,
+        client_order_id,
+        target_order_id,
+        side,
+        quantity,
+        economic_scope,
+        claim_occurrence_id,
+        claim_ordinal,
+    ) = snapshot
+    retained_effect = effect.record
+    retained_claim = claim.record
+    if (
+        validated.application_generation_id != retained_effect.application_generation_id
+        or validated.execution_profile_id != retained_effect.execution_profile_id
+        or validated.scope_id != retained_effect.scope_id
+        or validated.acquisition_generation_id
+        != retained_effect.acquisition_generation_id
+        or effect_external != retained_effect.effect_external
+        or request_occurrence_id != retained_effect.request_occurrence_id
+        or mandate_id != retained_effect.mandate_id
+        or generation_mandate_commitment_sha256
+        != retained_effect.generation_mandate_commitment_sha256
+        or expected_controller_head_ordinal
+        != retained_effect.expected_controller_head_ordinal
+        or expected_protection_version_ordinal
+        != retained_effect.expected_protection_version_ordinal
+        or authority_class != retained_effect.authority_class
+        or effect_kind.value != retained_effect.effect_kind
+        or client_order_id != retained_effect.client_order_id
+        or target_order_id != retained_effect.target_order_id
+        or side.value != retained_effect.side
+        or quantity != retained_effect.quantity
+        or economic_scope != retained_effect.economic_scope
+        or retained_claim.execution_profile_id != retained_effect.execution_profile_id
+        or claim_occurrence_id != retained_claim.claim_occurrence_id
+        or claim_ordinal != retained_claim.claim_ordinal
+    ):
+        return _integrity()
+    return None
+
+
+def store_broker_outbox(
+    connection: _SQLiteConnectionProtocol,
+    record: _records.BrokerOutboxRecord,
+    *,
+    capability: _WriteCapability,
+) -> _records.RepositoryOutcome[_Any]:
+    try:
+        _require_write_capability(connection, capability)
+        _verify_schema_connection(connection)
+    except (TypeError, ValueError):
+        return _integrity()
+    binding_failure = _validate_broker_outbox_effect_claim_binding(connection, record)
+    if binding_failure is not None:
+        return binding_failure
+    return _insert(
+        capability,
+        connection,
+        f"INSERT INTO broker_outbox ({_BROKER_OUTBOX_COLUMNS})"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        lambda: _broker_outbox_parameters(record),
+        conflict_trigger_messages=("broker outbox identity is already retained",),
+        conflict_probe=(
+            f"SELECT {_BROKER_OUTBOX_COLUMNS} FROM broker_outbox"
+            " WHERE outbox_sequence = ? OR (effect_id = ? AND claim_id = ?)",
+            lambda parameters: (parameters[0], parameters[7], parameters[8]),
+        ),
+    )
+
+
+def load_broker_outbox(
+    connection: _SQLiteConnectionProtocol,
+    outbox_sequence: int,
+) -> _records.RepositoryOutcome[_records.BrokerOutboxRecord]:
+    loaded = _load_int_key(
+        connection,
+        f"SELECT {_BROKER_OUTBOX_COLUMNS} FROM broker_outbox WHERE outbox_sequence = ?",
+        outbox_sequence,
+        _build_broker_outbox,
+    )
+    if loaded.kind is not _records.RepositoryOutcomeKind.FOUND:
+        return loaded
+    if loaded.record is None:
+        return _integrity()
+    binding_failure = _validate_broker_outbox_effect_claim_binding(
+        connection, loaded.record
+    )
+    if binding_failure is not None:
+        return _outcome(binding_failure.kind)
+    return loaded
 
 
 _CONTROLLER_COLUMNS = (
@@ -950,8 +2016,11 @@ def _controller_parameters(record: _records.SymbolControllerRecord) -> tuple[_An
 def store_symbol_controller(
     connection: _SQLiteConnectionProtocol,
     record: _records.SymbolControllerRecord,
+    *,
+    capability: _WriteCapability,
 ) -> _records.RepositoryOutcome[_Any]:
     return _insert(
+        capability,
         connection,
         f"INSERT INTO symbol_controller ({_CONTROLLER_COLUMNS})"
         " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -968,9 +2037,12 @@ def advance_symbol_controller(
     connection: _SQLiteConnectionProtocol,
     expected_version_ordinal: int,
     record: _records.SymbolControllerRecord,
+    *,
+    capability: _WriteCapability,
 ) -> _records.RepositoryOutcome[_Any]:
-    _verify_schema_connection(connection)
     try:
+        _require_write_capability(connection, capability)
+        _verify_schema_connection(connection)
         values = _controller_parameters(record)
     except (TypeError, ValueError, OverflowError):
         return _integrity()
@@ -989,6 +2061,7 @@ def advance_symbol_controller(
         return authority_failure
 
     return _advance(
+        capability,
         connection,
         "UPDATE symbol_controller SET live_acquisition_generation_id = ?,"
         " aggregate_quantity = ?, integrity_state = ?, currentness_head_ordinal = ?,"
@@ -1053,6 +2126,8 @@ def _build_root_fill(row: tuple[_Any, ...]) -> _records.RootFillRecord:
 def store_root_fill(
     connection: _SQLiteConnectionProtocol,
     record: _records.RootFillRecord,
+    *,
+    capability: _WriteCapability,
 ) -> _records.RepositoryOutcome[_Any]:
     def prepare() -> tuple[_Any, ...]:
         if (
@@ -1090,6 +2165,7 @@ def store_root_fill(
         )
 
     return _insert(
+        capability,
         connection,
         f"INSERT INTO root_fill ({_ROOT_FILL_COLUMNS})"
         " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -1163,6 +2239,8 @@ def _build_execution_fact(row: tuple[_Any, ...]) -> _records.ExecutionFactRecord
 def store_execution_fact(
     connection: _SQLiteConnectionProtocol,
     record: _records.ExecutionFactRecord,
+    *,
+    capability: _WriteCapability,
 ) -> _records.RepositoryOutcome[_Any]:
     def prepare() -> tuple[_Any, ...]:
         return (
@@ -1210,6 +2288,7 @@ def store_execution_fact(
         )
 
     return _insert(
+        capability,
         connection,
         f"INSERT INTO execution_fact ({_EXECUTION_FACT_COLUMNS})"
         " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,"
@@ -1378,6 +2457,8 @@ def _effect_immutable_coordinates(
 def store_venue_effect(
     connection: _SQLiteConnectionProtocol,
     record: _records.VenueEffectRecord,
+    *,
+    capability: _WriteCapability,
 ) -> _records.RepositoryOutcome[_Any]:
     def prepare() -> tuple[_Any, ...]:
         if (
@@ -1392,6 +2473,7 @@ def store_venue_effect(
         return _effect_parameters(record)
 
     return _insert(
+        capability,
         connection,
         f"INSERT INTO venue_effect ({_EFFECT_COLUMNS})"
         " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,"
@@ -1423,9 +2505,12 @@ def advance_venue_effect(
     expected_lifecycle_state: str,
     expected_disposition: str,
     record: _records.VenueEffectRecord,
+    *,
+    capability: _WriteCapability,
 ) -> _records.RepositoryOutcome[_Any]:
-    _verify_schema_connection(connection)
     try:
+        _require_write_capability(connection, capability)
+        _verify_schema_connection(connection)
         parameters = _effect_parameters(record)
     except (TypeError, ValueError, OverflowError):
         return _integrity()
@@ -1442,6 +2527,7 @@ def advance_venue_effect(
     if authority_failure is not None:
         return authority_failure
     return _advance(
+        capability,
         connection,
         "UPDATE venue_effect SET lifecycle_state = ?, disposition = ?,"
         " closure_proof_kind = ?, closure_proof_digest = ?,"
@@ -1503,8 +2589,11 @@ def _build_owner(row: tuple[_Any, ...]) -> _records.VenueIdentityOwnerRecord:
 def store_venue_identity_owner(
     connection: _SQLiteConnectionProtocol,
     record: _records.VenueIdentityOwnerRecord,
+    *,
+    capability: _WriteCapability,
 ) -> _records.RepositoryOutcome[_Any]:
     return _insert(
+        capability,
         connection,
         f"INSERT INTO venue_identity_owner ({_OWNER_COLUMNS})"
         " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -1575,8 +2664,11 @@ def _build_route(row: tuple[_Any, ...]) -> _records.AcquisitionRootRouteRecord:
 def store_acquisition_root_route(
     connection: _SQLiteConnectionProtocol,
     record: _records.AcquisitionRootRouteRecord,
+    *,
+    capability: _WriteCapability,
 ) -> _records.RepositoryOutcome[_Any]:
     return _insert(
+        capability,
         connection,
         f"INSERT INTO acquisition_root_route ({_ROUTE_COLUMNS})"
         " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -1635,8 +2727,11 @@ def _build_claim(row: tuple[_Any, ...]) -> _records.DispatchClaimRecord:
 def store_dispatch_claim(
     connection: _SQLiteConnectionProtocol,
     record: _records.DispatchClaimRecord,
+    *,
+    capability: _WriteCapability,
 ) -> _records.RepositoryOutcome[_Any]:
     return _insert(
+        capability,
         connection,
         f"INSERT INTO dispatch_claim ({_CLAIM_COLUMNS}) VALUES (?, ?, ?, ?, ?)",
         lambda: (
@@ -1687,8 +2782,11 @@ def _build_acceptance_set(row: tuple[_Any, ...]) -> _records.AcceptanceSetRecord
 def store_acceptance_set(
     connection: _SQLiteConnectionProtocol,
     record: _records.AcceptanceSetRecord,
+    *,
+    capability: _WriteCapability,
 ) -> _records.RepositoryOutcome[_Any]:
     return _insert(
+        capability,
         connection,
         f"INSERT INTO acceptance_set ({_ACCEPTANCE_SET_COLUMNS}) VALUES (?, ?)",
         lambda: (
@@ -1745,8 +2843,11 @@ def _build_evidence(row: tuple[_Any, ...]) -> _records.AcceptanceEvidenceRecord:
 def store_acceptance_evidence(
     connection: _SQLiteConnectionProtocol,
     record: _records.AcceptanceEvidenceRecord,
+    *,
+    capability: _WriteCapability,
 ) -> _records.RepositoryOutcome[_Any]:
     return _insert(
+        capability,
         connection,
         f"INSERT INTO acceptance_evidence ({_EVIDENCE_COLUMNS})"
         " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -1821,8 +2922,11 @@ def _build_closure(row: tuple[_Any, ...]) -> _records.ClosureChainRecord:
 def store_closure(
     connection: _SQLiteConnectionProtocol,
     record: _records.ClosureChainRecord,
+    *,
+    capability: _WriteCapability,
 ) -> _records.RepositoryOutcome[_Any]:
     return _insert(
+        capability,
         connection,
         f"INSERT INTO closure_chain ({_CLOSURE_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?)",
         lambda: (
@@ -1908,8 +3012,11 @@ def _stream_id(value: object) -> str:
 def store_market_stream_authority(
     connection: _SQLiteConnectionProtocol,
     record: _records.MarketStreamAuthorityRecord,
+    *,
+    capability: _WriteCapability,
 ) -> _records.RepositoryOutcome[_Any]:
     return _insert(
+        capability,
         connection,
         f"INSERT INTO market_stream_authority ({_MARKET_STREAM_COLUMNS})"
         " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -2010,8 +3117,11 @@ def _cursor_immutable_coordinates(
 def store_market_cursor(
     connection: _SQLiteConnectionProtocol,
     record: _records.MarketCursorRecord,
+    *,
+    capability: _WriteCapability,
 ) -> _records.RepositoryOutcome[_Any]:
     return _insert(
+        capability,
         connection,
         f"INSERT INTO market_cursor ({_MARKET_CURSOR_COLUMNS})"
         " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -2030,9 +3140,12 @@ def advance_market_cursor(
     expected_fixed_cursor_ordinal: int,
     expected_published_head_ordinal: int,
     record: _records.MarketCursorRecord,
+    *,
+    capability: _WriteCapability,
 ) -> _records.RepositoryOutcome[_Any]:
-    _verify_schema_connection(connection)
     try:
+        _require_write_capability(connection, capability)
+        _verify_schema_connection(connection)
         parameters = _cursor_parameters(record)
     except (TypeError, ValueError, OverflowError):
         return _integrity()
@@ -2050,6 +3163,7 @@ def advance_market_cursor(
     if authority_failure is not None:
         return authority_failure
     return _advance(
+        capability,
         connection,
         "UPDATE market_cursor SET fixed_cursor_ordinal = ?,"
         " published_head_ordinal = ? WHERE stream_generation_id = ?"
@@ -2152,8 +3266,11 @@ def _protection_parameters(
 def store_protection_authority(
     connection: _SQLiteConnectionProtocol,
     record: _records.ProtectionAuthorityRecord,
+    *,
+    capability: _WriteCapability,
 ) -> _records.RepositoryOutcome[_Any]:
     return _insert(
+        capability,
         connection,
         f"INSERT INTO protection_authority ({_PROTECTION_COLUMNS})"
         " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -2173,12 +3290,15 @@ def advance_protection_authority(
     connection: _SQLiteConnectionProtocol,
     expected_version_ordinal: int,
     record: _records.ProtectionAuthorityRecord,
+    *,
+    capability: _WriteCapability,
 ) -> _records.RepositoryOutcome[_Any]:
     def prepare() -> tuple[_Any, ...]:
         values = _protection_parameters(record)
         return (*values[1:], values[0], _exact_int(expected_version_ordinal))
 
     return _advance(
+        capability,
         connection,
         "UPDATE protection_authority SET authority_class = ?,"
         " active_stream_generation_id = ?, active_acquisition_generation_id = ?,"
@@ -2798,11 +3918,12 @@ def load_current_proof(
 
 
 __all__ = (
-    "advance_kernel_checkpoint",
     "advance_market_cursor",
     "advance_protection_authority",
     "advance_symbol_controller",
     "advance_venue_effect",
+    "claim_durable_input",
+    "finalize_durable_input",
     "load_acceptance_evidence",
     "load_acceptance_set",
     "load_acceptance_set_for_effect",
@@ -2810,15 +3931,20 @@ __all__ = (
     "load_acquisition_generation_current",
     "load_acquisition_root_route",
     "load_application_generation",
+    "load_broker_outbox",
     "load_closure_head",
     "load_current_proof",
+    "load_decision_receipt",
     "load_dispatch_claim",
     "load_dispatch_claim_for_effect",
+    "load_durable_input",
+    "load_durable_input_by_semantic_key",
+    "load_durable_input_outcome",
+    "load_durable_input_semantic_key",
     "load_execution_fact",
     "load_execution_fact_by_source",
     "load_execution_fact_head",
     "load_execution_profile",
-    "load_kernel_checkpoint",
     "load_latest_acceptance_evidence",
     "load_live_acquisition_generation",
     "load_market_cursor",
@@ -2839,11 +3965,14 @@ __all__ = (
     "store_acquisition_generation",
     "store_acquisition_root_route",
     "store_application_generation",
+    "store_broker_outbox",
     "store_closure",
     "store_dispatch_claim",
+    "store_decision_receipt",
+    "store_durable_input_outcome",
+    "store_durable_input_semantic_key",
     "store_execution_fact",
     "store_execution_profile",
-    "store_kernel_checkpoint",
     "store_market_cursor",
     "store_market_source_profile",
     "store_market_stream_authority",
