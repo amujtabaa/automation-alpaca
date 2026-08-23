@@ -9785,6 +9785,76 @@ def test_m2_checkpoint_hydrator_rebuilds_only_an_authentic_protection_state() ->
         )
 
 
+def _m2_checkpoint_from_state(module: ModuleType, state: object) -> object:
+    """Build the fixed owner checkpoint used by pure codec controls."""
+
+    return module._M2ProtectionCheckpoint(
+        state.policy,
+        state.mandate,
+        state.raw_quantity,
+        state.execution_commitment,
+        state.formula_available,
+        state.armed_hard_bail_trigger,
+        state.activation_price,
+        state.high_watermark,
+        state.trail,
+        state.waiting_buy_resolution,
+        state.commitment,
+        state._cursor_ordinal,
+        state._cursor_head,
+        state._market_occurrence_epoch,
+        state._market_committed_epoch,
+        state._market_expected_epoch,
+        state._market_source_sequence,
+        state._market_source_time,
+        state._market_evaluation_time,
+        state._market_occurrence_identity,
+        state._market_halted,
+        state._market_baseline_required,
+        state._market_exhausted,
+        state._market_last_primary,
+        state._hard_bid_identity,
+        state._hard_bid_source_time,
+        state._trade_identity,
+        state._trade_source_time,
+        state._trail_bid_identity,
+        state._trail_bid_source_time,
+        state._exit_provenance,
+    )
+
+
+def test_m2_protection_checkpoint_component_round_trips_canonically() -> None:
+    module = _protection_module()
+    venue_transition = _owned_fill_transition(label="m2-checkpoint-component")
+    _, _, state = _start(module, venue_transition)
+    checkpoint = _m2_checkpoint_from_state(module, state)
+
+    encoded = checkpoint_codec._encode_m2_protection_checkpoint_component(checkpoint)
+    decoded = checkpoint_codec._decode_m2_protection_checkpoint_component(encoded)
+
+    assert decoded == checkpoint
+    assert module._m2_protection_checkpoint_is_authentic(decoded)
+    assert (
+        checkpoint_codec._encode_m2_protection_checkpoint_component(decoded) == encoded
+    )
+
+    tampered_commitment = [*encoded]
+    tampered_commitment[11] = "00" * 32
+    with pytest.raises(ValueError, match="checkpoint is not authentic"):
+        checkpoint_codec._decode_m2_protection_checkpoint_component(tampered_commitment)
+
+    reordered = [*encoded]
+    reordered[3], reordered[4] = reordered[4], reordered[3]
+    with pytest.raises((TypeError, ValueError)):
+        checkpoint_codec._decode_m2_protection_checkpoint_component(reordered)
+
+    for member_index in range(len(encoded)):
+        malformed = [*encoded]
+        malformed[member_index] = object()
+        with pytest.raises((TypeError, ValueError)):
+            checkpoint_codec._decode_m2_protection_checkpoint_component(malformed)
+
+
 @pytest.mark.parametrize(
     "field_name",
     (

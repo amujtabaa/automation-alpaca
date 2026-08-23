@@ -2823,6 +2823,53 @@ def _m2_position_protection_from_checkpoint(
     return state
 
 
+def _m2_protection_checkpoint_is_authentic(checkpoint: object) -> bool:
+    """Return whether one fixed checkpoint reconstitutes an authentic state.
+
+    This validates the checkpoint's owned state members only.  Currentness and
+    profile selection remain the separate responsibility of the sealed
+    ``_M2ProtectionAuthorityProof`` consumed by
+    ``_m2_position_protection_from_checkpoint``.
+    """
+
+    if type(checkpoint) is not _M2ProtectionCheckpoint:
+        return False
+    rebuilt = _new_position_protection_state(
+        checkpoint.policy,
+        checkpoint.mandate,
+        checkpoint.raw_quantity,
+        checkpoint.execution_commitment,
+        checkpoint.formula_available,
+        checkpoint.armed_hard_bail_trigger,
+        checkpoint.activation_price,
+        checkpoint.high_watermark,
+        checkpoint.trail,
+        checkpoint.waiting_buy_resolution,
+        checkpoint.commitment,
+        checkpoint.cursor_ordinal,
+        checkpoint.cursor_head,
+        checkpoint.market_occurrence_epoch,
+        checkpoint.market_committed_epoch,
+        checkpoint.market_expected_epoch,
+        checkpoint.market_source_sequence,
+        checkpoint.market_source_time,
+        checkpoint.market_evaluation_time,
+        checkpoint.market_occurrence_identity,
+        checkpoint.market_halted,
+        checkpoint.market_baseline_required,
+        checkpoint.market_exhausted,
+        checkpoint.market_last_primary,
+        checkpoint.hard_bid_identity,
+        checkpoint.hard_bid_source_time,
+        checkpoint.trade_identity,
+        checkpoint.trade_source_time,
+        checkpoint.trail_bid_identity,
+        checkpoint.trail_bid_source_time,
+        checkpoint.exit_provenance,
+    )
+    return _state_is_authentic(rebuilt) and rebuilt.commitment == checkpoint.commitment
+
+
 def _execution_goal_commitment(goal: ExecutionGoal | None) -> bytes | None:
     """Return the exact immutable shape of one optional emitted goal."""
 
