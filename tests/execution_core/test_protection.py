@@ -10289,6 +10289,31 @@ def test_m2_protection_checkpoint_component_round_trips_canonically() -> None:
             checkpoint_codec._decode_m2_protection_checkpoint_component(malformed)
 
 
+def test_m2_protection_checkpoint_decoder_executes_its_final_canonicality_gate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _protection_module()
+    _, _, state = _start(module, _owned_fill_transition(label="m2-canonicality"))
+    checkpoint = _m2_checkpoint_from_state(module, state)
+    encoded = checkpoint_codec._encode_m2_protection_checkpoint_component(checkpoint)
+    original_encode = checkpoint_codec._encode_m2_protection_checkpoint_component
+
+    def _noncanonical_reencode(value: object) -> list[object]:
+        return [*original_encode(value), "unexpected-member"]
+
+    monkeypatch.setattr(
+        checkpoint_codec,
+        "_encode_m2_protection_checkpoint_component",
+        _noncanonical_reencode,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="^protection checkpoint component is not canonical$",
+    ):
+        checkpoint_codec._decode_m2_protection_checkpoint_component(encoded)
+
+
 @pytest.mark.parametrize(
     "field_name",
     (

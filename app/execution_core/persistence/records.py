@@ -365,6 +365,11 @@ def _validate_durable_input_semantic_key_coordinates(
         return
     application_generation_id = record.key_application_generation_id
     scope_id = record.key_scope_id
+    if application_generation_id != record.input_application_generation_id:
+        raise ValueError(
+            "authority semantic key input application generation does not match "
+            "its collision domain"
+        )
     if (
         application_generation_id is None
         or scope_id is None

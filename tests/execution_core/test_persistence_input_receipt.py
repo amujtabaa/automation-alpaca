@@ -166,6 +166,23 @@ def test_durable_input_semantic_key_record_binds_bytes_to_exact_collision_domain
             record.created_ordinal,
         )
 
+    with pytest.raises(
+        ValueError,
+        match="authority semantic key input application generation",
+    ):
+        records.DurableInputSemanticKeyRecord(
+            record.key_kind,
+            record.key_application_generation_id,
+            record.execution_profile_id,
+            record.key_scope_id,
+            record.canonical_key_bytes,
+            record.key_sha256,
+            ApplicationGenerationId("other-semantic-key-app"),
+            record.input_domain,
+            record.input_identity_sha256,
+            record.created_ordinal,
+        )
+
 
 def test_durable_input_semantic_key_record_keeps_venue_collision_domain_unscoped() -> (
     None

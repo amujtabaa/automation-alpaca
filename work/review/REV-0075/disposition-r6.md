@@ -1,6 +1,6 @@
 # REV-0075 R6 disposition
 
-Author: Codex implementation/orchestrator seat  
+Author: Codex implementation/orchestrator seat
 Date: 2026-08-23
 
 R6 found no production-code defect, but two independently reasoned P1
