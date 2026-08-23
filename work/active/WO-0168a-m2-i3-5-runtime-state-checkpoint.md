@@ -388,6 +388,14 @@ accepts the exact amendment candidate with `P0=0/P1=0`. The normal REV-0075 impl
 and changed-DDL human gate remain independent; this amendment does not authorize SQLite activity,
 runtime composition, credential, network, broker, order, promotion, merge, or any M2-I4/M3 work.
 
+REV-0074 R12-R1 accepted exact candidate `a921caa0ed389b846f8063fc94dfdc6663b65fc2`, tree
+`d448fb1be2f629500b9b4cac53c25da8255bdab0`, with `P0=0/P1=0/P2=0` in
+`result-r12-r1.md`. The already named R12 source/test surface is now usable for ordinary
+reversible implementation and static DDL authoring only. Any changed DDL remains uninstalled and
+all SQLite-bearing tests remain stopped at the exact human digest/candidate/tree/test-plan gate.
+This acceptance adds no configured/in-memory database, runtime composition, credential, network,
+broker, order, promotion, merge, M2-I4, or M3 authority.
+
 ## Out of scope
 
 - OS-1: The atomic transaction coordinator, commit, publication, and effect eligibility are

@@ -1181,3 +1181,14 @@ the cross-generation semantic-key rejection, a `test_persistence_input_receipt.p
 control, and both rejected/replayed genesis-bootstrap controls. These corrections add no source
 or DDL execution authority; they remain subject to a fresh R12-R1 documentation review, the
 normal REV-0075 implementation review, and the exact changed-DDL human gate.
+
+#### R12-R1 acceptance checkpoint
+
+Fresh bounded independent review accepted the exact R12-R1 candidate
+`a921caa0ed389b846f8063fc94dfdc6663b65fc2`, tree
+`d448fb1be2f629500b9b4cac53c25da8255bdab0`, at `P0=0/P1=0/P2=0` in
+`work/review/REV-0074/result-r12-r1.md`. This clears only the existing R12 source/test/static-DDL
+authoring surface. It does not authorize DDL installation, SQLite-bearing tests, runtime
+composition, configured or in-memory database access, credentials, broker/network calls, orders,
+promotion, merge, M2-I4, or M3 work; the normal REV-0075 review and exact changed-DDL human gate
+remain mandatory.
