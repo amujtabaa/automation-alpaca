@@ -1234,3 +1234,33 @@ The existing `WO-0168a` remains active for the R13-S source surface only. R13-H 
 fresh work-order/review identities after this amendment is independently accepted with P0=0/P1=0.
 This is a scope-tightening implementation partition, not an authorization to start M2-I4,
 runtime composition, a configured database, external activity, or a merge.
+
+## R13-R1 non-serving checkpoint-payload correction
+
+**Status: draft — documentation only; preserves the R13 P1 stop.**
+
+`REV-0074/result-r13.md` found that R13-S's header-only payload record could satisfy the future
+payload-to-head reverse edge even though it did not prove complete owner hydration. That is not a
+safe intermediate representation: a record that can anchor `kernel_checkpoint` is serving/restart
+authority, not mere structural metadata.
+
+R13-S is therefore narrowed as follows:
+
+1. It may author static, uninstalled DDL and implement the durable-input, semantic-key,
+   receipt/outcome, outbox, and write-capability substrate. It may not issue or export a
+   `RuntimeCheckpointPayloadRecord`, `RuntimeCheckpointEnvelope`, payload-storage/load API, or
+   restart/direct-proof authority from a header-only kind-`0x02` document.
+2. A canonical kind-`0x02` header may be parsed only as private non-serving validation metadata.
+   It must not be materialized into a persistence record, supplied to a kernel-head write, or used
+   as a substitute for an authenticated owner state.
+3. R13-C alone will freeze and implement the public payload record and storage/load API after
+   R13-H fixes every owner-state row and sealed proof tuple. Its construction and load route must
+   reject a header-valid document that lacks any required owner row/proof; only a fully decoded
+   complete checkpoint may become eligible for the immutable payload/history and reverse-edge
+   relation.
+
+The static DDL remains prohibited from installation and no SQLite-bearing test may execute before
+the already-required exact human gate. R13-R1 does not change the eventual R12 record family,
+reverse-edge semantics, eight-operation union, owner reducers, or M2 safety boundaries. No source
+or test work under this correction may proceed until a fresh documentation review accepts its exact
+candidate with P0=0/P1=0.

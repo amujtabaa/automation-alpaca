@@ -411,6 +411,20 @@ implement the anchored outer codec. Neither successor source increment begins un
 documentation review accepts R13 with P0=0/P1=0. The normal REV-0075 implementation review and
 the unchanged DDL human gate remain independent.
 
+## R13-R1 non-serving checkpoint-payload correction
+
+`REV-0074/result-r13.md` returned `ACCEPT-WITH-CHANGES` with `P0=0/P1=1/P2=0`. The finding is
+material: a header-valid but owner-incomplete payload could otherwise be stored and become eligible
+for the future kernel-head reverse edge. It cannot be accepted as a partial serving or restart
+representation.
+
+The R13-R1 companion-contract correction therefore reserves all public payload record,
+store/load, envelope, restart, and head-eligibility behavior for R13-C, after R13-H closes every
+exact owner row and sealed proof. R13-S remains limited to the non-serving static substrate and
+may not materialize a structural header as checkpoint authority. No R13-R1 source or test work may
+begin until a fresh documentation review returns `P0=0/P1=0`; the normal REV-0075 review and exact
+changed-DDL human gate remain independently required.
+
 ## 2026-08-23 pre-gate execution deviation record
 
 During an otherwise static verification pass, Codex mistakenly included

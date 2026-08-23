@@ -107,3 +107,12 @@ record explicitly covers those exact bytes and test plan.
 No configured or existing database, migration, credentials, broker/network call, order, runtime
 composition, promotion, implementation-branch merge to `master`, destructive branch operation, or
 M3 implementation is authorized by this record.
+
+## R13 correction status
+
+The R13 documentation candidate was independently reviewed at
+`work/review/REV-0074/result-r13.md` and returned `ACCEPT-WITH-CHANGES` (`P0=0/P1=1/P2=0`). The
+R13-S phrase in the remaining-chain table is superseded by R13-R1 until a new documentation review
+accepts it: static substrate work must exclude every serving checkpoint-payload record, store/load,
+envelope, and kernel-head eligibility path. R13-H freezes the complete owner wire/proof rows, and
+R13-C then introduces the typed checkpoint candidate before the exact DDL human gate.
