@@ -18,7 +18,7 @@ from app.execution_core.persistence.schema import (
     install_schema,
     schema_ddl_digest,
 )
-from persistence_setup_support import issue_setup_write_capability
+import persistence_setup_support as setup_support
 import test_persistence_repository as fixtures
 
 
@@ -84,7 +84,7 @@ def _route() -> records.AcquisitionRootRouteRecord:
 def _setup_write_capability(connection: sqlite3.Connection) -> object:
     """Issue the named fixture-only token for one directness test connection."""
 
-    return issue_setup_write_capability(connection)
+    return setup_support.issue_setup_write_capability(connection)
 
 
 def _apply_mutator(

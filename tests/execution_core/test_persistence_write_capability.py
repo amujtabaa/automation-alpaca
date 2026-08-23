@@ -66,45 +66,286 @@ def _assignment_names(node: ast.Assign | ast.AnnAssign) -> tuple[str, ...]:
     return tuple(target.id for target in targets if isinstance(target, ast.Name))
 
 
-def _mutator_name_from_expression(
+def _body_without_docstring(function: ast.FunctionDef) -> list[ast.stmt]:
+    body = list(function.body)
+    if (
+        body
+        and isinstance(body[0], ast.Expr)
+        and isinstance(body[0].value, ast.Constant)
+        and isinstance(body[0].value.value, str)
+    ):
+        body.pop(0)
+    return body
+
+
+def _exact_function(
+    tree: ast.Module,
+    name: str,
+) -> ast.FunctionDef | None:
+    definitions = [
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == name
+    ]
+    nested = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == name
+    ]
+    if len(definitions) != 1 or len(nested) != 1:
+        return None
+    return definitions[0]
+
+
+def _has_rebinding(
+    tree: ast.Module,
+    *,
+    name: str,
+    permitted_function: ast.FunctionDef | None = None,
+) -> bool:
+    """Reject every shadow/rebind route rather than trusting a name spelling."""
+
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Name)
+            and isinstance(node.ctx, ast.Store)
+            and node.id == name
+        ):
+            return True
+        if isinstance(node, ast.arg) and node.arg == name:
+            return True
+        if isinstance(node, (ast.ClassDef, ast.AsyncFunctionDef)) and node.name == name:
+            return True
+        if (
+            isinstance(node, ast.FunctionDef)
+            and node.name == name
+            and node is not permitted_function
+        ):
+            return True
+    return False
+
+
+def _import_bindings(
+    tree: ast.Module,
+    name: str,
+) -> tuple[tuple[str | None, str, str | None], ...]:
+    bindings: list[tuple[str | None, str, str | None]] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if (alias.asname or alias.name.split(".", 1)[0]) == name:
+                    bindings.append((None, alias.name, alias.asname))
+        elif isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                if (alias.asname or alias.name) == name:
+                    bindings.append((node.module, alias.name, alias.asname))
+    return tuple(bindings)
+
+
+def _exact_arguments(
+    arguments: ast.arguments,
+    *,
+    positional: tuple[str, ...],
+    vararg: str | None,
+) -> bool:
+    return bool(
+        not arguments.posonlyargs
+        and tuple(argument.arg for argument in arguments.args) == positional
+        and not arguments.defaults
+        and not arguments.kwonlyargs
+        and not arguments.kw_defaults
+        and arguments.kwarg is None
+        and (
+            (vararg is None and arguments.vararg is None)
+            or (
+                vararg is not None
+                and arguments.vararg is not None
+                and arguments.vararg.arg == vararg
+            )
+        )
+    )
+
+
+def _support_import_is_exact(tree: ast.Module) -> bool:
+    return bool(
+        _import_bindings(tree, "setup_support")
+        == ((None, "persistence_setup_support", "setup_support"),)
+        and not _has_rebinding(tree, name="setup_support")
+    )
+
+
+def _fixture_setup_helper_is_exact(tree: ast.Module) -> bool:
+    """Pin one unshadowed setup wrapper to the named test-support issuer."""
+
+    helper = _exact_function(tree, "_setup_write_capability")
+    if (
+        helper is None
+        or helper.decorator_list
+        or not _support_import_is_exact(tree)
+        or _import_bindings(tree, "_setup_write_capability")
+        or _has_rebinding(
+            tree,
+            name="_setup_write_capability",
+            permitted_function=helper,
+        )
+        or not _exact_arguments(
+            helper.args,
+            positional=("connection",),
+            vararg=None,
+        )
+    ):
+        return False
+    body = _body_without_docstring(helper)
+    if (
+        len(body) != 1
+        or not isinstance(body[0], ast.Return)
+        or not isinstance(body[0].value, ast.Call)
+    ):
+        return False
+    call = body[0].value
+    return bool(
+        isinstance(call.func, ast.Attribute)
+        and isinstance(call.func.value, ast.Name)
+        and call.func.value.id == "setup_support"
+        and call.func.attr == "issue_setup_write_capability"
+        and len(call.args) == 1
+        and not call.keywords
+        and isinstance(call.args[0], ast.Name)
+        and call.args[0].id == "connection"
+    )
+
+
+def _fixture_apply_helper_is_exact(tree: ast.Module) -> bool:
+    """Pin the only allowed higher-order writer to the exact setup wrapper."""
+
+    helper = _exact_function(tree, "_apply_mutator")
+    if (
+        helper is None
+        or helper.decorator_list
+        or _import_bindings(tree, "_apply_mutator")
+        or _has_rebinding(tree, name="_apply_mutator", permitted_function=helper)
+        or not _exact_arguments(
+            helper.args,
+            positional=("connection", "operation"),
+            vararg="arguments",
+        )
+    ):
+        return False
+    body = _body_without_docstring(helper)
+    if (
+        len(body) != 1
+        or not isinstance(body[0], ast.Return)
+        or not isinstance(body[0].value, ast.Call)
+    ):
+        return False
+    call = body[0].value
+    capability_keywords = [
+        keyword.value for keyword in call.keywords if keyword.arg == "capability"
+    ]
+    return bool(
+        isinstance(call.func, ast.Name)
+        and call.func.id == "operation"
+        and len(call.args) == 2
+        and isinstance(call.args[0], ast.Name)
+        and call.args[0].id == "connection"
+        and isinstance(call.args[1], ast.Starred)
+        and isinstance(call.args[1].value, ast.Name)
+        and call.args[1].value.id == "arguments"
+        and len(capability_keywords) == 1
+        and _is_issued_setup_capability(capability_keywords[0], connection=call.args[0])
+    )
+
+
+def _is_repository_expression(
     expression: ast.expr,
     *,
     repository_aliases: frozenset[str],
+    package_aliases: frozenset[str],
+) -> bool:
+    return bool(
+        (isinstance(expression, ast.Name) and expression.id in repository_aliases)
+        or (
+            isinstance(expression, ast.Attribute)
+            and isinstance(expression.value, ast.Name)
+            and expression.value.id in package_aliases
+            and expression.attr == "repository"
+        )
+    )
+
+
+def _dispatch_from_expression(
+    expression: ast.expr,
+    *,
+    repository_aliases: frozenset[str],
+    package_aliases: frozenset[str],
+    getter_aliases: frozenset[str],
     mutator_aliases: dict[str, str],
-) -> str | None:
-    """Resolve the deliberately small set of permitted fixture mutator aliases."""
+    unresolved_aliases: frozenset[str],
+) -> tuple[str | None, bool]:
+    """Resolve finite fixture dispatch or mark repository-derived dynamics unsafe."""
 
     if isinstance(expression, ast.Name):
-        return mutator_aliases.get(expression.id)
+        return mutator_aliases.get(expression.id), expression.id in unresolved_aliases
     if (
         isinstance(expression, ast.Attribute)
-        and isinstance(expression.value, ast.Name)
-        and expression.value.id in repository_aliases
+        and _is_repository_expression(
+            expression.value,
+            repository_aliases=repository_aliases,
+            package_aliases=package_aliases,
+        )
         and expression.attr in _mutator_names()
     ):
-        return expression.attr
+        return expression.attr, False
     if (
         isinstance(expression, ast.Call)
         and isinstance(expression.func, ast.Name)
-        and expression.func.id == "getattr"
+        and expression.func.id in getter_aliases
         and len(expression.args) == 2
-        and isinstance(expression.args[0], ast.Name)
-        and expression.args[0].id in repository_aliases
-        and isinstance(expression.args[1], ast.Constant)
-        and isinstance(expression.args[1].value, str)
-        and expression.args[1].value in _mutator_names()
+        and not expression.keywords
+        and _is_repository_expression(
+            expression.args[0],
+            repository_aliases=repository_aliases,
+            package_aliases=package_aliases,
+        )
     ):
-        return expression.args[1].value
-    return None
+        member = expression.args[1]
+        if (
+            isinstance(member, ast.Constant)
+            and isinstance(member.value, str)
+            and member.value in _mutator_names()
+        ):
+            return member.value, False
+        return None, True
+    return None, False
 
 
 def _fixture_mutator_aliases(
     tree: ast.Module,
-) -> tuple[frozenset[str], dict[str, str]]:
-    """Resolve repository/module/callable aliases without accepting dynamic routes."""
+) -> tuple[
+    frozenset[str],
+    frozenset[str],
+    frozenset[str],
+    dict[str, str],
+    frozenset[str],
+]:
+    """Resolve only the finite, source-level repository dispatch grammar."""
 
     repository_aliases = {"repository"}
+    package_aliases: set[str] = set()
+    getter_aliases = {"getattr"}
     mutator_aliases: dict[str, str] = {}
+    unresolved_aliases: set[str] = set()
+
+    def resolve(value: ast.expr) -> tuple[str | None, bool]:
+        return _dispatch_from_expression(
+            value,
+            repository_aliases=frozenset(repository_aliases),
+            package_aliases=frozenset(package_aliases),
+            getter_aliases=frozenset(getter_aliases),
+            mutator_aliases=mutator_aliases,
+            unresolved_aliases=frozenset(unresolved_aliases),
+        )
+
     changed = True
     while changed:
         changed = False
@@ -116,45 +357,93 @@ def _fixture_mutator_aliases(
                         if name not in repository_aliases:
                             repository_aliases.add(name)
                             changed = True
+                    elif alias.name == "app.execution_core.persistence":
+                        name = alias.asname or alias.name.rsplit(".", 1)[-1]
+                        if name not in package_aliases:
+                            package_aliases.add(name)
+                            changed = True
                 continue
             if isinstance(node, ast.ImportFrom):
-                if node.module != "app.execution_core.persistence.repository":
-                    continue
                 for alias in node.names:
-                    if alias.name in _mutator_names():
+                    if (
+                        node.module == "app.execution_core.persistence"
+                        and alias.name == "repository"
+                    ):
+                        name = alias.asname or alias.name
+                        if name not in repository_aliases:
+                            repository_aliases.add(name)
+                            changed = True
+                    elif (
+                        node.module == "app.execution_core.persistence.repository"
+                        and alias.name in _mutator_names()
+                    ):
                         name = alias.asname or alias.name
                         if mutator_aliases.get(name) != alias.name:
                             mutator_aliases[name] = alias.name
                             changed = True
+                    elif node.module == "builtins" and alias.name == "getattr":
+                        name = alias.asname or alias.name
+                        if name not in getter_aliases:
+                            getter_aliases.add(name)
+                            changed = True
                 continue
-            if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+            if isinstance(node, ast.FunctionDef):
+                positional = (*node.args.posonlyargs, *node.args.args)
+                defaults = node.args.defaults
+                default_pairs = (
+                    zip(positional[-len(defaults) :], defaults) if defaults else ()
+                )
+                for argument, value in (
+                    *default_pairs,
+                    *zip(node.args.kwonlyargs, node.args.kw_defaults),
+                ):
+                    if value is None:
+                        continue
+                    mutator_name, unresolved = resolve(value)
+                    if (
+                        mutator_name is not None
+                        and mutator_aliases.get(argument.arg) != mutator_name
+                    ):
+                        mutator_aliases[argument.arg] = mutator_name
+                        changed = True
+                    if unresolved and argument.arg not in unresolved_aliases:
+                        unresolved_aliases.add(argument.arg)
+                        changed = True
+                continue
+            if not isinstance(node, (ast.Assign, ast.AnnAssign)) or node.value is None:
                 continue
             value = node.value
-            if value is None:
-                continue
             for target in _assignment_names(node):
-                if isinstance(value, ast.Name) and value.id in repository_aliases:
+                if _is_repository_expression(
+                    value,
+                    repository_aliases=frozenset(repository_aliases),
+                    package_aliases=frozenset(package_aliases),
+                ):
                     if target not in repository_aliases:
                         repository_aliases.add(target)
                         changed = True
                     continue
-                mutator_name = _mutator_name_from_expression(
-                    value,
-                    repository_aliases=frozenset(repository_aliases),
-                    mutator_aliases=mutator_aliases,
-                )
+                if isinstance(value, ast.Name) and value.id in getter_aliases:
+                    if target not in getter_aliases:
+                        getter_aliases.add(target)
+                        changed = True
+                    continue
+                mutator_name, unresolved = resolve(value)
                 if (
                     mutator_name is not None
                     and mutator_aliases.get(target) != mutator_name
                 ):
                     mutator_aliases[target] = mutator_name
                     changed = True
-    return frozenset(repository_aliases), mutator_aliases
-
-
-def _same_source_expression(left: ast.expr, right: ast.expr) -> bool:
-    return ast.dump(left, include_attributes=False) == ast.dump(
-        right, include_attributes=False
+                if unresolved and target not in unresolved_aliases:
+                    unresolved_aliases.add(target)
+                    changed = True
+    return (
+        frozenset(repository_aliases),
+        frozenset(package_aliases),
+        frozenset(getter_aliases),
+        mutator_aliases,
+        frozenset(unresolved_aliases),
     )
 
 
@@ -163,127 +452,101 @@ def _is_issued_setup_capability(
     *,
     connection: ast.expr,
 ) -> bool:
-    """Accept only the named fixture wrapper bound to this exact connection node."""
+    """Accept only an exact wrapper call bound to the same direct name."""
 
     return (
-        isinstance(expression, ast.Call)
+        isinstance(connection, ast.Name)
+        and isinstance(expression, ast.Call)
         and isinstance(expression.func, ast.Name)
         and expression.func.id == "_setup_write_capability"
         and len(expression.args) == 1
         and not expression.keywords
-        and _same_source_expression(expression.args[0], connection)
+        and isinstance(expression.args[0], ast.Name)
+        and expression.args[0].id == connection.id
     )
 
 
 def _fixture_mutator_capability_violations(source: str) -> tuple[str, ...]:
-    """Return direct fixture mutators lacking an issued, connection-bound token.
-
-    The check deliberately resolves the small alias surface ordinary fixtures can
-    use.  Higher-order dispatch is permitted only through the separately pinned
-    ``_apply_mutator`` helper below, so a raw token or a callable alias cannot
-    silently evade the fixture gate.
-    """
+    """Return every direct, escaped, or dynamic mutator route outside the grammar."""
 
     tree = ast.parse(source)
-    repository_aliases, mutator_aliases = _fixture_mutator_aliases(tree)
+    (
+        repository_aliases,
+        package_aliases,
+        getter_aliases,
+        mutator_aliases,
+        unresolved_aliases,
+    ) = _fixture_mutator_aliases(tree)
+
+    def resolve(expression: ast.expr) -> tuple[str | None, bool]:
+        return _dispatch_from_expression(
+            expression,
+            repository_aliases=repository_aliases,
+            package_aliases=package_aliases,
+            getter_aliases=getter_aliases,
+            mutator_aliases=mutator_aliases,
+            unresolved_aliases=unresolved_aliases,
+        )
+
     violations: list[str] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
-        mutator_name = _mutator_name_from_expression(
-            node.func,
-            repository_aliases=repository_aliases,
-            mutator_aliases=mutator_aliases,
-        )
-        if mutator_name is None:
-            continue
-        capability_keywords = [
-            keyword.value for keyword in node.keywords if keyword.arg == "capability"
-        ]
-        if (
-            len(node.args) < 1
-            or len(capability_keywords) != 1
-            or not _is_issued_setup_capability(
-                capability_keywords[0], connection=node.args[0]
-            )
-        ):
-            violations.append(mutator_name)
+        mutator_name, unresolved = resolve(node.func)
+        if unresolved:
+            violations.append("unresolved-repository-dispatch")
+        if mutator_name is not None:
+            capability_keywords = [
+                keyword.value
+                for keyword in node.keywords
+                if keyword.arg == "capability"
+            ]
+            if (
+                len(node.args) < 1
+                or len(capability_keywords) != 1
+                or not _is_issued_setup_capability(
+                    capability_keywords[0], connection=node.args[0]
+                )
+            ):
+                violations.append(mutator_name)
+        for index, argument in enumerate(node.args):
+            argument_mutator, argument_unresolved = resolve(argument)
+            if argument_unresolved:
+                violations.append("unresolved-repository-dispatch")
+            if argument_mutator is not None and not (
+                isinstance(node.func, ast.Name)
+                and node.func.id == "_apply_mutator"
+                and index == 1
+            ):
+                violations.append(argument_mutator)
+        for keyword in node.keywords:
+            if keyword.arg is None:
+                continue
+            argument_mutator, argument_unresolved = resolve(keyword.value)
+            if argument_unresolved:
+                violations.append("unresolved-repository-dispatch")
+            if argument_mutator is not None:
+                violations.append(argument_mutator)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Return) and node.value is not None:
+            mutator_name, unresolved = resolve(node.value)
+            if unresolved:
+                violations.append("unresolved-repository-dispatch")
+            elif mutator_name is not None:
+                violations.append(mutator_name)
     return tuple(sorted(violations))
 
 
-def _fixture_helper_shape_is_exact(source: str) -> bool:
-    """Pin the only allowed higher-order fixture writer to the named issuer."""
+def _fixture_helper_shape_is_exact(
+    source: str,
+    *,
+    require_apply_helper: bool,
+) -> bool:
+    """Require an exact unshadowed setup helper and optional writer helper."""
 
     tree = ast.parse(source)
-    functions = {
-        node.name: node for node in tree.body if isinstance(node, ast.FunctionDef)
-    }
-    setup_helper = functions.get("_setup_write_capability")
-    apply_helper = functions.get("_apply_mutator")
-    if setup_helper is None or apply_helper is None:
-        return False
-
-    def body_without_docstring(function: ast.FunctionDef) -> list[ast.stmt]:
-        body = list(function.body)
-        if (
-            body
-            and isinstance(body[0], ast.Expr)
-            and isinstance(body[0].value, ast.Constant)
-            and isinstance(body[0].value.value, str)
-        ):
-            body.pop(0)
-        return body
-
-    setup_body = body_without_docstring(setup_helper)
-    if (
-        len(setup_helper.args.args) != 1
-        or setup_helper.args.args[0].arg != "connection"
-        or len(setup_body) != 1
-        or not isinstance(setup_body[0], ast.Return)
-        or not isinstance(setup_body[0].value, ast.Call)
-    ):
-        return False
-    setup_call = setup_body[0].value
-    if (
-        not isinstance(setup_call.func, ast.Name)
-        or setup_call.func.id != "issue_setup_write_capability"
-        or len(setup_call.args) != 1
-        or setup_call.keywords
-        or not isinstance(setup_call.args[0], ast.Name)
-        or setup_call.args[0].id != "connection"
-    ):
-        return False
-
-    apply_body = body_without_docstring(apply_helper)
-    if (
-        len(apply_helper.args.args) < 2
-        or apply_helper.args.args[0].arg != "connection"
-        or apply_helper.args.args[1].arg != "operation"
-        or len(apply_body) != 1
-        or not isinstance(apply_body[0], ast.Return)
-        or not isinstance(apply_body[0].value, ast.Call)
-    ):
-        return False
-    apply_call = apply_body[0].value
-    if (
-        not isinstance(apply_call.func, ast.Name)
-        or apply_call.func.id != "operation"
-        or not apply_call.args
-        or not isinstance(apply_call.args[0], ast.Name)
-        or apply_call.args[0].id != "connection"
-        or not any(
-            isinstance(argument, ast.Starred)
-            and isinstance(argument.value, ast.Name)
-            and argument.value.id == "arguments"
-            for argument in apply_call.args[1:]
-        )
-    ):
-        return False
-    capability_keywords = [
-        keyword.value for keyword in apply_call.keywords if keyword.arg == "capability"
-    ]
-    return len(capability_keywords) == 1 and _is_issued_setup_capability(
-        capability_keywords[0], connection=apply_call.args[0]
+    return _fixture_setup_helper_is_exact(tree) and (
+        not require_apply_helper or _fixture_apply_helper_is_exact(tree)
     )
 
 
@@ -396,13 +659,17 @@ getattr(repository, "_issue_setup_write_capability")(connection)
 def test_every_persistence_fixture_passes_issued_setup_capability_to_each_mutator() -> (
     None
 ):
-    for fixture_name in (
-        "test_persistence_repository.py",
-        "test_persistence_directness.py",
+    for fixture_name, requires_apply_helper in (
+        ("test_persistence_repository.py", True),
+        ("test_persistence_directness.py", True),
+        ("test_persistence_input_receipt.py", False),
     ):
         fixture_path = Path(__file__).with_name(fixture_name)
         fixture_source = fixture_path.read_text(encoding="utf-8")
-        assert _fixture_helper_shape_is_exact(fixture_source)
+        assert _fixture_helper_shape_is_exact(
+            fixture_source,
+            require_apply_helper=requires_apply_helper,
+        )
         assert _fixture_mutator_capability_violations(fixture_source) == ()
 
     direct_missing_capability = """
@@ -413,27 +680,138 @@ repository.load_scope(connection, 1)
         "store_scope",
     )
 
-    alias_and_forged_token = """
-import app.execution_core.persistence.repository as repository
-from app.execution_core.persistence.repository import store_scope as write_scope
+    module_getter_and_alias_chain = """
+from app.execution_core.persistence import repository as repo
+import app.execution_core.persistence as persistence
 
-repository_alias = repository
-mutator = repository.store_scope
+repository_alias = persistence.repository
+mutator = repository_alias.store_scope
 mutator(connection, record)
-repository_alias.store_scope(connection, record, capability=object())
-write_scope(connection, record, capability=_setup_write_capability(other_connection))
+repo.store_scope(connection, record, capability=object())
+getattr(repository, "store_scope")(connection, record, capability=object())
+lookup = getattr
+lookup(repository, "store_scope")(connection, record, capability=object())
+getattr(repository, dynamic_member)(connection, record, capability=object())
 """
-    assert _fixture_mutator_capability_violations(alias_and_forged_token) == (
+    assert _fixture_mutator_capability_violations(module_getter_and_alias_chain) == (
         "store_scope",
+        "store_scope",
+        "store_scope",
+        "store_scope",
+        "unresolved-repository-dispatch",
+    )
+
+    wrong_connection_and_proxy = """
+repository.store_scope(
+    connection,
+    record,
+    capability=_setup_write_capability(other_connection),
+)
+repository.store_scope(
+    next_connection(),
+    record,
+    capability=_setup_write_capability(next_connection()),
+)
+"""
+    assert _fixture_mutator_capability_violations(wrong_connection_and_proxy) == (
         "store_scope",
         "store_scope",
     )
 
-    forged_wrapper = """
+    valid_setup_helper = """
+import persistence_setup_support as setup_support
+
 def _setup_write_capability(connection):
-    return issue_setup_write_capability(connection)
+    return setup_support.issue_setup_write_capability(connection)
+"""
+    assert _fixture_helper_shape_is_exact(
+        valid_setup_helper,
+        require_apply_helper=False,
+    )
+
+    valid_apply_helper = (
+        valid_setup_helper
+        + """
 
 def _apply_mutator(connection, operation, *arguments):
-    return operation(connection, *arguments, capability=object())
+    return operation(
+        connection,
+        *arguments,
+        capability=_setup_write_capability(connection),
+    )
 """
-    assert not _fixture_helper_shape_is_exact(forged_wrapper)
+    )
+    assert _fixture_helper_shape_is_exact(
+        valid_apply_helper,
+        require_apply_helper=True,
+    )
+
+    rebound_setup_helper = (
+        valid_setup_helper
+        + """
+
+_setup_write_capability = lambda connection: object()
+"""
+    )
+    assert not _fixture_helper_shape_is_exact(
+        rebound_setup_helper,
+        require_apply_helper=False,
+    )
+
+    shadowed_issuer = (
+        valid_setup_helper
+        + """
+
+setup_support = object()
+"""
+    )
+    assert not _fixture_helper_shape_is_exact(
+        shadowed_issuer,
+        require_apply_helper=False,
+    )
+
+    imported_shadow = (
+        valid_setup_helper
+        + """
+
+def hide_issuer():
+    import counterfeit_support as setup_support
+"""
+    )
+    assert not _fixture_helper_shape_is_exact(
+        imported_shadow,
+        require_apply_helper=False,
+    )
+
+    decorated_or_extra_apply_helper = (
+        valid_setup_helper
+        + """
+
+@decorate
+def _apply_mutator(connection, operation, extra, *arguments):
+    return operation(
+        connection,
+        *arguments,
+        capability=_setup_write_capability(connection),
+    )
+"""
+    )
+    assert not _fixture_helper_shape_is_exact(
+        decorated_or_extra_apply_helper,
+        require_apply_helper=True,
+    )
+
+    default_and_proxy_dispatch = """
+def invoke(operation=repository.store_scope):
+    return operation(connection, record, capability=object())
+
+def proxy(operation):
+    return operation(connection, record, capability=object())
+
+proxy(repository.store_scope)
+"""
+    assert _fixture_mutator_capability_violations(default_and_proxy_dispatch) == (
+        "store_scope",
+        "store_scope",
+        "store_scope",
+    )

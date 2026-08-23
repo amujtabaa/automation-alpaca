@@ -50,6 +50,12 @@ _EXPECTED_OUTBOX_DOCUMENT = (
 )
 
 
+def _setup_write_capability(connection: object) -> object:
+    """Issue the exact setup token for one pure retained-input connection."""
+
+    return setup_support.issue_setup_write_capability(connection)  # type: ignore[arg-type]
+
+
 def _market_operation() -> operations.MarketOccurrenceOperation:
     application_generation_id = ApplicationGenerationId("durable-input-app")
     session_id = SessionId("durable-input-session")
@@ -426,13 +432,12 @@ def test_claim_durable_input_classifies_exact_replay_without_sqlite(
         repository._durable_input_parameters(retained),
         repository._durable_input_outcome_parameters(outcome),
     )
-    capability = setup_support.issue_setup_write_capability(connection)
     monkeypatch.setattr(repository, "_verify_schema_connection", lambda _: 2)
 
     result = repository.claim_durable_input(
         connection,
         candidate,
-        capability=capability,
+        capability=_setup_write_capability(connection),
     )
 
     assert result.kind is records.RepositoryOutcomeKind.FOUND
@@ -478,13 +483,12 @@ def test_claim_durable_input_classifies_same_primary_different_bytes_as_conflict
         repository._durable_input_parameters(retained),
         None,
     )
-    capability = setup_support.issue_setup_write_capability(connection)
     monkeypatch.setattr(repository, "_verify_schema_connection", lambda _: 2)
 
     result = repository.claim_durable_input(
         connection,
         candidate,
-        capability=capability,
+        capability=_setup_write_capability(connection),
     )
 
     assert result.kind is records.RepositoryOutcomeKind.CONFLICT

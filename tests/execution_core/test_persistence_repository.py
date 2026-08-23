@@ -18,7 +18,7 @@ from app.execution_core import identity, profiles, values
 from app.execution_core.persistence import records
 import app.execution_core.persistence.repository as repository
 from app.execution_core.persistence.schema import install_schema, schema_ddl_digest
-from persistence_setup_support import issue_setup_write_capability
+import persistence_setup_support as setup_support
 
 
 APP_ID = identity.ApplicationGenerationId("generation-1")
@@ -292,7 +292,7 @@ def _expect_applied(outcome: records.RepositoryOutcome[Any]) -> None:
 def _setup_write_capability(connection: sqlite3.Connection) -> object:
     """Issue a connection-bound setup token at the named fixture boundary."""
 
-    return issue_setup_write_capability(connection)
+    return setup_support.issue_setup_write_capability(connection)
 
 
 def _apply_mutator(
