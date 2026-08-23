@@ -48,30 +48,24 @@ forbidden_paths:
 
 ## Outcome
 
-Freeze and then implement the smallest complete typed current-state representation for
-`VenueRecoveryBook`, `ExecutionAuthorityState`, and `AcquisitionControllerState`, plus exact sealed
-proof encodings for the existing execution and protection components. The result must let each
-owner reconstruct an authentic current object without replaying audit history, reflecting generic
-objects, trusting a digest without bytes, or creating a second reducer/state engine.
+Freeze and then implement the smallest complete typed non-serving snapshot representation produced
+and decoded by the venue, authority, and acquisition owners, plus exact byte round-trips for the
+existing execution and protection proofs. R13-H must not construct a serving reducer or claim that
+omitted history can authorize future operations.
 
 R13-H does not create the public checkpoint envelope, payload record/store/load API, or restart
 head eligibility. Those remain R13-C after this work receives terminal `REV-0077` acceptance.
 
 ## Root design decision
 
-Accepted SQL rows corroborate application/profile/scope/currentness and immutable direct facts but
-do not contain every semantic member of the three opaque owners. The future complete checkpoint
-payload therefore owns explicit typed current/active/unresolved state rows. Repository-issued
-proofs bind those bytes to exact selected direct rows, counts, predicates, application generation,
-profiles, currentness head, and checkpoint version. Owner-local constructors decode the typed rows,
-rebuild all derived indexes and commitments, and reject any missing, extra, stale, cross-owner, or
-noncanonical member.
+Accepted SQL rows do not contain every semantic member of the three opaque owners. The future
+checkpoint therefore needs explicit typed current/active/unresolved snapshot rows. R13-H only
+proves owner-local pure projection, canonical bytes, validation, and non-serving type separation.
+Repository corroboration, omitted-history operation authority, behavioral-commitment activation,
+and serving composition are a distinct R13-C contract and review problem.
 
-The owner wire is not a history replay. Audit/order ledgers remain omitted and direct repository
-lookup remains authoritative for targeted historical inputs. Fresh review proved that one mutable
-retired-generation semantic row is not represented by the accepted immutable generation identity
-table; the contract therefore records one narrowly scoped future R13-C current-state family behind
-the existing exact DDL human gate. R13-H creates no table or repository operation.
+The snapshot wire is not a history replay. Audit/order ledgers remain omitted. R13-H creates no
+table, repository operation, operation fact, serving adapter, or reducer seam.
 
 ## Preflight deliverable
 
@@ -83,22 +77,21 @@ as one indivisible contract containing:
    semantic row, derived index, or omitted history;
 2. exact literal tags, fixed-array lengths, member order, null representation, enum spellings,
    digest/byte forms, and count-bearing collection wrappers;
-3. canonical identity bytes, family order, strict within-family order, uniqueness, completeness
-   predicates, and explicit finite limits;
+3. canonical typed ordering, strict within-collection order, uniqueness, counts, and explicit
+   finite limits;
 4. exact venue current rows for effects, claims, owners/attempts, correlations, closures,
    coverage, reconciliations, execution bindings, bootstrap targets, and protection cursors;
 5. exact authority rows for effects/claims, manual flatten state, acquisition slots, budget,
    emergency grant, and the sealed venue reference;
-6. exact acquisition controller/mandate, standing LIVE and unresolved generation/stream rows,
-   bounded active lineage, and a sealed operation-only targeted-retired generation/stream/lineage
-   proof with one reducer seam;
+6. exact acquisition controller/mandate, standing LIVE and unresolved generation/stream rows, and
+   bounded active lineage, all as non-serving snapshot state;
 7. complete fixed-array encodings for `_M2ExecutionObservationProof` and
    `_M2ProtectionAuthorityProof`;
-8. owner constructor equivalence, derived-index rebuild order, full authenticity checks, and
-   commitment domains;
+8. owner-local snapshot projection/decode, fail-closed type separation, full snapshot validation,
+   and commitment domains;
 9. genesis, empty, optional, unresolved predecessor-generation, and targeted late-fact behavior;
-10. failure-capable tests for missing/extra/reordered/duplicate/substituted/stale/header-only rows,
-    forged proofs, commitment-only substitution, history inclusion, and unbounded selection.
+10. failure-capable tests for missing/extra/reordered/duplicate/substituted rows, forged snapshots,
+    commitment-only substitution, history inclusion, oversize refusal, and serving-type misuse.
 
 The contract must resolve every identified source gap. `TBD`, generic records, `repr`, pickle,
 reflection, caller-shaped tuples, or “implementation-defined” ordering are preflight failures.
@@ -123,15 +116,17 @@ and R13-C remain out of scope.
 
 ## TDD and proof obligations
 
-- RED must show the named owner state/proof types or constructors are absent or refuse the frozen
+- RED must show the named owner snapshot types or constructors are absent or refuse the frozen
   canonical rows.
-- GREEN must prove canonical round-trip through owner-owned project/decode constructors and
-  equality with authentic reducer-produced objects for genesis and nontrivial current state.
-- Derived indexes must be omitted from bytes, rebuilt in fixed order, and independently mutated.
+- GREEN must prove canonical round-trip through owner-owned project/decode constructors from
+  authentic reducer-produced objects for genesis and nontrivial current state.
+- Derived indexes and omitted history must be absent from bytes; snapshot types expose no serving
+  reducer capability.
 - Every collection must be count-bound, strictly ordered, duplicate-free, and semantically
   complete for the declared current/active/unresolved predicate.
 - Execution/protection proof members must be re-derived and byte-round-tripped; detached or
   caller-forged proof tuples fail.
+- Passing any snapshot where an existing serving owner is required must fail by exact type.
 - Imports stay inert. No SQLite-bearing test belongs to R13-H.
 
 ## Required review gates
@@ -173,3 +168,10 @@ the accepted schema lacks the mutable generation-state row needed to reload reso
 targets without replay. The R13-H contract now defines that pure row and holds its future R13-C
 persistence/DDL behind Ameen's exact gate. These clarifications do not release the source hold or
 authorize SQLite/DDL work.
+
+R4 review then demonstrated that combining snapshot reconstruction with future-operation authority
+was itself the recurring complexity source: exact command grammars, historical replay membership,
+and repository freshness do not belong inside checkpoint state bytes. R5 therefore narrows R13-H
+to owner-local non-serving snapshots and moves all repository observation, operation capability,
+behavioral commitment activation, mutable generation state, FACT membership, and DDL to a fresh
+R13-C contract/review. This is a fail-closed scope split, not a default-empty or bypass path.

@@ -12,23 +12,49 @@ authorize source changes until a fresh `REV-0076` verdict returns `ACCEPT` with 
 does not authorize the R13-C outer envelope, persistence payload rows, changed-DDL installation,
 or any SQLite-bearing test.
 
+## R5 controlling scope correction
+
+Fresh R3/R4 review proved that checkpoint reconstruction and future-operation authorization are
+different authority problems. R13-H therefore freezes and implements only owner-produced,
+owner-decoded **non-serving snapshots** and the already-existing execution/protection proof bytes.
+It does not hydrate a serving reducer, replace any existing behavior commitment, mint repository
+observation authority, or define authority/acquisition operation capabilities.
+
+Sections 2 through 7 are normative only for snapshot grammar and semantic rows, subject to the R5
+changes below. Sections 8 through 11 are retained solely as superseded design evidence and are
+non-normative for R13-H; none of their proof families, operation contexts, target slices, direct
+rows, or source-attribution rules may be implemented under this work order. Section 12, as amended
+by R5, is the controlling boundary to R13-C.
+
+The exact R13-H result types are constructor-hidden `_M2VenueSnapshot`,
+`_M2AuthoritySnapshot`, and `_M2AcquisitionSnapshot`. Their owner-local project/decode functions
+validate and canonicalize state bytes and re-derive the snapshot commitment, but the types expose
+no reducer method and cannot be passed where `VenueRecoveryBook`, `ExecutionAuthorityState`, or
+`AcquisitionControllerState` is required. This fail-closed type separation is the serving gate.
+R13-C must independently freeze repository observation proofs, operation capabilities, historical
+FACT membership, mutable generation state, atomic persistence, and bounded-behavioral commitment
+activation before it may construct any serving adapter.
+
+Snapshot commitments are canonical integrity checks, not provenance or authorization. A caller who
+recomputes bytes and a hash can at most obtain another non-serving snapshot after full structural
+validation; it gains no reducer capability. R13-C repository proofs are the future provenance gate.
+
 ## 1. One bounded authority model
 
-The complete checkpoint payload, not an SQL row and not a digest alone, owns the semantic values
-that are absent from the accepted relational model. Repository-issued sealed proofs corroborate
-the payload's exact application/profile/scope/currentness coordinates and selected immutable/current
-rows. Each domain owner reconstructs its own opaque object, re-derives every seal, commitment,
-index, count, and cross-reference, and then byte-compares a canonical re-projection.
+The complete checkpoint snapshot bytes, not an SQL row and not a digest alone, own the semantic
+values absent from the accepted relational model. Each domain owner reconstructs its own opaque
+non-serving snapshot, re-derives its snapshot commitment, validates every cross-reference that is
+internal to those bytes, and then byte-compares a canonical re-projection. Repository
+corroboration remains R13-C authority.
 
 There is no second reducer and no history replay. The checkpoint contains only:
 
 1. fixed current scalars;
 2. bounded current, active, or unresolved semantic rows;
-3. exact proof rows needed to authenticate those values; and
+3. exact internal proof rows already owned by execution/protection; and
 4. derived commitments.
 
-Audit ledgers, insertion order, and terminal history are excluded. A targeted late fact may add one
-directly named retired-generation slice; it does not open an unbounded historical scan.
+Audit ledgers, insertion order, terminal history, and operation-time targeted history are excluded.
 
 ## 2. Canonical grammar
 
@@ -136,9 +162,11 @@ Unknown owner tags, aliases, case changes, integer substitutes, and unknown valu
 Every variable collection uses `C(tag, rows)`. The declared count must equal the array length.
 Rows are strictly increasing by the stated canonical key and duplicate keys fail. Every key member
 first uses its section-2 canonical value (`N`, `B`, `I`, `Z`, `T`, `X`, `A`, `E`, or a fully tagged
-fixed array). `order_component(v) = uint64-be(len(canonical_json_utf8(v))) ||
-canonical_json_utf8(v)` and a composite order key is the concatenation of its ordered components.
-Because each canonical value carries its type/tag and every component is length-framed, this is
+fixed array). `order_component(v) = type_octet || uint64-be(len(canonical_json_utf8(v))) ||
+canonical_json_utf8(v)`, where octets are `N=0x00`, `B=0x01`, `I=0x02`, `Z=0x03`, `T=0x04`,
+`X=0x05`, `A=0x06`, `E=0x07`, and tagged fixed array=`0x08`. A composite order key is the
+concatenation of its ordered components. Because every component has an explicit type octet and
+length frame, this is
 injective for nulls, booleans, signed/unsigned integers, text, arbitrary bytes, durable atoms,
 enums, and nested arrays. No Python comparison, `repr`, locale collation, implicit text conversion,
 or digest surrogate is permitted.
@@ -173,9 +201,9 @@ The closed new domains are:
 
 | Value | Domain |
 | --- | --- |
-| venue direct selection / state / transition proof / observation proof | `execution-core/m2-venue/direct-selection/v1`; `execution-core/m2-venue/state/v1`; `execution-core/m2-venue/transition-proof/v1`; `execution-core/m2-venue/observation-proof/v1` |
-| authority direct selection / state / observation proof | `execution-core/m2-authority/direct-selection/v1`; `execution-core/m2-authority/state/v1`; `execution-core/m2-authority/observation-proof/v1` |
-| acquisition direct selection / bounded registry / bounded lineage / targeted operation / state / observation proof | `execution-core/m2-acquisition/direct-selection/v1`; `execution-core/m2-acquisition/bounded-registry/v1`; `execution-core/m2-acquisition/bounded-lineage/v1`; `execution-core/m2-acquisition/targeted-operation/v1`; `execution-core/m2-acquisition/state/v1`; `execution-core/m2-acquisition/observation-proof/v1` |
+| venue snapshot state / transition proof | `execution-core/m2-venue/state/v1`; `execution-core/m2-venue/transition-proof/v1` |
+| authority snapshot state | `execution-core/m2-authority/state/v1` |
+| acquisition bounded registry / bounded lineage / snapshot state | `execution-core/m2-acquisition/bounded-registry/v1`; `execution-core/m2-acquisition/bounded-lineage/v1`; `execution-core/m2-acquisition/state/v1` |
 
 Existing M1 commitments, execution proof commitments, protection proof commitments, and exact
 private-row seals keep their current owner domains and constructors. A digest is checked only after
@@ -187,12 +215,10 @@ The dependency graph is acyclic and evaluated only in this order:
 2. semantic rows with their derived private commitments omitted;
 3. M2 venue-transition proofs and bootstrap-target rows;
 4. count-bearing collection wrappers and per-family row commitments;
-5. owner direct-selection commitment;
-6. acquisition bounded-registry and bounded-lineage commitments;
-7. owner state commitment over the state row with only its final state commitment omitted;
-8. owner-state byte digest, then owner observation-proof commitment over the proof row with only
-   its final proof commitment omitted; and
-9. in R13-C only, scope-component commitment, complete outer payload bytes, then outer payload
+5. acquisition bounded-registry and bounded-lineage commitments;
+6. owner snapshot commitment over the state row with only its final commitment omitted; and
+7. in R13-C only, repository observation/operation proofs, scope-component commitment, complete
+   outer payload bytes, then outer payload
    digest.
 
 No value may include itself, a later value, or the future outer digest in its preimage.
@@ -215,7 +241,7 @@ requires this contract to be revised and re-reviewed.
 
 ### 3.2 Exact venue state row
 
-`_M2VenueState` is the exact 24-member array:
+`_M2VenueSnapshot` is the exact 23-member array:
 
 ```text
 ["m2.venue.State/v1",
@@ -227,14 +253,13 @@ requires this contract to be revised and re-reviewed.
  AcquisitionCorrelationRows, ClosureHeadRows, EconomicHighWaterRows,
  HumanCoverageRows, BrokerCoverageRows, CoverageProvenanceRows,
  ReconciliationRows, ExecutionReconciliationRows, ExecutionScopeRows,
- BootstrapTargetRows, ProtectionCursorRows, direct_selection_commitment,
- state_commitment]
+ BootstrapTargetRows, ProtectionCursorRows, snapshot_commitment]
 ```
 
 `VenueScope` is
 `R("m2.venue.Scope/v1", A(generation), A(broker), A(environment), A(account))` (length 5).
 The registry count/commitment pair is wholly null or `(I,H)`. The transition head is `N|H`.
-`direct_selection_commitment` and `state_commitment` are `H` and are re-derived.
+`snapshot_commitment` is `H` and is re-derived with the final member omitted.
 
 ### 3.3 Venue semantic rows
 
@@ -456,7 +481,7 @@ fresh M2 lane starts from genesis or explicit reconciliation rather than migrati
 
 ### 3.4 Venue selection completeness
 
-One `_M2VenueState` is account-wide for its exact `VenueScope`; it is never duplicated per
+One `_M2VenueSnapshot` is account-wide for its exact `VenueScope`; it is never duplicated per
 symbol. `ExecutionScopeRows` is the exact identity-sorted set of every current `PositionScope`
 reachable from an included effect, execution binding/snapshot, bootstrap target, protection cursor,
 authority epoch, coverage provenance, or unresolved reconciliation. The future R13-C per-scope
@@ -494,7 +519,11 @@ closure head; a null attempt requires exactly one closure head.
 
 These 7 + 1 + 6 + 3 + 3 entries are all 20 fields.
 
-The three omitted maps are replaced only at an explicit behavioral boundary, not defaulted empty.
+### 4.1a Held R13-C operation design evidence — non-normative in R13-H
+
+Everything from this heading to (but not including) section 4.2 is deferred design evidence. R13-H implements
+none of these operation types or command encodings. The three omitted maps must eventually be
+replaced at an explicit behavioral boundary, not defaulted empty.
 The M2 authority kernel is callable only with an opaque repository-minted
 `_AuthorityInputDedupeFact`; the publicly constructible WO-0167 `InputDedupeFact` is transport data
 and is not sufficient authority. The opaque fact contains the exact primary classification and
@@ -576,7 +605,7 @@ coordinates remain identical. No public API accepts the WO-0167 transport fact d
 
 ### 4.2 Exact authority state and rows
 
-`_M2AuthorityState` is the exact 15-member array:
+`_M2AuthoritySnapshot` is the exact 14-member array:
 
 ```text
 ["m2.authority.State/v1", E(EnginePhase), E(TradingMode), E(SupervisorFence),
@@ -584,12 +613,12 @@ coordinates remain identical. No public API accepts the WO-0167 transport fact d
  ["m2.authority.RequestBudget/v1",I(remaining),I(safety_reserve)],
  VenueRef, EmergencyGrant|N, EffectAuthorizationRows, ManualRows,
  AcquisitionDescriptorRows, AcquisitionSlotRows,
- H(direct_selection_commitment), H(state_commitment)]
+ H(snapshot_commitment)]
 ```
 
-`VenueRef` is length 7:
+`VenueRef` is length 6:
 `["m2.authority.VenueRef/v1",A(application_generation_id),A(broker),A(environment),
-A(account),H(venue_state_commitment),H(venue_proof_commitment)]`.
+A(account),H(venue_snapshot_commitment)]`.
 
 The four variable state collections use exact wrappers:
 `EffectAuthorizationRows = C("m2.authority.EffectAuthorizations/v1",rows)`,
@@ -719,7 +748,7 @@ registry/lineage seals are not reused as bounded state commitments.
 
 ### 5.2 Exact acquisition state
 
-`_M2AcquisitionState` is the exact 18-member array:
+`_M2AcquisitionSnapshot` is the exact 17-member array:
 
 ```text
 ["m2.acquisition.State/v1", A(application_generation_id), PositionScope,
@@ -727,8 +756,8 @@ registry/lineage seals are not reused as bounded state commitments.
  H(protection_commitment)|N, Controller, AcquisitionMandate,
  GenerationLive, MarketStreamRouteLive,
  UnresolvedGenerationRows, UnresolvedMarketStreamRouteRows,
- LineageRows, H(direct_selection_commitment), H(bounded_registry_commitment),
- H(bounded_lineage_commitment), H(state_commitment)]
+ LineageRows, H(bounded_registry_commitment), H(bounded_lineage_commitment),
+ H(snapshot_commitment)]
 ```
 
 `Controller` is the exact source-order semantic array
@@ -787,26 +816,19 @@ direct rows each derive exactly their like-named route; their joins through effe
 resolve once and name the same generation. This fixed two-routes-per-effect projection is the only
 case where lineage-row count differs from source direct-row count.
 
-`bounded_registry_commitment`, `bounded_lineage_commitment`, and `state_commitment` use the new
+`bounded_registry_commitment`, `bounded_lineage_commitment`, and `snapshot_commitment` use the new
 domains `execution-core/m2-acquisition/bounded-registry/v1`,
 `execution-core/m2-acquisition/bounded-lineage/v1`, and
 `execution-core/m2-acquisition/state/v1`. They bind the canonical row bytes and counts. They do not
 claim equality with history-shaped `GenerationRegistry._seal`, `AcquisitionLineageIndex._seal`, or
 the old full-map `AcquisitionControllerState.commitment`.
 
-R13-H replaces that history-shaped behavioral dependency at its source. The canonical
-`AcquisitionControllerState.commitment` becomes the M2 state commitment derived from the bounded
-current serving view (LIVE generation and stream route, active/current/unresolved lineage, current
-controller and mandate); a targeted retired slice is operation proof and is not part of the
-ordinary standing commitment. Both the legacy in-memory state adapter and hydrated-state adapter
-derive this same commitment through one private helper. Every existing consumer of
-`state.commitment` -- status, create, successor, preemption, protection exit, canonical fact, and
-protection rebase -- therefore receives identical bytes before and after hydration. No consumer may
-retain or recompute the former full-registry/full-lineage digest. Equivalence tests construct two
-states with identical serving projections but different unrelated terminal history and require
-equal M2 state commitments and equal next controller heads for every transition family; changing
-any serving row must change both. This is a deliberate one-time semantic replacement, not a claim
-that the old history-shaped digest can be reconstructed.
+R13-H does not replace that history-shaped behavioral dependency or any consumer of
+`AcquisitionControllerState.commitment`. The snapshot commitment is a distinct non-serving value.
+R13-C must freeze and review one scope-local bounded behavioral commitment, repository-backed
+historical replay/nonmembership authority, and its atomic activation across status, create,
+successor, preemption, protection exit, canonical fact, and protection rebase before a snapshot can
+participate in reduction. Account-wide proof data may never enter that scope-local commitment.
 
 Their exact preimages are:
 
@@ -823,9 +845,8 @@ BoundedLineage = ["m2.acquisition.BoundedLineage/v1",
 BoundedRegistry)`; `bounded_lineage_commitment =
 K("execution-core/m2-acquisition/bounded-lineage/v1",BoundedLineage)`. Child generation and route
 commitment members remain present exactly as shown in their rows; lineage child commitments remain
-present exactly as shown. Targeted resolved-history rows are excluded from this standing commitment
-and are committed by the owner observation proof instead. Active/unresolved retired rows remain in
-the standing commitment.
+present exactly as shown. Resolved-history rows are excluded from the snapshot. Active/unresolved
+retired rows remain in the snapshot commitment.
 
 `LineageRows` is therefore exactly
 `C("m2.acquisition.LineageRoutes/v1",rows)`, ordered first by the closed family order REQUEST,
@@ -834,26 +855,14 @@ EFFECT, OWNER, ROOT, FACT and then by canonical identity bytes. Its sole empty f
 variable wrappers; their explicit position in `BoundedRegistry` is their role and cardinality. The
 two unresolved wrappers are the only variable registry members.
 
-Standing lineage selection is independently derived from direct current state: select every
-acquisition effect for this scope whose disposition is not `CLOSED` or which has a late owner;
+Standing lineage selection is derived by the authentic owner projection: select every acquisition
+effect for this scope whose disposition is not `CLOSED` or which has a late owner;
 include REQUEST+EFFECT for each, every reachable OWNER, every reachable ROOT, and each current FACT
 head. Also include the effect currently referenced by the authority acquisition slot and its
 reachable chain. No lineage row outside that union is standing state. Generation/stream unresolved
-sets are the exact non-LIVE generation IDs referenced by that lineage union. The direct source
-families are `LINEAGE_EFFECT_SOURCE`, `LINEAGE_OWNER_SOURCE`, `LINEAGE_ROOT_SOURCE`, and
-`LINEAGE_FACT_SOURCE`; their rows are respectively VenueEffect, VenueOwner,
-AcquisitionRootRoute, and ExecutionFact. Their proof counts equal source-row counts; the derived
-lineage count is `2*effect_source_count + owner_source_count + root_source_count +
-fact_source_count`. Missing, extra, cross-generation, or substituted routes fail.
-
-Resolved-history late facts require durable mutable generation state that the accepted immutable
-generation identity row does not contain. R13-C must therefore add, in its exact human-gated DDL
-candidate, one current `acquisition_generation_state` family keyed by
-`(scope_id,acquisition_generation_id)` with monotonic `state_ordinal` and all semantic members of
-the Generation row above. R13-H defines the pure exact type
-`m2.direct.AcquisitionGenerationState/v1`; no table, repository operation, or SQLite execution is
-authorized here. R13-C may not install or test that DDL until Ameen approves its exact candidate
-commit/tree/digest/bytes and named fresh-file test plan.
+sets are the exact non-LIVE generation IDs referenced by that lineage union. Missing, extra,
+cross-generation, or substituted routes fail snapshot decoding. These selection rules do not
+authorize replay decisions; exact historical FACT membership remains R13-C work.
 
 ## 6. Execution proof encoding
 
@@ -942,12 +951,53 @@ Length is 19. The proof is
 Only the checkpoint-codec issuer may mint `_CurrentRows`; the protection owner re-derives the seal
 and verifies source/profile/session/stream, live generation, mandate, state commitment, expected
 controller head, currentness head, and version before construction. The current rows are not a
-caller-shaped tuple and cannot be detached from their repository proof binding.
+caller-shaped tuple and cannot be detached from their owner proof binding.
 
 `scope_id`, both currentness-head ordinals, and every count are at least zero;
 `version_ordinal` is at least one. Negative values, version zero, and boolean substitutes fail.
 
-## 8. Repository-issued owner proofs
+## 7.1 R13-H snapshot construction and proof obligations
+
+The only new constructors authorized by R13-H are owner-private pure functions:
+
+- venue: `_m2_venue_snapshot_from_book`, `_m2_venue_snapshot_from_bytes`, and
+  `_m2_venue_snapshot_bytes`;
+- authority: `_m2_authority_snapshot_from_state`, `_m2_authority_snapshot_from_bytes`, and
+  `_m2_authority_snapshot_bytes`; and
+- acquisition: `_m2_acquisition_snapshot_from_state`, `_m2_acquisition_snapshot_from_bytes`, and
+  `_m2_acquisition_snapshot_bytes`.
+
+Projection accepts only an authentic exact existing owner, selects the bounded semantic rows in
+sections 3 through 5, derives the owner snapshot commitment over the exact state row with its final
+commitment member omitted, and constructs the exact hidden snapshot type. Decode validates scalar
+grammar, tags, lengths, limits, ordering, counts, cross-references internal to the snapshot, all
+owner-existing child commitments/seals represented in bytes, final snapshot commitment, and exact
+re-encoding. It never calls `object.__new__` on an existing serving owner and never installs derived
+indexes or omitted maps. Snapshot types are immutable, exact, non-subclassable, constructor-hidden,
+and absent from module `__all__`.
+
+R13-H positive tests cover empty/genesis where legal and nontrivial authentic projections for each
+owner, including multiple account scopes, active effects/claims/owners, authority manual and
+acquisition slots, LIVE plus unresolved acquisition state, execution proof, and protection proof.
+Every canonical byte sequence round-trips byte-for-byte and a second projection of the same owner
+is identical. Negative tests independently kill wrong tag/length/count/order, duplicate/missing/
+extra semantic row, malformed scalar/enum/optional group, cross-scope/reference substitution,
+child commitment mutation, snapshot commitment mutation, oversize scalar/row/collection/snapshot,
+forged snapshot type, and any attempt to pass a snapshot to a serving reducer. Imports remain inert
+and tests open no SQLite connection.
+
+R13-H makes no claim that omitted input/query/grant maps or omitted terminal acquisition lineage
+can answer a future operation. That authority is deliberately absent. Any code path that converts a
+snapshot into a serving owner, changes an existing reducer commitment, accepts a repository fact,
+or overlays targeted history is an R13-H scope violation.
+
+## 8. Superseded R13-C design evidence — non-normative in R13-H
+
+Sections 8 through 11 record rejected proof/operation exploration only. They impose no R13-H
+requirement and authorize no source. R13-C must replace them with a fresh, separately reviewed
+contract; copying these designs without that review is forbidden.
+
+### 8.1 Prior repository-issued owner-proof exploration
 
 Each owner proof is an opaque exact type. Its canonical row is:
 
@@ -1086,7 +1136,7 @@ Family order is exact and closed:
   `TARGETED_ROOT_FILL`, `TARGETED_EXECUTION_FACT_HEAD`, `TARGETED_PRIOR_FACT_ROUTE`,
   `TARGETED_FACT_SOURCE`.
 
-### 8.1 Closed direct-row union
+### 8.2 Prior closed direct-row exploration
 
 `exact_direct_rows` uses only the explicit arrays below. There is one handwritten branch per tag;
 reflection and a generic record fallback are forbidden. Members appear in the listed order after
@@ -1448,10 +1498,28 @@ Imports remain inert. R13-H tests are pure and open no SQLite connection.
 
 ## 12. Boundary to R13-C
 
-R13-H ends with authentic typed owner projection/hydration and complete proof row encodings. It does
-not create `RuntimeCheckpointEnvelope`, payload persistence records, store/load methods, head
-eligibility, or transaction composition. R13-C must bind these accepted owner values into the exact
-kind-`0x02` document, add repository issuance on one connection, specify the held
-`acquisition_generation_state` current row, and return the exact changed-DDL candidate identity for
-Ameen Mujtabaa's fresh gate before any changed schema is installed or any SQLite-bearing test
-executes.
+R13-H ends with authentic typed non-serving owner snapshots and byte-round-tripped existing
+execution/protection proofs. It does not create `RuntimeCheckpointEnvelope`, repository observation
+proofs, operation capabilities, payload persistence records, store/load methods, head eligibility,
+behavioral-commitment activation, or transaction composition.
+
+Before any snapshot can serve, R13-C must freeze in a new reviewed contract:
+
+1. repository observation proof issuance and complete account/scope/source selection;
+2. authority replay/query/grant operation capability, including exact command bytes, reverse-input
+   semantic-key completeness, predecessor/currentness freshness, and one operation token;
+3. acquisition operation capability with distinct NEW (FACT absent) and EXACT_REPLAY (FACT present)
+   paths, exact four-route predecessor overlay, and no alternate reducer;
+4. scope-local bounded behavioral commitments that exclude sibling account scopes and replace every
+   old history-shaped consumer atomically;
+5. durable mutable `acquisition_generation_state` and exact generation-scoped FACT membership rows
+   (or an equivalently exact authenticated membership structure), both atomically updated with the
+   owner transition;
+6. the kind-`0x02` outer document, repository store/load, current head, and one caller-owned
+   transaction; and
+7. exact changed-DDL candidate commit/tree, DDL SHA-256/bytes, and named fresh-file test plan for
+   Ameen Mujtabaa's approval.
+
+No changed schema may be installed and no SQLite-bearing test may execute before that exact human
+gate. The superseded exploration in sections 8 through 11 is findings input only, not a shortcut to
+R13-C authority.
