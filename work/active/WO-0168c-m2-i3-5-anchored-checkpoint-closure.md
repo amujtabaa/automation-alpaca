@@ -35,6 +35,7 @@ allowed_paths:
   - work/queue/M2-EXECUTION-2026-08-21/23-WO-0168C-FROZEN-NONSERVING-CHECKPOINT-R12.md
   - work/queue/M2-EXECUTION-2026-08-21/24-WO-0168C-FROZEN-NONSERVING-CHECKPOINT-R13.md
   - work/queue/M2-EXECUTION-2026-08-21/25-WO-0168C-FROZEN-NONSERVING-CHECKPOINT-R14.md
+  - work/queue/M2-EXECUTION-2026-08-21/26-WO-0168C-FROZEN-NONSERVING-CHECKPOINT-R15.md
   - work/review/REV-0077/**
   - work/review/REV-0078/**
   - work/ledger.jsonl
@@ -42,12 +43,14 @@ allowed_paths:
   - app/execution_core/persistence/records.py
   - app/execution_core/persistence/repository.py
   - app/execution_core/persistence/schema.py
+  - app/execution_core/venue.py
   - tests/execution_core/persistence_setup_support.py
   - tests/execution_core/test_persistence_checkpoint_codec.py
   - tests/execution_core/test_persistence_runtime_checkpoint_pure.py
   - tests/execution_core/test_persistence_runtime_checkpoint_sqlite.py
   - tests/execution_core/test_persistence_runtime_checkpoint_directness.py
   - tests/execution_core/test_persistence_schema.py
+  - tests/execution_core/test_venue_checkpoint_hardening.py
 forbidden_paths: []
 ---
 
