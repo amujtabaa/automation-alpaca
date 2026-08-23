@@ -11,6 +11,7 @@ from __future__ import annotations as _annotations
 
 import enum as _enum
 from dataclasses import dataclass as _dataclass
+from hashlib import sha256 as _sha256
 from typing import Generic as _Generic
 from typing import TypeVar as _TypeVar
 from typing import cast as _cast
@@ -33,6 +34,18 @@ class RepositoryOutcomeKind(_enum.Enum):
 
 
 _RecordT = _TypeVar("_RecordT")
+
+
+def _require_sha256_text(name: str, value: object) -> str:
+    """Require one exact lowercase SHA-256 textual binding."""
+
+    if type(value) is not str:
+        raise TypeError(f"{name} must be exact text")
+    if len(value) != 64 or any(
+        character not in "0123456789abcdef" for character in value
+    ):
+        raise ValueError(f"{name} must be lowercase SHA-256 hexadecimal text")
+    return value
 
 
 @_dataclass(frozen=True, slots=True)
@@ -91,6 +104,51 @@ class KernelCheckpointRecord:
     currentness_head_ordinal: int
     checkpoint_sha256: str
     checkpoint_version_ordinal: int
+
+
+@_dataclass(frozen=True, slots=True)
+class RuntimeCheckpointPayloadRecord:
+    """One exact retained canonical checkpoint payload and its bound coordinates."""
+
+    application_generation_id: _identity.ApplicationGenerationId
+    execution_profile_id: str
+    market_source_profile_id: str
+    currentness_head_ordinal: int
+    checkpoint_version_ordinal: int
+    payload_bytes: bytes
+    payload_length: int
+    payload_sha256: str
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.application_generation_id)
+            is not _identity.ApplicationGenerationId
+        ):
+            raise TypeError("checkpoint application generation must be exact")
+        _identity.ApplicationGenerationId(self.application_generation_id.value)
+        _require_sha256_text("checkpoint execution profile", self.execution_profile_id)
+        _require_sha256_text(
+            "checkpoint market-source profile", self.market_source_profile_id
+        )
+        if type(self.currentness_head_ordinal) is not int:
+            raise TypeError("checkpoint head ordinal must be an exact integer")
+        if self.currentness_head_ordinal < 0:
+            raise ValueError("checkpoint head ordinal must be non-negative")
+        if type(self.checkpoint_version_ordinal) is not int:
+            raise TypeError("checkpoint version ordinal must be an exact integer")
+        if self.checkpoint_version_ordinal < 1:
+            raise ValueError("checkpoint version ordinal must be positive")
+        if type(self.payload_bytes) is not bytes:
+            raise TypeError("checkpoint payload bytes must be exact bytes")
+        if not self.payload_bytes:
+            raise ValueError("checkpoint payload bytes must be nonempty")
+        if type(self.payload_length) is not int:
+            raise TypeError("checkpoint payload length must be an exact integer")
+        if self.payload_length != len(self.payload_bytes):
+            raise ValueError("checkpoint payload length does not match payload bytes")
+        _require_sha256_text("checkpoint payload SHA-256", self.payload_sha256)
+        if self.payload_sha256 != _sha256(self.payload_bytes).hexdigest():
+            raise ValueError("checkpoint payload SHA-256 does not match payload bytes")
 
 
 @_dataclass(frozen=True, slots=True)
@@ -1055,6 +1113,7 @@ __all__ = (
     "RepositoryOutcome",
     "RepositoryOutcomeKind",
     "RootFillRecord",
+    "RuntimeCheckpointPayloadRecord",
     "ScopeRecord",
     "SymbolControllerRecord",
     "VenueEffectRecord",

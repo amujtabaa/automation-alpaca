@@ -438,6 +438,7 @@ def test_exact_exports_and_outcome_invariants() -> None:
         "RepositoryOutcome",
         "RepositoryOutcomeKind",
         "RootFillRecord",
+        "RuntimeCheckpointPayloadRecord",
         "ScopeRecord",
         "SymbolControllerRecord",
         "VenueEffectRecord",
