@@ -11,10 +11,10 @@ access SQLite, create a database, or invoke runtime composition.
 - R8 rejected amendment: `d669c362a711de95f84c493c1f5c823a991d5f8d`, tree
   `4acec41cf4d44e6178f9442eef7674cc615dd6cb`
 - R8 findings record: `work/review/REV-0074/result-r8.md`
-- R9 amendment parent: `f66383c5a0b8e7482eb3a929fe315e1d9c1d0e4d`
+- R9 amendment parent: `f66383c561b6d09e0c85d516c627874a97a596ee`
 - Exact R9 candidate: `439abc5b728d3362776ed9af8de666f4f0bd8383`
 - Candidate tree: `1a770f4202fb567239ffd39dca4cf34dd2c12236`
-- Amendment diff: `f66383c5a0b8e7482eb3a929fe315e1d9c1d0e4d..439abc5b728d3362776ed9af8de666f4f0bd8383`
+- Amendment diff: `f66383c561b6d09e0c85d516c627874a97a596ee..439abc5b728d3362776ed9af8de666f4f0bd8383`
 
 ## Required read order
 
