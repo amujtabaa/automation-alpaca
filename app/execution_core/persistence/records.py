@@ -12,9 +12,11 @@ from __future__ import annotations as _annotations
 import enum as _enum
 from dataclasses import dataclass as _dataclass
 from hashlib import sha256 as _sha256
+from threading import RLock as _RLock
 from typing import Generic as _Generic
 from typing import TypeVar as _TypeVar
 from typing import cast as _cast
+from weakref import ref as _weakref_ref
 
 from .. import durable_codec as _durable_codec
 from .. import fills as _fills
@@ -152,6 +154,1393 @@ class KernelCheckpointRecord:
     currentness_head_ordinal: int
     checkpoint_sha256: str
     checkpoint_version_ordinal: int
+
+
+_RUNTIME_CHECKPOINT_MAX_PAYLOAD_BYTES = 268_435_456
+_RUNTIME_CHECKPOINT_REGISTRY_LOCK = _RLock()
+_RUNTIME_CHECKPOINT_REGISTRY: dict[int, tuple[object, bytes, str]] = {}
+_RUNTIME_CHECKPOINT_ABSENCE_FIELDS = (
+    ("owner_effect_absences", "owner/effect", "owner-effect"),
+    ("claim_effect_absences", "claim/effect", "claim-effect"),
+    ("acceptance_effect_absences", "acceptance/effect", "acceptance-effect"),
+    (
+        "evidence_acceptance_absences",
+        "evidence/acceptance",
+        "evidence-acceptance",
+    ),
+    ("closure_owner_absences", "closure/owner", "closure-owner"),
+    ("route_owner_absences", "route/owner", "route-owner"),
+    ("fact_head_root_absences", "fact-head/root", "fact-head-root"),
+    ("current_fact_root_absences", "current-fact/root", "current-fact-root"),
+    ("stream_generation_absences", "stream/generation", "stream-generation"),
+    ("cursor_stream_absences", "cursor/stream", "cursor-stream"),
+)
+
+
+def _runtime_checkpoint_require_application_id(
+    name: str, value: object
+) -> _identity.ApplicationGenerationId:
+    if type(value) is not _identity.ApplicationGenerationId:
+        raise TypeError(f"{name} must be exact ApplicationGenerationId")
+    _identity.ApplicationGenerationId(value.value)
+    return value
+
+
+def _runtime_checkpoint_require_nonnegative_int(name: str, value: object) -> int:
+    if type(value) is not int:
+        raise TypeError(f"{name} must be an exact integer")
+    if value < 0:
+        raise ValueError(f"{name} must be non-negative")
+    return value
+
+
+def _runtime_checkpoint_require_positive_int(name: str, value: object) -> int:
+    result = _runtime_checkpoint_require_nonnegative_int(name, value)
+    if result < 1:
+        raise ValueError(f"{name} must be positive")
+    return result
+
+
+def _runtime_checkpoint_require_binding(name: str, value: object) -> bytes:
+    if type(value) is not bytes:
+        raise TypeError(f"{name} must be exact bytes")
+    if len(value) != 32:
+        raise ValueError(f"{name} must be exactly 32 bytes")
+    return value
+
+
+def _runtime_checkpoint_field_none() -> bytes:
+    return _commit_parts(b"execution-core/runtime-checkpoint/field/absent/v1")
+
+
+def _runtime_checkpoint_field_bool(value: bool) -> bytes:
+    if type(value) is not bool:
+        raise TypeError("runtime checkpoint Boolean field must be exact")
+    return _commit_parts(
+        b"execution-core/runtime-checkpoint/field/bool/v1",
+        b"\x01" if value else b"\x00",
+    )
+
+
+def _runtime_checkpoint_field_int(value: int) -> bytes:
+    return _commit_parts(
+        b"execution-core/runtime-checkpoint/field/int/v1", _encode_int(value)
+    )
+
+
+def _runtime_checkpoint_field_text(value: str) -> bytes:
+    if type(value) is not str:
+        raise TypeError("runtime checkpoint text field must be exact")
+    return _commit_parts(
+        b"execution-core/runtime-checkpoint/field/text/v1", _encode_text(value)
+    )
+
+
+def _runtime_checkpoint_field_bytes(value: bytes) -> bytes:
+    if type(value) is not bytes:
+        raise TypeError("runtime checkpoint bytes field must be exact")
+    return _commit_parts(
+        b"execution-core/runtime-checkpoint/field/bytes/v1",
+        len(value).to_bytes(8, "big") + value,
+    )
+
+
+def _runtime_checkpoint_atom_binding(atom: _durable_codec.DurableAtom) -> bytes:
+    if (
+        type(atom) is not _durable_codec.DurableAtom
+        or type(atom.contract_version) is not str
+        or type(atom.type_tag) is not str
+        or type(atom.fields) is not tuple
+    ):
+        raise TypeError("runtime checkpoint durable atom must be exact")
+    fields: list[bytes] = []
+    for field in atom.fields:
+        if type(field) is str:
+            fields.append(
+                _commit_parts(
+                    b"execution-core/runtime-checkpoint/atom-text/v1",
+                    _encode_text(field),
+                )
+            )
+        elif type(field) is _durable_codec.DurableAtom:
+            fields.append(_runtime_checkpoint_atom_binding(field))
+        else:
+            raise TypeError("runtime checkpoint durable atom field is invalid")
+    return _commit_parts(
+        b"execution-core/runtime-checkpoint/durable-atom/v1",
+        _encode_text(atom.contract_version),
+        _encode_text(atom.type_tag),
+        _encode_int(len(fields)),
+        *fields,
+    )
+
+
+def _runtime_checkpoint_field_m1(value: object) -> bytes:
+    try:
+        atom = _durable_codec.encode_m1_value(_cast(_durable_codec._OwningValue, value))
+    except (TypeError, ValueError, OverflowError) as error:
+        raise ValueError("runtime checkpoint M1 field is invalid") from error
+    return _commit_parts(
+        b"execution-core/runtime-checkpoint/field/m1-value/v1",
+        _runtime_checkpoint_atom_binding(atom),
+    )
+
+
+def _runtime_checkpoint_record_binding(
+    tag: str, fields: tuple[bytes, ...]
+) -> bytes:
+    if type(tag) is not str or type(fields) is not tuple:
+        raise TypeError("runtime checkpoint record binding is invalid")
+    if any(type(field) is not bytes for field in fields):
+        raise TypeError("runtime checkpoint record field binding is invalid")
+    return _commit_parts(
+        b"execution-core/runtime-checkpoint/record/v1",
+        _encode_text(tag),
+        _encode_int(len(fields)),
+        *fields,
+    )
+
+
+def _runtime_checkpoint_optional_record_binding(value: bytes | None) -> bytes:
+    if value is None:
+        return _commit_parts(b"execution-core/runtime-checkpoint/optional/absent/v1")
+    return _commit_parts(
+        b"execution-core/runtime-checkpoint/optional/present/v1",
+        _runtime_checkpoint_require_binding("optional record binding", value),
+    )
+
+
+def _runtime_checkpoint_sequence_binding(domain: str, items: tuple[bytes, ...]) -> bytes:
+    if type(domain) is not str or type(items) is not tuple:
+        raise TypeError("runtime checkpoint sequence binding is invalid")
+    if any(type(item) is not bytes for item in items):
+        raise TypeError("runtime checkpoint sequence item must be exact bytes")
+    return _commit_parts(domain.encode("ascii"), _encode_int(len(items)), *items)
+
+
+def _runtime_checkpoint_storage_field_binding(value: object) -> bytes:
+    if value is None:
+        return _runtime_checkpoint_field_none()
+    if type(value) is bool:
+        return _runtime_checkpoint_field_bool(value)
+    if type(value) is int:
+        return _runtime_checkpoint_field_int(value)
+    if type(value) is str:
+        return _runtime_checkpoint_field_text(value)
+    if type(value) is bytes:
+        return _runtime_checkpoint_field_bytes(value)
+    raise TypeError("runtime checkpoint storage field has an invalid class")
+
+
+def _runtime_checkpoint_identity_text(value: object, expected: type[object]) -> str:
+    if type(value) is not expected:
+        raise TypeError("runtime checkpoint identity has an invalid exact class")
+    text = getattr(value, "value")
+    if type(text) is not str:
+        raise TypeError("runtime checkpoint identity value must be exact text")
+    expected(text)
+    return text
+
+
+def _runtime_checkpoint_quantity_value(value: object | None) -> int | None:
+    if value is None:
+        return None
+    if type(value) is not _values.Quantity:
+        raise TypeError("runtime checkpoint quantity must be exact Quantity")
+    return value.value
+
+
+def _runtime_checkpoint_price_columns(
+    value: object | None, *, absent_is_null: bool
+) -> tuple[object, ...]:
+    if value is None:
+        if absent_is_null:
+            return (None,) * 9
+        return (0, 0, 0, "0", 0, 0, 0, "0", 0)
+    if type(value) is not _values.ReportedPrice:
+        raise TypeError("runtime checkpoint price must be exact ReportedPrice")
+    scale = value.scale.value.as_tuple()
+    tick_scale = value.tick.scale.value.as_tuple()
+    return (
+        1,
+        value.units.value,
+        scale.sign,
+        "".join(str(digit) for digit in scale.digits),
+        scale.exponent,
+        value.tick.tick_units.value,
+        tick_scale.sign,
+        "".join(str(digit) for digit in tick_scale.digits),
+        tick_scale.exponent,
+    )
+
+
+def _runtime_checkpoint_storage_record(record: object) -> tuple[str, tuple[object, ...]]:
+    identity = _runtime_checkpoint_identity_text
+    if type(record) is ScopeRecord:
+        return "scope/v1", (
+            record.scope_id,
+            identity(record.application_generation_id, _identity.ApplicationGenerationId),
+            record.execution_profile_id,
+            identity(record.symbol, _identity.SymbolId),
+        )
+    if type(record) is SymbolControllerRecord:
+        return "controller/v1", (
+            record.scope_id,
+            identity(record.application_generation_id, _identity.ApplicationGenerationId),
+            record.execution_profile_id,
+            None
+            if record.live_acquisition_generation_id is None
+            else identity(
+                record.live_acquisition_generation_id,
+                _identity.AcquisitionGenerationId,
+            ),
+            record.aggregate_quantity,
+            record.integrity_state,
+            record.currentness_head_ordinal,
+            record.controller_version_ordinal,
+            record.emergency_compatibility_sha256,
+        )
+    if type(record) is ProtectionAuthorityRecord:
+        return "protection/v1", (
+            record.scope_id,
+            record.authority_class,
+            None
+            if record.active_stream_generation_id is None
+            else identity(
+                record.active_stream_generation_id, _identity.MarketStreamGenerationId
+            ),
+            None
+            if record.active_acquisition_generation_id is None
+            else identity(
+                record.active_acquisition_generation_id,
+                _identity.AcquisitionGenerationId,
+            ),
+            record.active_generation_mandate_commitment_sha256,
+            record.active_source_profile_id,
+            None
+            if record.active_session_id is None
+            else identity(record.active_session_id, _identity.SessionId),
+            record.active_sequence_mode,
+            record.expected_controller_head_ordinal,
+            record.state_commitment_sha256,
+            record.version_ordinal,
+        )
+    if type(record) is AcquisitionGenerationRecord:
+        return "generation/v1", (
+            identity(
+                record.acquisition_generation_id, _identity.AcquisitionGenerationId
+            ),
+            record.scope_id,
+            record.status,
+            record.successor_ordinal,
+            None
+            if record.predecessor_generation_id is None
+            else identity(
+                record.predecessor_generation_id, _identity.AcquisitionGenerationId
+            ),
+            record.mandate_commitment_sha256,
+            record.emergency_compatibility_sha256,
+        )
+    if type(record) is AcquisitionGenerationCurrentRecord:
+        return "generation-current/v1", (
+            identity(
+                record.acquisition_generation_id, _identity.AcquisitionGenerationId
+            ),
+            record.scope_id,
+            record.current_economics_head_ordinal,
+            record.unresolved_effect_count,
+            record.active_protection_count,
+        )
+    if type(record) is VenueEffectRecord:
+        return "effect/v1", (
+            record.effect_id,
+            identity(record.effect_external, _identity.EffectId),
+            record.scope_id,
+            identity(record.application_generation_id, _identity.ApplicationGenerationId),
+            record.execution_profile_id,
+            identity(
+                record.acquisition_generation_id, _identity.AcquisitionGenerationId
+            ),
+            record.generation_mandate_commitment_sha256,
+            record.expected_controller_head_ordinal,
+            record.expected_protection_version_ordinal,
+            record.authority_class,
+            identity(record.request_occurrence_id, _identity.RequestOccurrenceId),
+            identity(record.mandate_id, _identity.MandateId),
+            record.effect_kind,
+            None
+            if record.client_order_id is None
+            else identity(record.client_order_id, _identity.ClientOrderId),
+            None
+            if record.target_order_id is None
+            else identity(record.target_order_id, _identity.OrderId),
+            record.side,
+            _runtime_checkpoint_quantity_value(record.quantity),
+            record.economic_scope,
+            record.lifecycle_state,
+            record.disposition,
+            record.closure_proof_kind,
+            record.closure_proof_digest,
+            record.closure_proof_evidence_id,
+            record.closure_proof_claim_id,
+            record.created_ordinal,
+        )
+    if type(record) is VenueIdentityOwnerRecord:
+        return "owner/v1", (
+            record.scope_id,
+            record.execution_profile_id,
+            identity(record.owner_id, _identity.OrderId),
+            identity(record.observation_id, _identity.VenueObservationId),
+            record.effect_id,
+            record.root_fill_key_id,
+            identity(record.owner_generation_id, _identity.AcquisitionGenerationId),
+            record.admitted_after_effect_closed,
+        )
+    if type(record) is DispatchClaimRecord:
+        return "claim/v1", (
+            record.claim_id,
+            record.effect_id,
+            record.execution_profile_id,
+            identity(record.claim_occurrence_id, _identity.ClaimOccurrenceId),
+            record.claim_ordinal,
+        )
+    if type(record) is AcceptanceSetRecord:
+        return "acceptance/v1", (record.acceptance_set_id, record.effect_id)
+    if type(record) is AcceptanceEvidenceRecord:
+        return "evidence/v1", (
+            record.evidence_id,
+            record.acceptance_set_id,
+            record.effect_id,
+            record.evidence_kind,
+            record.proof_kind,
+            record.evidence_digest,
+            record.evidence_ordinal,
+            None
+            if record.contradiction_owner_id is None
+            else identity(record.contradiction_owner_id, _identity.OrderId),
+            None
+            if record.contradiction_observation_id is None
+            else identity(
+                record.contradiction_observation_id, _identity.VenueObservationId
+            ),
+        )
+    if type(record) is ClosureChainRecord:
+        return "closure/v1", (
+            record.closure_id,
+            record.scope_id,
+            identity(record.owner_id, _identity.OrderId),
+            record.ordinal,
+            record.effect_id,
+            record.closure_kind,
+            record.predecessor_closure_id,
+        )
+    if type(record) is AcquisitionRootRouteRecord:
+        return "route/v1", (
+            record.root_fill_key_id,
+            record.scope_id,
+            identity(record.application_generation_id, _identity.ApplicationGenerationId),
+            record.execution_profile_id,
+            identity(
+                record.acquisition_generation_id, _identity.AcquisitionGenerationId
+            ),
+            record.effect_id,
+            identity(record.owner_id, _identity.OrderId),
+            identity(record.observation_id, _identity.VenueObservationId),
+        )
+    if type(record) is RootFillRecord:
+        return "root/v1", (
+            record.root_fill_key_id,
+            record.scope_id,
+            identity(record.application_generation_id, _identity.ApplicationGenerationId),
+            record.execution_profile_id,
+            identity(record.owner_generation_id, _identity.AcquisitionGenerationId),
+            identity(record.root_fill_id, _identity.RootFillId),
+            record.current_fact_id,
+            record.current_kind,
+            record.current_authority,
+            record.current_side,
+            _runtime_checkpoint_quantity_value(record.current_quantity),
+            *_runtime_checkpoint_price_columns(
+                record.current_price, absent_is_null=True
+            ),
+            record.economics_head_ordinal,
+        )
+    if type(record) is ExecutionFactHeadRecord:
+        return "fact-head/v1", (
+            record.root_fill_key_id,
+            record.fact_id,
+            record.fact_ordinal,
+        )
+    if type(record) is ExecutionFactRecord:
+        return "fact/v1", (
+            record.fact_id,
+            record.scope_id,
+            identity(record.application_generation_id, _identity.ApplicationGenerationId),
+            record.execution_profile_id,
+            record.root_fill_key_id,
+            identity(record.source_event_id, _identity.SourceEventId),
+            identity(record.order_id, _identity.OrderId),
+            record.side,
+            record.kind,
+            record.authority,
+            _runtime_checkpoint_quantity_value(record.quantity),
+            *_runtime_checkpoint_price_columns(record.price, absent_is_null=False),
+            None
+            if record.request_occurrence_id is None
+            else identity(record.request_occurrence_id, _identity.RequestOccurrenceId),
+            None
+            if record.claim_occurrence_id is None
+            else identity(record.claim_occurrence_id, _identity.ClaimOccurrenceId),
+            _runtime_checkpoint_quantity_value(record.prior_cumulative_quantity),
+            _runtime_checkpoint_quantity_value(record.resulting_cumulative_quantity),
+            None
+            if record.actor_id is None
+            else identity(record.actor_id, _identity.ActorId),
+            record.reason_text,
+            None
+            if record.evidence_reference is None
+            else identity(record.evidence_reference, _identity.EvidenceReference),
+            record.predecessor_fact_id,
+            record.fact_ordinal,
+        )
+    if type(record) is MarketStreamAuthorityRecord:
+        return "stream/v1", (
+            identity(
+                record.stream_generation_id, _identity.MarketStreamGenerationId
+            ),
+            record.scope_id,
+            identity(record.application_generation_id, _identity.ApplicationGenerationId),
+            identity(
+                record.acquisition_generation_id, _identity.AcquisitionGenerationId
+            ),
+            record.generation_mandate_commitment_sha256,
+            record.source_profile_id,
+            identity(record.session_id, _identity.SessionId),
+            record.sequence_mode,
+        )
+    if type(record) is MarketCursorRecord:
+        return "cursor/v1", (
+            identity(
+                record.stream_generation_id, _identity.MarketStreamGenerationId
+            ),
+            record.scope_id,
+            identity(record.application_generation_id, _identity.ApplicationGenerationId),
+            identity(
+                record.acquisition_generation_id, _identity.AcquisitionGenerationId
+            ),
+            record.generation_mandate_commitment_sha256,
+            record.source_profile_id,
+            identity(record.session_id, _identity.SessionId),
+            record.sequence_mode,
+            record.fixed_cursor_ordinal,
+            record.published_head_ordinal,
+        )
+    raise TypeError("runtime checkpoint selection has an unknown record class")
+
+
+def _runtime_checkpoint_selected_record_binding(record: object) -> bytes:
+    tag, fields = _runtime_checkpoint_storage_record(record)
+    return _runtime_checkpoint_record_binding(
+        tag, tuple(_runtime_checkpoint_storage_field_binding(field) for field in fields)
+    )
+
+
+@_dataclass(frozen=True, slots=True)
+class _RuntimeCheckpointSelectionSet:
+    scopes: tuple[ScopeRecord, ...]
+    controllers: tuple[SymbolControllerRecord, ...]
+    protection_authorities: tuple[ProtectionAuthorityRecord, ...]
+    live_generations: tuple[AcquisitionGenerationRecord, ...]
+    live_generation_current: tuple[AcquisitionGenerationCurrentRecord, ...]
+    unresolved_generations: tuple[AcquisitionGenerationRecord, ...]
+    unresolved_generation_current: tuple[AcquisitionGenerationCurrentRecord, ...]
+    effects: tuple[VenueEffectRecord, ...]
+    owners: tuple[VenueIdentityOwnerRecord, ...]
+    claims: tuple[DispatchClaimRecord, ...]
+    acceptance_sets: tuple[AcceptanceSetRecord, ...]
+    evidence: tuple[AcceptanceEvidenceRecord, ...]
+    closure_heads: tuple[ClosureChainRecord, ...]
+    root_routes: tuple[AcquisitionRootRouteRecord, ...]
+    roots: tuple[RootFillRecord, ...]
+    fact_heads: tuple[ExecutionFactHeadRecord, ...]
+    current_facts: tuple[ExecutionFactRecord, ...]
+    streams: tuple[MarketStreamAuthorityRecord, ...]
+    cursors: tuple[MarketCursorRecord, ...]
+    owner_effect_absences: tuple[tuple[str, bytes], ...]
+    claim_effect_absences: tuple[tuple[str, bytes], ...]
+    acceptance_effect_absences: tuple[tuple[str, bytes], ...]
+    evidence_acceptance_absences: tuple[tuple[str, bytes], ...]
+    closure_owner_absences: tuple[tuple[str, bytes], ...]
+    route_owner_absences: tuple[tuple[str, bytes], ...]
+    fact_head_root_absences: tuple[tuple[str, bytes], ...]
+    current_fact_root_absences: tuple[tuple[str, bytes], ...]
+    stream_generation_absences: tuple[tuple[str, bytes], ...]
+    cursor_stream_absences: tuple[tuple[str, bytes], ...]
+    query_row_counts: tuple[int, ...]
+
+    def __post_init__(self) -> None:
+        for name in (
+            "scopes",
+            "controllers",
+            "protection_authorities",
+            "live_generations",
+            "live_generation_current",
+            "unresolved_generations",
+            "unresolved_generation_current",
+            "effects",
+            "owners",
+            "claims",
+            "acceptance_sets",
+            "evidence",
+            "closure_heads",
+            "root_routes",
+            "roots",
+            "fact_heads",
+            "current_facts",
+            "streams",
+            "cursors",
+        ):
+            if type(getattr(self, name)) is not tuple:
+                raise TypeError(f"runtime checkpoint {name} must be an exact tuple")
+        for name, family, _suffix in _RUNTIME_CHECKPOINT_ABSENCE_FIELDS:
+            values = getattr(self, name)
+            if type(values) is not tuple:
+                raise TypeError(f"runtime checkpoint {name} must be an exact tuple")
+            if len(values) > 65_535:
+                raise OverflowError(f"runtime checkpoint {name} exceeds its row limit")
+            prior_key: bytes | None = None
+            for item in values:
+                if (
+                    type(item) is not tuple
+                    or len(item) != 2
+                    or item[0] != family
+                    or type(item[0]) is not str
+                    or type(item[1]) is not bytes
+                    or len(item[1]) != 32
+                ):
+                    raise ValueError(f"runtime checkpoint {name} item is invalid")
+                if prior_key is not None and item[1] <= prior_key:
+                    raise ValueError(f"runtime checkpoint {name} is not canonical")
+                prior_key = item[1]
+        if type(self.query_row_counts) is not tuple or len(self.query_row_counts) != 13:
+            raise ValueError("runtime checkpoint requires exactly thirteen query counts")
+        for count in self.query_row_counts:
+            _runtime_checkpoint_require_nonnegative_int(
+                "runtime checkpoint query count", count
+            )
+        _runtime_checkpoint_validate_selection_set(self)
+
+
+_RUNTIME_CHECKPOINT_SELECTION_FIELDS = (
+    ("scopes", "scopes"),
+    ("controllers", "controllers"),
+    ("protection_authorities", "protections"),
+    ("live_generations", "live-generations"),
+    ("live_generation_current", "live-generation-current"),
+    ("unresolved_generations", "unresolved-generations"),
+    ("unresolved_generation_current", "unresolved-generation-current"),
+    ("effects", "effects"),
+    ("owners", "owners"),
+    ("claims", "claims"),
+    ("acceptance_sets", "acceptance-sets"),
+    ("evidence", "evidence"),
+    ("closure_heads", "closure-heads"),
+    ("root_routes", "root-routes"),
+    ("roots", "roots"),
+    ("fact_heads", "fact-heads"),
+    ("current_facts", "current-facts"),
+    ("streams", "streams"),
+    ("cursors", "cursors"),
+)
+
+
+def _runtime_checkpoint_selection_record_key(name: str, record: object) -> tuple[object, ...]:
+    identity = _runtime_checkpoint_identity_text
+    if name == "scopes" and type(record) is ScopeRecord:
+        return (record.scope_id,)
+    if name == "controllers" and type(record) is SymbolControllerRecord:
+        return (record.scope_id,)
+    if name == "protection_authorities" and type(record) is ProtectionAuthorityRecord:
+        return (record.scope_id,)
+    if name in {"live_generations", "unresolved_generations"} and type(
+        record
+    ) is AcquisitionGenerationRecord:
+        return (
+            record.scope_id,
+            record.successor_ordinal,
+            identity(
+                record.acquisition_generation_id, _identity.AcquisitionGenerationId
+            ),
+        )
+    if name in {
+        "live_generation_current",
+        "unresolved_generation_current",
+    } and type(record) is AcquisitionGenerationCurrentRecord:
+        return (
+            record.scope_id,
+            identity(
+                record.acquisition_generation_id, _identity.AcquisitionGenerationId
+            ),
+        )
+    if name == "effects" and type(record) is VenueEffectRecord:
+        return (record.created_ordinal, record.effect_id)
+    if name == "owners" and type(record) is VenueIdentityOwnerRecord:
+        return (
+            record.effect_id,
+            identity(record.owner_id, _identity.OrderId),
+            identity(record.observation_id, _identity.VenueObservationId),
+        )
+    if name == "claims" and type(record) is DispatchClaimRecord:
+        return (record.effect_id, record.claim_id)
+    if name == "acceptance_sets" and type(record) is AcceptanceSetRecord:
+        return (record.effect_id, record.acceptance_set_id)
+    if name == "evidence" and type(record) is AcceptanceEvidenceRecord:
+        return (record.effect_id, record.evidence_ordinal, record.evidence_id)
+    if name == "closure_heads" and type(record) is ClosureChainRecord:
+        return (
+            record.effect_id,
+            identity(record.owner_id, _identity.OrderId),
+            record.ordinal,
+        )
+    if name == "root_routes" and type(record) is AcquisitionRootRouteRecord:
+        return (
+            record.effect_id,
+            identity(record.owner_id, _identity.OrderId),
+            record.root_fill_key_id,
+        )
+    if name == "roots" and type(record) is RootFillRecord:
+        return (record.root_fill_key_id,)
+    if name == "fact_heads" and type(record) is ExecutionFactHeadRecord:
+        return (record.root_fill_key_id,)
+    if name == "current_facts" and type(record) is ExecutionFactRecord:
+        return (record.root_fill_key_id,)
+    if name == "streams" and type(record) is MarketStreamAuthorityRecord:
+        return (
+            identity(
+                record.acquisition_generation_id, _identity.AcquisitionGenerationId
+            ),
+            identity(
+                record.stream_generation_id, _identity.MarketStreamGenerationId
+            ),
+        )
+    if name == "cursors" and type(record) is MarketCursorRecord:
+        return (
+            identity(
+                record.acquisition_generation_id, _identity.AcquisitionGenerationId
+            ),
+            identity(
+                record.stream_generation_id, _identity.MarketStreamGenerationId
+            ),
+        )
+    raise TypeError(f"runtime checkpoint {name} contains an invalid record class")
+
+
+def _runtime_checkpoint_validate_selection_set(
+    selection: _RuntimeCheckpointSelectionSet,
+) -> None:
+    parent_ordered_names = {
+        "live_generation_current",
+        "unresolved_generation_current",
+        "roots",
+        "fact_heads",
+        "current_facts",
+        "cursors",
+    }
+    for name, _suffix in _RUNTIME_CHECKPOINT_SELECTION_FIELDS:
+        records = getattr(selection, name)
+        limit = 4_096 if name == "scopes" else 65_535
+        if len(records) > limit:
+            raise OverflowError(f"runtime checkpoint {name} exceeds its row limit")
+        if name in parent_ordered_names:
+            for record in records:
+                _runtime_checkpoint_selection_record_key(name, record)
+            continue
+        prior_key: tuple[object, ...] | None = None
+        for record in records:
+            key = _runtime_checkpoint_selection_record_key(name, record)
+            if prior_key is not None and key <= prior_key:
+                raise ValueError(f"runtime checkpoint {name} is not canonical")
+            prior_key = key
+
+    for generations_name, current_name in (
+        ("live_generations", "live_generation_current"),
+        ("unresolved_generations", "unresolved_generation_current"),
+    ):
+        generations = getattr(selection, generations_name)
+        current_rows = getattr(selection, current_name)
+        if len(generations) != len(current_rows):
+            raise ValueError(
+                f"runtime checkpoint {generations_name} current rows are incomplete"
+            )
+        if any(
+            generation.scope_id != current.scope_id
+            or generation.acquisition_generation_id
+            != current.acquisition_generation_id
+            for generation, current in zip(generations, current_rows, strict=True)
+        ):
+            raise ValueError(
+                f"runtime checkpoint {generations_name} current rows do not agree"
+            )
+
+    routes = selection.root_routes
+    if len(routes) != len(selection.roots):
+        raise ValueError("runtime checkpoint root rows are incomplete")
+    route_order_by_root: dict[int, tuple[object, ...]] = {}
+    for route, root in zip(routes, selection.roots, strict=True):
+        if route.root_fill_key_id != root.root_fill_key_id:
+            raise ValueError("runtime checkpoint root rows do not agree")
+        route_order_by_root[root.root_fill_key_id] = (
+            route.effect_id,
+            _runtime_checkpoint_identity_text(
+                route.owner_id, _identity.OrderId
+            ),
+            route.root_fill_key_id,
+        )
+
+    for name in ("fact_heads", "current_facts"):
+        prior_key = None
+        for record in getattr(selection, name):
+            key = route_order_by_root.get(record.root_fill_key_id)
+            if key is None or (prior_key is not None and key <= prior_key):
+                raise ValueError(f"runtime checkpoint {name} is not canonical")
+            prior_key = key
+
+    if len(selection.fact_heads) != len(selection.current_facts) or any(
+        head.root_fill_key_id != fact.root_fill_key_id
+        or head.fact_id != fact.fact_id
+        or head.fact_ordinal != fact.fact_ordinal
+        for head, fact in zip(
+            selection.fact_heads, selection.current_facts, strict=True
+        )
+    ):
+        raise ValueError("runtime checkpoint current fact rows do not agree")
+
+    stream_order = {
+        stream.stream_generation_id: (
+            _runtime_checkpoint_identity_text(
+                stream.acquisition_generation_id, _identity.AcquisitionGenerationId
+            ),
+            _runtime_checkpoint_identity_text(
+                stream.stream_generation_id, _identity.MarketStreamGenerationId
+            ),
+        )
+        for stream in selection.streams
+    }
+    prior_cursor_key = None
+    for cursor in selection.cursors:
+        key = stream_order.get(cursor.stream_generation_id)
+        if key is None or (prior_cursor_key is not None and key <= prior_cursor_key):
+            raise ValueError("runtime checkpoint cursors are not canonical")
+        prior_cursor_key = key
+
+
+def _runtime_checkpoint_selection_set_binding(
+    selection: _RuntimeCheckpointSelectionSet,
+) -> bytes:
+    if type(selection) is not _RuntimeCheckpointSelectionSet:
+        raise TypeError("runtime checkpoint selection set must be exact")
+    record_sequences = tuple(
+        _runtime_checkpoint_sequence_binding(
+            f"execution-core/runtime-checkpoint/records/{suffix}/v1",
+            tuple(
+                _runtime_checkpoint_selected_record_binding(record)
+                for record in getattr(selection, name)
+            ),
+        )
+        for name, suffix in _RUNTIME_CHECKPOINT_SELECTION_FIELDS
+    )
+    absence_sequences: list[bytes] = []
+    for name, family, suffix in _RUNTIME_CHECKPOINT_ABSENCE_FIELDS:
+        absence_sequences.append(
+            _runtime_checkpoint_sequence_binding(
+                f"execution-core/runtime-checkpoint/absences/{suffix}/v1",
+                tuple(
+                    _commit_parts(
+                        b"execution-core/runtime-checkpoint/absence/v1",
+                        _encode_text(item_family),
+                        len(key).to_bytes(8, "big") + key,
+                    )
+                    for item_family, key in getattr(selection, name)
+                ),
+            )
+        )
+    query_counts = _runtime_checkpoint_sequence_binding(
+        "execution-core/runtime-checkpoint/query-counts/v1",
+        tuple(
+            _runtime_checkpoint_field_int(count)
+            for count in selection.query_row_counts
+        ),
+    )
+    return _commit_parts(
+        b"execution-core/runtime-checkpoint/selection-set/v1",
+        *record_sequences,
+        *absence_sequences,
+        query_counts,
+    )
+
+
+def _runtime_checkpoint_application_record_binding(
+    record: ApplicationGenerationRecord,
+) -> bytes:
+    if type(record) is not ApplicationGenerationRecord:
+        raise TypeError("runtime checkpoint application record must be exact")
+    _runtime_checkpoint_require_application_id(
+        "runtime checkpoint application", record.application_generation_id
+    )
+    _require_sha256_text(
+        "runtime checkpoint selected execution profile",
+        record.selected_execution_profile_id,
+    )
+    _require_sha256_text(
+        "runtime checkpoint selected market profile",
+        record.selected_market_source_profile_id,
+    )
+    _runtime_checkpoint_require_positive_int(
+        "runtime checkpoint activation ordinal", record.activation_ordinal
+    )
+    return _runtime_checkpoint_record_binding(
+        "app/v1",
+        (
+            _runtime_checkpoint_field_text(record.application_generation_id.value),
+            _runtime_checkpoint_field_text(record.selected_execution_profile_id),
+            _runtime_checkpoint_field_text(record.selected_market_source_profile_id),
+            _runtime_checkpoint_field_int(record.activation_ordinal),
+        ),
+    )
+
+
+def _runtime_checkpoint_execution_profile_binding(
+    profile: _profiles.ExecutionConnectionProfile,
+) -> bytes:
+    if type(profile) is not _profiles.ExecutionConnectionProfile:
+        raise TypeError("runtime checkpoint execution profile must be exact")
+    fields = (
+        profile.connection_profile_id,
+        profile.application_generation,
+        profile.broker_provider,
+        profile.environment_class,
+        profile.account_identity,
+        profile.trade_command_origin,
+        profile.order_query_origin,
+        profile.order_event_origin,
+        profile.credential_handle_fingerprint,
+        profile.adapter_contract_version,
+        profile.capability_profile_sha256,
+        profile.deployment_identity,
+        profile.profile_commitment_sha256,
+    )
+    return _runtime_checkpoint_record_binding(
+        "exec-profile/v1",
+        tuple(_runtime_checkpoint_field_text(field) for field in fields),
+    )
+
+
+def _runtime_checkpoint_market_profile_binding(
+    profile: _profiles.MarketDataSourceProfile,
+) -> bytes:
+    if type(profile) is not _profiles.MarketDataSourceProfile:
+        raise TypeError("runtime checkpoint market profile must be exact")
+    fields = (
+        profile.market_source_profile_id,
+        profile.provider,
+        profile.environment_or_feed,
+        profile.source_origin,
+        profile.entitlement_class,
+        profile.normalization_contract_version,
+        profile.data_capability_profile_sha256,
+        profile.source_profile_commitment_sha256,
+    )
+    return _runtime_checkpoint_record_binding(
+        "market-profile/v1",
+        tuple(_runtime_checkpoint_field_text(field) for field in fields),
+    )
+
+
+def _runtime_checkpoint_head_record_binding(
+    record: KernelCheckpointRecord,
+) -> bytes:
+    if type(record) is not KernelCheckpointRecord:
+        raise TypeError("runtime checkpoint head must be exact KernelCheckpointRecord")
+    _runtime_checkpoint_require_application_id(
+        "runtime checkpoint head application", record.application_generation_id
+    )
+    _runtime_checkpoint_require_nonnegative_int(
+        "runtime checkpoint head ordinal", record.currentness_head_ordinal
+    )
+    _require_sha256_text("runtime checkpoint head SHA-256", record.checkpoint_sha256)
+    _runtime_checkpoint_require_positive_int(
+        "runtime checkpoint version", record.checkpoint_version_ordinal
+    )
+    return _runtime_checkpoint_record_binding(
+        "head/v1",
+        (
+            _runtime_checkpoint_field_text(record.application_generation_id.value),
+            _runtime_checkpoint_field_int(record.currentness_head_ordinal),
+            _runtime_checkpoint_field_text(record.checkpoint_sha256),
+            _runtime_checkpoint_field_int(record.checkpoint_version_ordinal),
+        ),
+    )
+
+
+@_dataclass(frozen=True, slots=True)
+class RuntimeCheckpointPayloadRecord:
+    application_generation_id: _identity.ApplicationGenerationId
+    execution_profile_id: str
+    market_source_profile_id: str
+    currentness_head_ordinal: int
+    checkpoint_version_ordinal: int
+    payload_bytes: bytes
+    payload_length: int
+    payload_sha256: str
+
+    def __post_init__(self) -> None:
+        _runtime_checkpoint_payload_record_binding(self)
+
+
+def _runtime_checkpoint_payload_record_binding(
+    record: RuntimeCheckpointPayloadRecord,
+) -> bytes:
+    if type(record) is not RuntimeCheckpointPayloadRecord:
+        raise TypeError("runtime checkpoint payload record must be exact")
+    _runtime_checkpoint_require_application_id(
+        "runtime checkpoint payload application", record.application_generation_id
+    )
+    _require_sha256_text(
+        "runtime checkpoint payload execution profile", record.execution_profile_id
+    )
+    _require_sha256_text(
+        "runtime checkpoint payload market profile", record.market_source_profile_id
+    )
+    _runtime_checkpoint_require_nonnegative_int(
+        "runtime checkpoint payload head", record.currentness_head_ordinal
+    )
+    _runtime_checkpoint_require_positive_int(
+        "runtime checkpoint payload version", record.checkpoint_version_ordinal
+    )
+    if type(record.payload_bytes) is not bytes:
+        raise TypeError("runtime checkpoint payload must be exact bytes")
+    if not record.payload_bytes:
+        raise ValueError("runtime checkpoint payload must be nonempty")
+    if len(record.payload_bytes) > _RUNTIME_CHECKPOINT_MAX_PAYLOAD_BYTES:
+        raise OverflowError("runtime checkpoint payload exceeds the contract limit")
+    if type(record.payload_length) is not int:
+        raise TypeError("runtime checkpoint payload length must be an exact integer")
+    if record.payload_length != len(record.payload_bytes):
+        raise ValueError("runtime checkpoint payload length does not match its bytes")
+    _require_sha256_text("runtime checkpoint payload SHA-256", record.payload_sha256)
+    if _sha256(record.payload_bytes).hexdigest() != record.payload_sha256:
+        raise ValueError("runtime checkpoint payload SHA-256 does not match its bytes")
+    return _runtime_checkpoint_record_binding(
+        "payload/v1",
+        (
+            _runtime_checkpoint_field_text(record.application_generation_id.value),
+            _runtime_checkpoint_field_text(record.execution_profile_id),
+            _runtime_checkpoint_field_text(record.market_source_profile_id),
+            _runtime_checkpoint_field_int(record.currentness_head_ordinal),
+            _runtime_checkpoint_field_int(record.checkpoint_version_ordinal),
+            _runtime_checkpoint_field_bytes(record.payload_bytes),
+            _runtime_checkpoint_field_int(record.payload_length),
+            _runtime_checkpoint_field_text(record.payload_sha256),
+        ),
+    )
+
+
+@_dataclass(frozen=True, slots=True)
+class RuntimeCheckpointSelectionRequest:
+    application_generation_id: _identity.ApplicationGenerationId
+    execution_profile_id: str
+    market_source_profile_id: str
+    expected_checkpoint: KernelCheckpointRecord | None
+
+    def __post_init__(self) -> None:
+        _runtime_checkpoint_selection_request_binding(self)
+
+
+def _runtime_checkpoint_selection_request_binding(
+    request: RuntimeCheckpointSelectionRequest,
+) -> bytes:
+    if type(request) is not RuntimeCheckpointSelectionRequest:
+        raise TypeError("runtime checkpoint selection request must be exact")
+    application_id = _runtime_checkpoint_require_application_id(
+        "runtime checkpoint selection application", request.application_generation_id
+    )
+    _require_sha256_text(
+        "runtime checkpoint selection execution profile", request.execution_profile_id
+    )
+    _require_sha256_text(
+        "runtime checkpoint selection market profile", request.market_source_profile_id
+    )
+    predecessor_binding: bytes | None = None
+    if request.expected_checkpoint is not None:
+        predecessor_binding = _runtime_checkpoint_head_record_binding(
+            request.expected_checkpoint
+        )
+        if request.expected_checkpoint.application_generation_id != application_id:
+            raise ValueError("runtime checkpoint expected head has wrong application")
+    return _commit_parts(
+        b"execution-core/runtime-checkpoint/selection-request/v1",
+        _runtime_checkpoint_field_m1(application_id),
+        _runtime_checkpoint_field_text(request.execution_profile_id),
+        _runtime_checkpoint_field_text(request.market_source_profile_id),
+        _runtime_checkpoint_optional_record_binding(predecessor_binding),
+    )
+
+
+@_dataclass(frozen=True, slots=True)
+class RuntimeCheckpointLoadRequest:
+    application_generation_id: _identity.ApplicationGenerationId
+    execution_profile_id: str
+    market_source_profile_id: str
+
+    def __post_init__(self) -> None:
+        _runtime_checkpoint_load_request_binding(self)
+
+
+def _runtime_checkpoint_load_request_binding(
+    request: RuntimeCheckpointLoadRequest,
+) -> tuple[bytes, bytes, bytes]:
+    if type(request) is not RuntimeCheckpointLoadRequest:
+        raise TypeError("runtime checkpoint load request must be exact")
+    application_id = _runtime_checkpoint_require_application_id(
+        "runtime checkpoint load application", request.application_generation_id
+    )
+    _require_sha256_text(
+        "runtime checkpoint load execution profile", request.execution_profile_id
+    )
+    _require_sha256_text(
+        "runtime checkpoint load market profile", request.market_source_profile_id
+    )
+    return (
+        _runtime_checkpoint_field_m1(application_id),
+        _runtime_checkpoint_field_text(request.execution_profile_id),
+        _runtime_checkpoint_field_text(request.market_source_profile_id),
+    )
+
+
+def _runtime_checkpoint_load_proof_binding(
+    request: RuntimeCheckpointLoadRequest,
+    initial_checkpoint: KernelCheckpointRecord,
+    payload: RuntimeCheckpointPayloadRecord,
+    selection: _RuntimeCheckpointSelectionSet,
+) -> bytes:
+    """Bind one freshly reselected private load proof without minting authority."""
+
+    request_coordinates = _runtime_checkpoint_load_request_binding(request)
+    head_binding = _runtime_checkpoint_head_record_binding(initial_checkpoint)
+    payload_binding = _runtime_checkpoint_payload_record_binding(payload)
+    selection_binding = _runtime_checkpoint_selection_set_binding(selection)
+    if (
+        initial_checkpoint.application_generation_id
+        != request.application_generation_id
+        or payload.application_generation_id != request.application_generation_id
+        or payload.execution_profile_id != request.execution_profile_id
+        or payload.market_source_profile_id != request.market_source_profile_id
+        or payload.currentness_head_ordinal
+        != initial_checkpoint.currentness_head_ordinal
+        or payload.checkpoint_version_ordinal
+        != initial_checkpoint.checkpoint_version_ordinal
+        or payload.payload_sha256 != initial_checkpoint.checkpoint_sha256
+    ):
+        raise ValueError("runtime checkpoint load proof coordinates do not agree")
+    return _commit_parts(
+        b"execution-core/runtime-checkpoint/load-proof/v1",
+        *request_coordinates,
+        head_binding,
+        payload_binding,
+        selection_binding,
+    )
+
+
+def _runtime_checkpoint_register(value: object, binding: bytes, provenance: str) -> None:
+    exact_binding = _runtime_checkpoint_require_binding(
+        "runtime checkpoint registry binding", binding
+    )
+    if type(provenance) is not str:
+        raise TypeError("runtime checkpoint provenance must be exact text")
+    key = id(value)
+
+    def cleanup(reference: object) -> None:
+        with _RUNTIME_CHECKPOINT_REGISTRY_LOCK:
+            retained = _RUNTIME_CHECKPOINT_REGISTRY.get(key)
+            if retained is not None and retained[0] is reference:
+                del _RUNTIME_CHECKPOINT_REGISTRY[key]
+
+    reference = _weakref_ref(value, cleanup)
+    with _RUNTIME_CHECKPOINT_REGISTRY_LOCK:
+        retained = _RUNTIME_CHECKPOINT_REGISTRY.get(key)
+        if retained is not None and retained[0]() is not None:
+            raise ValueError("runtime checkpoint object identity is already registered")
+        _RUNTIME_CHECKPOINT_REGISTRY[key] = (
+            reference,
+            exact_binding,
+            provenance,
+        )
+
+
+def _runtime_checkpoint_registry_authentic(
+    value: object, binding: bytes, provenance: str
+) -> bool:
+    with _RUNTIME_CHECKPOINT_REGISTRY_LOCK:
+        retained = _RUNTIME_CHECKPOINT_REGISTRY.get(id(value))
+        return bool(
+            retained is not None
+            and retained[0]() is value
+            and retained[1] == binding
+            and retained[2] == provenance
+        )
+
+
+class _RuntimeCheckpointNonCopyable:
+    __slots__ = ()
+
+    def __copy__(self) -> object:
+        raise TypeError(f"{type(self).__name__} cannot be copied")
+
+    def __deepcopy__(self, memo: object) -> object:
+        del memo
+        raise TypeError(f"{type(self).__name__} cannot be copied")
+
+    def __reduce__(self) -> object:
+        raise TypeError(f"{type(self).__name__} cannot be reduced")
+
+    def __reduce_ex__(self, protocol: int) -> object:
+        del protocol
+        raise TypeError(f"{type(self).__name__} cannot be reduced")
+
+
+@_dataclass(frozen=True, slots=True, init=False, weakref_slot=True)
+class RuntimeCheckpointSelectionProof(_RuntimeCheckpointNonCopyable):
+    request: RuntimeCheckpointSelectionRequest
+    application_generation: ApplicationGenerationRecord
+    execution_profile: _profiles.ExecutionConnectionProfile
+    market_source_profile: _profiles.MarketDataSourceProfile
+    predecessor_checkpoint: KernelCheckpointRecord | None
+    target_currentness_head_ordinal: int
+    target_checkpoint_version_ordinal: int
+    selection_commitment: bytes
+    _selection: _RuntimeCheckpointSelectionSet
+    _binding: bytes
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise TypeError("RuntimeCheckpointSelectionProof is repository-issued")
+
+    @classmethod
+    def _is_authentic(cls, value: object) -> bool:
+        if cls is not RuntimeCheckpointSelectionProof or type(value) is not cls:
+            return False
+        try:
+            binding = _runtime_checkpoint_selection_proof_binding(value)
+            return bool(
+                type(value._binding) is bytes
+                and value._binding == binding
+                and _runtime_checkpoint_registry_authentic(
+                    value, binding, "SELECTION"
+                )
+            )
+        except (AttributeError, TypeError, ValueError, OverflowError):
+            return False
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        del cls, kwargs
+        raise TypeError("RuntimeCheckpointSelectionProof cannot be subclassed")
+
+
+def _runtime_checkpoint_selection_proof_binding(
+    proof: RuntimeCheckpointSelectionProof,
+) -> bytes:
+    if type(proof) is not RuntimeCheckpointSelectionProof:
+        raise TypeError("runtime checkpoint selection proof must be exact")
+    request_binding = _runtime_checkpoint_selection_request_binding(proof.request)
+    application_binding = _runtime_checkpoint_application_record_binding(
+        proof.application_generation
+    )
+    execution_binding = _runtime_checkpoint_execution_profile_binding(
+        proof.execution_profile
+    )
+    market_binding = _runtime_checkpoint_market_profile_binding(
+        proof.market_source_profile
+    )
+    predecessor_binding = (
+        None
+        if proof.predecessor_checkpoint is None
+        else _runtime_checkpoint_head_record_binding(proof.predecessor_checkpoint)
+    )
+    target_head = _runtime_checkpoint_require_nonnegative_int(
+        "runtime checkpoint target head", proof.target_currentness_head_ordinal
+    )
+    target_version = _runtime_checkpoint_require_positive_int(
+        "runtime checkpoint target version", proof.target_checkpoint_version_ordinal
+    )
+    selection_binding = _runtime_checkpoint_selection_set_binding(proof._selection)
+    _runtime_checkpoint_require_binding(
+        "runtime checkpoint selection commitment", proof.selection_commitment
+    )
+    application_id = proof.request.application_generation_id
+    if (
+        proof.application_generation.application_generation_id != application_id
+        or proof.application_generation.selected_execution_profile_id
+        != proof.request.execution_profile_id
+        or proof.application_generation.selected_market_source_profile_id
+        != proof.request.market_source_profile_id
+        or proof.execution_profile.connection_profile_id
+        != proof.request.execution_profile_id
+        or proof.execution_profile.application_generation != application_id.value
+        or proof.market_source_profile.market_source_profile_id
+        != proof.request.market_source_profile_id
+        or proof.predecessor_checkpoint != proof.request.expected_checkpoint
+        or proof.selection_commitment != selection_binding
+    ):
+        raise ValueError("runtime checkpoint selection proof coordinates do not agree")
+    if proof.predecessor_checkpoint is None:
+        if target_version != 1:
+            raise ValueError("runtime checkpoint genesis target version must be one")
+    elif (
+        target_head < proof.predecessor_checkpoint.currentness_head_ordinal
+        or target_version
+        != proof.predecessor_checkpoint.checkpoint_version_ordinal + 1
+    ):
+        raise ValueError("runtime checkpoint target does not advance its predecessor")
+    return _commit_parts(
+        b"execution-core/runtime-checkpoint/selection-proof/v1",
+        request_binding,
+        application_binding,
+        execution_binding,
+        market_binding,
+        _runtime_checkpoint_optional_record_binding(predecessor_binding),
+        _encode_int(target_head),
+        _encode_int(target_version),
+        selection_binding,
+    )
+
+
+def _issue_runtime_checkpoint_selection_proof(
+    request: RuntimeCheckpointSelectionRequest,
+    application_generation: ApplicationGenerationRecord,
+    execution_profile: _profiles.ExecutionConnectionProfile,
+    market_source_profile: _profiles.MarketDataSourceProfile,
+    predecessor_checkpoint: KernelCheckpointRecord | None,
+    target_currentness_head_ordinal: int,
+    target_checkpoint_version_ordinal: int,
+    selection: _RuntimeCheckpointSelectionSet,
+) -> RuntimeCheckpointSelectionProof:
+    result = object.__new__(RuntimeCheckpointSelectionProof)
+    object.__setattr__(result, "request", request)
+    object.__setattr__(result, "application_generation", application_generation)
+    object.__setattr__(result, "execution_profile", execution_profile)
+    object.__setattr__(result, "market_source_profile", market_source_profile)
+    object.__setattr__(result, "predecessor_checkpoint", predecessor_checkpoint)
+    object.__setattr__(
+        result, "target_currentness_head_ordinal", target_currentness_head_ordinal
+    )
+    object.__setattr__(
+        result, "target_checkpoint_version_ordinal", target_checkpoint_version_ordinal
+    )
+    object.__setattr__(
+        result,
+        "selection_commitment",
+        _runtime_checkpoint_selection_set_binding(selection),
+    )
+    object.__setattr__(result, "_selection", selection)
+    binding = _runtime_checkpoint_selection_proof_binding(result)
+    object.__setattr__(result, "_binding", binding)
+    _runtime_checkpoint_register(result, binding, "SELECTION")
+    return result
+
+
+@_dataclass(frozen=True, slots=True, init=False, weakref_slot=True)
+class RuntimeCheckpointWriteReceipt(_RuntimeCheckpointNonCopyable):
+    payload: RuntimeCheckpointPayloadRecord
+    predecessor_checkpoint: KernelCheckpointRecord | None
+    resulting_checkpoint: KernelCheckpointRecord
+    selection_commitment: bytes
+    _binding: bytes
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise TypeError("RuntimeCheckpointWriteReceipt is repository-issued")
+
+    @classmethod
+    def _is_authentic(cls, value: object) -> bool:
+        if cls is not RuntimeCheckpointWriteReceipt or type(value) is not cls:
+            return False
+        try:
+            binding = _runtime_checkpoint_write_receipt_binding(value)
+            return bool(
+                type(value._binding) is bytes
+                and value._binding == binding
+                and _runtime_checkpoint_registry_authentic(value, binding, "RECEIPT")
+            )
+        except (AttributeError, TypeError, ValueError, OverflowError):
+            return False
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        del cls, kwargs
+        raise TypeError("RuntimeCheckpointWriteReceipt cannot be subclassed")
+
+
+def _runtime_checkpoint_write_receipt_binding(
+    receipt: RuntimeCheckpointWriteReceipt,
+) -> bytes:
+    if type(receipt) is not RuntimeCheckpointWriteReceipt:
+        raise TypeError("runtime checkpoint write receipt must be exact")
+    payload_binding = _runtime_checkpoint_payload_record_binding(receipt.payload)
+    predecessor_binding = (
+        None
+        if receipt.predecessor_checkpoint is None
+        else _runtime_checkpoint_head_record_binding(receipt.predecessor_checkpoint)
+    )
+    resulting_binding = _runtime_checkpoint_head_record_binding(
+        receipt.resulting_checkpoint
+    )
+    selection_commitment = _runtime_checkpoint_require_binding(
+        "runtime checkpoint receipt selection commitment",
+        receipt.selection_commitment,
+    )
+    payload = receipt.payload
+    resulting = receipt.resulting_checkpoint
+    if (
+        resulting.application_generation_id != payload.application_generation_id
+        or resulting.currentness_head_ordinal != payload.currentness_head_ordinal
+        or resulting.checkpoint_version_ordinal != payload.checkpoint_version_ordinal
+        or resulting.checkpoint_sha256 != payload.payload_sha256
+    ):
+        raise ValueError("runtime checkpoint receipt result does not match its payload")
+    predecessor = receipt.predecessor_checkpoint
+    if predecessor is None:
+        if resulting.checkpoint_version_ordinal != 1:
+            raise ValueError("runtime checkpoint genesis receipt version must be one")
+    elif (
+        predecessor.application_generation_id != resulting.application_generation_id
+        or resulting.currentness_head_ordinal < predecessor.currentness_head_ordinal
+        or resulting.checkpoint_version_ordinal
+        != predecessor.checkpoint_version_ordinal + 1
+    ):
+        raise ValueError("runtime checkpoint receipt does not advance its predecessor")
+    return _commit_parts(
+        b"execution-core/runtime-checkpoint/write-receipt/v1",
+        payload_binding,
+        _runtime_checkpoint_optional_record_binding(predecessor_binding),
+        resulting_binding,
+        selection_commitment,
+    )
+
+
+def _issue_runtime_checkpoint_write_receipt(
+    payload: RuntimeCheckpointPayloadRecord,
+    predecessor_checkpoint: KernelCheckpointRecord | None,
+    resulting_checkpoint: KernelCheckpointRecord,
+    selection_commitment: bytes,
+) -> RuntimeCheckpointWriteReceipt:
+    result = object.__new__(RuntimeCheckpointWriteReceipt)
+    object.__setattr__(result, "payload", payload)
+    object.__setattr__(result, "predecessor_checkpoint", predecessor_checkpoint)
+    object.__setattr__(result, "resulting_checkpoint", resulting_checkpoint)
+    object.__setattr__(result, "selection_commitment", selection_commitment)
+    binding = _runtime_checkpoint_write_receipt_binding(result)
+    object.__setattr__(result, "_binding", binding)
+    _runtime_checkpoint_register(result, binding, "RECEIPT")
+    return result
 
 
 @_dataclass(frozen=True, slots=True)
@@ -2071,6 +3460,11 @@ __all__ = (
     "RepositoryOutcome",
     "RepositoryOutcomeKind",
     "RootFillRecord",
+    "RuntimeCheckpointLoadRequest",
+    "RuntimeCheckpointPayloadRecord",
+    "RuntimeCheckpointSelectionProof",
+    "RuntimeCheckpointSelectionRequest",
+    "RuntimeCheckpointWriteReceipt",
     "ScopeRecord",
     "SymbolControllerRecord",
     "VenueEffectRecord",
