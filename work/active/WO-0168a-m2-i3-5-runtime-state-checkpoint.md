@@ -356,6 +356,15 @@ No R11 source or test change may be made until a fresh REV-0074 R11 documentatio
 the exact amendment with `P0=0/P1=0`. The normal REV-0075 implementation review and changed-DDL
 human gate remain independently required.
 
+REV-0074 R11 accepted the exact terminal-nonmembership mutation-proof amendment candidate
+`17dc50a7c440bcc4bbce309868df408df70170b6`, tree
+`96122883853e1b5403b14b9f5dfb88ed0084f430`, with `P0=0/P1=0/P2=0` in `result-r11.md`. The
+already named R9-R11 source/test surface may now implement the complete authenticated radix witness,
+opaque repository-issued current proof, checkpoint-codec-only protection-proof issuance, and the
+exact mutation controls. This acceptance does not authorize DDL execution, SQLite activity, runtime
+composition, credentials, broker/network calls, orders, promotion, merge, or relax the normal
+REV-0075 and changed-DDL human gates.
+
 ## Out of scope
 
 - OS-1: The atomic transaction coordinator, commit, publication, and effect eligibility are
