@@ -1,12 +1,12 @@
 ---
 type: Work Order
 title: M2-I3.5 bounded runtime-state checkpoint and input/receipt substrate
-status: ACTIVE
+status: CLOSED
 work_order_id: WO-0168a
 wave: M2-I3.5
 model_tier: strong
 risk: critical
-disposition: []
+disposition: [RESULT_SUMMARY_KEPT, ARCHIVED]
 owner: Codex implementation seat; clean-context reviewer required
 created: 2026-08-22
 predecessor: WO-0167 closeout 0777fab62598f85ce189f40eb1a69319791282c2
@@ -22,7 +22,7 @@ execution_authority: Ameen Mujtabaa's 2026-08-22 serial-M2 request authorizes or
 
 **Date:** 2026-08-22
 
-**Status:** Active after REV-0074 R3 acceptance; implementation review REV-0075 reserved
+**Status:** Closed after terminal REV-0075 R19 acceptance of the R13-S substrate
 
 `[FABLE • FULL • spec-first/TDD • prerequisite root correction • no external I/O]`
 
@@ -464,3 +464,46 @@ Implementation clears only with RED/GREEN,
 failure-capable mutations, focused/static/full/governance evidence, exact scope, a clean committed
 candidate, and a fresh implementation review with P0=0/P1=0. Changed DDL may be designed and
 hashed, but SQLite execution stops at its exact human gate.
+
+## Terminal R13-S acceptance and disposition (2026-08-23)
+
+Fresh independent `REV-0075/result-r19.md` accepted exact terminal source candidate
+`adc82188b9645fb8674dd3e6c886cea46a88cd18`, tree
+`9c5a0c95f4ecd76e7584b7c232364a85fba26fd8`, with P0=0/P1=0/P2=0. The terminal result is
+preserved with SHA-256
+`cf2edc32a2a935b0a0a6e58bff963b1056f3bd25701312d677e574180b57d779` and result-record commit
+`c16c0cba1b6956b22e548048b085b46d4e55478a`, tree
+`d925040bbc8933afb965688e813e6f4400228fb2`.
+
+The fresh reviewer reproduced the mutable-row, helper-global, alias, rebinding, subscript,
+attribute, and indirect-call mutants; verified four immutable tuple bindings and 105 direct
+protected-helper call targets; and independently passed the permitted 79-test pure suite, Ruff,
+format, and whitespace checks. The full SQLite-bearing and broader runtime suites remained
+intentionally unexecuted because the changed-DDL human gate has not opened.
+
+Earlier REV-0075 findings remain preserved as negative evidence and accept no superseded
+candidate. The R13-S result closes only the non-serving durable input/outcome/receipt, semantic-key,
+capability, reverse-edge static substrate. It does not materialize a runtime checkpoint payload,
+provide restart authority, or activate R13-C.
+
+## Completion disposition
+
+- [x] `RESULT_SUMMARY_KEPT`
+- [x] `ARCHIVED`
+- [x] PKL/ADR update not required: R13-S implements the already accepted R13/R13-R1 non-serving
+  boundary without changing architecture semantics.
+
+```yaml
+fable_done:
+  status: VERIFIED
+  evidence: "REV-0075 R19 ACCEPT P0=0/P1=0/P2=0; 79 pure tests plus Ruff, format, whitespace, and failure-capable mutation checks passed."
+  command: "See work/review/REV-0075/result-r19.md and the R13-S terminal record above."
+  terminal_state: "WO-0168a CLOSED — R13-H/R13-C AND CHANGED-DDL EXECUTION REMAIN SEPARATELY GATED"
+```
+
+## Distillation decision
+
+Keep this work order and the complete REV-0074/REV-0075 chain as durable contract, remediation,
+and acceptance authority. Delete no source, test, ADR, PKL, or review history. This closeout does
+not authorize DDL installation, SQLite-bearing tests, configured/in-memory database access,
+runtime composition, credentials, broker/network calls, orders, promotion, or merge to `master`.
