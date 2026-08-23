@@ -14,6 +14,28 @@ branch: codex/m2-i3-5-owner-state-wire-r1
 preflight_review_id: REV-0076
 implementation_review_id: REV-0077
 execution_authority: Ameen Mujtabaa's serial-M2 authorization permits ordinary reversible work through M2 closeout and M3 preparation. R13-H begins documentation-only. No owner-state source or test change may start until REV-0076 accepts the exact frozen row/proof contract with P0=0/P1=0. No changed-DDL installation, SQLite-bearing test, configured/in-memory database, runtime composition, credentials, network, broker calls, orders, promotion, or merge to master is authorized.
+allowed_paths:
+  - app/execution_core/venue.py
+  - app/execution_core/authority.py
+  - app/execution_core/acquisition.py
+  - app/execution_core/position.py
+  - app/execution_core/protection.py
+  - tests/execution_core/test_m2_owner_state_wire.py
+  - tests/execution_core/test_venue*.py
+  - tests/execution_core/test_authority*.py
+  - tests/execution_core/test_acquisition*.py
+  - tests/execution_core/test_position*.py
+  - tests/execution_core/test_fill_position*.py
+  - tests/execution_core/test_protection*.py
+  - work/active/WO-0168h-m2-i3-5-owner-state-wire-closure.md
+  - work/completed/keep/WO-0168h-m2-i3-5-owner-state-wire-closure.md
+  - work/queue/M2-EXECUTION-2026-08-21/07-WO-0168H-FROZEN-OWNER-STATE-WIRE-CONTRACT.md
+  - work/review/REV-0076/**
+  - work/review/REV-0077/**
+  - work/ledger.jsonl
+forbidden_paths:
+  - app/execution_core/persistence/**
+  - app/execution_core/runtime.py
 ---
 
 # Work Order: WO-0168h — M2 owner-state wire closure
