@@ -1,12 +1,12 @@
 ---
 type: Work Order
 title: M2-I3 narrow SQLite repository hydration
-status: REVIEW
+status: CLOSED
 work_order_id: WO-0167
 wave: M2-I3
 model_tier: strong
 risk: high
-disposition: []
+disposition: [RESULT_SUMMARY_KEPT, ARCHIVED]
 owner: Codex remediation implementation seat; fresh independent reviewer required
 created: 2026-08-21
 predecessor: WO-0166 exact accepted head
@@ -21,7 +21,7 @@ execution_authority: Ameen Mujtabaa activated WO-0167 (Codex task, 2026-08-21) a
 
 **Date:** 2026-08-21
 
-**Status:** REVIEW — Codex R5 capability/rollback candidate awaits fresh REV-0073 acceptance
+**Status:** Closed after root remediation and terminal REV-0073 R5 acceptance
 
 `[FABLE • FULL • spec-first/TDD • direct-key repository only]`
 
@@ -419,3 +419,39 @@ All SQLite-bearing tests used explicit fresh file-backed pytest temporary databa
 or in-memory database, DDL/schema change, migration, runtime composition, credential,
 broker/network call, order, M2-I4+ implementation, promotion, PR, or merge occurred. R5 awaits fresh
 independent `REV-0073/result-r5.md`; author evidence does not accept or close WO-0167.
+
+## Terminal acceptance and completion disposition (2026-08-22)
+
+Fresh authoritative `result-r5.md` accepted exact candidate
+`3c028b9ae5fd3e1b6bf84b7d73c2f3039ac14043`, tree
+`d078be4b8b0157216aef51c80b13cf211626b0d1`, with P0=0/P1=0/P2=0. The terminal result is
+preserved unchanged with SHA-256
+`ba5cbdfe6fad74f1d4f131c3788e51c7240e56116aa9c0eebc70a5c410f5e382` and publication commit
+`5779c444722eec86acde56c3a269e2cc49da5c34`.
+
+The independent seat reproduced all three R5 failure-capability mutants, all four R3 mutants, the
+complete connection/cursor capability matrix, exact identities, schema immutability, and the clean
+190-case focused gate on fresh file-backed SQLite. Earlier BLOCK results remain preserved as
+negative evidence and accept no superseded candidate.
+
+## Completion disposition
+
+- [x] `RESULT_SUMMARY_KEPT`
+- [x] `ARCHIVED`
+- [x] PKL/ADR update not required: the repository realizes accepted ADR-020/ADR-021/ADR-022
+  semantics without changing an accepted architecture claim.
+
+```yaml
+fable_done:
+  status: VERIFIED
+  evidence: "REV-0073 R5 ACCEPT P0=0/P1=0/P2=0; 190 focused, 563 integration, 61 R2-oracle, and 1880 execution-core tests; static, import, governance, exact-scope, mutation, and rollback gates passed."
+  command: "See work/review/REV-0073/result-r5.md and disposition.md."
+  terminal_state: "WO-0167 CLOSED — M2-I4 REMAINS UNAUTHORIZED AND NOT ACTIVATED"
+```
+
+## Distillation decision
+
+Keep this work order and the complete REV-0072/REV-0073 chain as durable repository authority,
+negative evidence, remediation history, and terminal acceptance. Delete no source, test, ADR, PKL,
+or review history. This closeout does not activate M2-I4, authorize configured database access or
+migration, or authorize promotion, PR, or merge to `master`.

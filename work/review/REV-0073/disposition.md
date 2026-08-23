@@ -2,12 +2,12 @@
 type: Review Disposition
 rev_id: REV-0073
 work_order_id: WO-0167
-status: REMEDIATED_AWAITING_R5
+status: ACCEPTED
 date: 2026-08-22
 recorded_by: Codex implementation and orchestration seat
 ---
 
-# REV-0073 BLOCK disposition
+# REV-0073 disposition
 
 ## Decision
 
@@ -156,3 +156,20 @@ passed 190 focused tests, 563 integration tests, the 61-case R2 oracle, and all 
 tests. Ruff, format, mypy over 93 app files, six import contracts, installation/version/ledger/PKL/
 disposition/scope, and whitespace gates passed. Production and schema remain unchanged. R5 remains
 unaccepted until fresh independent `result-r5.md` returns P0=0/P1=0.
+
+## Terminal R5 acceptance and closeout
+
+Accept reviewer-owned `result-r5.md` unchanged as the authoritative terminal `ACCEPT`,
+P0=0/P1=0/P2=0, for candidate `3c028b9ae5fd3e1b6bf84b7d73c2f3039ac14043`, tree
+`d078be4b8b0157216aef51c80b13cf211626b0d1`. Terminal result SHA-256:
+`ba5cbdfe6fad74f1d4f131c3788e51c7240e56116aa9c0eebc70a5c410f5e382`; publication commit:
+`5779c444722eec86acde56c3a269e2cc49da5c34`.
+
+The terminal reviewer independently reproduced the exact R5 cursor hidden-read, cursor encoded
+commit/replacement-begin, and raw escaped commit/replacement-begin mutants; reconciled all four R3
+mutants and all earlier REV-0073 findings; exercised every requested connection/cursor capability;
+and returned no finding. Retain every prior BLOCK result as immutable negative evidence.
+
+Close WO-0167 with `RESULT_SUMMARY_KEPT` and `ARCHIVED`. No PKL/ADR update is required because the
+accepted implementation changes no architecture authority. This disposition does not activate
+M2-I4 or authorize configured database access, migration, promotion, PR, or merge to `master`.
