@@ -18,8 +18,8 @@ execution_authority: Ameen Mujtabaa's serial-M2 authorization permits ordinary r
 
 # Work Order: WO-0168h — M2 owner-state wire closure
 
-**Author:** Codex orchestrator seat  
-**Date:** 2026-08-23  
+**Author:** Codex orchestrator seat
+**Date:** 2026-08-23
 **Status:** Active, documentation-only preflight
 
 `[FABLE • FULL • spec-first/TDD • owner-local hydration • no external I/O]`
