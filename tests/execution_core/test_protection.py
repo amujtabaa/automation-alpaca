@@ -9823,22 +9823,78 @@ def _m2_checkpoint_from_state(module: ModuleType, state: object) -> object:
     )
 
 
+def _expected_m2_protection_policy_wire(value: object) -> list[str]:
+    """Build the policy wire literal without using the production policy codec."""
+
+    if value.value not in {
+        "FLOOR_ONLY",
+        "TRAIL_ACTIVE",
+        "EXIT_NORMAL",
+        "HARD_BAIL",
+        "FLAT",
+    }:
+        raise AssertionError("protection policy is outside the frozen checkpoint enum")
+    return ["m2.protection.ProtectionPolicy", value.value]
+
+
+def _expected_m2_decimal_atom(value: Decimal) -> list[object]:
+    """Express one M1 decimal atom directly from the frozen durable grammar."""
+
+    sign, digits, exponent = value.as_tuple()
+    return ["1", "_decimal", [str(sign), "".join(map(str, digits)), str(exponent)]]
+
+
+def _expected_m2_reported_price_atom(value: ReportedPrice) -> list[object]:
+    """Express the one admitted optional-price atom without production helpers."""
+
+    return [
+        "1",
+        "reported_price",
+        [
+            ["1", "price_units", [str(value.units.value)]],
+            ["1", "price_scale", [_expected_m2_decimal_atom(value.scale.value)]],
+            [
+                "1",
+                "tick_metadata",
+                [
+                    ["1", "price_units", [str(value.tick.tick_units.value)]],
+                    [
+                        "1",
+                        "price_scale",
+                        [_expected_m2_decimal_atom(value.tick.scale.value)],
+                    ],
+                ],
+            ],
+        ],
+    ]
+
+
+def _expected_m2_optional_protection_m1_wire(value: object) -> list[object] | None:
+    """Build the two allowed optional M1 checkpoint shapes independently."""
+
+    if value is None:
+        return None
+    if type(value) is ReportedPrice:
+        return _expected_m2_reported_price_atom(value)
+    if type(value) is execution_core.MarketOccurrenceId:
+        return ["1", "market_occurrence_id", [value.value]]
+    raise AssertionError("unexpected optional M1 checkpoint owner type")
+
+
 def _expected_m2_protection_checkpoint_component(checkpoint: object) -> list[object]:
     """Return every fixed wire member from one checkpoint in frozen order."""
 
     return [
         "m2.protection.checkpoint/v1",
-        checkpoint_codec._encode_m2_protection_policy(checkpoint.policy),
+        _expected_m2_protection_policy_wire(checkpoint.policy),
         checkpoint_codec._operations._encode_m2_protection_mandate(checkpoint.mandate),
         checkpoint.raw_quantity,
         checkpoint.execution_commitment.hex(),
         checkpoint.formula_available,
-        checkpoint_codec._encode_m2_optional_m1_value(
-            checkpoint.armed_hard_bail_trigger
-        ),
-        checkpoint_codec._encode_m2_optional_m1_value(checkpoint.activation_price),
-        checkpoint_codec._encode_m2_optional_m1_value(checkpoint.high_watermark),
-        checkpoint_codec._encode_m2_optional_m1_value(checkpoint.trail),
+        _expected_m2_optional_protection_m1_wire(checkpoint.armed_hard_bail_trigger),
+        _expected_m2_optional_protection_m1_wire(checkpoint.activation_price),
+        _expected_m2_optional_protection_m1_wire(checkpoint.high_watermark),
+        _expected_m2_optional_protection_m1_wire(checkpoint.trail),
         checkpoint.waiting_buy_resolution,
         checkpoint.commitment.hex(),
         checkpoint.cursor_ordinal,
@@ -9849,21 +9905,96 @@ def _expected_m2_protection_checkpoint_component(checkpoint: object) -> list[obj
         checkpoint.market_source_sequence,
         checkpoint.market_source_time,
         checkpoint.market_evaluation_time,
-        checkpoint_codec._encode_m2_optional_m1_value(
-            checkpoint.market_occurrence_identity
-        ),
+        _expected_m2_optional_protection_m1_wire(checkpoint.market_occurrence_identity),
         checkpoint.market_halted,
         checkpoint.market_baseline_required,
         checkpoint.market_exhausted,
-        checkpoint_codec._encode_m2_optional_m1_value(checkpoint.market_last_primary),
-        checkpoint_codec._encode_m2_optional_m1_value(checkpoint.hard_bid_identity),
+        _expected_m2_optional_protection_m1_wire(checkpoint.market_last_primary),
+        _expected_m2_optional_protection_m1_wire(checkpoint.hard_bid_identity),
         checkpoint.hard_bid_source_time,
-        checkpoint_codec._encode_m2_optional_m1_value(checkpoint.trade_identity),
+        _expected_m2_optional_protection_m1_wire(checkpoint.trade_identity),
         checkpoint.trade_source_time,
-        checkpoint_codec._encode_m2_optional_m1_value(checkpoint.trail_bid_identity),
+        _expected_m2_optional_protection_m1_wire(checkpoint.trail_bid_identity),
         checkpoint.trail_bid_source_time,
         checkpoint.exit_provenance.hex(),
     ]
+
+
+def _m2_checkpoint_wire_fingerprint(value: object) -> object:
+    """Make one nested canonical wire member hashable without repr shortcuts."""
+
+    if type(value) is list:
+        return (list, tuple(_m2_checkpoint_wire_fingerprint(item) for item in value))
+    return (type(value), value)
+
+
+def _m2_checkpoint_flat_state(module: ModuleType) -> object:
+    """Reach the real zero-quantity FLAT policy through closed buy/sell effects."""
+
+    fill = _owned_fill_transition(label="m2-checkpoint-flat", quantity=4)
+    mandate, _, state = _start(module, fill)
+    buy_terminal, buy_closed = _close_base_parent(fill)
+    state, _, _ = _sync_transitions(
+        module,
+        state,
+        mandate,
+        (buy_terminal, buy_closed),
+    )
+    sell_chain, sell_effect, sell_leg, _ = _append_needs_review_effect(
+        buy_closed,
+        prefix="m2-checkpoint-flat-sell",
+        side=ExecutionSide.SELL,
+        quantity=4,
+    )
+    state, _, _ = _sync_transitions(module, state, mandate, sell_chain)
+    sell_fact = venue_fixtures._broker_fill(
+        "m2-checkpoint-flat-sell-source",
+        "m2-checkpoint-flat-sell-root",
+        leg_key=sell_leg,
+        side=ExecutionSide.SELL,
+        quantity=4,
+        units=110,
+    )
+    sold = venue_fixtures.apply_venue_recovery_input(
+        sell_chain[-1].book,
+        sell_chain[-1].execution,
+        RecordBrokerFillEvidence(
+            input_id=VenueInputId("m2-checkpoint-flat-sell-input"),
+            effect_id=sell_effect,
+            leg_key=sell_leg,
+            prior_cumulative_quantity=Quantity(0),
+            resulting_cumulative_quantity=Quantity(4),
+            fact=sell_fact,
+            evidence_digest=b"\x94" * 32,
+        ),
+    )
+    zero_with_live_sell = _reduce(module, state, _projection(module, sold, mandate))
+    _, sell_terminal = _terminal_fixture(
+        sold,
+        effect_id=sell_effect,
+        leg_key=sell_leg,
+        label="m2-checkpoint-flat-sell",
+        cumulative_quantity=4,
+    )
+    terminal_only = _reduce(
+        module,
+        zero_with_live_sell.state,
+        _projection(module, sell_terminal, mandate),
+    )
+    _, sell_closed = _close_parent_fixture(
+        sell_terminal,
+        effect_id=sell_effect,
+        label="m2-checkpoint-flat-sell",
+    )
+    finalized = _reduce(
+        module,
+        terminal_only.state,
+        _projection(module, sell_closed, mandate),
+    )
+    (policy,) = _required(module, "ProtectionPolicy")
+    assert finalized.state.policy is policy.FLAT
+    assert finalized.state.raw_quantity == 0
+    return finalized.state
 
 
 def _m2_checkpoint_states_with_all_optional_members(
@@ -9872,7 +10003,7 @@ def _m2_checkpoint_states_with_all_optional_members(
     """Reach every optional checkpoint member through ordinary reducers."""
 
     fill = _owned_fill_transition(label="m2-checkpoint-populated")
-    mandate, _, baseline = _start(module, fill)
+    mandate, baseline_projection, baseline = _start(module, fill)
     (initialize,) = _required(module, "initialize_position_protection")
     pre_baseline = initialize(mandate, _projection(module, fill, mandate))
     terminal, closed = _close_base_parent(fill)
@@ -9932,6 +10063,69 @@ def _m2_checkpoint_states_with_all_optional_members(
             evaluation_time=110,
         ),
     )
+    invalidated = _invalidate_market(module, baseline, baseline_projection)
+    next_epoch_reserved = _reduce(
+        module,
+        invalidated.state,
+        baseline_projection,
+        _occurrence(
+            module,
+            "m2-checkpoint-next-epoch-reserved",
+            bid=102,
+            ask=101,
+            sequence=1,
+            source_time=1,
+            evaluation_time=1,
+            market_epoch=1,
+        ),
+    )
+    halted = _reduce(
+        module,
+        baseline,
+        baseline_projection,
+        _occurrence(
+            module,
+            "m2-checkpoint-halted",
+            bid=100,
+            ask=101,
+            sequence=1,
+            source_time=1,
+            evaluation_time=1,
+            halted=True,
+        ),
+    )
+    exhausted_fill = _owned_fill_transition(label="m2-checkpoint-exhausted")
+    exhausted_mandate = _mandate(module, max_age=_U64_MAX)
+    exhausted_mandate, exhausted_projection, exhausted_seed = _start(
+        module,
+        exhausted_fill,
+        exhausted_mandate,
+        establish_baseline=False,
+    )
+    exhausted = _reduce(
+        module,
+        exhausted_seed,
+        exhausted_projection,
+        _occurrence(
+            module,
+            "m2-checkpoint-exhausted",
+            bid=100,
+            ask=101,
+            sequence=_U64_MAX,
+            source_time=1,
+            evaluation_time=1,
+            market_epoch=0,
+        ),
+    )
+    _, _, overfilled = _start(
+        module,
+        _owned_fill_transition(
+            label="m2-checkpoint-overfilled",
+            quantity=5,
+            capacity=4,
+        ),
+    )
+    flat = _m2_checkpoint_flat_state(module)
     return (
         pre_baseline,
         baseline,
@@ -9939,6 +10133,11 @@ def _m2_checkpoint_states_with_all_optional_members(
         hard_bid.state,
         activated.state,
         trail_bid.state,
+        next_epoch_reserved.state,
+        halted.state,
+        exhausted.state,
+        overfilled,
+        flat,
     )
 
 
@@ -9992,6 +10191,37 @@ def test_m2_protection_checkpoint_component_round_trips_canonically() -> None:
         any(populated[index] is not None for populated in populated_encodings)
         for index in optional_member_indexes
     )
+    populated_policies = {state.policy.value for state in populated_states}
+    assert {"HARD_BAIL", "FLAT"} <= populated_policies
+    assert any(state.raw_quantity == 0 for state in populated_states)
+    assert any(state.formula_available is False for state in populated_states)
+    assert any(state._market_halted is True for state in populated_states)
+    assert any(state._market_exhausted is True for state in populated_states)
+    position_value_vectors = tuple(
+        tuple(
+            _m2_checkpoint_wire_fingerprint(populated[index])
+            for populated in populated_encodings
+        )
+        for index in range(len(encoded))
+    )
+    assert len(position_value_vectors) == len(set(position_value_vectors))
+    optional_m1_member_indexes = (6, 7, 8, 9, 20, 24, 25, 27, 29)
+    for member_index in optional_m1_member_indexes:
+        source_encoding = next(
+            encoding
+            for encoding in populated_encodings
+            if encoding[member_index] is not None
+        )
+        malformed = [*source_encoding]
+        malformed[member_index] = [
+            "m2.protection.optional-m1-wrapper/v2",
+            source_encoding[member_index],
+        ]
+        with pytest.raises(
+            ValueError,
+            match="^durable atom must be a three-member array$",
+        ):
+            checkpoint_codec._decode_m2_protection_checkpoint_component(malformed)
     for populated_state, populated_encoded in zip(
         populated_states,
         populated_encodings,

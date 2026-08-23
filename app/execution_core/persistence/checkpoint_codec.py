@@ -186,6 +186,8 @@ def _encode_m2_tail_fold_input(value: object) -> list[object]:
 
     if type(value) is not _position.FoldInput:
         raise TypeError("tail fold input must be exact FoldInput")
+    if not value.is_bound:
+        raise ValueError("tail fold input must carry a bound predecessor proof")
     return [
         _M2_TAIL_FOLD_INPUT_TAG,
         value.raw_quantity,
@@ -226,6 +228,8 @@ def _decode_m2_tail_fold_input(value: object) -> _position.FoldInput:
         _operations._require_exact_int("tail fold prefix count", fields[5]),
         _operations._decode_m2_bytes("tail fold prefix commitment", fields[6]),
     )
+    if not decoded.is_bound:
+        raise ValueError("tail fold input must carry a bound predecessor proof")
     if _encode_m2_tail_fold_input(decoded) != value:
         raise ValueError("tail fold input is not canonical")
     return decoded
@@ -267,68 +271,55 @@ def _encode_m2_execution_state_component(state: object) -> list[object]:
 
 def _decode_m2_execution_state_component(
     value: object,
+    proof: _position._M2ExecutionObservationProof,
 ) -> _position._M2ExecutionState:
-    """Decode and re-encode one exact bounded execution-state component."""
+    """Decode only through the owner's aggregate-bound direct-proof seam."""
 
     fields = _operations._require_m2_aggregate(value, _M2_EXECUTION_STATE_TAG, 20)
-    decoded = _position._new_m2_execution_state(
-        scope=_operations._decode_m2_position_scope(fields[0]),
-        raw_quantity=_operations._require_exact_int(
-            "execution state raw quantity", fields[1]
+    decoded_fields = (
+        _operations._decode_m2_position_scope(fields[0]),
+        _operations._require_exact_int("execution state raw quantity", fields[1]),
+        _decode_m2_basis_authority(fields[2]),
+        _decode_m2_optional_exact_basis(fields[3]),
+        _decode_m2_optional_m1_value(
+            "execution state basis price metadata", fields[4], _values.ReportedPrice
         ),
-        basis_authority=_decode_m2_basis_authority(fields[2]),
-        cost_basis=_decode_m2_optional_exact_basis(fields[3]),
-        basis_price_metadata=_decode_m2_optional_m1_value(
-            "execution state basis price metadata",
-            fields[4],
-            _values.ReportedPrice,
-        ),
-        tail_fold_input=(
-            None if fields[5] is None else _decode_m2_tail_fold_input(fields[5])
-        ),
-        integrity_floor=_decode_m2_position_integrity(fields[6]),
-        integrity=_decode_m2_position_integrity(fields[7]),
-        account_reconciliation_required=_decode_m2_exact_bool(
-            "execution state reconciliation required", fields[8]
-        ),
-        reconciliation_transition_count=_operations._require_exact_int(
+        None if fields[5] is None else _decode_m2_tail_fold_input(fields[5]),
+        _decode_m2_position_integrity(fields[6]),
+        _decode_m2_position_integrity(fields[7]),
+        _decode_m2_exact_bool("execution state reconciliation required", fields[8]),
+        _operations._require_exact_int(
             "execution state reconciliation transition count", fields[9]
         ),
-        reconciliation_transition_head=_operations._decode_m2_bytes(
+        _operations._decode_m2_bytes(
             "execution state reconciliation transition head", fields[10]
         ),
-        root_count=_operations._require_exact_int(
-            "execution state root count", fields[11]
-        ),
-        root_order_commitment=_operations._decode_m2_bytes(
+        _operations._require_exact_int("execution state root count", fields[11]),
+        _operations._decode_m2_bytes(
             "execution state root order commitment", fields[12]
         ),
-        head_ids_commitment=_operations._decode_m2_bytes(
-            "execution state head ids commitment", fields[13]
-        ),
-        root_heads_commitment=_operations._decode_m2_bytes(
+        _operations._decode_m2_bytes("execution state head ids commitment", fields[13]),
+        _operations._decode_m2_bytes(
             "execution state root heads commitment", fields[14]
         ),
-        seen_facts_commitment=_operations._decode_m2_bytes(
+        _operations._decode_m2_bytes(
             "execution state seen facts commitment", fields[15]
         ),
-        root_head_map_commitment=_operations._decode_m2_bytes(
+        _operations._decode_m2_bytes(
             "execution state root head map commitment", fields[16]
         ),
-        seen_fact_map_commitment=_operations._decode_m2_bytes(
+        _operations._decode_m2_bytes(
             "execution state seen fact map commitment", fields[17]
         ),
-        root_claim_map_commitment=_operations._decode_m2_bytes(
+        _operations._decode_m2_bytes(
             "execution state root claim map commitment", fields[18]
         ),
     )
+    decoded = _position._m2_execution_state_from_direct_proof(decoded_fields, proof)
     retained_commitment = _operations._decode_m2_bytes(
         "execution state commitment", fields[19]
     )
-    if (
-        retained_commitment != decoded.commitment
-        or not _position._m2_execution_state_is_authentic(decoded)
-    ):
+    if retained_commitment != decoded.commitment:
         raise ValueError("execution state is not authentic")
     if _encode_m2_execution_state_component(decoded) != value:
         raise ValueError("execution state component is not canonical")
