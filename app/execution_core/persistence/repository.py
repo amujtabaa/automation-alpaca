@@ -10,6 +10,7 @@ the accepted M2-I1 codec and immutable profile constructors.
 
 from __future__ import annotations as _annotations
 
+from hashlib import sha256 as _sha256
 from typing import Any as _Any
 from typing import Callable as _Callable
 from typing import TypeVar as _TypeVar
@@ -21,6 +22,7 @@ from .. import values as _values
 from ..durable_codec import DurableAtom as _DurableAtom
 from ..durable_codec import decode_m1_value as _decode_m1_value
 from ..durable_codec import encode_m1_value as _encode_m1_value
+from . import checkpoint_codec as _checkpoint_codec
 from . import operations as _operations
 from . import records as _records
 from .schema import SQLiteConnectionProtocol as _SQLiteConnectionProtocol
@@ -3955,6 +3957,1576 @@ def load_current_proof(
         return _integrity()
 
 
+_RUNTIME_CHECKPOINT_CAP = 65_536
+_RUNTIME_CHECKPOINT_SCOPE_CAP = 4_097
+_RUNTIME_CHECKPOINT_PAYLOAD_COLUMNS = (
+    "application_generation_id, execution_profile_id, market_source_profile_id,"
+    " currentness_head_ordinal, checkpoint_version_ordinal, payload_bytes,"
+    " payload_length, payload_sha256"
+)
+
+
+def _checkpoint_vector(alias: str, columns: str) -> str:
+    return ",".join(f"{alias}.{column.strip()}" for column in columns.split(","))
+
+
+_RUNTIME_CHECKPOINT_STORAGE_VECTORS = (
+    ("APP", _APPLICATION_COLUMNS),
+    ("EXEC_PROFILE", _EXECUTION_PROFILE_COLUMNS),
+    ("MARKET_PROFILE", _MARKET_PROFILE_COLUMNS),
+    ("HEAD", _CHECKPOINT_COLUMNS),
+    ("SCOPE", _SCOPE_COLUMNS),
+    ("CONTROLLER", _CONTROLLER_COLUMNS),
+    ("PROTECTION", _PROTECTION_COLUMNS),
+    ("GENERATION", _ACQUISITION_COLUMNS),
+    ("GENERATION_CURRENT", _ACQUISITION_CURRENT_COLUMNS),
+    ("EFFECT", _EFFECT_COLUMNS),
+    ("OWNER", _OWNER_COLUMNS),
+    ("CLAIM", _CLAIM_COLUMNS),
+    ("ACCEPTANCE", _ACCEPTANCE_SET_COLUMNS),
+    ("EVIDENCE", _EVIDENCE_COLUMNS),
+    ("CLOSURE", _CLOSURE_COLUMNS),
+    ("ROUTE", _ROUTE_COLUMNS),
+    ("ROOT", _ROOT_FILL_COLUMNS),
+    ("FACT_HEAD", _FACT_HEAD_COLUMNS),
+    ("FACT", _EXECUTION_FACT_COLUMNS),
+    ("STREAM", _MARKET_STREAM_COLUMNS),
+    ("CURSOR", _MARKET_CURSOR_COLUMNS),
+    ("PAYLOAD", _RUNTIME_CHECKPOINT_PAYLOAD_COLUMNS),
+)
+
+_RC_APP = _checkpoint_vector("application", _APPLICATION_COLUMNS)
+_RC_EXECUTION_PROFILE = _checkpoint_vector(
+    "execution_profile", _EXECUTION_PROFILE_COLUMNS
+)
+_RC_MARKET_PROFILE = _checkpoint_vector("market_profile", _MARKET_PROFILE_COLUMNS)
+_RC_HEAD = _checkpoint_vector("checkpoint", _CHECKPOINT_COLUMNS)
+_RC_SCOPE = _checkpoint_vector("scope", _SCOPE_COLUMNS)
+_RC_CONTROLLER = _checkpoint_vector("controller", _CONTROLLER_COLUMNS)
+_RC_PROTECTION = _checkpoint_vector("protection", _PROTECTION_COLUMNS)
+_RC_GENERATION = _checkpoint_vector("generation", _ACQUISITION_COLUMNS)
+_RC_GENERATION_CURRENT = _checkpoint_vector(
+    "current", _ACQUISITION_CURRENT_COLUMNS
+)
+_RC_EFFECT = _checkpoint_vector("effect", _EFFECT_COLUMNS)
+_RC_OWNER = _checkpoint_vector("owner", _OWNER_COLUMNS)
+_RC_CLAIM = _checkpoint_vector("claim", _CLAIM_COLUMNS)
+_RC_ACCEPTANCE = _checkpoint_vector("acceptance", _ACCEPTANCE_SET_COLUMNS)
+_RC_EVIDENCE = _checkpoint_vector("evidence", _EVIDENCE_COLUMNS)
+_RC_CLOSURE = _checkpoint_vector("closure", _CLOSURE_COLUMNS)
+_RC_ROUTE = _checkpoint_vector("route", _ROUTE_COLUMNS)
+_RC_ROOT = _checkpoint_vector("root", _ROOT_FILL_COLUMNS)
+_RC_FACT_HEAD = _checkpoint_vector("head", _FACT_HEAD_COLUMNS)
+_RC_FACT = _checkpoint_vector("fact", _EXECUTION_FACT_COLUMNS)
+_RC_STREAM = _checkpoint_vector("stream", _MARKET_STREAM_COLUMNS)
+_RC_CURSOR = _checkpoint_vector("cursor", _MARKET_CURSOR_COLUMNS)
+
+_RUNTIME_CHECKPOINT_SELECTED_GENERATION_SQL = """
+WITH selected_scope(scope_id) AS MATERIALIZED (
+    SELECT scope.scope_id FROM acquisition_scope AS scope
+      INDEXED BY ix_acquisition_scope_checkpoint
+    WHERE scope.application_generation_id=? AND scope.execution_profile_id=?
+),
+live_generation AS MATERIALIZED (
+    SELECT generation.acquisition_generation_id,generation.scope_id
+    FROM selected_scope AS selected
+    JOIN symbol_controller AS controller ON controller.scope_id=selected.scope_id
+    JOIN acquisition_generation AS generation
+      ON generation.acquisition_generation_id=controller.live_acquisition_generation_id
+     AND generation.scope_id=selected.scope_id AND generation.status='LIVE'
+    JOIN acquisition_generation_current AS current
+      ON current.acquisition_generation_id=generation.acquisition_generation_id
+     AND current.scope_id=generation.scope_id
+    WHERE controller.live_acquisition_generation_id IS NOT NULL
+    LIMIT 65536
+),
+effect_unresolved AS MATERIALIZED (
+    SELECT current.acquisition_generation_id,current.scope_id
+    FROM selected_scope AS selected
+    JOIN acquisition_generation_current AS current
+      INDEXED BY ix_acquisition_generation_current_checkpoint_effect
+      ON current.scope_id=selected.scope_id AND current.unresolved_effect_count>0
+    JOIN acquisition_generation AS generation
+      ON generation.acquisition_generation_id=current.acquisition_generation_id
+     AND generation.scope_id=current.scope_id AND generation.status='RETIRED_UNSERVING'
+    LIMIT 65536
+),
+protection_active AS MATERIALIZED (
+    SELECT current.acquisition_generation_id,current.scope_id
+    FROM selected_scope AS selected
+    JOIN acquisition_generation_current AS current
+      INDEXED BY ix_acquisition_generation_current_checkpoint_protection
+      ON current.scope_id=selected.scope_id AND current.active_protection_count>0
+    JOIN acquisition_generation AS generation
+      ON generation.acquisition_generation_id=current.acquisition_generation_id
+     AND generation.scope_id=current.scope_id AND generation.status='RETIRED_UNSERVING'
+    LIMIT 65536
+),
+selected_generation AS MATERIALIZED (
+    SELECT * FROM (
+      SELECT * FROM live_generation
+      UNION SELECT * FROM effect_unresolved
+      UNION SELECT * FROM protection_active)
+    LIMIT 65536
+)
+""".strip()
+
+_RUNTIME_CHECKPOINT_QUALIFYING_EFFECT_SQL = """
+, qualifying_effect(effect_id) AS MATERIALIZED (
+    SELECT effect.effect_id
+    FROM selected_generation AS selected
+    JOIN venue_effect AS effect INDEXED BY ix_venue_effect_generation_disposition
+      ON effect.acquisition_generation_id=selected.acquisition_generation_id
+     AND effect.disposition IN ('OPEN','INVALIDATED')
+    UNION
+    SELECT effect.effect_id
+    FROM selected_generation AS selected
+    JOIN venue_identity_owner AS owner INDEXED BY ix_venue_owner_checkpoint_late
+      ON owner.owner_generation_id=selected.acquisition_generation_id
+     AND owner.admitted_after_effect_closed=1
+    JOIN venue_effect AS effect ON effect.effect_id=owner.effect_id
+     AND effect.scope_id=selected.scope_id
+     AND effect.acquisition_generation_id=selected.acquisition_generation_id
+     AND effect.disposition='CLOSED'
+)
+""".strip()
+
+_RUNTIME_CHECKPOINT_SELECTION_SQL = (
+    f"""
+SELECT {_RC_APP},{_RC_EXECUTION_PROFILE},{_RC_MARKET_PROFILE},
+       CASE WHEN checkpoint.application_generation_id IS NULL THEN 0 ELSE 1 END,
+       {_RC_HEAD}
+FROM application_generation AS application
+JOIN execution_connection_profile AS execution_profile
+  ON execution_profile.connection_profile_id=application.selected_execution_profile_id
+ AND execution_profile.application_generation=application.application_generation_id
+JOIN market_data_source_profile AS market_profile
+  ON market_profile.market_source_profile_id=application.selected_market_source_profile_id
+LEFT JOIN kernel_checkpoint AS checkpoint
+  ON checkpoint.application_generation_id=application.application_generation_id
+WHERE application.application_generation_id=?
+LIMIT 2
+""".strip(),
+    f"""
+SELECT {_RC_SCOPE},
+       CASE WHEN controller.scope_id IS NULL THEN 0 ELSE 1 END,{_RC_CONTROLLER},
+       CASE WHEN protection.scope_id IS NULL THEN 0 ELSE 1 END,{_RC_PROTECTION}
+FROM acquisition_scope AS scope INDEXED BY ix_acquisition_scope_checkpoint
+LEFT JOIN symbol_controller AS controller ON controller.scope_id=scope.scope_id
+ AND controller.application_generation_id=scope.application_generation_id
+ AND controller.execution_profile_id=scope.execution_profile_id
+LEFT JOIN protection_authority AS protection ON protection.scope_id=scope.scope_id
+WHERE scope.application_generation_id=? AND scope.execution_profile_id=?
+ORDER BY scope.scope_id
+LIMIT 4097
+""".strip(),
+    f"""
+WITH selected_scope(scope_id) AS MATERIALIZED (
+    SELECT scope.scope_id
+    FROM acquisition_scope AS scope INDEXED BY ix_acquisition_scope_checkpoint
+    WHERE scope.application_generation_id=? AND scope.execution_profile_id=?
+)
+SELECT {_RC_GENERATION},{_RC_GENERATION_CURRENT}
+FROM selected_scope AS selected
+JOIN symbol_controller AS controller ON controller.scope_id=selected.scope_id
+JOIN acquisition_generation AS generation
+  ON generation.acquisition_generation_id=controller.live_acquisition_generation_id
+ AND generation.scope_id=selected.scope_id AND generation.status='LIVE'
+JOIN acquisition_generation_current AS current
+  ON current.acquisition_generation_id=generation.acquisition_generation_id
+ AND current.scope_id=generation.scope_id
+WHERE controller.live_acquisition_generation_id IS NOT NULL
+ORDER BY generation.scope_id,generation.successor_ordinal,
+         generation.acquisition_generation_id
+LIMIT 65536
+""".strip(),
+    f"""
+WITH selected_scope(scope_id) AS MATERIALIZED (
+    SELECT scope.scope_id
+    FROM acquisition_scope AS scope INDEXED BY ix_acquisition_scope_checkpoint
+    WHERE scope.application_generation_id=? AND scope.execution_profile_id=?
+),
+effect_unresolved AS MATERIALIZED (
+    SELECT {_RC_GENERATION},{_RC_GENERATION_CURRENT}
+    FROM selected_scope AS selected
+    JOIN acquisition_generation_current AS current
+      INDEXED BY ix_acquisition_generation_current_checkpoint_effect
+      ON current.scope_id=selected.scope_id AND current.unresolved_effect_count>0
+    JOIN acquisition_generation AS generation
+      ON generation.acquisition_generation_id=current.acquisition_generation_id
+     AND generation.scope_id=current.scope_id
+     AND generation.status='RETIRED_UNSERVING'
+    LIMIT 65536
+),
+protection_active AS MATERIALIZED (
+    SELECT {_RC_GENERATION},{_RC_GENERATION_CURRENT}
+    FROM selected_scope AS selected
+    JOIN acquisition_generation_current AS current
+      INDEXED BY ix_acquisition_generation_current_checkpoint_protection
+      ON current.scope_id=selected.scope_id AND current.active_protection_count>0
+    JOIN acquisition_generation AS generation
+      ON generation.acquisition_generation_id=current.acquisition_generation_id
+     AND generation.scope_id=current.scope_id
+     AND generation.status='RETIRED_UNSERVING'
+    LIMIT 65536
+),
+combined AS (
+    SELECT * FROM effect_unresolved
+    UNION
+    SELECT * FROM protection_active
+)
+SELECT * FROM combined
+LIMIT 65536
+""".strip(),
+    f"""{_RUNTIME_CHECKPOINT_SELECTED_GENERATION_SQL}, admitted AS MATERIALIZED (
+    SELECT {_RC_EFFECT}
+    FROM selected_generation AS selected
+    JOIN venue_effect AS effect INDEXED BY ix_venue_effect_generation_disposition
+      ON effect.acquisition_generation_id=selected.acquisition_generation_id
+     AND effect.disposition IN ('OPEN','INVALIDATED')
+    LIMIT 65536
+)
+SELECT * FROM admitted ORDER BY 25,1""",
+    f"""{_RUNTIME_CHECKPOINT_SELECTED_GENERATION_SQL}, admitted AS MATERIALIZED (
+    SELECT {_RC_OWNER},{_RC_EFFECT}
+    FROM selected_generation AS selected
+    JOIN venue_identity_owner AS owner INDEXED BY ix_venue_owner_checkpoint_late
+      ON owner.owner_generation_id=selected.acquisition_generation_id
+     AND owner.admitted_after_effect_closed=1
+    JOIN venue_effect AS effect ON effect.effect_id=owner.effect_id
+     AND effect.scope_id=selected.scope_id
+     AND effect.acquisition_generation_id=selected.acquisition_generation_id
+     AND effect.disposition='CLOSED'
+    LIMIT 65536
+)
+SELECT * FROM admitted ORDER BY 7,5,3""",
+    f"""{_RUNTIME_CHECKPOINT_SELECTED_GENERATION_SQL}
+{_RUNTIME_CHECKPOINT_QUALIFYING_EFFECT_SQL}, admitted AS MATERIALIZED (
+    SELECT {_RC_OWNER}
+    FROM qualifying_effect AS selected
+    JOIN venue_identity_owner AS owner INDEXED BY ix_venue_identity_owner_effect
+      ON owner.effect_id=selected.effect_id
+    LIMIT 65536
+)
+SELECT * FROM admitted ORDER BY 5,3,4""",
+    f"""{_RUNTIME_CHECKPOINT_SELECTED_GENERATION_SQL}
+{_RUNTIME_CHECKPOINT_QUALIFYING_EFFECT_SQL}, admitted AS MATERIALIZED (
+    SELECT {_RC_CLAIM}
+    FROM qualifying_effect AS selected
+    JOIN dispatch_claim AS claim INDEXED BY ix_dispatch_claim_effect
+      ON claim.effect_id=selected.effect_id
+    LIMIT 65536
+)
+SELECT * FROM admitted ORDER BY 2,1""",
+    f"""{_RUNTIME_CHECKPOINT_SELECTED_GENERATION_SQL}
+{_RUNTIME_CHECKPOINT_QUALIFYING_EFFECT_SQL}, admitted AS MATERIALIZED (
+    SELECT {_RC_ACCEPTANCE}
+    FROM qualifying_effect AS selected
+    JOIN acceptance_set AS acceptance ON acceptance.effect_id=selected.effect_id
+    LIMIT 65536
+)
+SELECT * FROM admitted ORDER BY 2,1""",
+    f"""{_RUNTIME_CHECKPOINT_SELECTED_GENERATION_SQL}
+{_RUNTIME_CHECKPOINT_QUALIFYING_EFFECT_SQL}, admitted AS MATERIALIZED (
+    SELECT {_RC_EVIDENCE}
+    FROM qualifying_effect AS selected
+    JOIN acceptance_set AS acceptance ON acceptance.effect_id=selected.effect_id
+    JOIN acceptance_evidence AS evidence INDEXED BY ix_acceptance_evidence_set
+      ON evidence.acceptance_set_id=acceptance.acceptance_set_id
+    LIMIT 65536
+)
+SELECT * FROM admitted ORDER BY 3,7,1""",
+    f"""{_RUNTIME_CHECKPOINT_SELECTED_GENERATION_SQL}
+{_RUNTIME_CHECKPOINT_QUALIFYING_EFFECT_SQL}, admitted AS MATERIALIZED (
+    SELECT {_RC_CLOSURE}
+    FROM qualifying_effect AS selected
+    JOIN venue_identity_owner AS owner INDEXED BY ix_venue_identity_owner_effect
+      ON owner.effect_id=selected.effect_id
+    JOIN closure_chain AS closure ON closure.closure_id=(
+        SELECT candidate.closure_id
+        FROM closure_chain AS candidate INDEXED BY ix_closure_chain_head
+        WHERE candidate.scope_id=owner.scope_id
+          AND candidate.owner_external=owner.owner_external
+        ORDER BY candidate.ordinal DESC LIMIT 1)
+    LIMIT 65536
+)
+SELECT * FROM admitted ORDER BY 5,3,4""",
+    f"""{_RUNTIME_CHECKPOINT_SELECTED_GENERATION_SQL}
+{_RUNTIME_CHECKPOINT_QUALIFYING_EFFECT_SQL}, admitted AS MATERIALIZED (
+    SELECT {_RC_ROUTE},{_RC_ROOT},
+           CASE WHEN head.fact_id IS NULL THEN 0 ELSE 1 END,
+           {_RC_FACT_HEAD},{_RC_FACT}
+    FROM qualifying_effect AS selected
+    JOIN venue_identity_owner AS owner INDEXED BY ix_venue_identity_owner_effect
+      ON owner.effect_id=selected.effect_id
+    JOIN acquisition_root_route AS route INDEXED BY ix_acquisition_root_route_owner
+      ON route.effect_id=owner.effect_id
+     AND route.owner_external=owner.owner_external
+     AND route.observation_external=owner.observation_external
+    JOIN root_fill AS root ON root.root_fill_key_id=route.root_fill_key_id
+     AND root.scope_id=route.scope_id
+     AND root.owner_generation_id=route.acquisition_generation_id
+    LEFT JOIN execution_fact_head AS head ON head.root_fill_key_id=root.root_fill_key_id
+    LEFT JOIN execution_fact AS fact ON fact.root_fill_key_id=head.root_fill_key_id
+     AND fact.fact_id=head.fact_id AND fact.fact_ordinal=head.fact_ordinal
+    LIMIT 65536
+)
+SELECT * FROM admitted ORDER BY 6,7,1""",
+    f"""{_RUNTIME_CHECKPOINT_SELECTED_GENERATION_SQL}, admitted AS MATERIALIZED (
+    SELECT {_RC_STREAM},
+           CASE WHEN cursor.stream_generation_id IS NULL THEN 0 ELSE 1 END,
+           {_RC_CURSOR}
+    FROM selected_generation AS selected
+    JOIN market_stream_authority AS stream
+      INDEXED BY ix_market_stream_authority_checkpoint_generation
+      ON stream.acquisition_generation_id=selected.acquisition_generation_id
+     AND stream.scope_id=selected.scope_id
+    LEFT JOIN market_cursor AS cursor ON cursor.stream_generation_id=stream.stream_generation_id
+    LIMIT 65536
+)
+SELECT * FROM admitted ORDER BY 4,1""",
+)
+
+_RUNTIME_CHECKPOINT_HEAD_SELECT_SQL = (
+    f"SELECT {_CHECKPOINT_COLUMNS} FROM kernel_checkpoint "
+    "WHERE application_generation_id=? LIMIT 2"
+)
+_RUNTIME_CHECKPOINT_PAYLOAD_SELECT_SQL = (
+    f"SELECT {_RUNTIME_CHECKPOINT_PAYLOAD_COLUMNS} "
+    "FROM runtime_checkpoint_payload "
+    "WHERE application_generation_id=? AND currentness_head_ordinal=? "
+    "AND checkpoint_version_ordinal=? AND payload_sha256=? LIMIT 2"
+)
+_RUNTIME_CHECKPOINT_PAYLOAD_INSERT_SQL = (
+    "INSERT INTO runtime_checkpoint_payload("
+    "application_generation_id,execution_profile_id,market_source_profile_id,"
+    "currentness_head_ordinal,checkpoint_version_ordinal,payload_bytes,"
+    "payload_length,payload_sha256) VALUES (?,?,?,?,?,?,?,?)"
+)
+_RUNTIME_CHECKPOINT_HEAD_INSERT_SQL = (
+    "INSERT INTO kernel_checkpoint(application_generation_id,currentness_head_ordinal,"
+    "checkpoint_sha256,checkpoint_version_ordinal) "
+    "SELECT ?,?,?,? WHERE NOT EXISTS ("
+    "SELECT 1 FROM kernel_checkpoint WHERE application_generation_id=?)"
+)
+_RUNTIME_CHECKPOINT_HEAD_UPDATE_SQL = (
+    "UPDATE kernel_checkpoint SET currentness_head_ordinal=?,checkpoint_sha256=?,"
+    "checkpoint_version_ordinal=? WHERE application_generation_id=? "
+    "AND currentness_head_ordinal=? AND checkpoint_sha256=? "
+    "AND checkpoint_version_ordinal=?"
+)
+
+
+def _runtime_checkpoint_records_member(name: str) -> _Any:
+    member = getattr(_records, name, None)
+    if member is None:
+        raise RuntimeError(f"checkpoint records integration is missing {name}")
+    return member
+
+
+def _runtime_checkpoint_codec_member(name: str) -> _Any:
+    member = getattr(_checkpoint_codec, name, None)
+    if member is None:
+        raise RuntimeError(f"checkpoint codec integration is missing {name}")
+    return member
+
+
+def _checkpoint_query_rows(
+    connection: _SQLiteConnectionProtocol,
+    sql: str,
+    parameters: tuple[_Any, ...],
+) -> _records.RepositoryOutcome[tuple[tuple[_Any, ...], ...]]:
+    try:
+        rows = connection.execute(sql, _query_parameters(parameters)).fetchall()
+    except Exception as caught:
+        return _classify_runtime_checkpoint_sqlite_failure(
+            caught,
+            payload_insert=False,
+        )
+    return _outcome(
+        _records.RepositoryOutcomeKind.FOUND,
+        tuple(tuple(row) for row in rows),
+    )
+
+
+def _checkpoint_required_rows(
+    outcome: _records.RepositoryOutcome[tuple[tuple[_Any, ...], ...]],
+) -> tuple[tuple[_Any, ...], ...]:
+    if outcome.kind is not _records.RepositoryOutcomeKind.FOUND:
+        raise _CheckpointSelectionOutcome(outcome.kind)
+    if outcome.record is None:
+        raise ValueError("checkpoint query omitted its row collection")
+    return outcome.record
+
+
+class _CheckpointSelectionOutcome(Exception):
+    def __init__(self, kind: _records.RepositoryOutcomeKind) -> None:
+        super().__init__(kind.value)
+        self.kind = kind
+
+
+def _checkpoint_presence(
+    value: object,
+    fields: tuple[_Any, ...],
+    *,
+    optional: bool,
+) -> bool:
+    present = _exact_int(value)
+    if present == 0:
+        if not optional or any(field is not None for field in fields):
+            raise ValueError("checkpoint absence vector is not wholly null")
+        return False
+    if present != 1:
+        raise ValueError("checkpoint presence vector is not canonical")
+    return True
+
+
+def _checkpoint_unique_records(
+    records: tuple[_RecordT, ...],
+    key: _Callable[[_RecordT], object],
+) -> dict[object, _RecordT]:
+    unique: dict[object, _RecordT] = {}
+    for record in records:
+        coordinate = key(record)
+        retained = unique.get(coordinate)
+        if retained is not None and retained != record:
+            raise ValueError("checkpoint coordinate has conflicting rows")
+        if retained is not None:
+            raise ValueError("checkpoint coordinate is duplicated")
+        unique[coordinate] = record
+    return unique
+
+
+def _checkpoint_pack(domain: bytes, *parts: bytes) -> bytes:
+    return len(domain).to_bytes(4, "big") + domain + b"".join(
+        len(part).to_bytes(8, "big") + part for part in parts
+    )
+
+
+def _checkpoint_commit(domain: bytes, *parts: bytes) -> bytes:
+    return _sha256(_checkpoint_pack(domain, *parts)).digest()
+
+
+def _checkpoint_binding_int(value: int) -> bytes:
+    exact = _exact_int(value)
+    magnitude = abs(exact)
+    width = max(1, (magnitude.bit_length() + 7) // 8)
+    return bytes((0 if exact >= 0 else 1,)) + width.to_bytes(
+        4, "big"
+    ) + magnitude.to_bytes(width, "big")
+
+
+def _checkpoint_binding_text(value: str) -> bytes:
+    encoded = _exact_text(value).encode("utf-8")
+    return len(encoded).to_bytes(8, "big") + encoded
+
+
+def _checkpoint_field_int(value: int) -> bytes:
+    return _checkpoint_commit(
+        b"execution-core/runtime-checkpoint/field/int/v1",
+        _checkpoint_binding_int(value),
+    )
+
+
+def _checkpoint_field_text(value: str) -> bytes:
+    return _checkpoint_commit(
+        b"execution-core/runtime-checkpoint/field/text/v1",
+        _checkpoint_binding_text(value),
+    )
+
+
+def _checkpoint_absence(
+    family: str,
+    suffix: str,
+    *parts: bytes,
+) -> tuple[str, bytes]:
+    return (
+        family,
+        _checkpoint_commit(
+            f"execution-core/runtime-checkpoint/absence-key/{suffix}/v1".encode(
+                "ascii"
+            ),
+            *parts,
+        ),
+    )
+
+
+def _checkpoint_rows_are_bounded(rows: tuple[tuple[_Any, ...], ...]) -> None:
+    if len(rows) >= _RUNTIME_CHECKPOINT_CAP:
+        raise OverflowError("checkpoint query returned its refusal sentinel")
+
+
+def _checkpoint_issue_selection_set(
+    values: tuple[_Any, ...],
+) -> _Any:
+    selection_type = _runtime_checkpoint_records_member(
+        "_RuntimeCheckpointSelectionSet"
+    )
+    return selection_type(*values)
+
+
+def _checkpoint_issue_selection_proof(
+    request: _Any,
+    application: _records.ApplicationGenerationRecord,
+    execution_profile: _profiles.ExecutionConnectionProfile,
+    market_profile: _profiles.MarketDataSourceProfile,
+    predecessor: _records.KernelCheckpointRecord | None,
+    target_head: int,
+    target_version: int,
+    selection: _Any,
+) -> _Any:
+    issuer = _runtime_checkpoint_records_member(
+        "_issue_runtime_checkpoint_selection_proof"
+    )
+    return issuer(
+        request,
+        application,
+        execution_profile,
+        market_profile,
+        predecessor,
+        target_head,
+        target_version,
+        selection,
+    )
+
+
+def _checkpoint_request_values(request: object) -> tuple[str, str, str]:
+    request_type = _runtime_checkpoint_records_member(
+        "RuntimeCheckpointSelectionRequest"
+    )
+    if type(request) is not request_type:
+        raise TypeError("selection request must be exact")
+    exact_request = _cast(_Any, request)
+    application_id = _application_id(exact_request.application_generation_id)
+    return (
+        application_id,
+        _exact_text(exact_request.execution_profile_id),
+        _exact_text(exact_request.market_source_profile_id),
+    )
+
+
+def select_runtime_checkpoint(
+    connection: _SQLiteConnectionProtocol,
+    request: _Any,
+) -> _records.RepositoryOutcome[_Any]:
+    """Select one bounded, authenticated non-serving checkpoint preimage."""
+
+    if getattr(connection, "in_transaction", False) is not True:
+        return _integrity()
+    try:
+        _verify_schema_connection(connection)
+        application_key, execution_profile_id, market_profile_id = (
+            _checkpoint_request_values(request)
+        )
+        parameters = (application_key, execution_profile_id)
+
+        q1 = _checkpoint_required_rows(
+            _checkpoint_query_rows(
+                connection,
+                _RUNTIME_CHECKPOINT_SELECTION_SQL[0],
+                (application_key,),
+            )
+        )
+        if not q1:
+            return _outcome(_records.RepositoryOutcomeKind.ABSENT)
+        if len(q1) != 1:
+            return _integrity()
+        q1_row = q1[0]
+        if len(q1_row) != 30:
+            raise ValueError("checkpoint Q1 has the wrong exact vector length")
+        application = _build_application(q1_row[0:4])
+        execution_profile = _build_execution_profile(q1_row[4:17])
+        market_profile = _build_market_profile(q1_row[17:25])
+        head_values = q1_row[26:30]
+        head_present = _checkpoint_presence(
+            q1_row[25], head_values, optional=True
+        )
+        predecessor = _build_checkpoint(head_values) if head_present else None
+        if (
+            _application_id(application.application_generation_id) != application_key
+            or application.selected_execution_profile_id != execution_profile_id
+            or application.selected_market_source_profile_id != market_profile_id
+            or execution_profile.connection_profile_id != execution_profile_id
+            or execution_profile.application_generation != application_key
+            or market_profile.market_source_profile_id != market_profile_id
+        ):
+            return _outcome(_records.RepositoryOutcomeKind.CONFLICT)
+        if predecessor != request.expected_checkpoint:
+            return _outcome(_records.RepositoryOutcomeKind.CONFLICT)
+
+        q2 = _checkpoint_required_rows(
+            _checkpoint_query_rows(
+                connection, _RUNTIME_CHECKPOINT_SELECTION_SQL[1], parameters
+            )
+        )
+        if len(q2) >= _RUNTIME_CHECKPOINT_SCOPE_CAP:
+            raise OverflowError("checkpoint selected too many scopes")
+        scopes: list[_records.ScopeRecord] = []
+        controllers: list[_records.SymbolControllerRecord] = []
+        protections: list[_records.ProtectionAuthorityRecord] = []
+        prior_scope_id = -1
+        for row in q2:
+            if len(row) != 26:
+                raise ValueError("checkpoint Q2 has the wrong exact vector length")
+            scope = _build_scope(row[0:4])
+            controller_values = row[5:14]
+            protection_values = row[15:26]
+            if not _checkpoint_presence(row[4], controller_values, optional=True):
+                raise ValueError("selected scope has no controller")
+            if not _checkpoint_presence(row[14], protection_values, optional=True):
+                raise ValueError("selected scope has no protection authority")
+            controller = _build_controller(controller_values)
+            protection = _build_protection(protection_values)
+            if (
+                scope.scope_id <= prior_scope_id
+                or scope.application_generation_id
+                != application.application_generation_id
+                or scope.execution_profile_id != execution_profile_id
+                or controller.scope_id != scope.scope_id
+                or controller.application_generation_id
+                != application.application_generation_id
+                or controller.execution_profile_id != execution_profile_id
+                or protection.scope_id != scope.scope_id
+                or protection.expected_controller_head_ordinal
+                != controller.currentness_head_ordinal
+            ):
+                raise ValueError("checkpoint scope vectors do not agree")
+            active = (
+                protection.active_stream_generation_id,
+                protection.active_acquisition_generation_id,
+                protection.active_generation_mandate_commitment_sha256,
+                protection.active_source_profile_id,
+                protection.active_session_id,
+                protection.active_sequence_mode,
+            )
+            if not (all(value is None for value in active) or all(
+                value is not None for value in active
+            )):
+                raise ValueError("checkpoint protection activity is partial")
+            if protection.authority_class == "HARD_BAIL" and any(
+                value is None for value in active
+            ):
+                raise ValueError("hard-bail protection has no active coordinates")
+            prior_scope_id = scope.scope_id
+            scopes.append(scope)
+            controllers.append(controller)
+            protections.append(protection)
+
+        generation_rows: list[tuple[tuple[_Any, ...], ...]] = []
+        for query_index in (2, 3):
+            rows = _checkpoint_required_rows(
+                _checkpoint_query_rows(
+                    connection,
+                    _RUNTIME_CHECKPOINT_SELECTION_SQL[query_index],
+                    parameters,
+                )
+            )
+            _checkpoint_rows_are_bounded(rows)
+            generation_rows.append(rows)
+
+        generation_families: list[
+            tuple[
+                tuple[_records.AcquisitionGenerationRecord, ...],
+                tuple[_records.AcquisitionGenerationCurrentRecord, ...],
+            ]
+        ] = []
+        for family_index, rows in enumerate(generation_rows):
+            generations: list[_records.AcquisitionGenerationRecord] = []
+            currents: list[_records.AcquisitionGenerationCurrentRecord] = []
+            seen: dict[tuple[str, int], tuple[_Any, _Any]] = {}
+            for row in rows:
+                if len(row) != 12:
+                    raise ValueError(
+                        "checkpoint generation query has the wrong vector length"
+                    )
+                generation = _build_acquisition(row[0:7])
+                current = _build_acquisition_current(row[7:12])
+                coordinate = (
+                    _acquisition_id(generation.acquisition_generation_id),
+                    generation.scope_id,
+                )
+                if (
+                    coordinate in seen
+                    or current.acquisition_generation_id
+                    != generation.acquisition_generation_id
+                    or current.scope_id != generation.scope_id
+                    or (family_index == 0 and generation.status != "LIVE")
+                    or (
+                        family_index == 1
+                        and (
+                            generation.status != "RETIRED_UNSERVING"
+                            or (
+                                current.unresolved_effect_count <= 0
+                                and current.active_protection_count <= 0
+                            )
+                        )
+                    )
+                ):
+                    raise ValueError("checkpoint generation vectors do not agree")
+                seen[coordinate] = (generation, current)
+                generations.append(generation)
+                currents.append(current)
+            generation_families.append((tuple(generations), tuple(currents)))
+
+        live_generations, live_currents = generation_families[0]
+        unresolved_generations, unresolved_currents = generation_families[1]
+        controller_live = {
+            (controller.live_acquisition_generation_id, controller.scope_id)
+            for controller in controllers
+            if controller.live_acquisition_generation_id is not None
+        }
+        selected_live = {
+            (generation.acquisition_generation_id, generation.scope_id)
+            for generation in live_generations
+        }
+        if controller_live != selected_live:
+            raise ValueError("checkpoint LIVE discovery is incomplete")
+        selected_generation: dict[tuple[str, int], tuple[_Any, _Any]] = {}
+        for generation, current in zip(
+            live_generations + unresolved_generations,
+            live_currents + unresolved_currents,
+            strict=True,
+        ):
+            coordinate = (
+                _acquisition_id(generation.acquisition_generation_id),
+                generation.scope_id,
+            )
+            retained = selected_generation.get(coordinate)
+            if retained is not None and retained != (generation, current):
+                raise ValueError("checkpoint generation union is spliced")
+            selected_generation[coordinate] = (generation, current)
+        if len(selected_generation) >= _RUNTIME_CHECKPOINT_CAP:
+            raise OverflowError("checkpoint selected-generation union is too large")
+        selected_coordinates = set(selected_generation)
+
+        later_rows: list[tuple[tuple[_Any, ...], ...]] = []
+        for query_index in range(4, 13):
+            rows = _checkpoint_required_rows(
+                _checkpoint_query_rows(
+                    connection,
+                    _RUNTIME_CHECKPOINT_SELECTION_SQL[query_index],
+                    parameters,
+                )
+            )
+            _checkpoint_rows_are_bounded(rows)
+            later_rows.append(rows)
+
+        effects_by_id: dict[int, _records.VenueEffectRecord] = {}
+        for row in later_rows[0]:
+            if len(row) != 25:
+                raise ValueError("checkpoint Q4a has the wrong vector length")
+            effect = _build_effect(row)
+            if (
+                effect.disposition not in ("OPEN", "INVALIDATED")
+                or (
+                    _acquisition_id(effect.acquisition_generation_id),
+                    effect.scope_id,
+                )
+                not in selected_coordinates
+            ):
+                raise ValueError("checkpoint Q4a admitted an unselected effect")
+            if effect.effect_id in effects_by_id:
+                raise ValueError("checkpoint effect is duplicated")
+            effects_by_id[effect.effect_id] = effect
+
+        late_owners: dict[tuple[int, str, str], _records.VenueIdentityOwnerRecord] = {}
+        for row in later_rows[1]:
+            if len(row) != 33:
+                raise ValueError("checkpoint Q4b has the wrong vector length")
+            owner = _build_owner(row[0:8])
+            effect = _build_effect(row[8:33])
+            if (
+                not owner.admitted_after_effect_closed
+                or owner.effect_id != effect.effect_id
+                or owner.scope_id != effect.scope_id
+                or owner.owner_generation_id != effect.acquisition_generation_id
+                or effect.disposition != "CLOSED"
+                or (
+                    _acquisition_id(effect.acquisition_generation_id),
+                    effect.scope_id,
+                )
+                not in selected_coordinates
+            ):
+                raise ValueError("checkpoint Q4b admitted a spliced late owner")
+            retained_effect = effects_by_id.get(effect.effect_id)
+            if retained_effect is not None and retained_effect != effect:
+                raise ValueError("checkpoint effect vectors conflict")
+            effects_by_id[effect.effect_id] = effect
+            owner_key = (
+                owner.effect_id,
+                owner.owner_id.value,
+                owner.observation_id.value,
+            )
+            if owner_key in late_owners:
+                raise ValueError("checkpoint late owner is duplicated")
+            late_owners[owner_key] = owner
+
+        unresolved_count = sum(
+            current.unresolved_effect_count
+            for current in live_currents + unresolved_currents
+        )
+        if unresolved_count >= _RUNTIME_CHECKPOINT_CAP:
+            raise OverflowError("checkpoint unresolved-effect sum is too large")
+        if len(effects_by_id) != unresolved_count:
+            raise ValueError("checkpoint effect union disagrees with counters")
+        qualifying_effect_ids = set(effects_by_id)
+
+        owners = tuple(_build_owner(row) for row in later_rows[2])
+        claims = tuple(_build_claim(row) for row in later_rows[3])
+        acceptances = tuple(_build_acceptance_set(row) for row in later_rows[4])
+        evidence = tuple(_build_evidence(row) for row in later_rows[5])
+        closures = tuple(_build_closure(row) for row in later_rows[6])
+        owner_by_key = _checkpoint_unique_records(
+            owners,
+            lambda owner: (
+                owner.effect_id,
+                owner.owner_id.value,
+                owner.observation_id.value,
+            ),
+        )
+        if any(owner.effect_id not in qualifying_effect_ids for owner in owners):
+            raise ValueError("checkpoint owner has no qualifying effect")
+        if any(owner_by_key.get(key) != owner for key, owner in late_owners.items()):
+            raise ValueError("checkpoint late owner is absent from owner discovery")
+        claim_by_effect = _checkpoint_unique_records(
+            claims, lambda claim: claim.effect_id
+        )
+        acceptance_by_effect = _checkpoint_unique_records(
+            acceptances, lambda acceptance: acceptance.effect_id
+        )
+        evidence_by_acceptance = _checkpoint_unique_records(
+            evidence, lambda item: item.acceptance_set_id
+        )
+        if (
+            any(effect_id not in qualifying_effect_ids for effect_id in claim_by_effect)
+            or any(
+                effect_id not in qualifying_effect_ids
+                for effect_id in acceptance_by_effect
+            )
+            or any(
+                item.effect_id not in qualifying_effect_ids for item in evidence
+            )
+        ):
+            raise ValueError("checkpoint effect child is spliced")
+        for item in evidence:
+            acceptance = acceptance_by_effect.get(item.effect_id)
+            if (
+                acceptance is None
+                or acceptance.acceptance_set_id != item.acceptance_set_id
+            ):
+                raise ValueError("checkpoint evidence has no selected acceptance")
+
+        closure_by_owner = _checkpoint_unique_records(
+            closures,
+            lambda closure: (closure.scope_id, closure.owner_id.value),
+        )
+        owner_coordinates = {
+            (owner.scope_id, owner.owner_id.value) for owner in owners
+        }
+        if any(key not in owner_coordinates for key in closure_by_owner):
+            raise ValueError("checkpoint closure has no selected owner")
+
+        routes: list[_records.AcquisitionRootRouteRecord] = []
+        roots: list[_records.RootFillRecord] = []
+        fact_heads: list[_records.ExecutionFactHeadRecord] = []
+        current_facts: list[_records.ExecutionFactRecord] = []
+        route_by_owner: dict[tuple[int, str, str], _Any] = {}
+        root_by_id: dict[int, _Any] = {}
+        fact_head_by_root: dict[int, _Any] = {}
+        fact_by_root: dict[int, _Any] = {}
+        for row in later_rows[7]:
+            if len(row) != 62:
+                raise ValueError("checkpoint Q8 has the wrong vector length")
+            route = _build_route(row[0:8])
+            root = _build_root_fill(row[8:29])
+            head_values = row[30:33]
+            fact_values = row[33:62]
+            present = _checkpoint_presence(row[29], head_values + fact_values, optional=True)
+            owner_key = (
+                route.effect_id,
+                route.owner_id.value,
+                route.observation_id.value,
+            )
+            selected_owner = owner_by_key.get(owner_key)
+            if (
+                selected_owner is None
+                or route.root_fill_key_id != root.root_fill_key_id
+                or route.scope_id != root.scope_id
+                or route.acquisition_generation_id != root.owner_generation_id
+                or route.effect_id != selected_owner.effect_id
+                or route.scope_id != selected_owner.scope_id
+                or route.acquisition_generation_id
+                != selected_owner.owner_generation_id
+                or owner_key in route_by_owner
+                or root.root_fill_key_id in root_by_id
+            ):
+                raise ValueError("checkpoint route/root vectors do not agree")
+            routes.append(route)
+            roots.append(root)
+            route_by_owner[owner_key] = route
+            root_by_id[root.root_fill_key_id] = root
+            if present:
+                fact_head = _build_fact_head(head_values)
+                fact = _build_execution_fact(fact_values)
+                if (
+                    fact_head.root_fill_key_id != root.root_fill_key_id
+                    or fact.root_fill_key_id != root.root_fill_key_id
+                    or fact_head.fact_id != fact.fact_id
+                    or fact_head.fact_ordinal != fact.fact_ordinal
+                    or root.current_fact_id != fact.fact_id
+                    or root.economics_head_ordinal != fact.fact_ordinal
+                ):
+                    raise ValueError("checkpoint current fact is spliced")
+                fact_heads.append(fact_head)
+                current_facts.append(fact)
+                fact_head_by_root[root.root_fill_key_id] = fact_head
+                fact_by_root[root.root_fill_key_id] = fact
+
+        streams: list[_records.MarketStreamAuthorityRecord] = []
+        cursors: list[_records.MarketCursorRecord] = []
+        stream_by_generation: dict[str, _Any] = {}
+        cursor_by_stream: dict[str, _Any] = {}
+        for row in later_rows[8]:
+            if len(row) != 19:
+                raise ValueError("checkpoint Q9 has the wrong vector length")
+            stream = _build_market_stream(row[0:8])
+            cursor_values = row[9:19]
+            present = _checkpoint_presence(row[8], cursor_values, optional=True)
+            generation_key = _acquisition_id(stream.acquisition_generation_id)
+            if (
+                (generation_key, stream.scope_id) not in selected_coordinates
+                or generation_key in stream_by_generation
+            ):
+                raise ValueError("checkpoint stream has no selected generation")
+            streams.append(stream)
+            stream_by_generation[generation_key] = stream
+            if present:
+                cursor = _build_market_cursor(cursor_values)
+                if cursor.stream_generation_id != stream.stream_generation_id:
+                    raise ValueError("checkpoint cursor is spliced")
+                cursors.append(cursor)
+                cursor_by_stream[stream.stream_generation_id.value] = cursor
+
+        for controller, protection in zip(controllers, protections, strict=True):
+            if protection.active_acquisition_generation_id is None:
+                continue
+            generation_key = _acquisition_id(
+                protection.active_acquisition_generation_id
+            )
+            selected_stream = stream_by_generation.get(generation_key)
+            if (
+                controller.live_acquisition_generation_id
+                != protection.active_acquisition_generation_id
+                or selected_stream is None
+                or selected_stream.stream_generation_id
+                != protection.active_stream_generation_id
+                or selected_stream.generation_mandate_commitment_sha256
+                != protection.active_generation_mandate_commitment_sha256
+                or selected_stream.source_profile_id
+                != protection.active_source_profile_id
+                or selected_stream.session_id != protection.active_session_id
+                or selected_stream.sequence_mode != protection.active_sequence_mode
+            ):
+                raise ValueError("checkpoint active protection stream is spliced")
+
+        effects = tuple(
+            sorted(
+                effects_by_id.values(),
+                key=lambda effect: (effect.created_ordinal, effect.effect_id),
+            )
+        )
+        owners = tuple(
+            sorted(
+                owners,
+                key=lambda owner: (
+                    owner.effect_id,
+                    owner.owner_id.value,
+                    owner.observation_id.value,
+                ),
+            )
+        )
+        selected_generation_ids = set(stream_by_generation) | {
+            coordinate[0] for coordinate in selected_coordinates
+        }
+        owner_effect_absences = tuple(
+            _checkpoint_absence(
+                "owner/effect",
+                "owner-effect",
+                _checkpoint_field_int(effect_id),
+            )
+            for effect_id in sorted(qualifying_effect_ids - {owner.effect_id for owner in owners})
+        )
+        claim_effect_absences = tuple(
+            _checkpoint_absence(
+                "claim/effect", "claim-effect", _checkpoint_field_int(effect_id)
+            )
+            for effect_id in sorted(qualifying_effect_ids - set(claim_by_effect))
+        )
+        acceptance_effect_absences = tuple(
+            _checkpoint_absence(
+                "acceptance/effect",
+                "acceptance-effect",
+                _checkpoint_field_int(effect_id),
+            )
+            for effect_id in sorted(qualifying_effect_ids - set(acceptance_by_effect))
+        )
+        evidence_acceptance_absences = tuple(
+            _checkpoint_absence(
+                "evidence/acceptance",
+                "evidence-acceptance",
+                _checkpoint_field_int(acceptance.acceptance_set_id),
+            )
+            for acceptance in acceptances
+            if acceptance.acceptance_set_id not in evidence_by_acceptance
+        )
+        closure_owner_absences = tuple(
+            _checkpoint_absence(
+                "closure/owner",
+                "closure-owner",
+                _checkpoint_field_int(owner.scope_id),
+                _checkpoint_field_text(owner.owner_id.value),
+            )
+            for owner in owners
+            if (owner.scope_id, owner.owner_id.value) not in closure_by_owner
+        )
+        route_owner_absences = tuple(
+            _checkpoint_absence(
+                "route/owner",
+                "route-owner",
+                _checkpoint_field_int(owner.effect_id),
+                _checkpoint_field_text(owner.owner_id.value),
+                _checkpoint_field_text(owner.observation_id.value),
+            )
+            for owner in owners
+            if (
+                owner.effect_id,
+                owner.owner_id.value,
+                owner.observation_id.value,
+            )
+            not in route_by_owner
+        )
+        fact_head_root_absences = tuple(
+            _checkpoint_absence(
+                "fact-head/root",
+                "fact-head-root",
+                _checkpoint_field_int(root.root_fill_key_id),
+            )
+            for root in roots
+            if root.root_fill_key_id not in fact_head_by_root
+        )
+        current_fact_root_absences = tuple(
+            _checkpoint_absence(
+                "current-fact/root",
+                "current-fact-root",
+                _checkpoint_field_int(root.root_fill_key_id),
+            )
+            for root in roots
+            if root.root_fill_key_id not in fact_by_root
+        )
+        stream_generation_absences = tuple(
+            _checkpoint_absence(
+                "stream/generation",
+                "stream-generation",
+                _checkpoint_field_text(generation_id),
+            )
+            for generation_id in sorted(
+                selected_generation_ids - set(stream_by_generation)
+            )
+        )
+        cursor_stream_absences = tuple(
+            _checkpoint_absence(
+                "cursor/stream",
+                "cursor-stream",
+                _checkpoint_field_text(stream.stream_generation_id.value),
+            )
+            for stream in streams
+            if stream.stream_generation_id.value not in cursor_by_stream
+        )
+        query_counts = tuple(
+            len(rows) for rows in (q1, q2, *generation_rows, *later_rows)
+        )
+        if len(query_counts) != 13:
+            raise ValueError("checkpoint selection did not execute thirteen queries")
+
+        selection = _checkpoint_issue_selection_set(
+            (
+                tuple(scopes),
+                tuple(controllers),
+                tuple(protections),
+                live_generations,
+                live_currents,
+                unresolved_generations,
+                unresolved_currents,
+                effects,
+                owners,
+                claims,
+                acceptances,
+                evidence,
+                closures,
+                tuple(routes),
+                tuple(roots),
+                tuple(fact_heads),
+                tuple(current_facts),
+                tuple(streams),
+                tuple(cursors),
+                owner_effect_absences,
+                claim_effect_absences,
+                acceptance_effect_absences,
+                evidence_acceptance_absences,
+                closure_owner_absences,
+                route_owner_absences,
+                fact_head_root_absences,
+                current_fact_root_absences,
+                stream_generation_absences,
+                cursor_stream_absences,
+                query_counts,
+            )
+        )
+        if controllers:
+            target_head = max(
+                controller.currentness_head_ordinal for controller in controllers
+            )
+        elif predecessor is not None:
+            target_head = predecessor.currentness_head_ordinal
+        else:
+            target_head = 0
+        if predecessor is not None and target_head < predecessor.currentness_head_ordinal:
+            raise ValueError("checkpoint target head regresses")
+        target_version = (
+            predecessor.checkpoint_version_ordinal + 1
+            if predecessor is not None
+            else 1
+        )
+        proof = _checkpoint_issue_selection_proof(
+            request,
+            application,
+            execution_profile,
+            market_profile,
+            predecessor,
+            target_head,
+            target_version,
+            selection,
+        )
+        return _outcome(_records.RepositoryOutcomeKind.FOUND, proof)
+    except _CheckpointSelectionOutcome as failure:
+        return _outcome(failure.kind)
+    except (TypeError, ValueError, OverflowError, IndexError):
+        return _integrity()
+
+
+def _checkpoint_proof_is_authentic(proof: object) -> bool:
+    proof_type = _runtime_checkpoint_records_member(
+        "RuntimeCheckpointSelectionProof"
+    )
+    if type(proof) is not proof_type:
+        return False
+    checker = _runtime_checkpoint_records_member(
+        "_runtime_checkpoint_selection_proof_is_authentic"
+    )
+    return checker(proof) is True
+
+
+def _checkpoint_envelope_is_authentic(envelope: object) -> bool:
+    envelope_type = _runtime_checkpoint_codec_member("RuntimeCheckpointEnvelope")
+    if type(envelope) is not envelope_type:
+        return False
+    checker = _runtime_checkpoint_codec_member("_envelope_is_authentic")
+    return checker(envelope) is True
+
+
+def _checkpoint_payload_parameters(payload: object) -> tuple[_Any, ...]:
+    payload_type = _runtime_checkpoint_records_member(
+        "RuntimeCheckpointPayloadRecord"
+    )
+    if type(payload) is not payload_type:
+        raise TypeError("checkpoint payload record must be exact")
+    exact_payload = _cast(_Any, payload)
+    return (
+        _application_id(exact_payload.application_generation_id),
+        _exact_text(exact_payload.execution_profile_id),
+        _exact_text(exact_payload.market_source_profile_id),
+        _exact_int(exact_payload.currentness_head_ordinal),
+        _exact_int(exact_payload.checkpoint_version_ordinal),
+        _exact_bytes(exact_payload.payload_bytes),
+        _exact_int(exact_payload.payload_length),
+        _exact_text(exact_payload.payload_sha256),
+    )
+
+
+def _checkpoint_head_parameters(
+    head: _records.KernelCheckpointRecord,
+) -> tuple[_Any, ...]:
+    if type(head) is not _records.KernelCheckpointRecord:
+        raise TypeError("checkpoint head must be exact")
+    return (
+        _application_id(head.application_generation_id),
+        _exact_int(head.currentness_head_ordinal),
+        _exact_text(head.checkpoint_sha256),
+        _exact_int(head.checkpoint_version_ordinal),
+    )
+
+
+def _checkpoint_load_head_unchecked(
+    connection: _SQLiteConnectionProtocol,
+    application_key: str,
+) -> _records.RepositoryOutcome[_records.KernelCheckpointRecord]:
+    rows_outcome = _checkpoint_query_rows(
+        connection,
+        _RUNTIME_CHECKPOINT_HEAD_SELECT_SQL,
+        (application_key,),
+    )
+    if rows_outcome.kind is not _records.RepositoryOutcomeKind.FOUND:
+        return _outcome(rows_outcome.kind)
+    rows = rows_outcome.record
+    if rows is None:
+        return _integrity()
+    if not rows:
+        return _outcome(_records.RepositoryOutcomeKind.ABSENT)
+    if len(rows) != 1:
+        return _integrity()
+    try:
+        return _outcome(
+            _records.RepositoryOutcomeKind.FOUND,
+            _build_checkpoint(rows[0]),
+        )
+    except (TypeError, ValueError, OverflowError, IndexError):
+        return _integrity()
+
+
+def _issue_runtime_checkpoint_write_receipt(
+    payload: object,
+    predecessor: _records.KernelCheckpointRecord | None,
+    resulting: _records.KernelCheckpointRecord,
+    selection_commitment: bytes,
+) -> _records.RepositoryOutcome[_Any]:
+    """Translate only exact receipt-phase validation exceptions."""
+
+    issuer = _runtime_checkpoint_records_member(
+        "_issue_runtime_checkpoint_write_receipt"
+    )
+    try:
+        receipt = issuer(
+            payload,
+            predecessor,
+            resulting,
+            selection_commitment,
+        )
+    except Exception as caught:
+        if type(caught) in (TypeError, ValueError, OverflowError):
+            return _integrity()
+        raise
+    return _outcome(_records.RepositoryOutcomeKind.APPLIED, receipt)
+
+
+def store_runtime_checkpoint(
+    connection: _SQLiteConnectionProtocol,
+    proof: _Any,
+    envelope: _Any,
+    *,
+    capability: _WriteCapability,
+) -> _records.RepositoryOutcome[_Any]:
+    """Stage payload, CAS the head, reread, then issue one receipt."""
+
+    _require_write_capability(connection, capability)
+    if getattr(connection, "in_transaction", False) is not True:
+        return _integrity()
+    try:
+        _verify_schema_connection(connection)
+        if not _checkpoint_proof_is_authentic(proof):
+            return _outcome(_records.RepositoryOutcomeKind.CONFLICT)
+        if not _checkpoint_envelope_is_authentic(envelope):
+            return _outcome(_records.RepositoryOutcomeKind.CONFLICT)
+        if envelope._provenance != "PROJECTED":
+            return _outcome(_records.RepositoryOutcomeKind.CONFLICT)
+        proof_binding = _exact_bytes(proof._binding)
+        selection_commitment = _exact_bytes(proof.selection_commitment)
+        if (
+            len(proof_binding) != 32
+            or len(selection_commitment) != 32
+            or envelope._selection_binding != proof_binding
+            or envelope.application_generation_id
+            != proof.request.application_generation_id
+            or envelope.execution_profile_id != proof.request.execution_profile_id
+            or envelope.market_source_profile_id
+            != proof.request.market_source_profile_id
+            or envelope.currentness_head_ordinal
+            != proof.target_currentness_head_ordinal
+            or envelope.checkpoint_version_ordinal
+            != proof.target_checkpoint_version_ordinal
+            or tuple(scope.scope_id for scope in envelope.scopes)
+            != tuple(scope.scope_id for scope in proof._selection.scopes)
+        ):
+            return _outcome(_records.RepositoryOutcomeKind.CONFLICT)
+        encoder = _runtime_checkpoint_codec_member("encode_runtime_checkpoint")
+        payload_bytes = encoder(envelope)
+        if (
+            payload_bytes != envelope.canonical_payload_bytes
+            or len(payload_bytes) != len(envelope.canonical_payload_bytes)
+            or _sha256(payload_bytes).hexdigest() != envelope.payload_sha256
+        ):
+            return _integrity()
+    except (TypeError, ValueError, OverflowError, IndexError):
+        return _integrity()
+
+    reselected = select_runtime_checkpoint(connection, proof.request)
+    if reselected.kind is _records.RepositoryOutcomeKind.INTEGRITY_FAILURE:
+        return _integrity()
+    if reselected.kind is not _records.RepositoryOutcomeKind.FOUND:
+        return _outcome(_records.RepositoryOutcomeKind.CONFLICT)
+    fresh_proof = reselected.record
+    if (
+        fresh_proof is None
+        or not _checkpoint_proof_is_authentic(fresh_proof)
+        or fresh_proof._binding != proof._binding
+        or fresh_proof.selection_commitment != proof.selection_commitment
+        or fresh_proof.predecessor_checkpoint != proof.predecessor_checkpoint
+        or fresh_proof.target_currentness_head_ordinal
+        != proof.target_currentness_head_ordinal
+        or fresh_proof.target_checkpoint_version_ordinal
+        != proof.target_checkpoint_version_ordinal
+        or fresh_proof._selection != proof._selection
+    ):
+        return _outcome(_records.RepositoryOutcomeKind.CONFLICT)
+
+    payload_type = _runtime_checkpoint_records_member(
+        "RuntimeCheckpointPayloadRecord"
+    )
+    try:
+        payload = payload_type(
+            envelope.application_generation_id,
+            envelope.execution_profile_id,
+            envelope.market_source_profile_id,
+            envelope.currentness_head_ordinal,
+            envelope.checkpoint_version_ordinal,
+            payload_bytes,
+            len(payload_bytes),
+            envelope.payload_sha256,
+        )
+        payload_parameters = _checkpoint_payload_parameters(payload)
+        resulting = _records.KernelCheckpointRecord(
+            envelope.application_generation_id,
+            envelope.currentness_head_ordinal,
+            envelope.payload_sha256,
+            envelope.checkpoint_version_ordinal,
+        )
+        resulting_parameters = _checkpoint_head_parameters(resulting)
+    except (TypeError, ValueError, OverflowError):
+        return _integrity()
+
+    try:
+        connection.execute(
+            _RUNTIME_CHECKPOINT_PAYLOAD_INSERT_SQL,
+            payload_parameters,
+        )
+    except Exception as caught:
+        return _classify_runtime_checkpoint_sqlite_failure(
+            caught,
+            payload_insert=True,
+        )
+
+    predecessor = proof.predecessor_checkpoint
+    if predecessor is None:
+        cas_sql = _RUNTIME_CHECKPOINT_HEAD_INSERT_SQL
+        cas_parameters = resulting_parameters + (resulting_parameters[0],)
+    else:
+        try:
+            predecessor_parameters = _checkpoint_head_parameters(predecessor)
+        except (TypeError, ValueError, OverflowError):
+            return _integrity()
+        cas_sql = _RUNTIME_CHECKPOINT_HEAD_UPDATE_SQL
+        cas_parameters = resulting_parameters[1:] + predecessor_parameters
+    try:
+        cursor = connection.execute(cas_sql, cas_parameters)
+    except Exception as caught:
+        return _classify_runtime_checkpoint_sqlite_failure(
+            caught,
+            payload_insert=False,
+        )
+    if cursor.rowcount != 1:
+        return _outcome(_records.RepositoryOutcomeKind.CONFLICT)
+
+    reread = _checkpoint_load_head_unchecked(
+        connection,
+        resulting_parameters[0],
+    )
+    if (
+        reread.kind is not _records.RepositoryOutcomeKind.FOUND
+        or reread.record != resulting
+    ):
+        return _integrity()
+    return _issue_runtime_checkpoint_write_receipt(
+        payload,
+        predecessor,
+        resulting,
+        selection_commitment,
+    )
+
+
+def load_runtime_checkpoint_payload(
+    connection: _SQLiteConnectionProtocol,
+    application_generation_id: _identity.ApplicationGenerationId,
+    currentness_head_ordinal: int,
+    checkpoint_version_ordinal: int,
+    payload_sha256: str,
+) -> _records.RepositoryOutcome[_Any]:
+    """Load and authenticate one immutable payload by its complete identity."""
+
+    try:
+        _verify_schema_connection(connection)
+        parameters = (
+            _application_id(application_generation_id),
+            _exact_int(currentness_head_ordinal),
+            _exact_int(checkpoint_version_ordinal),
+            _exact_text(payload_sha256),
+        )
+    except (TypeError, ValueError, OverflowError):
+        return _integrity()
+    rows_outcome = _checkpoint_query_rows(
+        connection,
+        _RUNTIME_CHECKPOINT_PAYLOAD_SELECT_SQL,
+        parameters,
+    )
+    if rows_outcome.kind is not _records.RepositoryOutcomeKind.FOUND:
+        return _outcome(rows_outcome.kind)
+    rows = rows_outcome.record
+    if rows is None:
+        return _integrity()
+    if not rows:
+        return _outcome(_records.RepositoryOutcomeKind.ABSENT)
+    if len(rows) != 1:
+        return _integrity()
+    payload_type = _runtime_checkpoint_records_member(
+        "RuntimeCheckpointPayloadRecord"
+    )
+    try:
+        row = rows[0]
+        if len(row) != 8:
+            raise ValueError("checkpoint payload has the wrong vector length")
+        payload = payload_type(
+            _decode_application_id(row[0]),
+            _exact_text(row[1]),
+            _exact_text(row[2]),
+            _exact_int(row[3]),
+            _exact_int(row[4]),
+            _exact_bytes(row[5]),
+            _exact_int(row[6]),
+            _exact_text(row[7]),
+        )
+        payload_parameters = _checkpoint_payload_parameters(payload)
+        if (
+            payload_parameters[0] != parameters[0]
+            or payload_parameters[3] != parameters[1]
+            or payload_parameters[4] != parameters[2]
+            or payload_parameters[7] != parameters[3]
+            or payload.payload_length != len(payload.payload_bytes)
+            or payload.payload_sha256
+            != _sha256(payload.payload_bytes).hexdigest()
+        ):
+            return _integrity()
+    except (TypeError, ValueError, OverflowError, IndexError):
+        return _integrity()
+    return _outcome(_records.RepositoryOutcomeKind.FOUND, payload)
+
+
+def load_runtime_checkpoint(
+    connection: _SQLiteConnectionProtocol,
+    request: _Any,
+) -> _records.RepositoryOutcome[_Any]:
+    """Compose head, payload, fresh selection, decode, and final-head proof."""
+
+    if getattr(connection, "in_transaction", False) is not True:
+        return _integrity()
+    load_request_type = _runtime_checkpoint_records_member(
+        "RuntimeCheckpointLoadRequest"
+    )
+    if type(request) is not load_request_type:
+        return _integrity()
+    try:
+        _verify_schema_connection(connection)
+        application_key = _application_id(request.application_generation_id)
+        execution_profile_id = _exact_text(request.execution_profile_id)
+        market_profile_id = _exact_text(request.market_source_profile_id)
+    except (TypeError, ValueError, OverflowError):
+        return _integrity()
+    initial = _checkpoint_load_head_unchecked(connection, application_key)
+    if initial.kind is not _records.RepositoryOutcomeKind.FOUND:
+        return _outcome(initial.kind)
+    initial_head = initial.record
+    if initial_head is None:
+        return _integrity()
+    payload_outcome = load_runtime_checkpoint_payload(
+        connection,
+        request.application_generation_id,
+        initial_head.currentness_head_ordinal,
+        initial_head.checkpoint_version_ordinal,
+        initial_head.checkpoint_sha256,
+    )
+    if payload_outcome.kind is _records.RepositoryOutcomeKind.ABSENT:
+        return _integrity()
+    if payload_outcome.kind is not _records.RepositoryOutcomeKind.FOUND:
+        return _outcome(payload_outcome.kind)
+    payload = payload_outcome.record
+    if payload is None:
+        return _integrity()
+    selection_request_type = _runtime_checkpoint_records_member(
+        "RuntimeCheckpointSelectionRequest"
+    )
+    try:
+        selection_request = selection_request_type(
+            request.application_generation_id,
+            execution_profile_id,
+            market_profile_id,
+            initial_head,
+        )
+    except (TypeError, ValueError, OverflowError):
+        return _integrity()
+    selected = select_runtime_checkpoint(connection, selection_request)
+    if selected.kind is _records.RepositoryOutcomeKind.INTEGRITY_FAILURE:
+        return _integrity()
+    if selected.kind is not _records.RepositoryOutcomeKind.FOUND:
+        return _outcome(_records.RepositoryOutcomeKind.CONFLICT)
+    proof = selected.record
+    if proof is None or not _checkpoint_proof_is_authentic(proof):
+        return _integrity()
+    load_proof_issuer = _runtime_checkpoint_records_member(
+        "_issue_runtime_checkpoint_load_proof_binding"
+    )
+    try:
+        load_proof_binding = load_proof_issuer(
+            request,
+            initial_head,
+            payload,
+            proof,
+        )
+        decoder = _runtime_checkpoint_codec_member("_decode_runtime_checkpoint")
+        envelope = decoder(payload.payload_bytes, load_proof_binding)
+        encoder = _runtime_checkpoint_codec_member("encode_runtime_checkpoint")
+        if (
+            not _checkpoint_envelope_is_authentic(envelope)
+            or envelope._provenance != "LOADED"
+            or envelope.application_generation_id
+            != request.application_generation_id
+            or envelope.execution_profile_id != execution_profile_id
+            or envelope.market_source_profile_id != market_profile_id
+            or envelope.currentness_head_ordinal
+            != initial_head.currentness_head_ordinal
+            or envelope.checkpoint_version_ordinal
+            != initial_head.checkpoint_version_ordinal
+            or envelope.payload_sha256 != initial_head.checkpoint_sha256
+            or encoder(envelope) != payload.payload_bytes
+        ):
+            return _integrity()
+    except (TypeError, ValueError, OverflowError, IndexError):
+        return _integrity()
+    final = _checkpoint_load_head_unchecked(connection, application_key)
+    if (
+        final.kind is not _records.RepositoryOutcomeKind.FOUND
+        or final.record != initial_head
+    ):
+        return _outcome(_records.RepositoryOutcomeKind.CONFLICT)
+    return _outcome(_records.RepositoryOutcomeKind.FOUND, envelope)
+
+
 __all__ = (
     "advance_market_cursor",
     "advance_protection_authority",
@@ -3992,6 +5564,8 @@ __all__ = (
     "load_protection_authority",
     "load_root_fill",
     "load_root_fill_by_external",
+    "load_runtime_checkpoint",
+    "load_runtime_checkpoint_payload",
     "load_scope",
     "load_symbol_controller",
     "load_venue_effect",
@@ -4016,8 +5590,10 @@ __all__ = (
     "store_market_stream_authority",
     "store_protection_authority",
     "store_root_fill",
+    "store_runtime_checkpoint",
     "store_scope",
     "store_symbol_controller",
     "store_venue_effect",
     "store_venue_identity_owner",
+    "select_runtime_checkpoint",
 )
