@@ -812,6 +812,14 @@ strictly by `scope_id`; effect references are ordered by canonical effect identi
 references are ordered by domain then canonical identity. `payload_sha256` is the document digest
 and is deliberately not serialized as an eleventh self-reference.
 
+For every R12 canonical document, its retained length member is exactly `len(document_bytes)`:
+runtime-checkpoint `payload_length == len(payload_bytes)`, decision-receipt
+`receipt_length == len(canonical_receipt_bytes)`, durable-input-outcome
+`outcome_length == len(canonical_outcome_bytes)`, and broker-outbox
+`payload_length == len(canonical_payload_bytes)`. Record construction, repository store/load, and
+the outer checkpoint decoder must recheck that equality as well as the digest; a changed length
+with unchanged bytes is an integrity failure.
+
 `RuntimeCheckpointEnvelope` remains the only public checkpoint data type. Its two public codec
 entry points are exactly `encode_runtime_checkpoint(envelope) -> bytes` and
 `decode_runtime_checkpoint(payload_record, current_proofs) -> RuntimeCheckpointEnvelope`.
@@ -1022,6 +1030,11 @@ duplicate field and foreign coordinate to agree. The receipt is explanatory evid
 reducer, currentness, claim, closure, recovery, outbox, or serving query may take it as an input
 authority. A receipt must be inserted before its outcome; neither row is updateable or deletable.
 
+Before an outcome is inserted, a null-safe schema trigger must require that its receipt has equal
+`owner_domain`, `owner_disposition`, `terminal_technical_state`, `result_sha256`, and every member
+of `checkpoint_reference_or_null`. The durable-input finalization trigger rechecks the same
+coherent pair, not terminal state alone. A mutation of any one duplicated member is refused.
+
 ### R12.4 Immutable broker outbox snapshot
 
 `BrokerOutboxRecord` has these ordered persisted members:
@@ -1051,7 +1064,7 @@ retained effect and claim before accepting or loading it; an ID-only foreign key
 The kind-`0x05` canonical JSON array is exactly:
 
 ```text
-[1, "m2.broker-outbox/v1", application_generation_atom,
+[1, "m2.broker-outbox/v1", outbox_sequence, application_generation_atom,
  execution_profile_id, scope_id, acquisition_generation_atom,
  ["m2.operations.OperationDomain", DOMAIN], input_identity_sha256,
  effect_id, effect_external_atom, request_occurrence_atom, mandate_atom,
@@ -1063,7 +1076,9 @@ The kind-`0x05` canonical JSON array is exactly:
 ```
 
 Every `_atom` is the section-5 M1 durable atom, `economic_scope_hex` is lowercase even-length
-hex for the exact retained bytes, and each enum/value has the section-5 owner tag. This is the
+hex for the exact retained bytes, and each enum/value has the section-5 owner tag. The encoded
+`outbox_sequence` must equal the persisted primary-key value, so a sequence-only substitution is
+an integrity failure. This is the
 complete immutable dispatch snapshot; a later dispatcher must not reconstruct a broker command
 from mutable effect lifecycle fields. The outbox has no delivered, acknowledged, success, retry,
 or broker-result state. Later observed venue activity remains a separately durable input. An
@@ -1075,7 +1090,8 @@ currentness, closure, or recovery authority.
 `tests/execution_core/persistence_setup_support.py` is the only setup-capability issuer and is
 added to the exact test scope. It may import the private setup issuer from `repository.py`; only
 `test_persistence_schema.py`, `test_persistence_repository.py`,
-`test_persistence_directness.py`, and `test_persistence_write_capability.py` may import that
+`test_persistence_directness.py`, `test_persistence_input_receipt.py`, and
+`test_persistence_write_capability.py` may import that
 support module. No `app/**` module may import it or a setup capability.
 
 `_RuntimeWriteCapability` is a private exact, non-subclassable, connection- and transaction-bound
@@ -1086,14 +1102,42 @@ may obtain it only for a fresh `tmp_path` fixture connection. These are structur
 claim that hostile arbitrary Python cannot inspect process memory.
 
 All `load_*` repository functions, including `load_current_proof`, are **read-only** and accept no
-capability. The existing and new mutators are classified exactly as follows. Runtime mutators
-accept a runtime capability in production and a setup capability only through the named test
-support route; setup mutators accept setup capability only.
+capability. Every production mutator below is a runtime mutator: it accepts a runtime capability
+in production and a setup capability only through the named test-support route. The seven genesis
+entries may be used in production only by the exact bootstrap transaction below; there is no
+production setup-token bypass.
 
 | Class | Exact mutators |
 | --- | --- |
-| setup | `store_execution_profile`, `store_market_source_profile`, `store_application_generation`, `store_scope`, `store_kernel_checkpoint`, `store_symbol_controller`, `store_protection_authority` |
+| runtime, genesis only | `store_execution_profile`, `store_market_source_profile`, `store_application_generation`, `store_scope`, `store_kernel_checkpoint`, `store_symbol_controller`, `store_protection_authority` |
 | runtime | `store_acquisition_generation`, `retire_acquisition_generation`, `advance_kernel_checkpoint`, `advance_symbol_controller`, `store_root_fill`, `store_execution_fact`, `store_venue_effect`, `advance_venue_effect`, `store_venue_identity_owner`, `store_acquisition_root_route`, `store_dispatch_claim`, `store_acceptance_set`, `store_acceptance_evidence`, `store_closure`, `store_market_stream_authority`, `store_market_cursor`, `advance_market_cursor`, `advance_protection_authority`, `claim_durable_input`, `finalize_durable_input`, `store_runtime_checkpoint_payload`, `store_durable_input_semantic_key`, `store_decision_receipt`, `store_durable_input_outcome`, `store_broker_outbox` |
+
+`unit_of_work.py` owns one package-private `begin_genesis_bootstrap` route for the otherwise
+cyclic first durable baseline. It is not an admitted top-level operation and may be called only by
+WO-0169 startup after that order is separately activated. It begins one immediate transaction,
+verifies the exact schema, and requires all of the following target keys to be absent before it
+issues a runtime capability: the exact execution profile, market profile, application generation,
+scope, kernel checkpoint, symbol controller, and protection-authority row. Its exact validated
+seed tuple, in write order, is:
+
+1. `ExecutionConnectionProfile`;
+2. `MarketDataSourceProfile`;
+3. `ApplicationGenerationRecord` selecting exactly those two profiles;
+4. `ScopeRecord` bound to that application/profile;
+5. `RuntimeCheckpointPayloadRecord` with head `0` and version `1`;
+6. `KernelCheckpointRecord` with the same application, head, version, and payload digest;
+7. `SymbolControllerRecord` for that scope with head `0`, aggregate quantity `0`, no live
+   acquisition generation, and `CONSISTENT` integrity; and
+8. `ProtectionAuthorityRecord` for that scope with `NORMAL` authority and no active stream.
+
+The plan validates every listed profile/application/scope relation before its first insert and the
+payload-first/head-second rule before inserts 5--6. It does not create an acquisition generation,
+market stream, effect, claim, outbox, or external eligibility; those remain ordinary later runtime
+steps. It refuses until the exact complete outer-checkpoint typed rows required by R12.1 are
+implemented; no bootstrap may substitute a partial component document for that payload. Any
+nonempty target row, coordinate mismatch, nonzero/noninitial baseline, or repeated bootstrap is
+refused. This resolves the bootstrap cycle without allowing production code to mint a setup
+capability.
 
 Static and runtime boundary tests must enumerate this table, all private issuer names, direct
 aliases, wrapped connections/cursors, subclass attempts, and every `store_`, `advance_`,
@@ -1114,3 +1158,26 @@ No source or test implementation of R12 is authorized until a fresh `REV-0074` R
 review accepts the exact amendment candidate with `P0=0/P1=0`. The normal `REV-0075`
 implementation review, changed-DDL human gate, no-runtime-composition rule, and all safety
 boundaries remain independent and unchanged.
+
+### R12-R1 independent-review remediation
+
+The first fresh R12 review identified two additional relational requirements that must be frozen
+before schema authoring. For `durable_input_semantic_key`, a table-local insert trigger must
+enforce the already-required record rule at the database boundary:
+
+- for authority kinds, `key_application_generation_id` and `key_scope_id` are non-null,
+  `key_application_generation_id == input_application_generation_id`, and the owning
+  `durable_input` row has exactly the same execution profile and `scope_id == key_scope_id`; and
+- for venue kinds, both key coordinates are null and the owning durable-input row has the same
+  execution profile and `VENUE_RECOVERY` domain.
+
+The trigger runs in addition to the existing composite input foreign key and partial unique
+indexes. Two otherwise-valid distinct application generations with a cross-bound authority key
+must be rejected; this is the relational counterpart to the R9 record validation.
+
+The decisive R12 test set also includes length-only mutants for all four document kinds,
+an outbox-sequence-only mutant, one mutation for each receipt/outcome shared result member,
+the cross-generation semantic-key rejection, a `test_persistence_input_receipt.py` setup-import
+control, and both rejected/replayed genesis-bootstrap controls. These corrections add no source
+or DDL execution authority; they remain subject to a fresh R12-R1 documentation review, the
+normal REV-0075 implementation review, and the exact changed-DDL human gate.
