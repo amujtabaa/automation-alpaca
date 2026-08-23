@@ -9,9 +9,13 @@ from pathlib import Path
 from app.execution_core.persistence import checkpoint_codec, records, repository
 
 
-def test_checkpoint_codec_is_inert_and_exposes_no_public_checkpoint_surface() -> None:
-    assert checkpoint_codec.__all__ == ()
-    assert not hasattr(checkpoint_codec, "RuntimeCheckpointEnvelope")
+def test_checkpoint_codec_is_inert_and_exposes_only_nonserving_checkpoint_surface() -> None:
+    assert checkpoint_codec.__all__ == (
+        "InertRuntimeCheckpointComponent",
+        "RuntimeCheckpointEnvelope",
+        "RuntimeCheckpointScopeCandidate",
+        "encode_runtime_checkpoint",
+    )
 
     tree = ast.parse(inspect.getsource(checkpoint_codec))
     imported_modules = {
@@ -29,10 +33,10 @@ def test_checkpoint_codec_refuses_a_forged_current_proof_before_adaptation() -> 
     assert not records.CurrentProofSlice._is_authentic(forged)
 
 
-def test_r13s_exposes_no_serving_checkpoint_payload_surface() -> None:
-    assert not hasattr(checkpoint_codec, "RuntimeCheckpointEnvelope")
-    assert "RuntimeCheckpointPayloadRecord" not in records.__all__
-    assert not hasattr(records, "RuntimeCheckpointPayloadRecord")
+def test_wo0168c_exposes_only_the_frozen_nonserving_checkpoint_surface() -> None:
+    assert hasattr(checkpoint_codec, "RuntimeCheckpointEnvelope")
+    assert "RuntimeCheckpointPayloadRecord" in records.__all__
+    assert hasattr(records, "RuntimeCheckpointPayloadRecord")
     assert "store_runtime_checkpoint_payload" not in repository.__all__
     assert "load_runtime_checkpoint_payload" not in repository.__all__
     assert not hasattr(repository, "store_runtime_checkpoint_payload")

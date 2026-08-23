@@ -14,8 +14,11 @@ from dataclasses import dataclass as _dataclass
 from hashlib import sha256 as _sha256
 from threading import RLock as _RLock
 from typing import Generic as _Generic
+from typing import Any as _Any
+from typing import Callable as _Callable
 from typing import TypeVar as _TypeVar
 from typing import cast as _cast
+from weakref import ReferenceType as _ReferenceType
 from weakref import ref as _weakref_ref
 
 from .. import durable_codec as _durable_codec
@@ -158,7 +161,9 @@ class KernelCheckpointRecord:
 
 _RUNTIME_CHECKPOINT_MAX_PAYLOAD_BYTES = 268_435_456
 _RUNTIME_CHECKPOINT_REGISTRY_LOCK = _RLock()
-_RUNTIME_CHECKPOINT_REGISTRY: dict[int, tuple[object, bytes, str]] = {}
+_RUNTIME_CHECKPOINT_REGISTRY: dict[
+    int, tuple[_ReferenceType[object], bytes, str]
+] = {}
 _RUNTIME_CHECKPOINT_ABSENCE_FIELDS = (
     ("owner_effect_absences", "owner/effect", "owner-effect"),
     ("claim_effect_absences", "claim/effect", "claim-effect"),
@@ -332,13 +337,13 @@ def _runtime_checkpoint_storage_field_binding(value: object) -> bytes:
     raise TypeError("runtime checkpoint storage field has an invalid class")
 
 
-def _runtime_checkpoint_identity_text(value: object, expected: type[object]) -> str:
+def _runtime_checkpoint_identity_text(value: object, expected: type[_Any]) -> str:
     if type(value) is not expected:
         raise TypeError("runtime checkpoint identity has an invalid exact class")
     text = getattr(value, "value")
     if type(text) is not str:
         raise TypeError("runtime checkpoint identity value must be exact text")
-    expected(text)
+    _cast(_Callable[[str], object], expected)(text)
     return text
 
 
@@ -855,12 +860,12 @@ def _runtime_checkpoint_validate_selection_set(
             for record in records:
                 _runtime_checkpoint_selection_record_key(name, record)
             continue
-        prior_key: tuple[object, ...] | None = None
+        prior_record_key: tuple[object, ...] | None = None
         for record in records:
             key = _runtime_checkpoint_selection_record_key(name, record)
-            if prior_key is not None and key <= prior_key:
+            if prior_record_key is not None and key <= prior_record_key:
                 raise ValueError(f"runtime checkpoint {name} is not canonical")
-            prior_key = key
+            prior_record_key = key
 
     for generations_name, current_name in (
         ("live_generations", "live_generation_current"),
@@ -898,12 +903,14 @@ def _runtime_checkpoint_validate_selection_set(
         )
 
     for name in ("fact_heads", "current_facts"):
-        prior_key = None
+        prior_root_key: tuple[object, ...] | None = None
         for record in getattr(selection, name):
-            key = route_order_by_root.get(record.root_fill_key_id)
-            if key is None or (prior_key is not None and key <= prior_key):
+            root_key = route_order_by_root.get(record.root_fill_key_id)
+            if root_key is None or (
+                prior_root_key is not None and root_key <= prior_root_key
+            ):
                 raise ValueError(f"runtime checkpoint {name} is not canonical")
-            prior_key = key
+            prior_root_key = root_key
 
     if len(selection.fact_heads) != len(selection.current_facts) or any(
         head.root_fill_key_id != fact.root_fill_key_id
@@ -915,7 +922,7 @@ def _runtime_checkpoint_validate_selection_set(
     ):
         raise ValueError("runtime checkpoint current fact rows do not agree")
 
-    stream_order = {
+    stream_order: dict[object, tuple[str, str]] = {
         stream.stream_generation_id: (
             _runtime_checkpoint_identity_text(
                 stream.acquisition_generation_id, _identity.AcquisitionGenerationId
@@ -926,12 +933,14 @@ def _runtime_checkpoint_validate_selection_set(
         )
         for stream in selection.streams
     }
-    prior_cursor_key = None
+    prior_cursor_key: tuple[str, str] | None = None
     for cursor in selection.cursors:
-        key = stream_order.get(cursor.stream_generation_id)
-        if key is None or (prior_cursor_key is not None and key <= prior_cursor_key):
+        cursor_key = stream_order.get(cursor.stream_generation_id)
+        if cursor_key is None or (
+            prior_cursor_key is not None and cursor_key <= prior_cursor_key
+        ):
             raise ValueError("runtime checkpoint cursors are not canonical")
-        prior_cursor_key = key
+        prior_cursor_key = cursor_key
 
 
 def _runtime_checkpoint_selection_set_binding(
@@ -1293,17 +1302,17 @@ def _runtime_checkpoint_registry_authentic(
 class _RuntimeCheckpointNonCopyable:
     __slots__ = ()
 
-    def __copy__(self) -> object:
+    def __copy__(self) -> _Any:
         raise TypeError(f"{type(self).__name__} cannot be copied")
 
-    def __deepcopy__(self, memo: object) -> object:
+    def __deepcopy__(self, memo: object) -> _Any:
         del memo
         raise TypeError(f"{type(self).__name__} cannot be copied")
 
-    def __reduce__(self) -> object:
+    def __reduce__(self) -> _Any:
         raise TypeError(f"{type(self).__name__} cannot be reduced")
 
-    def __reduce_ex__(self, protocol: int) -> object:
+    def __reduce_ex__(self, protocol: _Any) -> _Any:
         del protocol
         raise TypeError(f"{type(self).__name__} cannot be reduced")
 

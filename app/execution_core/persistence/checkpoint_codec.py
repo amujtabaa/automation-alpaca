@@ -261,7 +261,11 @@ def _atom_binding(atom: _durable_codec.DurableAtom) -> bytes:
 def _field_m1(value: object) -> bytes:
     return _commit_runtime_parts(
         b"execution-core/runtime-checkpoint/field/m1-value/v1",
-        _atom_binding(_durable_codec.encode_m1_value(value)),
+        _atom_binding(
+            _durable_codec.encode_m1_value(
+                _cast(_durable_codec._OwningValue, value)
+            )
+        ),
     )
 
 
@@ -614,7 +618,7 @@ def _decode_canonical_json(value: bytes) -> object:
         decoded = _json.loads(value.decode("utf-8"))
     except (UnicodeDecodeError, _json.JSONDecodeError) as error:
         raise ValueError("checkpoint bytes are not canonical JSON") from error
-    if _encode_canonical_json(decoded) != value:  # type: ignore[arg-type]
+    if _encode_canonical_json(decoded) != value:
         raise ValueError("checkpoint JSON bytes are not canonical")
     return decoded
 
