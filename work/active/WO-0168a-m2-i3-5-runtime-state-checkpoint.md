@@ -269,6 +269,13 @@ No change to that test file may be made until a fresh REV-0074 R6 documentation 
 this exact amendment with `P0=0/P1=0`. The normal REV-0075 implementation review and changed-DDL
 human gate remain independent.
 
+REV-0074 R6 accepted the exact test-scope amendment candidate
+`e3d6665d999bb46be37ca812ba41906191d963cf`, tree
+`e7cf739a00be650192ba572a5ce526063b8c3743`, at `P0=0/P1=0/P2=0` in
+`result-r6.md`. The existing import-boundary test may now be updated only to restore the retained
+public protection reducer body in its legacy AST view. This acceptance does not relax REV-0075 or
+the changed-DDL human gate.
+
 ## Out of scope
 
 - OS-1: The atomic transaction coordinator, commit, publication, and effect eligibility are
