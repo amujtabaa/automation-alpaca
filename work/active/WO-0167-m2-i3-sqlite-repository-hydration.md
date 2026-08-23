@@ -21,7 +21,7 @@ execution_authority: Ameen Mujtabaa activated WO-0167 (Codex task, 2026-08-21) a
 
 **Date:** 2026-08-21
 
-**Status:** REVIEW — Codex R3 remediation candidate awaits fresh REV-0073 acceptance
+**Status:** REVIEW — Codex R4 gate-remediation candidate awaits fresh REV-0073 acceptance
 
 `[FABLE • FULL • spec-first/TDD • direct-key repository only]`
 
@@ -336,3 +336,45 @@ All SQLite-bearing tests used explicit fresh file-backed pytest temporary databa
 or in-memory database, DDL/schema change, migration, runtime composition, credential,
 broker/network call, order, M2-I4+ implementation, promotion, PR, or merge occurred. R3 awaits fresh
 independent `REV-0073/result-r3.md`; author evidence does not accept or close WO-0167.
+
+## REV-0073 R3 BLOCK disposition and remediation R4 (2026-08-22)
+
+Fresh authoritative `result-r3.md` returned `BLOCK` against implementation commit
+`4ed0b4e0378a91940ca392dc40902959dc41ecff` (P0=4, P1=0, P2=0). The reviewer-owned result is
+preserved unchanged with SHA-256
+`490e825f76ec623e85f06c834151c4da02ed2efaf2d82ca1add1d7d399234008`.
+The review found no current production violation; all four findings were mandatory completion gates
+that survived stronger mutants. Codex replaced those weak mechanisms in test-only implementation
+commit `0813a9bec8bb7c2ff37f31dec68d3f7f98bf414a`, tree
+`8bf5929e31f31ec970165611c333a2fc43b576f0`.
+
+- Total-proof directness now records every prepared SQLite call after an exact schema-guard prefix,
+  pins the complete ordered SQL tail and bound parameter vector, and rejects every extra statement
+  without attempting to parse table syntax.
+- Effect, acceptance-set, and evidence identities are deliberately disjoint; the exact wrong
+  acceptance-evidence bind fails.
+- Transaction enforcement transparently exposes connection state, strips leading line/block
+  comments before token checks, constant-folds literal `join` construction, starts every public
+  operation inside a caller transaction, and verifies ownership remains with the caller.
+- Each of the six active-stream coordinates is independently nulled and rejected, while one all-null
+  tuple is positively accepted without stream/cursor rows.
+
+Failure-capable R4 mutations were demonstrated: the wrong acceptance-evidence bind, a parenthesized
+hidden history read, the exact comment-prefixed dynamically assembled `COMMIT`, and removal of the
+six-coordinate all-or-none rule each failed its owning test for the intended reason.
+
+| R4 evidence | Exact result |
+| --- | --- |
+| Candidate commit / tree | `0813a9bec8bb7c2ff37f31dec68d3f7f98bf414a` / `8bf5929e31f31ec970165611c333a2fc43b576f0` |
+| Focused repository/directness | 186 passed |
+| Codec/profile/value/schema/import/repository integration | 559 passed |
+| R2 conformance oracle | 61 passed |
+| Full `tests/execution_core` at exact commit | 1,876 collected and passed; 0 failed/skipped |
+| Static/architecture | Ruff check/format; mypy `app/` 93 files; Import Linter 6 kept/0 broken |
+| Governance | install, version v0.9.2, ledger, PKL, disposition, exact scope, whitespace all passed |
+| Production/schema identity | Repository production blob unchanged from R3; `schema.py` blob `5ab6a87fe5212dd44b8cb0a3ad91b39c43ee65bd`, unchanged from base; DDL SHA-256 `2dc33ba1af41d7516b2cde43cac85ea6644dc9ab904501065aae1c77b14d3859` |
+
+All SQLite-bearing tests used explicit fresh file-backed pytest temporary databases. No configured
+or in-memory database, DDL/schema change, migration, runtime composition, credential,
+broker/network call, order, M2-I4+ implementation, promotion, PR, or merge occurred. R4 awaits fresh
+independent `REV-0073/result-r4.md`; author evidence does not accept or close WO-0167.

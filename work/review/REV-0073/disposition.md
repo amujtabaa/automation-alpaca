@@ -2,7 +2,7 @@
 type: Review Disposition
 rev_id: REV-0073
 work_order_id: WO-0167
-status: REMEDIATED_AWAITING_R3
+status: REMEDIATED_AWAITING_R4
 date: 2026-08-22
 recorded_by: Codex implementation and orchestration seat
 ---
@@ -104,3 +104,29 @@ Fresh author evidence passed 177 focused repository/directness tests, 550 integr
 import contracts, install/version/ledger/PKL/disposition/scope, and whitespace gates passed. The
 schema blob and DDL digest remain unchanged. R3 remains unaccepted until a fresh independent
 `result-r3.md` returns P0=0/P1=0.
+
+## R3 BLOCK disposition and R4 root resolutions
+
+Fresh authoritative `result-r3.md` returned `BLOCK` against R3 commit
+`4ed0b4e0378a91940ca392dc40902959dc41ecff` (P0=4, P1=0, P2=0). Its SHA-256 is
+`490e825f76ec623e85f06c834151c4da02ed2efaf2d82ca1add1d7d399234008`; the result remains
+reviewer-owned and unchanged. The disproof pass confirmed current production behavior was correct;
+the four findings were test-gate defects. R4 commit
+`0813a9bec8bb7c2ff37f31dec68d3f7f98bf414a`, tree
+`8bf5929e31f31ec970165611c333a2fc43b576f0`, changes only the two repository test modules:
+
+1. Prepared SQL and exact bound parameters are captured at the connection boundary after the exact
+   schema-guard prefix. No parser or identifier spelling can hide an additional execute call.
+2. Effect, acceptance-set, and evidence identifiers are disjoint, and every root/effect query has
+   an exact ordered parameter vector.
+3. Static and runtime transaction gates normalize leading comments, recognize literal `join`
+   assembly, transparently expose `in_transaction`, and keep all 56 public operations inside the
+   caller's active transaction until caller rollback.
+4. All six active-stream partial tuples fail independently; an all-null tuple remains a positive
+   accepted state.
+
+The exact four reviewer mutants were killed for the intended reason. Fresh author evidence passed
+186 focused tests, 559 integration tests, the 61-case R2 oracle, and all 1,876 execution-core tests.
+Ruff, format, mypy over 93 app files, six import contracts, installation/version/ledger/PKL/
+disposition/scope, and whitespace gates passed. Production and schema identities remain unchanged.
+R4 remains unaccepted until fresh independent `result-r4.md` returns P0=0/P1=0.
