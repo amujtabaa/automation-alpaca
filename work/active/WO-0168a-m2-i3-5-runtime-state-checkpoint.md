@@ -247,6 +247,13 @@ No `unit_of_work.py` source file may be created or changed until a fresh REV-007
 review accepts this exact scope amendment with P0=0/P1=0. The normal REV-0075 implementation
 review and the separate changed-DDL human gate remain required.
 
+REV-0074 R5 accepted the exact source-scope amendment candidate
+`5239581e92a9b52e7e54ee148d70431da218fdbd`, tree
+`ef1c53c51912cf19a8028a8e14ed7b7139481cea`, at `P0=0/P1=0/P2=0` in
+`result-r5.md`. The exact contractually required `unit_of_work.py` path is now usable only for its
+finite capability issuance and row-write responsibilities. This acceptance does not relax the
+normal REV-0075 implementation review or the changed-DDL human gate.
+
 ## Out of scope
 
 - OS-1: The atomic transaction coordinator, commit, publication, and effect eligibility are
