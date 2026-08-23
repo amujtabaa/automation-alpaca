@@ -110,3 +110,98 @@ def test_durable_input_record_keeps_passive_venue_session_optional_only() -> Non
             record.technical_state,
             record.created_ordinal,
         )
+
+
+def test_durable_input_semantic_key_record_binds_bytes_to_exact_collision_domain() -> (
+    None
+):
+    application_generation_id = ApplicationGenerationId("semantic-key-app")
+    execution_profile_id = "06" * 32
+    key_bytes = operations.encode_m2_semantic_key(
+        operations.InputSemanticKeyKind.AUTHORITY_QUERY_CLAIM_V1,
+        (application_generation_id.value, execution_profile_id, 9),
+        ("query-claim-id", "claim-1"),
+    )
+    record = records.DurableInputSemanticKeyRecord(
+        operations.InputSemanticKeyKind.AUTHORITY_QUERY_CLAIM_V1,
+        application_generation_id,
+        execution_profile_id,
+        9,
+        key_bytes,
+        sha256(key_bytes).hexdigest(),
+        application_generation_id,
+        operations.OperationDomain.AUTHORITY,
+        "07" * 32,
+        3,
+    )
+
+    assert record.canonical_key_bytes == key_bytes
+    assert record.key_sha256 == sha256(key_bytes).hexdigest()
+
+    with pytest.raises(ValueError, match="authority semantic key coordinates"):
+        records.DurableInputSemanticKeyRecord(
+            record.key_kind,
+            record.key_application_generation_id,
+            record.execution_profile_id,
+            10,
+            record.canonical_key_bytes,
+            record.key_sha256,
+            record.input_application_generation_id,
+            record.input_domain,
+            record.input_identity_sha256,
+            record.created_ordinal,
+        )
+
+    with pytest.raises(ValueError, match="kind does not match canonical"):
+        records.DurableInputSemanticKeyRecord(
+            operations.InputSemanticKeyKind.AUTHORITY_MANUAL_FLATTEN_V1,
+            record.key_application_generation_id,
+            record.execution_profile_id,
+            record.key_scope_id,
+            record.canonical_key_bytes,
+            record.key_sha256,
+            record.input_application_generation_id,
+            record.input_domain,
+            record.input_identity_sha256,
+            record.created_ordinal,
+        )
+
+
+def test_durable_input_semantic_key_record_keeps_venue_collision_domain_unscoped() -> (
+    None
+):
+    application_generation_id = ApplicationGenerationId("venue-semantic-key-app")
+    execution_profile_id = "08" * 32
+    key_bytes = operations.encode_m2_semantic_key(
+        operations.InputSemanticKeyKind.VENUE_COMMAND_V2,
+        (execution_profile_id,),
+        ("venue-semantic-digest", "09" * 32),
+    )
+    record = records.DurableInputSemanticKeyRecord(
+        operations.InputSemanticKeyKind.VENUE_COMMAND_V2,
+        None,
+        execution_profile_id,
+        None,
+        key_bytes,
+        sha256(key_bytes).hexdigest(),
+        application_generation_id,
+        operations.OperationDomain.VENUE_RECOVERY,
+        "0a" * 32,
+        4,
+    )
+
+    assert record.key_application_generation_id is None
+    assert record.key_scope_id is None
+    with pytest.raises(ValueError, match="venue semantic key coordinates"):
+        records.DurableInputSemanticKeyRecord(
+            record.key_kind,
+            application_generation_id,
+            record.execution_profile_id,
+            1,
+            record.canonical_key_bytes,
+            record.key_sha256,
+            record.input_application_generation_id,
+            record.input_domain,
+            record.input_identity_sha256,
+            record.created_ordinal,
+        )

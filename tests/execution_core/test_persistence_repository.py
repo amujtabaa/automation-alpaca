@@ -429,6 +429,7 @@ def test_exact_exports_and_outcome_invariants() -> None:
         "CurrentProofRequest",
         "CurrentProofSlice",
         "DurableInputRecord",
+        "DurableInputSemanticKeyRecord",
         "DispatchClaimRecord",
         "ExecutionFactHeadRecord",
         "ExecutionFactRecord",

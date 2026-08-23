@@ -233,6 +233,60 @@ class DurableInputRecord:
             raise ValueError("durable input created ordinal must be positive")
 
 
+@_dataclass(frozen=True, slots=True)
+class DurableInputSemanticKeyRecord:
+    """Immutable alternate-key row whose canonical bytes remain authoritative."""
+
+    key_kind: _operations.InputSemanticKeyKind
+    key_application_generation_id: _identity.ApplicationGenerationId | None
+    execution_profile_id: str
+    key_scope_id: int | None
+    canonical_key_bytes: bytes
+    key_sha256: str
+    input_application_generation_id: _identity.ApplicationGenerationId
+    input_domain: _operations.OperationDomain
+    input_identity_sha256: str
+    created_ordinal: int
+
+    def __post_init__(self) -> None:
+        if type(self.key_kind) is not _operations.InputSemanticKeyKind:
+            raise TypeError("semantic key kind must be exact InputSemanticKeyKind")
+        _require_optional_exact_identity(
+            "semantic key application generation",
+            self.key_application_generation_id,
+            _identity.ApplicationGenerationId,
+        )
+        _require_sha256_text(
+            "semantic key execution profile", self.execution_profile_id
+        )
+        if self.key_scope_id is not None:
+            if type(self.key_scope_id) is not int:
+                raise TypeError("semantic key scope id must be an exact integer")
+            if self.key_scope_id < 1:
+                raise ValueError("semantic key scope id must be positive")
+        if type(self.canonical_key_bytes) is not bytes:
+            raise TypeError("semantic key bytes must be exact bytes")
+        if not self.canonical_key_bytes:
+            raise ValueError("semantic key bytes must be nonempty")
+        _require_sha256_text("semantic key SHA-256", self.key_sha256)
+        if self.key_sha256 != _sha256(self.canonical_key_bytes).hexdigest():
+            raise ValueError("semantic key SHA-256 does not match key bytes")
+        if (
+            type(self.input_application_generation_id)
+            is not _identity.ApplicationGenerationId
+        ):
+            raise TypeError("semantic key input application generation must be exact")
+        _identity.ApplicationGenerationId(self.input_application_generation_id.value)
+        if type(self.input_domain) is not _operations.OperationDomain:
+            raise TypeError("semantic key input domain must be exact OperationDomain")
+        _require_sha256_text("semantic key input identity", self.input_identity_sha256)
+        if type(self.created_ordinal) is not int:
+            raise TypeError("semantic key created ordinal must be an exact integer")
+        if self.created_ordinal < 1:
+            raise ValueError("semantic key created ordinal must be positive")
+        _validate_durable_input_semantic_key_coordinates(self)
+
+
 def _require_optional_exact_identity(
     name: str,
     value: object,
@@ -278,6 +332,48 @@ def _validate_durable_input_coordinates(record: DurableInputRecord) -> None:
     if has_session or has_acquisition or has_market or has_stream:
         raise ValueError(
             "execution coordinates cannot retain session or derived coordinates"
+        )
+
+
+def _validate_durable_input_semantic_key_coordinates(
+    record: DurableInputSemanticKeyRecord,
+) -> None:
+    """Bind canonical semantic-key bytes to their exact stored collision domain."""
+
+    decoded_kind, coordinates, _ = _operations.decode_m2_semantic_key(
+        record.canonical_key_bytes
+    )
+    if decoded_kind is not record.key_kind:
+        raise ValueError("semantic key kind does not match canonical key bytes")
+    venue_kinds = {
+        _operations.InputSemanticKeyKind.VENUE_COMMAND_V2,
+        _operations.InputSemanticKeyKind.VENUE_EXECUTION_FACT_V1,
+        _operations.InputSemanticKeyKind.VENUE_COVERAGE_ROOT_V1,
+        _operations.InputSemanticKeyKind.VENUE_COVERAGE_INTERVAL_V1,
+        _operations.InputSemanticKeyKind.VENUE_BROKER_FACT_V1,
+    }
+    if record.key_kind in venue_kinds:
+        if (
+            record.key_application_generation_id is not None
+            or record.key_scope_id is not None
+            or record.input_domain is not _operations.OperationDomain.VENUE_RECOVERY
+            or coordinates != (record.execution_profile_id,)
+        ):
+            raise ValueError(
+                "venue semantic key coordinates do not match its collision domain"
+            )
+        return
+    application_generation_id = record.key_application_generation_id
+    scope_id = record.key_scope_id
+    if (
+        application_generation_id is None
+        or scope_id is None
+        or record.input_domain is not _operations.OperationDomain.AUTHORITY
+        or coordinates
+        != (application_generation_id.value, record.execution_profile_id, scope_id)
+    ):
+        raise ValueError(
+            "authority semantic key coordinates do not match its collision domain"
         )
 
 
@@ -1234,6 +1330,7 @@ __all__ = (
     "CurrentProofRequest",
     "CurrentProofSlice",
     "DurableInputRecord",
+    "DurableInputSemanticKeyRecord",
     "DispatchClaimRecord",
     "ExecutionFactHeadRecord",
     "ExecutionFactRecord",
