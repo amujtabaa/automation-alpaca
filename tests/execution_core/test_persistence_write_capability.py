@@ -187,10 +187,16 @@ getattr(repository, "_issue_setup_write_capability")(connection)
     )
 
 
-def test_repository_fixture_passes_setup_capability_to_every_direct_mutator() -> None:
-    fixture_path = Path(__file__).with_name("test_persistence_repository.py")
-    fixture_source = fixture_path.read_text(encoding="utf-8")
-    assert _repository_mutator_calls_missing_capability(fixture_source) == ()
+def test_every_persistence_fixture_passes_setup_capability_to_each_direct_mutator() -> (
+    None
+):
+    for fixture_name in (
+        "test_persistence_repository.py",
+        "test_persistence_directness.py",
+    ):
+        fixture_path = Path(__file__).with_name(fixture_name)
+        fixture_source = fixture_path.read_text(encoding="utf-8")
+        assert _repository_mutator_calls_missing_capability(fixture_source) == ()
 
     mutant = """
 repository.store_scope(connection, record)

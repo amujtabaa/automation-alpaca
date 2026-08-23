@@ -7,7 +7,6 @@ rows, opens a connection, or serializes arbitrary Python objects.
 
 from __future__ import annotations as _annotations
 
-from dataclasses import dataclass as _dataclass
 from typing import TypeVar as _TypeVar
 from typing import cast as _cast
 
@@ -24,30 +23,6 @@ _M2_PROTECTION_CHECKPOINT_TAG = "m2.protection.checkpoint/v1"
 _M2_EXECUTION_STATE_TAG = "m2.position.execution-state/v1"
 _M2_TAIL_FOLD_INPUT_TAG = "m2.position.tail-fold-input/v1"
 _M1ValueT = _TypeVar("_M1ValueT")
-
-
-@_dataclass(frozen=True, slots=True, init=False)
-class RuntimeCheckpointEnvelope:
-    """Reserved exact checkpoint shape; only its completed owner codec may issue it."""
-
-    contract_version: int
-    application_generation_id: _identity.ApplicationGenerationId
-    execution_profile_id: str
-    market_source_profile_id: str
-    currentness_head_ordinal: int
-    checkpoint_version_ordinal: int
-    authority_state: object
-    scope_states: tuple[object, ...]
-    active_or_unresolved_effect_refs: tuple[object, ...]
-    active_or_unresolved_route_refs: tuple[object, ...]
-    payload_sha256: str
-
-    def __init__(self, *args: object, **kwargs: object) -> None:
-        raise TypeError("RuntimeCheckpointEnvelope is codec-issued")
-
-    def __init_subclass__(cls, **kwargs: object) -> None:
-        del cls, kwargs
-        raise TypeError("RuntimeCheckpointEnvelope cannot be subclassed")
 
 
 def _encode_m2_protection_policy(value: object) -> list[str]:
@@ -541,4 +516,4 @@ def _m2_protection_authority_proof_from_current_proof(
     )
 
 
-__all__ = ("RuntimeCheckpointEnvelope",)
+__all__: tuple[str, ...] = ()

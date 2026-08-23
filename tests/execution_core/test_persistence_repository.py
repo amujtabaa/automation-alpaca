@@ -662,12 +662,6 @@ def test_all_remaining_families_and_total_current_proof_round_trip(connection) -
     controller = repository.load_symbol_controller(connection, 1).record
     assert isinstance(controller, records.SymbolControllerRecord)
     assert controller.currentness_head_ordinal == 1
-    checkpoint_v2 = _checkpoint(head=1, version=2)
-    _expect_applied(
-        repository.advance_kernel_checkpoint(
-            connection, 1, checkpoint_v2, capability=_setup_write_capability(connection)
-        )
-    )
     protection_v2 = _protection(controller_head=1, version=2)
     _expect_applied(
         repository.advance_protection_authority(
@@ -968,18 +962,12 @@ def test_repository_loads_cross_the_accepted_codec_boundary(
     } <= set(decoded_tags)
 
 
-def test_mutable_rows_use_expected_version_and_caller_owns_rollback(connection) -> None:
+def test_noncheckpoint_mutable_rows_use_expected_version_and_caller_owns_rollback(
+    connection,
+) -> None:
     _foundation(connection)
     connection.commit()
     connection.execute("BEGIN")
-    _expect_applied(
-        repository.advance_kernel_checkpoint(
-            connection,
-            1,
-            _checkpoint(head=1, version=2),
-            capability=_setup_write_capability(connection),
-        )
-    )
     _expect_applied(
         repository.advance_market_cursor(
             connection,
@@ -1006,18 +994,9 @@ def test_mutable_rows_use_expected_version_and_caller_owns_rollback(connection) 
         )
     )
     connection.rollback()
-    _assert_found(repository.load_kernel_checkpoint(connection, APP_ID), _checkpoint())
     _assert_found(repository.load_market_cursor(connection, STREAM_ID), _cursor())
     _assert_found(repository.load_symbol_controller(connection, 1), _controller())
     _assert_found(repository.load_protection_authority(connection, 1), _protection())
-
-    stale = repository.advance_kernel_checkpoint(
-        connection,
-        9,
-        _checkpoint(head=1, version=2),
-        capability=_setup_write_capability(connection),
-    )
-    assert stale.kind is records.RepositoryOutcomeKind.CONFLICT
 
 
 def test_repository_source_cannot_begin_commit_or_rollback_transactions() -> None:
@@ -1281,9 +1260,6 @@ def test_every_insert_owned_family_reports_duplicate_contention(connection) -> N
         repository.store_acquisition_generation(
             connection, _acquisition(), capability=_setup_write_capability(connection)
         ),
-        repository.store_kernel_checkpoint(
-            connection, _checkpoint(), capability=_setup_write_capability(connection)
-        ),
         repository.store_symbol_controller(
             connection, _controller(), capability=_setup_write_capability(connection)
         ),
@@ -1389,7 +1365,6 @@ def test_every_insert_owned_family_rejects_primary_identity_mismatch(
                 emergency_compatibility_sha256="ac" * 32,
             ),
         ),
-        (repository.store_kernel_checkpoint, _checkpoint(head=1, version=2)),
         (
             repository.store_symbol_controller,
             dataclasses.replace(
@@ -2014,15 +1989,3 @@ def test_current_proof_refuses_checkpoint_behind_controller_head(connection) -> 
     stale = repository.load_current_proof(connection, proof_request)
     assert stale.kind is records.RepositoryOutcomeKind.INTEGRITY_FAILURE
     assert stale.record is None
-
-    _expect_applied(
-        repository.advance_kernel_checkpoint(
-            connection,
-            1,
-            _checkpoint(head=1, version=2),
-            capability=_setup_write_capability(connection),
-        )
-    )
-    fresh = repository.load_current_proof(connection, proof_request)
-    assert fresh.kind is records.RepositoryOutcomeKind.FOUND
-    assert fresh.record is not None

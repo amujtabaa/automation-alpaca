@@ -18,6 +18,7 @@ from app.execution_core.persistence.schema import (
     install_schema,
     schema_ddl_digest,
 )
+from persistence_setup_support import issue_setup_write_capability
 import test_persistence_repository as fixtures
 
 
@@ -80,9 +81,33 @@ def _route() -> records.AcquisitionRootRouteRecord:
     )
 
 
+def _setup_write_capability(connection: sqlite3.Connection) -> object:
+    """Issue the named fixture-only token for one directness test connection."""
+
+    return issue_setup_write_capability(connection)
+
+
+def _apply_mutator(
+    connection: sqlite3.Connection,
+    operation: Callable[..., Any],
+    *arguments: object,
+) -> Any:
+    """Invoke the real repository mutator with an explicit setup capability."""
+
+    return operation(
+        connection,
+        *arguments,
+        capability=_setup_write_capability(connection),
+    )
+
+
 def _seed_complete(connection: sqlite3.Connection) -> None:
     fixtures._foundation(connection)
-    fixtures._expect_applied(repository.store_root_fill(connection, fixtures._root()))
+    fixtures._expect_applied(
+        repository.store_root_fill(
+            connection, fixtures._root(), capability=_setup_write_capability(connection)
+        )
+    )
     effect1 = fixtures._effect(1, controller_head=0, protection_version=1)
     owner1 = fixtures._owner(1, root_fill_key_id=1)
     for operation, value in (
@@ -91,16 +116,12 @@ def _seed_complete(connection: sqlite3.Connection) -> None:
         (repository.store_acquisition_root_route, _route()),
         (repository.store_execution_fact, fixtures._fact()),
     ):
-        fixtures._expect_applied(operation(connection, value))
-
-    fixtures._expect_applied(
-        repository.advance_kernel_checkpoint(
-            connection, 1, fixtures._checkpoint(head=1, version=2)
-        )
-    )
+        fixtures._expect_applied(_apply_mutator(connection, operation, value))
     protection_v2 = fixtures._protection(controller_head=1, version=2)
     fixtures._expect_applied(
-        repository.advance_protection_authority(connection, 1, protection_v2)
+        repository.advance_protection_authority(
+            connection, 1, protection_v2, capability=_setup_write_capability(connection)
+        )
     )
     effect2 = fixtures._effect(2, controller_head=1, protection_version=2)
     owner2 = fixtures._owner(2, root_fill_key_id=None)
@@ -115,7 +136,7 @@ def _seed_complete(connection: sqlite3.Connection) -> None:
         ),
         (repository.store_closure, _closure(2)),
     ):
-        fixtures._expect_applied(operation(connection, value))
+        fixtures._expect_applied(_apply_mutator(connection, operation, value))
 
 
 def _operation_cases() -> dict[str, Callable[[Any], Any]]:
@@ -125,22 +146,26 @@ def _operation_cases() -> dict[str, Callable[[Any], Any]]:
     evidence = _evidence(1)
     closure = _closure(1)
     return {
-        "advance_kernel_checkpoint": lambda c: repository.advance_kernel_checkpoint(
-            c, 1, fixtures._checkpoint(head=1, version=2)
-        ),
         "advance_market_cursor": lambda c: repository.advance_market_cursor(
-            c, 0, 0, fixtures._cursor(fixed=1, published=1)
+            c,
+            0,
+            0,
+            fixtures._cursor(fixed=1, published=1),
+            capability=_setup_write_capability(c),
         ),
         "advance_protection_authority": lambda c: (
             repository.advance_protection_authority(
-                c, 1, fixtures._protection(version=2)
+                c,
+                1,
+                fixtures._protection(version=2),
+                capability=_setup_write_capability(c),
             )
         ),
         "advance_symbol_controller": lambda c: repository.advance_symbol_controller(
-            c, 1, fixtures._controller(version=2)
+            c, 1, fixtures._controller(version=2), capability=_setup_write_capability(c)
         ),
         "advance_venue_effect": lambda c: repository.advance_venue_effect(
-            c, "REQUESTED", "OPEN", effect
+            c, "REQUESTED", "OPEN", effect, capability=_setup_write_capability(c)
         ),
         "load_acceptance_evidence": lambda c: repository.load_acceptance_evidence(c, 1),
         "load_acceptance_set": lambda c: repository.load_acceptance_set(c, 1),
@@ -179,9 +204,6 @@ def _operation_cases() -> dict[str, Callable[[Any], Any]]:
         "load_execution_profile": lambda c: repository.load_execution_profile(
             c, fixtures.EXECUTION_PROFILE_ID
         ),
-        "load_kernel_checkpoint": lambda c: repository.load_kernel_checkpoint(
-            c, fixtures.APP_ID
-        ),
         "load_latest_acceptance_evidence": lambda c: (
             repository.load_latest_acceptance_evidence(c, 1)
         ),
@@ -215,56 +237,71 @@ def _operation_cases() -> dict[str, Callable[[Any], Any]]:
             repository.load_venue_identity_owners_for_effect(c, 1)
         ),
         "retire_acquisition_generation": lambda c: (
-            repository.retire_acquisition_generation(c, fixtures.ACQUISITION_ID)
+            repository.retire_acquisition_generation(
+                c, fixtures.ACQUISITION_ID, capability=_setup_write_capability(c)
+            )
         ),
         "store_acceptance_evidence": lambda c: repository.store_acceptance_evidence(
-            c, evidence
+            c, evidence, capability=_setup_write_capability(c)
         ),
         "store_acceptance_set": lambda c: repository.store_acceptance_set(
-            c, records.AcceptanceSetRecord(1, 1)
+            c, records.AcceptanceSetRecord(1, 1), capability=_setup_write_capability(c)
         ),
         "store_acquisition_generation": lambda c: (
-            repository.store_acquisition_generation(c, fixtures._acquisition())
+            repository.store_acquisition_generation(
+                c, fixtures._acquisition(), capability=_setup_write_capability(c)
+            )
         ),
         "store_acquisition_root_route": lambda c: (
-            repository.store_acquisition_root_route(c, route)
+            repository.store_acquisition_root_route(
+                c, route, capability=_setup_write_capability(c)
+            )
         ),
         "store_application_generation": lambda c: (
-            repository.store_application_generation(c, fixtures._application())
+            repository.store_application_generation(
+                c, fixtures._application(), capability=_setup_write_capability(c)
+            )
         ),
-        "store_closure": lambda c: repository.store_closure(c, closure),
+        "store_closure": lambda c: repository.store_closure(
+            c, closure, capability=_setup_write_capability(c)
+        ),
         "store_dispatch_claim": lambda c: repository.store_dispatch_claim(
-            c, fixtures._claim(1)
+            c, fixtures._claim(1), capability=_setup_write_capability(c)
         ),
         "store_execution_fact": lambda c: repository.store_execution_fact(
-            c, fixtures._fact()
+            c, fixtures._fact(), capability=_setup_write_capability(c)
         ),
         "store_execution_profile": lambda c: repository.store_execution_profile(
-            c, fixtures._execution_profile()
-        ),
-        "store_kernel_checkpoint": lambda c: repository.store_kernel_checkpoint(
-            c, fixtures._checkpoint()
+            c, fixtures._execution_profile(), capability=_setup_write_capability(c)
         ),
         "store_market_cursor": lambda c: repository.store_market_cursor(
-            c, fixtures._cursor()
+            c, fixtures._cursor(), capability=_setup_write_capability(c)
         ),
         "store_market_source_profile": lambda c: repository.store_market_source_profile(
-            c, fixtures._market_profile()
+            c, fixtures._market_profile(), capability=_setup_write_capability(c)
         ),
         "store_market_stream_authority": lambda c: (
-            repository.store_market_stream_authority(c, fixtures._market_stream())
+            repository.store_market_stream_authority(
+                c, fixtures._market_stream(), capability=_setup_write_capability(c)
+            )
         ),
         "store_protection_authority": lambda c: repository.store_protection_authority(
-            c, fixtures._protection()
+            c, fixtures._protection(), capability=_setup_write_capability(c)
         ),
-        "store_root_fill": lambda c: repository.store_root_fill(c, fixtures._root()),
-        "store_scope": lambda c: repository.store_scope(c, fixtures._scope()),
+        "store_root_fill": lambda c: repository.store_root_fill(
+            c, fixtures._root(), capability=_setup_write_capability(c)
+        ),
+        "store_scope": lambda c: repository.store_scope(
+            c, fixtures._scope(), capability=_setup_write_capability(c)
+        ),
         "store_symbol_controller": lambda c: repository.store_symbol_controller(
-            c, fixtures._controller()
+            c, fixtures._controller(), capability=_setup_write_capability(c)
         ),
-        "store_venue_effect": lambda c: repository.store_venue_effect(c, effect),
+        "store_venue_effect": lambda c: repository.store_venue_effect(
+            c, effect, capability=_setup_write_capability(c)
+        ),
         "store_venue_identity_owner": lambda c: repository.store_venue_identity_owner(
-            c, owner
+            c, owner, capability=_setup_write_capability(c)
         ),
     }
 
@@ -538,11 +575,6 @@ def test_every_direct_loader_uses_its_production_key_and_index(connection) -> No
             "where acquisition_generation_id =",
         ),
         (
-            lambda: repository.load_kernel_checkpoint(connection, fixtures.APP_ID),
-            "kernel_checkpoint",
-            "where application_generation_id =",
-        ),
-        (
             lambda: repository.load_symbol_controller(connection, 1),
             "symbol_controller",
             "where scope_id =",
@@ -665,7 +697,11 @@ def test_every_direct_loader_uses_its_production_key_and_index(connection) -> No
 def test_same_family_growth_cannot_hide_a_root_full_scan(connection) -> None:
     fixtures._foundation(connection)
     target = fixtures._root()
-    fixtures._expect_applied(repository.store_root_fill(connection, target))
+    fixtures._expect_applied(
+        repository.store_root_fill(
+            connection, target, capability=_setup_write_capability(connection)
+        )
+    )
     connection.executemany(
         "INSERT INTO root_fill (root_fill_key_id, scope_id, application_generation_id,"
         " execution_profile_id, owner_generation_id, root_fill_external,"
@@ -977,19 +1013,13 @@ def test_root_proof_binds_fact_head_id_not_root_coordinate(connection) -> None:
         (repository.store_acquisition_root_route, route),
         (repository.store_execution_fact, fact),
     ):
-        fixtures._expect_applied(operation(connection, value))
-    fixtures._expect_applied(
-        repository.advance_kernel_checkpoint(
-            connection,
-            1,
-            fixtures._checkpoint(head=1, version=2),
-        )
-    )
+        fixtures._expect_applied(_apply_mutator(connection, operation, value))
     fixtures._expect_applied(
         repository.advance_protection_authority(
             connection,
             1,
             fixtures._protection(controller_head=1, version=2),
+            capability=_setup_write_capability(connection),
         )
     )
 
@@ -1365,7 +1395,6 @@ def test_total_proof_accepts_an_all_null_active_stream_tuple(connection) -> None
         (repository.store_application_generation, fixtures._application()),
         (repository.store_scope, fixtures._scope()),
         (repository.store_acquisition_generation, fixtures._acquisition()),
-        (repository.store_kernel_checkpoint, fixtures._checkpoint()),
         (repository.store_symbol_controller, fixtures._controller()),
         (
             repository.store_protection_authority,
@@ -1380,7 +1409,7 @@ def test_total_proof_accepts_an_all_null_active_stream_tuple(connection) -> None
             ),
         ),
     ):
-        fixtures._expect_applied(operation(connection, value))
+        fixtures._expect_applied(_apply_mutator(connection, operation, value))
 
     outcome = repository.load_current_proof(
         connection,
@@ -1430,16 +1459,19 @@ def test_scope_proof_refuses_every_incomplete_foundation_stage(connection) -> No
         (repository.store_application_generation, fixtures._application()),
         (repository.store_scope, fixtures._scope()),
         (repository.store_acquisition_generation, fixtures._acquisition()),
-        (repository.store_kernel_checkpoint, fixtures._checkpoint()),
         (repository.store_symbol_controller, fixtures._controller()),
         (repository.store_market_stream_authority, fixtures._market_stream()),
         (repository.store_market_cursor, fixtures._cursor()),
     ):
-        fixtures._expect_applied(operation(connection, value))
+        fixtures._expect_applied(_apply_mutator(connection, operation, value))
         assert_incomplete()
 
     fixtures._expect_applied(
-        repository.store_protection_authority(connection, fixtures._protection())
+        repository.store_protection_authority(
+            connection,
+            fixtures._protection(),
+            capability=_setup_write_capability(connection),
+        )
     )
     outcome = repository.load_current_proof(connection, proof_request)
     assert outcome.kind is records.RepositoryOutcomeKind.FOUND
