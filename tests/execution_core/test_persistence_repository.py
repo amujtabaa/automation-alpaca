@@ -781,7 +781,8 @@ def test_repository_source_cannot_begin_commit_or_rollback_transactions() -> Non
         node
         for node in ast.walk(tree)
         if isinstance(node, ast.Attribute)
-        and node.attr in {"commit", "rollback", "executescript"}
+        and node.attr
+        in {"commit", "rollback", "cursor", "executemany", "executescript"}
     ]
     transaction_tokens = {
         "BEGIN",

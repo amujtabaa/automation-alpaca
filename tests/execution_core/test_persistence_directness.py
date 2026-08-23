@@ -269,6 +269,33 @@ def _operation_cases() -> dict[str, Callable[[Any], Any]]:
     }
 
 
+class _TransactionTripwireCursor:
+    def __init__(
+        self,
+        connection: _TransactionTripwireConnection,
+        cursor: Any,
+    ) -> None:
+        self._connection = connection
+        self._cursor = cursor
+
+    @property
+    def connection(self) -> _TransactionTripwireConnection:
+        return self._connection
+
+    def execute(self, sql: str, parameters: tuple[Any, ...] = ()) -> Any:
+        self._connection._refuse_transaction_sql(sql)
+        result = self._cursor.execute(sql, parameters)
+        return self if result is self._cursor else result
+
+    def executemany(self, sql: str, parameters: Any) -> Any:
+        self._connection._refuse_transaction_sql(sql)
+        result = self._cursor.executemany(sql, parameters)
+        return self if result is self._cursor else result
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._cursor, name)
+
+
 class _TransactionTripwireConnection:
     _FORBIDDEN_ATTRIBUTES = frozenset({"commit", "rollback", "executescript"})
     _FORBIDDEN_SQL = frozenset(
@@ -287,10 +314,48 @@ class _TransactionTripwireConnection:
         return getattr(self._connection, name)
 
     def execute(self, sql: str, parameters: tuple[Any, ...] = ()) -> Any:
+        self._refuse_transaction_sql(sql)
+        return _TransactionTripwireCursor(
+            self,
+            self._connection.execute(sql, parameters),
+        )
+
+    def cursor(self, *args: Any, **kwargs: Any) -> _TransactionTripwireCursor:
+        return _TransactionTripwireCursor(
+            self,
+            self._connection.cursor(*args, **kwargs),
+        )
+
+    def executemany(self, sql: str, parameters: Any) -> _TransactionTripwireCursor:
+        self._refuse_transaction_sql(sql)
+        return _TransactionTripwireCursor(
+            self,
+            self._connection.executemany(sql, parameters),
+        )
+
+    def _refuse_transaction_sql(self, sql: str) -> None:
         token = _first_sql_token(sql)
         if token in self._FORBIDDEN_SQL:
             raise AssertionError(f"repository attempted transaction SQL {token}")
-        return self._connection.execute(sql, parameters)
+
+
+def _application_row_counts(
+    connection: sqlite3.Connection,
+) -> tuple[tuple[str, int], ...]:
+    tables = tuple(
+        str(row[0])
+        for row in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+            " AND name NOT LIKE 'sqlite_%' AND name <> 'schema_meta' ORDER BY name"
+        )
+    )
+    return tuple(
+        (
+            table,
+            int(connection.execute(f'SELECT count(*) FROM "{table}"').fetchone()[0]),
+        )
+        for table in tables
+    )
 
 
 def _first_sql_token(sql: str) -> str:
@@ -320,19 +385,24 @@ def test_every_public_operation_leaves_transactions_with_caller(
     connection,
     operation_name: str,
 ) -> None:
-    _seed_complete(connection)
     connection.commit()
+    before = _application_row_counts(connection)
     connection.execute("BEGIN")
     assert connection.in_transaction
-    outcome = _operation_cases()[operation_name](
-        _TransactionTripwireConnection(connection)
-    )
+    guarded_connection = _TransactionTripwireConnection(connection)
+    _seed_complete(guarded_connection)  # type: ignore[arg-type]
+    outcome = _operation_cases()[operation_name](guarded_connection)
     assert isinstance(outcome, records.RepositoryOutcome)
     assert connection.in_transaction
     connection.rollback()
     assert not connection.in_transaction
+    assert _application_row_counts(connection) == before
 
 
+@pytest.mark.parametrize(
+    "channel",
+    ("connection", "cursor"),
+)
 @pytest.mark.parametrize(
     "sql",
     (
@@ -343,10 +413,17 @@ def test_every_public_operation_leaves_transactions_with_caller(
 )
 def test_transaction_tripwire_rejects_leading_comment_bypasses(
     connection,
+    channel: str,
     sql: str,
 ) -> None:
+    guarded_connection = _TransactionTripwireConnection(connection)
+    executor = (
+        guarded_connection.execute
+        if channel == "connection"
+        else guarded_connection.cursor().execute
+    )
     with pytest.raises(AssertionError, match="transaction SQL"):
-        _TransactionTripwireConnection(connection).execute(sql)
+        executor(sql)
 
 
 def test_every_public_operation_executes_the_schema_guard_first(
@@ -616,14 +693,70 @@ def _normalize_sql(sql: str) -> str:
     return " ".join(sql.lower().split())
 
 
+class _ProofRecordingCursor:
+    def __init__(
+        self,
+        connection: _ProofRecordingConnection,
+        cursor: Any,
+    ) -> None:
+        self._connection = connection
+        self._cursor = cursor
+
+    @property
+    def connection(self) -> _ProofRecordingConnection:
+        return self._connection
+
+    def execute(self, sql: str, parameters: tuple[Any, ...] = ()) -> Any:
+        self._connection._record(sql, parameters)
+        result = self._cursor.execute(sql, parameters)
+        return self if result is self._cursor else result
+
+    def executemany(self, sql: str, parameters: Any) -> Any:
+        self._connection._record(sql, ("<executemany>",))
+        result = self._cursor.executemany(sql, parameters)
+        return self if result is self._cursor else result
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._cursor, name)
+
+
 class _ProofRecordingConnection:
     def __init__(self, connection: Any) -> None:
         self._connection = connection
         self.calls: list[tuple[str, tuple[Any, ...]]] = []
 
     def execute(self, sql: str, parameters: tuple[Any, ...] = ()) -> Any:
+        self._record(sql, parameters)
+        return _ProofRecordingCursor(
+            self,
+            self._connection.execute(sql, parameters),
+        )
+
+    def cursor(self, *args: Any, **kwargs: Any) -> _ProofRecordingCursor:
+        return _ProofRecordingCursor(
+            self,
+            self._connection.cursor(*args, **kwargs),
+        )
+
+    def executemany(self, sql: str, parameters: Any) -> _ProofRecordingCursor:
+        self._record(sql, ("<executemany>",))
+        return _ProofRecordingCursor(
+            self,
+            self._connection.executemany(sql, parameters),
+        )
+
+    def executescript(self, sql: str) -> _ProofRecordingCursor:
+        self._record(sql, ("<executescript>",))
+        return _ProofRecordingCursor(
+            self,
+            self._connection.executescript(sql),
+        )
+
+    def _record(self, sql: str, parameters: tuple[Any, ...]) -> None:
         self.calls.append((sql, tuple(parameters)))
-        return self._connection.execute(sql, parameters)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._connection, name)
 
 
 _SCHEMA_GUARD_CALLS = tuple(
@@ -913,6 +1046,33 @@ def test_exact_prepared_call_gate_rejects_every_hidden_statement_form(
     with pytest.raises(AssertionError):
         _capture_proof_queries(
             _HiddenReadConnection(connection, hidden_sql),
+            records.CurrentProofRequest(fixtures.APP_ID, 1),
+            _BASE_PROOF_QUERY_SHAPES,
+            _BASE_PROOF_QUERY_PARAMETERS,
+        )
+
+
+def test_exact_prepared_call_gate_cannot_hide_a_cursor_capability_branch(
+    connection,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _seed_complete(connection)
+    accepted_select = repository._select_one_unchecked
+    injected = False
+
+    def inject_cursor_once(connection_arg, sql, parameters, build):
+        nonlocal injected
+        if not injected and hasattr(connection_arg, "cursor"):
+            injected = True
+            connection_arg.cursor().execute(
+                "SELECT count(*) FROM (execution_fact)"
+            ).fetchone()
+        return accepted_select(connection_arg, sql, parameters, build)
+
+    monkeypatch.setattr(repository, "_select_one_unchecked", inject_cursor_once)
+    with pytest.raises(AssertionError):
+        _capture_proof_queries(
+            connection,
             records.CurrentProofRequest(fixtures.APP_ID, 1),
             _BASE_PROOF_QUERY_SHAPES,
             _BASE_PROOF_QUERY_PARAMETERS,
