@@ -48,6 +48,8 @@ __all__ = (
     "ExecutionOperationCoordinates",
     "InputDedupeFact",
     "InputDedupeKind",
+    "InputSemanticKey",
+    "InputSemanticKeyKind",
     "M2Operation",
     "MarketOccurrenceOperation",
     "MarketOperationCoordinates",
@@ -80,12 +82,24 @@ acquisition, and market operation requires a non-null exact session matching cur
 
 `InputDedupeKind` is exactly `UNSEEN`, `EXACT_REPLAY`, or `IDENTITY_CONFLICT`.
 `InputDedupeFact` has ordered members `kind`, `input_domain`, `input_identity_sha256`,
-`payload_sha256`, and `retained_outcome_sha256: str | None`.
+`payload_sha256`, `retained_outcome_sha256: str | None`, and
+`semantic_matches: tuple[InputSemanticKey, ...]`.
 
-Only the repository creates this fact after an exact direct lookup. `EXACT_REPLAY` requires equal
+Only the repository creates this fact after exact primary and alternate-key lookups. `EXACT_REPLAY` requires equal
 domain, identity, coordinates, version, canonical payload bytes, and payload digest.
-`IDENTITY_CONFLICT` means the exact domain/identity is retained with any unequal member. Reducers
-never infer technical dedupe from their in-memory history maps on the SQLite path.
+`IDENTITY_CONFLICT` means the exact primary domain/identity is retained with any unequal member.
+An unseen primary identity with a retained alternate semantic key remains `UNSEEN` and carries the
+matching key proof to the owning reducer; it is not prematurely translated to replay, conflict, or
+refusal. Reducers never infer technical or alternate-key dedupe from history maps on the SQLite
+path.
+
+`InputSemanticKeyKind` is exactly `VENUE_COMMAND_V2`, `VENUE_EXECUTION_FACT_V1`,
+`VENUE_COVERAGE_ROOT_V1`, `VENUE_COVERAGE_INTERVAL_V1`, `VENUE_BROKER_FACT_V1`,
+`AUTHORITY_QUERY_CLAIM_V1`, `AUTHORITY_MANUAL_FLATTEN_V1`, or
+`AUTHORITY_EMERGENCY_GRANT_CONSUMPTION_V1`. `InputSemanticKey` has ordered members `kind`,
+`canonical_key_bytes`, `key_sha256`, `retained_input_domain`, and
+`retained_input_identity_sha256`. Bytes, not a digest alone, are authority; decode rehashes and
+byte-compares them.
 
 ### 2.3 Admitted WO-0168b operation union
 
@@ -122,13 +136,34 @@ The following current public inputs are deliberately **not** top-level durable o
 Passing any of those as a top-level operation, or passing a subclass/proxy, raises before a
 transaction begins.
 
+### 2.4 Exact alternate-key projection
+
+The operation codec or authenticated current proof derives semantic keys; callers cannot supply
+them. C3 directly looks up input-derived keys, and C4 directly looks up state-derived keys. A key
+is inserted only at C6 when the owning reducer output proves that the corresponding historical map
+would acquire it; a refused input cannot consume a semantic identity.
+
+| Operation/payload | Required lookup | Exact insertion condition / placement |
+| --- | --- | --- |
+| every `VenueRecoveryOperation` | `VENUE_COMMAND_V2` equal to venue's accepted `_semantic_input_key(item)` bytes (input ID excluded) | C6 only when the owner emits a new `VenueInputRecord`; aliases retain the original owning input and do not overwrite it |
+| venue payload with exact `.fact.key` | `VENUE_EXECUTION_FACT_V1` for that exact `ExecutionFactKey` | C6 only when the owner establishes the first-input-for-fact row |
+| human/broker coverage payload | `VENUE_COVERAGE_ROOT_V1`; where applicable exact leg/prior/resulting `VENUE_COVERAGE_INTERVAL_V1` and broker-fact `VENUE_BROKER_FACT_V1` | C6 only with matching new human/broker coverage authority emitted by the owner |
+| `ClaimBrokerQuery` | `AUTHORITY_QUERY_CLAIM_V1` for exact `query_claim_id` | C6 only on `AuthorityDisposition.APPLIED`, beside the budget/query checkpoint write |
+| `BeginManualFlatten` | `AUTHORITY_MANUAL_FLATTEN_V1` for exact `flatten_id` | C6 only on `APPLIED`; `AdvanceManualFlatten` only looks up the retained key and active manual state |
+| `ClaimEffect` whose authenticated retained effect authorization carries an emergency grant | state-derived `AUTHORITY_EMERGENCY_GRANT_CONSUMPTION_V1` for that exact grant ID | C6 only on the exact applied claim that consumes the grant; effect creation/refusal never consumes it |
+
+Broker-fact primary identity, dispatch claim effect/occurrence identity, request/client-order
+identity, acquisition generation/routes, and market occurrence identity already have exact unique
+authority in `durable_input` or accepted M2-I2 rows and are not duplicated as semantic keys.
+
 ## 3. Finite operation-to-reducer-to-write matrix
 
 Every row first performs the common sequence `C0..C9`:
 
 `C0` exact operation/type validation; `C1` `BEGIN IMMEDIATE`; `C2` schema/profile/application/
-scope/session verification; `C3` durable-input insert or direct dedupe classification; `C4` direct
-current-proof load; `C5` shared pure transition; `C6` row writes in the frozen order below; `C7`
+scope/session verification; `C3` durable-input claim plus exact input-derived alternate-key
+lookups; `C4` direct current proof plus state-derived alternate-key lookup; `C5` shared pure
+transition; `C6` conditional owner-authorized semantic-key and row writes in frozen order; `C7`
 checkpoint payload/head; `C8` mandatory receipt plus terminal outcome; `C9` commit and only then
 publish eligibility. `IDENTITY_CONFLICT` stops after C3 and writes no semantic/checkpoint/outbox
 row. `EXACT_REPLAY` returns the retained outcome without invoking a reducer.
@@ -193,8 +228,10 @@ row. The owner types/seams are `_M2VenueState`, `_M2VenueObservationProof`,
 | --- | --- |
 | `phase`, `mode`, `supervisor_fence`, `kill_engaged`, `session_id`, `budget`, `_emergency_grant` | bounded current state retained exactly in the checkpoint |
 | `venue` | represented by the verified `_M2VenueState` reference and commitment, never nested arbitrary object bytes |
-| `_effect_authority_by_id`, `_claim_by_effect`, `_claim_by_occurrence`, `_manual_by_id`, `_manual_flatten_by_scope`, `_acquisition_currentness_by_scope`, `_acquisition_descriptor_by_scope`, `_acquisition_descriptor_by_effect`, `_acquisition_active_by_scope` | active/unresolved entries only, ordered by canonical identity and resolved against current direct rows |
-| `_input_by_id`, `_query_by_id`, `_consumed_grant_ids` | history-shaped; omitted and replaced by durable-input/outcome direct lookup; a currently live query/grant remains an active entry in the checkpoint |
+| `_effect_authority_by_id`, `_claim_by_effect`, `_claim_by_occurrence`, `_manual_by_id`, `_manual_flatten_by_scope`, `_acquisition_currentness_by_scope`, `_acquisition_descriptor_by_scope`, `_acquisition_descriptor_by_effect`, `_acquisition_active_by_scope` | active/unresolved entries only, ordered by canonical identity and resolved against current direct rows; terminal manual IDs use the semantic-key ledger below |
+| `_input_by_id` | history-shaped; omitted and replaced by primary `durable_input`/outcome direct lookup |
+| `_query_by_id` | history-shaped alternate-key authority; omitted and replaced by immutable `AUTHORITY_QUERY_CLAIM_V1` rows; a different input ID with the same query ID is still presented to the owner as a retained semantic match |
+| `_consumed_grant_ids` | history-shaped one-use authority; omitted and replaced by immutable `AUTHORITY_EMERGENCY_GRANT_CONSUMPTION_V1` rows; the active unconsumed `_emergency_grant` remains in the checkpoint |
 
 The owner types/seams are `_M2AuthorityState`, `_M2AuthorityObservationProof`,
 `_m2_authority_state_from_reference`, `_m2_authority_state_from_direct_proof`, and
@@ -296,13 +333,15 @@ trigger semantics except the schema version/catalog identity and adds exactly th
 | --- | --- |
 | `runtime_checkpoint_payload` | one exact canonical payload per `kernel_checkpoint` version; bytes, length, digest, version, application/profile binding |
 | `durable_input` | immutable domain/identity/coordinates/version/payload bytes+digest and technical state `CLAIMED|TERMINAL|RECONCILIATION_PENDING` |
+| `durable_input_semantic_key` | immutable application/profile/scope-bound key kind, canonical key bytes+digest, and exact owning input FK; unique on coordinates+kind+bytes, never digest alone |
 | `decision_receipt` | append-only receipt bytes+digest and exact input correlation; explanatory only |
 | `durable_input_outcome` | one terminal owner-domain/disposition/result digest/checkpoint reference plus mandatory receipt FK |
 | `broker_outbox` | immutable post-commit effect/dispatch-claim payload and committed sequence; no external-success state |
 
 Required uniqueness, immutable-byte triggers, coordinate/profile FKs, monotonic checkpoint/outbox
 ordinals, and no-update/no-delete rules are part of the DDL. An outcome cannot exist without its
-receipt; a checkpoint head cannot advance without its exact payload; an outbox row cannot exist
+receipt; every semantic key is claimed atomically with its input and cannot be updated or deleted;
+a checkpoint head cannot advance without its exact payload; an outbox row cannot exist
 without the exact immutable dispatch claim and matching effect/profile/generation. A receipt or
 outbox row cannot be referenced as economic/currentness/owner/closure authority.
 
@@ -314,8 +353,10 @@ that gate.
 Exact new record/repository surface:
 
 - records: `RuntimeCheckpointPayloadRecord`, `DurableInputRecord`,
+  `DurableInputSemanticKeyRecord`,
   `DecisionReceiptRecord`, `DurableInputOutcomeRecord`, `BrokerOutboxRecord`;
 - repository: `store/load_runtime_checkpoint_payload`, `claim/load_durable_input`,
+  `store/load_durable_input_semantic_key`, `load_durable_input_by_semantic_key`,
   `store/load_decision_receipt`, `store/load_durable_input_outcome`, and
   `store/load_broker_outbox`;
 - all operations accept an explicit verified connection and a write capability where applicable;
@@ -386,8 +427,9 @@ implementation review directory. No other path is implied.
 
 The decisive RED/GREEN set must prove exact union/export ratchets, byte known answers, every
 decode mutant, complete member classification, reference/direct semantic parity for every matrix
-row and owner disposition, history-independent checkpoint size/query counts, all five new schema
-families, mandatory receipt rollback, outbox non-authority, and capability bypasses. Target and
+row and owner disposition, history-independent checkpoint size/query counts, all six new schema
+families, different-input-ID query/grant/manual/venue-semantic reuse, mandatory receipt rollback,
+outbox non-authority, and capability bypasses. Target and
 stress fixtures are 64 and 2,048 unrelated terminal facts/inputs/effects respectively; canonical
 checkpoint bytes and direct query count for one unchanged active set must be identical at both
 sizes.

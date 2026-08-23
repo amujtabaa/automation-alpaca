@@ -40,7 +40,7 @@ bytes that were never retained.
 The complete finite contract is
 `work/queue/M2-EXECUTION-2026-08-21/06-WO-0168A-FROZEN-OPERATION-STATE-CONTRACT.md`.
 That file freezes the eight-operation union, owner reducers and dispositions, derived inputs,
-complete state-member classification, canonical byte grammar, five schema/repository additions,
+complete state-member classification, canonical byte grammar, six schema/repository additions,
 capability issuance rules, exact paths, tests, budgets, and fault names. This work order and that
 contract are one indivisible preflight candidate.
 

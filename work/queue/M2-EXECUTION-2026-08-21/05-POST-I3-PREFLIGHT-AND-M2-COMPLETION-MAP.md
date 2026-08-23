@@ -35,6 +35,10 @@ candidate correctly required a finite matrix but had not frozen it. The additive
 inventory, encoding, schema, capability, path, budget, and fault contract. Source remains held
 until a fresh head-bound review accepts that remediation with P0=0/P1=0.
 
+R1 preserved one adjacent P1: primary input identity could not substitute for query/grant and other
+alternate semantic-key history. The R2 candidate adds one exact immutable semantic-key family and
+owner-proof mapping; source remains held pending fresh acceptance.
+
 ## Remaining serial chain
 
 | Order | State after this preflight candidate | Purpose | Exit required before successor |
