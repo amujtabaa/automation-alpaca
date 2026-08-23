@@ -13,7 +13,7 @@ predecessor: WO-0168h superseded after REV-0076 R5 BLOCK
 branch: codex/m2-i3-5-checkpoint-closure-r1
 preflight_review_id: REV-0077
 implementation_review_id: REV-0078
-execution_authority: Ameen Mujtabaa's serial-M2 authorization permits ordinary reversible work through M2 closeout and M3 preparation. WO-0168c begins documentation-only. Source/test work requires exact REV-0077 ACCEPT P0=0/P1=0. Changed DDL remains static-only and no changed-DDL install or SQLite-bearing test may run until Ameen approves the exact candidate commit/tree, DDL SHA-256 and byte count, and named fresh-file test plan. No configured/in-memory database, migration, runtime composition, credentials, network, broker calls, orders, promotion, or merge to master is authorized.
+execution_authority: Ameen Mujtabaa's serial-M2 authorization permits ordinary reversible work through M2 closeout and M3 preparation. REV-0077 accepted the exact R13 preflight at aa2f0225a0d0d85a41e5cfc5f6c8e530ed7c1a83 with P0=0/P1=0/P2=0. Exact named source/test paths below are released. Changed DDL remains static-only and no changed-DDL install or SQLite-bearing test may run until Ameen approves the exact candidate commit/tree, DDL SHA-256 and byte count, and named fresh-file test plan. No configured/in-memory database, migration, runtime composition, credentials, network, broker calls, orders, promotion, or merge to master is authorized.
 allowed_paths:
   - work/active/WO-0168c-m2-i3-5-anchored-checkpoint-closure.md
   - work/completed/keep/WO-0168c-m2-i3-5-anchored-checkpoint-closure.md
@@ -37,9 +37,17 @@ allowed_paths:
   - work/review/REV-0077/**
   - work/review/REV-0078/**
   - work/ledger.jsonl
-forbidden_paths:
-  - app/**
-  - tests/**
+  - app/execution_core/persistence/checkpoint_codec.py
+  - app/execution_core/persistence/records.py
+  - app/execution_core/persistence/repository.py
+  - app/execution_core/persistence/schema.py
+  - tests/execution_core/persistence_setup_support.py
+  - tests/execution_core/test_persistence_checkpoint_codec.py
+  - tests/execution_core/test_persistence_runtime_checkpoint_pure.py
+  - tests/execution_core/test_persistence_runtime_checkpoint_sqlite.py
+  - tests/execution_core/test_persistence_runtime_checkpoint_directness.py
+  - tests/execution_core/test_persistence_schema.py
+forbidden_paths: []
 ---
 
 # Work Order: WO-0168c — anchored checkpoint closure
@@ -97,6 +105,16 @@ engine, generic serializer, replay store, or alternate authority source.
 6. After Ameen's approval, run only the approved fresh-file SQLite gate, remediate within the same
    authority while re-gating every changed DDL byte, then complete full verification.
 7. Obtain fresh REV-0078 `ACCEPT` with `P0=0/P1=0`, close, and publish.
+
+## Accepted implementation release
+
+REV-0077 R13 passed at the exact identity recorded in frontmatter. The implementation seat may
+edit only the named `app/**` and `tests/**` paths above. Pure codec/binding/authenticity and static
+source tests may run before the DDL gate. The SQLite-bearing runtime-checkpoint and schema tests
+may be authored but must not run; no changed schema may be installed. The implementation must stop
+with a static source candidate and return its exact commit, tree, `SCHEMA_DDL` SHA-256 and UTF-8
+byte count, changed-DDL summary, and the exact fresh-`tmp_path` file test commands for Ameen's
+approval.
 
 ## Exclusions
 
