@@ -1,7 +1,7 @@
 ---
 type: Work Order
 title: M2-I3.5 bounded runtime-state checkpoint and input/receipt substrate
-status: READY
+status: ACTIVE
 work_order_id: WO-0168a
 wave: M2-I3.5
 model_tier: strong
@@ -12,8 +12,8 @@ created: 2026-08-22
 predecessor: WO-0167 closeout 0777fab62598f85ce189f40eb1a69319791282c2
 branch: codex/m2-i3-5-runtime-checkpoint-r1
 preflight_review_id: REV-0074
-implementation_review_id: TO_ASSIGN_AFTER_PREFLIGHT_ACCEPTANCE
-execution_authority: Documentation, static analysis, and RED design are authorized by Ameen Mujtabaa's 2026-08-22 serial-M2 request. The original REV-0074 result returned P1=1; source implementation starts only after a fresh head-bound REV-0074 remediation review returns P0=0/P1=0. Any changed DDL may be authored and hashed but not executed before an exact recorded human gate for those bytes and the temporary-file test plan.
+implementation_review_id: REV-0075
+execution_authority: Ameen Mujtabaa's 2026-08-22 serial-M2 request authorizes ordinary reversible work within this activated order. REV-0074 R3 accepted the exact preflight candidate bd8024e35301d96bf22a4e44606fa78cb2e07488 (tree 3f76e66906a42eaf12d0a7d7f22dfddcd676af59) at P0=0/P1=0. Any changed DDL may be authored and hashed but not executed before an exact recorded human gate for those bytes, candidate commit/tree, and the named temporary-file test plan.
 ---
 
 # Work Order: M2-I3.5 runtime-state checkpoint and input/receipt substrate
@@ -22,7 +22,7 @@ execution_authority: Documentation, static analysis, and RED design are authoriz
 
 **Date:** 2026-08-22
 
-**Status:** Ready for fresh remediation preflight; no source edit before acceptance
+**Status:** Active after REV-0074 R3 acceptance; implementation review REV-0075 reserved
 
 `[FABLE • FULL • spec-first/TDD • prerequisite root correction • no external I/O]`
 
@@ -158,21 +158,57 @@ is introduced.
 The exact member sets and byte representation of these models are frozen in the companion
 contract; this summary table does not grant implementation discretion.
 
-## Preflight-only allowed paths
+## Activated allowed paths
 
 ```yaml
 allowed_paths:
+  - app/execution_core/position.py
+  - app/execution_core/venue.py
+  - app/execution_core/recovery.py
+  - app/execution_core/authority.py
+  - app/execution_core/protection.py
+  - app/execution_core/acquisition.py
+  - app/execution_core/persistence/operations.py
+  - app/execution_core/persistence/checkpoint_codec.py
+  - app/execution_core/persistence/records.py
+  - app/execution_core/persistence/repository.py
+  - app/execution_core/persistence/schema.py
+  - tests/execution_core/test_persistence_operations.py
+  - tests/execution_core/test_persistence_checkpoint_codec.py
+  - tests/execution_core/test_persistence_reducer_parity.py
+  - tests/execution_core/test_persistence_input_receipt.py
+  - tests/execution_core/test_persistence_write_capability.py
+  - tests/execution_core/test_persistence_schema.py
+  - tests/execution_core/test_persistence_repository.py
+  - tests/execution_core/test_persistence_directness.py
+  - tests/execution_core/test_position.py
+  - tests/execution_core/test_venue.py
+  - tests/execution_core/test_recovery.py
+  - tests/execution_core/test_authority.py
+  - tests/execution_core/test_protection.py
+  - tests/execution_core/test_acquisition.py
   - work/queue/M2-EXECUTION-2026-08-21/05-POST-I3-PREFLIGHT-AND-M2-COMPLETION-MAP.md
   - work/queue/M2-EXECUTION-2026-08-21/06-WO-0168A-FROZEN-OPERATION-STATE-CONTRACT.md
-  - work/queue/WO-0168a-m2-i3-5-runtime-state-checkpoint.md
+  - work/active/WO-0168a-m2-i3-5-runtime-state-checkpoint.md
+  - work/completed/WO-0168a-m2-i3-5-runtime-state-checkpoint.md
   - work/review/REV-0074/**
+  - work/review/REV-0075/**
   - work/ledger.jsonl
 ```
 
-After fresh REV-0074 remediation acceptance, activation MUST replace this preflight-only list with
-exactly the source/test/governance paths frozen in section 8 of the companion contract plus the
-newly assigned implementation-review directory. No source path is implicitly authorized by this
-candidate, and adding one requires a head-bound amendment and fresh review.
+This list is exactly the section-8 source, test, and governance surface from the accepted companion
+contract. A source, test, or governance path not listed here requires a head-bound amendment and
+fresh review. DDL is static-only until the exact human gate described in FR-5 and EC-4.
+
+## Activation checkpoint
+
+REV-0074 R3 accepted the preflight candidate `bd8024e35301d96bf22a4e44606fa78cb2e07488`, tree
+`3f76e66906a42eaf12d0a7d7f22dfddcd676af59`, with `P0=0/P1=0/P2=0`; its independent reviewer
+recomputed all eight semantic-key known-answer vectors. This order is activated from review-record
+head `e603b51484ab675a9611476303f970bfe56fd9a6` with implementation review `REV-0075` reserved.
+The initial source increment is a RED-first, pure operation/semantic-key codec foundation. It
+performs no SQLite activity and does not change DDL; the DDL-bearing portion remains static-only
+until a separate exact human gate.
 
 ## Out of scope
 
