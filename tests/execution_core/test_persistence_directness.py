@@ -33,10 +33,16 @@ def connection(tmp_path: Path):
         connection.close()
 
 
-def _evidence(effect_id: int) -> records.AcceptanceEvidenceRecord:
+def _evidence(
+    effect_id: int,
+    *,
+    acceptance_set_id: int | None = None,
+    evidence_id: int | None = None,
+) -> records.AcceptanceEvidenceRecord:
+    set_id = effect_id if acceptance_set_id is None else acceptance_set_id
     return records.AcceptanceEvidenceRecord(
-        effect_id,
-        effect_id,
+        effect_id if evidence_id is None else evidence_id,
+        set_id,
         effect_id,
         "OBSERVATION",
         None,
@@ -102,8 +108,11 @@ def _seed_complete(connection: sqlite3.Connection) -> None:
         (repository.store_venue_effect, effect2),
         (repository.store_venue_identity_owner, owner2),
         (repository.store_dispatch_claim, fixtures._claim(2)),
-        (repository.store_acceptance_set, records.AcceptanceSetRecord(2, 2)),
-        (repository.store_acceptance_evidence, _evidence(2)),
+        (repository.store_acceptance_set, records.AcceptanceSetRecord(77, 2)),
+        (
+            repository.store_acceptance_evidence,
+            _evidence(2, acceptance_set_id=77, evidence_id=88),
+        ),
         (repository.store_closure, _closure(2)),
     ):
         fixtures._expect_applied(operation(connection, value))
@@ -274,11 +283,36 @@ class _TransactionTripwireConnection:
             raise AssertionError(f"repository attempted transaction method {name}")
         return object.__getattribute__(self, name)
 
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._connection, name)
+
     def execute(self, sql: str, parameters: tuple[Any, ...] = ()) -> Any:
-        token = sql.lstrip().split(None, 1)[0].rstrip(";").upper()
+        token = _first_sql_token(sql)
         if token in self._FORBIDDEN_SQL:
             raise AssertionError(f"repository attempted transaction SQL {token}")
         return self._connection.execute(sql, parameters)
+
+
+def _first_sql_token(sql: str) -> str:
+    remaining = sql
+    while True:
+        remaining = remaining.lstrip()
+        if remaining.startswith("--"):
+            newline = remaining.find("\n")
+            if newline < 0:
+                return ""
+            remaining = remaining[newline + 1 :]
+            continue
+        if remaining.startswith("/*"):
+            close = remaining.find("*/", 2)
+            if close < 0:
+                return ""
+            remaining = remaining[close + 2 :]
+            continue
+        break
+    if not remaining:
+        return ""
+    return remaining.split(None, 1)[0].rstrip(";").upper()
 
 
 @pytest.mark.parametrize("operation_name", tuple(sorted(_operation_cases())))
@@ -287,10 +321,32 @@ def test_every_public_operation_leaves_transactions_with_caller(
     operation_name: str,
 ) -> None:
     _seed_complete(connection)
+    connection.commit()
+    connection.execute("BEGIN")
+    assert connection.in_transaction
     outcome = _operation_cases()[operation_name](
         _TransactionTripwireConnection(connection)
     )
     assert isinstance(outcome, records.RepositoryOutcome)
+    assert connection.in_transaction
+    connection.rollback()
+    assert not connection.in_transaction
+
+
+@pytest.mark.parametrize(
+    "sql",
+    (
+        "-- transaction\nCOMMIT",
+        "/* transaction */ COMMIT",
+        "-- first\n/* second */ ROLLBACK",
+    ),
+)
+def test_transaction_tripwire_rejects_leading_comment_bypasses(
+    connection,
+    sql: str,
+) -> None:
+    with pytest.raises(AssertionError, match="transaction SQL"):
+        _TransactionTripwireConnection(connection).execute(sql)
 
 
 def test_every_public_operation_executes_the_schema_guard_first(
@@ -483,7 +539,7 @@ def test_every_direct_loader_uses_its_production_key_and_index(connection) -> No
             "where effect_id =",
         ),
         (
-            lambda: repository.load_acceptance_set(connection, 2),
+            lambda: repository.load_acceptance_set(connection, 77),
             "acceptance_set",
             "where acceptance_set_id =",
         ),
@@ -493,12 +549,12 @@ def test_every_direct_loader_uses_its_production_key_and_index(connection) -> No
             "where effect_id =",
         ),
         (
-            lambda: repository.load_acceptance_evidence(connection, 2),
+            lambda: repository.load_acceptance_evidence(connection, 88),
             "acceptance_evidence",
             "where evidence_id =",
         ),
         (
-            lambda: repository.load_latest_acceptance_evidence(connection, 2),
+            lambda: repository.load_latest_acceptance_evidence(connection, 77),
             "acceptance_evidence",
             "where acceptance_set_id =",
         ),
@@ -556,90 +612,76 @@ def test_same_family_growth_cannot_hide_a_root_full_scan(connection) -> None:
     )
 
 
-_PROOF_DOMAIN_TABLES = (
-    "execution_connection_profile",
-    "market_data_source_profile",
-    "application_generation",
-    "acquisition_scope",
-    "acquisition_generation",
-    "acquisition_generation_current",
-    "kernel_checkpoint",
-    "symbol_controller",
-    "protection_authority",
-    "market_stream_authority",
-    "market_cursor",
-    "root_fill",
-    "acquisition_root_route",
-    "execution_fact_head",
-    "execution_fact",
-    "venue_effect",
-    "dispatch_claim",
-    "venue_identity_owner",
-    "acceptance_set",
-    "acceptance_evidence",
-    "closure_chain",
-)
+def _normalize_sql(sql: str) -> str:
+    return " ".join(sql.lower().split())
 
 
-def _statement_domain_tables(statement: str) -> tuple[str, ...]:
-    normalized = statement.lower().translate(str.maketrans("", "", '"`[]'))
-    normalized = re.sub(r"\b(?:main|temp)\s*\.\s*", "", normalized)
-    return tuple(
-        table
-        for table in _PROOF_DOMAIN_TABLES
-        if re.search(rf"\b(?:from|join)\s+{re.escape(table)}\b", normalized)
+class _ProofRecordingConnection:
+    def __init__(self, connection: Any) -> None:
+        self._connection = connection
+        self.calls: list[tuple[str, tuple[Any, ...]]] = []
+
+    def execute(self, sql: str, parameters: tuple[Any, ...] = ()) -> Any:
+        self.calls.append((sql, tuple(parameters)))
+        return self._connection.execute(sql, parameters)
+
+
+_SCHEMA_GUARD_CALLS = tuple(
+    (_normalize_sql(sql), ())
+    for sql in (
+        "PRAGMA foreign_keys",
+        "PRAGMA recursive_triggers",
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_meta'",
+        "SELECT schema_version, approved_ddl_sha256 FROM schema_meta",
+        "SELECT type, name, tbl_name, sql FROM sqlite_master "
+        "WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name",
     )
-
-
-@pytest.mark.parametrize(
-    "statement",
-    (
-        'SELECT count(*) FROM "execution_fact"',
-        "SELECT count(*) FROM main.execution_fact",
-        "SELECT count(*) FROM [execution_fact]",
-        "SELECT count(*) FROM `execution_fact`",
-    ),
 )
-def test_domain_query_accounting_recognizes_quoted_and_qualified_tables(
-    statement: str,
-) -> None:
-    assert _statement_domain_tables(statement) == ("execution_fact",)
 
 
 def _capture_proof_queries(
-    connection: sqlite3.Connection,
+    connection: Any,
     proof_request: records.CurrentProofRequest,
     expected_shapes: tuple[str, ...],
-) -> tuple[str, ...]:
-    statements: list[str] = []
-    connection.set_trace_callback(statements.append)
-    outcome = repository.load_current_proof(connection, proof_request)
-    connection.set_trace_callback(None)
+    expected_parameters: tuple[tuple[Any, ...], ...],
+) -> tuple[tuple[str, tuple[Any, ...]], ...]:
+    recording = _ProofRecordingConnection(connection)
+    outcome = repository.load_current_proof(recording, proof_request)
     assert outcome.kind is records.RepositoryOutcomeKind.FOUND
     assert outcome.record is not None
-    domain = tuple(
-        statement
-        for statement in statements
-        if statement.lstrip().upper().startswith("SELECT")
-        and _statement_domain_tables(statement)
+    normalized_calls = tuple(
+        (_normalize_sql(statement), parameters)
+        for statement, parameters in recording.calls
     )
-    assert domain
-    assert len(domain) == len(expected_shapes)
-    for statement, expected_shape in zip(domain, expected_shapes, strict=True):
-        normalized = " ".join(statement.lower().split())
+    assert normalized_calls[: len(_SCHEMA_GUARD_CALLS)] == _SCHEMA_GUARD_CALLS
+    proof_calls = recording.calls[len(_SCHEMA_GUARD_CALLS) :]
+    assert len(proof_calls) == len(expected_shapes)
+    assert len(proof_calls) == len(expected_parameters)
+    for (statement, parameters), expected_shape, expected_values in zip(
+        proof_calls,
+        expected_shapes,
+        expected_parameters,
+        strict=True,
+    ):
+        normalized = _normalize_sql(statement)
         normalized = normalized.translate(str.maketrans("", "", '"`[]'))
-        normalized = re.sub(r"\b(?:main|temp)\s*\.\s*", "", normalized)
         query_tail = "from " + normalized.split(" from ", 1)[1]
         query_tail = re.sub(r"'(?:''|[^'])*'", "?", query_tail)
         query_tail = re.sub(r"(?<![\w.])-?\d+(?:\.\d+)?(?![\w.])", "?", query_tail)
         assert query_tail == expected_shape
+        assert parameters == expected_values
         assert "select *" not in normalized
-        plan = connection.execute(f"EXPLAIN QUERY PLAN {statement}").fetchall()
+        plan = connection.execute(
+            f"EXPLAIN QUERY PLAN {statement}",
+            parameters,
+        ).fetchall()
         plan_text = " ".join(str(row[-1]) for row in plan).upper()
         assert "SEARCH" in plan_text
         assert "SCAN" not in plan_text
         assert "USE TEMP B-TREE" not in plan_text
-    return tuple(" ".join(statement.lower().split()) for statement in domain)
+    return tuple(
+        (_normalize_sql(statement), parameters) for statement, parameters in proof_calls
+    )
 
 
 _BASE_PROOF_QUERY_SHAPES = (
@@ -674,6 +716,36 @@ _EFFECT_PROOF_QUERY_SHAPES = _BASE_PROOF_QUERY_SHAPES + (
     " order by ordinal desc limit ?",
 )
 
+_BASE_PROOF_QUERY_PARAMETERS = (
+    (fixtures.APP_ID.value,),
+    (1,),
+    (fixtures.EXECUTION_PROFILE_ID,),
+    (fixtures.MARKET_PROFILE_ID,),
+    (fixtures.APP_ID.value,),
+    (1,),
+    (1,),
+    (fixtures.ACQUISITION_ID.value,),
+    (1,),
+    (fixtures.STREAM_ID.value,),
+    (fixtures.STREAM_ID.value,),
+)
+
+_ROOT_PROOF_QUERY_PARAMETERS = _BASE_PROOF_QUERY_PARAMETERS + (
+    (1,),
+    (1,),
+    (1,),
+    (1,),
+)
+
+_EFFECT_PROOF_QUERY_PARAMETERS = _BASE_PROOF_QUERY_PARAMETERS + (
+    (2,),
+    (2,),
+    (fixtures.EXECUTION_PROFILE_ID, "owner-2"),
+    (2,),
+    (77,),
+    (1, "owner-2"),
+)
+
 
 def test_total_proof_uses_only_fixed_direct_key_queries_under_history_stress(
     connection,
@@ -696,11 +768,13 @@ def test_total_proof_uses_only_fixed_direct_key_queries_under_history_stress(
         connection,
         root_request,
         _ROOT_PROOF_QUERY_SHAPES,
+        _ROOT_PROOF_QUERY_PARAMETERS,
     )
     baseline_effect = _capture_proof_queries(
         connection,
         effect_request,
         _EFFECT_PROOF_QUERY_SHAPES,
+        _EFFECT_PROOF_QUERY_PARAMETERS,
     )
 
     connection.executemany(
@@ -723,6 +797,7 @@ def test_total_proof_uses_only_fixed_direct_key_queries_under_history_stress(
             connection,
             root_request,
             _ROOT_PROOF_QUERY_SHAPES,
+            _ROOT_PROOF_QUERY_PARAMETERS,
         )
         == baseline_root
     )
@@ -731,6 +806,7 @@ def test_total_proof_uses_only_fixed_direct_key_queries_under_history_stress(
             connection,
             effect_request,
             _EFFECT_PROOF_QUERY_SHAPES,
+            _EFFECT_PROOF_QUERY_PARAMETERS,
         )
         == baseline_effect
     )
@@ -784,25 +860,63 @@ def test_root_proof_binds_fact_head_id_not_root_coordinate(connection) -> None:
         )
     )
 
-    statements: list[str] = []
-    connection.set_trace_callback(statements.append)
-    outcome = repository.load_current_proof(
+    _capture_proof_queries(
         connection,
         records.CurrentProofRequest(
             fixtures.APP_ID,
             1,
             root_fill_key_id=root_key,
         ),
+        _ROOT_PROOF_QUERY_SHAPES,
+        _BASE_PROOF_QUERY_PARAMETERS
+        + ((root_key,), (root_key,), (root_key,), (fact_id,)),
     )
-    connection.set_trace_callback(None)
-    assert outcome.kind is records.RepositoryOutcomeKind.FOUND
-    fact_queries = tuple(
-        " ".join(statement.lower().split())
-        for statement in statements
-        if _statement_domain_tables(statement) == ("execution_fact",)
-    )
-    assert len(fact_queries) == 1
-    assert fact_queries[0].endswith(f"where fact_id = {fact_id}")
+
+
+class _HiddenReadConnection:
+    def __init__(self, connection: sqlite3.Connection, hidden_sql: str) -> None:
+        self._connection = connection
+        self._hidden_sql = hidden_sql
+
+    def execute(self, sql: str, parameters: tuple[Any, ...] = ()) -> Any:
+        if sql == self._hidden_sql:
+            return self._connection.execute("SELECT 0")
+        return self._connection.execute(sql, parameters)
+
+
+@pytest.mark.parametrize(
+    "hidden_sql",
+    (
+        "SELECT count(*) FROM 'execution_fact'",
+        "SELECT count(*) FROM (execution_fact)",
+        "SELECT count(*) FROM execution_fact, root_fill",
+        "SELECT count(*) FROM aux.execution_fact",
+    ),
+)
+def test_exact_prepared_call_gate_rejects_every_hidden_statement_form(
+    connection,
+    monkeypatch: pytest.MonkeyPatch,
+    hidden_sql: str,
+) -> None:
+    _seed_complete(connection)
+    accepted_select = repository._select_one_unchecked
+    injected = False
+
+    def inject_once(connection_arg, sql, parameters, build):
+        nonlocal injected
+        if not injected:
+            injected = True
+            connection_arg.execute(hidden_sql).fetchone()
+        return accepted_select(connection_arg, sql, parameters, build)
+
+    monkeypatch.setattr(repository, "_select_one_unchecked", inject_once)
+    with pytest.raises(AssertionError):
+        _capture_proof_queries(
+            _HiddenReadConnection(connection, hidden_sql),
+            records.CurrentProofRequest(fixtures.APP_ID, 1),
+            _BASE_PROOF_QUERY_SHAPES,
+            _BASE_PROOF_QUERY_PARAMETERS,
+        )
 
 
 class _AbsentCursor:
@@ -1031,7 +1145,12 @@ class _MutatingProofMemberConnection:
 @pytest.mark.parametrize(
     ("table", "column", "value", "request_kind"),
     (
+        ("protection_authority", 2, None, "base"),
         ("protection_authority", 3, None, "base"),
+        ("protection_authority", 4, None, "base"),
+        ("protection_authority", 5, None, "base"),
+        ("protection_authority", 6, None, "base"),
+        ("protection_authority", 7, None, "base"),
         ("protection_authority", 5, "00" * 32, "base"),
         ("market_cursor", 4, "00" * 32, "base"),
         ("execution_fact", 1, 999, "root"),
@@ -1077,6 +1196,40 @@ def test_total_proof_rejects_each_cross_record_contradiction(
     )
     assert outcome.kind is records.RepositoryOutcomeKind.INTEGRITY_FAILURE
     assert outcome.record is None
+
+
+def test_total_proof_accepts_an_all_null_active_stream_tuple(connection) -> None:
+    for operation, value in (
+        (repository.store_execution_profile, fixtures._execution_profile()),
+        (repository.store_market_source_profile, fixtures._market_profile()),
+        (repository.store_application_generation, fixtures._application()),
+        (repository.store_scope, fixtures._scope()),
+        (repository.store_acquisition_generation, fixtures._acquisition()),
+        (repository.store_kernel_checkpoint, fixtures._checkpoint()),
+        (repository.store_symbol_controller, fixtures._controller()),
+        (
+            repository.store_protection_authority,
+            dataclasses.replace(
+                fixtures._protection(),
+                active_stream_generation_id=None,
+                active_acquisition_generation_id=None,
+                active_generation_mandate_commitment_sha256=None,
+                active_source_profile_id=None,
+                active_session_id=None,
+                active_sequence_mode=None,
+            ),
+        ),
+    ):
+        fixtures._expect_applied(operation(connection, value))
+
+    outcome = repository.load_current_proof(
+        connection,
+        records.CurrentProofRequest(fixtures.APP_ID, 1),
+    )
+    assert outcome.kind is records.RepositoryOutcomeKind.FOUND
+    assert outcome.record is not None
+    assert outcome.record.market_stream_authority is None
+    assert outcome.record.market_cursor is None
 
 
 def test_single_row_loader_refuses_a_second_row(

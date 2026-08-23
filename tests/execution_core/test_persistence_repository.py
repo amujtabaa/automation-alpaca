@@ -799,16 +799,45 @@ def test_repository_source_cannot_begin_commit_or_rollback_transactions() -> Non
             left = constant_text(node.left)
             right = constant_text(node.right)
             return None if left is None or right is None else left + right
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "join"
+            and not node.keywords
+            and len(node.args) == 1
+            and isinstance(node.args[0], (ast.Tuple, ast.List))
+        ):
+            separator = constant_text(node.func.value)
+            parts = [constant_text(item) for item in node.args[0].elts]
+            if separator is not None and all(part is not None for part in parts):
+                return separator.join(part for part in parts if part is not None)
         return None
+
+    def first_sql_token(text: str) -> str:
+        remaining = text
+        while True:
+            remaining = remaining.lstrip()
+            if remaining.startswith("--"):
+                newline = remaining.find("\n")
+                if newline < 0:
+                    return ""
+                remaining = remaining[newline + 1 :]
+                continue
+            if remaining.startswith("/*"):
+                close = remaining.find("*/", 2)
+                if close < 0:
+                    return ""
+                remaining = remaining[close + 2 :]
+                continue
+            break
+        if not remaining:
+            return ""
+        return remaining.split(None, 1)[0].rstrip(";").upper()
 
     forbidden_sql = []
     for node in ast.walk(tree):
         text = constant_text(node)
-        if (
-            text is not None
-            and text.strip()
-            and text.strip().upper().split(" ", 1)[0] in transaction_tokens
-        ):
+        if text is not None and first_sql_token(text) in transaction_tokens:
             forbidden_sql.append(text)
     assert forbidden_attributes == []
     assert forbidden_sql == []
