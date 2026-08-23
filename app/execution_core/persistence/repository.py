@@ -4005,9 +4005,7 @@ _RC_SCOPE = _checkpoint_vector("scope", _SCOPE_COLUMNS)
 _RC_CONTROLLER = _checkpoint_vector("controller", _CONTROLLER_COLUMNS)
 _RC_PROTECTION = _checkpoint_vector("protection", _PROTECTION_COLUMNS)
 _RC_GENERATION = _checkpoint_vector("generation", _ACQUISITION_COLUMNS)
-_RC_GENERATION_CURRENT = _checkpoint_vector(
-    "current", _ACQUISITION_CURRENT_COLUMNS
-)
+_RC_GENERATION_CURRENT = _checkpoint_vector("current", _ACQUISITION_CURRENT_COLUMNS)
 _RC_EFFECT = _checkpoint_vector("effect", _EFFECT_COLUMNS)
 _RC_OWNER = _checkpoint_vector("owner", _OWNER_COLUMNS)
 _RC_CLAIM = _checkpoint_vector("claim", _CLAIM_COLUMNS)
@@ -4398,8 +4396,10 @@ def _checkpoint_unique_records(
 
 
 def _checkpoint_pack(domain: bytes, *parts: bytes) -> bytes:
-    return len(domain).to_bytes(4, "big") + domain + b"".join(
-        len(part).to_bytes(8, "big") + part for part in parts
+    return (
+        len(domain).to_bytes(4, "big")
+        + domain
+        + b"".join(len(part).to_bytes(8, "big") + part for part in parts)
     )
 
 
@@ -4411,9 +4411,11 @@ def _checkpoint_binding_int(value: int) -> bytes:
     exact = _exact_int(value)
     magnitude = abs(exact)
     width = max(1, (magnitude.bit_length() + 7) // 8)
-    return bytes((0 if exact >= 0 else 1,)) + width.to_bytes(
-        4, "big"
-    ) + magnitude.to_bytes(width, "big")
+    return (
+        bytes((0 if exact >= 0 else 1,))
+        + width.to_bytes(4, "big")
+        + magnitude.to_bytes(width, "big")
+    )
 
 
 def _checkpoint_binding_text(value: str) -> bytes:
@@ -4538,9 +4540,7 @@ def select_runtime_checkpoint(
         execution_profile = _build_execution_profile(q1_row[4:17])
         market_profile = _build_market_profile(q1_row[17:25])
         head_values = q1_row[26:30]
-        head_present = _checkpoint_presence(
-            q1_row[25], head_values, optional=True
-        )
+        head_present = _checkpoint_presence(q1_row[25], head_values, optional=True)
         predecessor = _build_checkpoint(head_values) if head_present else None
         if (
             _application_id(application.application_generation_id) != application_key
@@ -4599,9 +4599,10 @@ def select_runtime_checkpoint(
                 protection.active_session_id,
                 protection.active_sequence_mode,
             )
-            if not (all(value is None for value in active) or all(
-                value is not None for value in active
-            )):
+            if not (
+                all(value is None for value in active)
+                or all(value is not None for value in active)
+            ):
                 raise ValueError("checkpoint protection activity is partial")
             if protection.authority_class == "HARD_BAIL" and any(
                 value is None for value in active
@@ -4803,9 +4804,7 @@ def select_runtime_checkpoint(
                 effect_id not in qualifying_effect_ids
                 for effect_id in acceptance_by_effect
             )
-            or any(
-                item.effect_id not in qualifying_effect_ids for item in evidence
-            )
+            or any(item.effect_id not in qualifying_effect_ids for item in evidence)
         ):
             raise ValueError("checkpoint effect child is spliced")
         for item in evidence:
@@ -4820,9 +4819,7 @@ def select_runtime_checkpoint(
             closures,
             lambda closure: (closure.scope_id, closure.owner_id.value),
         )
-        owner_coordinates = {
-            (owner.scope_id, owner.owner_id.value) for owner in owners
-        }
+        owner_coordinates = {(owner.scope_id, owner.owner_id.value) for owner in owners}
         if any(key not in owner_coordinates for key in closure_by_owner):
             raise ValueError("checkpoint closure has no selected owner")
 
@@ -4841,7 +4838,9 @@ def select_runtime_checkpoint(
             root = _build_root_fill(row[8:29])
             head_values = row[30:33]
             fact_values = row[33:62]
-            present = _checkpoint_presence(row[29], head_values + fact_values, optional=True)
+            present = _checkpoint_presence(
+                row[29], head_values + fact_values, optional=True
+            )
             owner_key = (
                 route.effect_id,
                 route.owner_id.value,
@@ -4855,8 +4854,7 @@ def select_runtime_checkpoint(
                 or route.acquisition_generation_id != root.owner_generation_id
                 or route.effect_id != selected_owner.effect_id
                 or route.scope_id != selected_owner.scope_id
-                or route.acquisition_generation_id
-                != selected_owner.owner_generation_id
+                or route.acquisition_generation_id != selected_owner.owner_generation_id
                 or owner_key in route_by_owner
                 or root.root_fill_key_id in root_by_id
             ):
@@ -4894,9 +4892,9 @@ def select_runtime_checkpoint(
             present = _checkpoint_presence(row[8], cursor_values, optional=True)
             generation_key = _acquisition_id(stream.acquisition_generation_id)
             if (
-                (generation_key, stream.scope_id) not in selected_coordinates
-                or generation_key in stream_by_generation
-            ):
+                generation_key,
+                stream.scope_id,
+            ) not in selected_coordinates or generation_key in stream_by_generation:
                 raise ValueError("checkpoint stream has no selected generation")
             streams.append(stream)
             stream_by_generation[generation_key] = stream
@@ -4954,7 +4952,9 @@ def select_runtime_checkpoint(
                 "owner-effect",
                 _checkpoint_field_int(effect_id),
             )
-            for effect_id in sorted(qualifying_effect_ids - {owner.effect_id for owner in owners})
+            for effect_id in sorted(
+                qualifying_effect_ids - {owner.effect_id for owner in owners}
+            )
         )
         claim_effect_absences = tuple(
             _checkpoint_absence(
@@ -5090,12 +5090,13 @@ def select_runtime_checkpoint(
             target_head = predecessor.currentness_head_ordinal
         else:
             target_head = 0
-        if predecessor is not None and target_head < predecessor.currentness_head_ordinal:
+        if (
+            predecessor is not None
+            and target_head < predecessor.currentness_head_ordinal
+        ):
             raise ValueError("checkpoint target head regresses")
         target_version = (
-            predecessor.checkpoint_version_ordinal + 1
-            if predecessor is not None
-            else 1
+            predecessor.checkpoint_version_ordinal + 1 if predecessor is not None else 1
         )
         proof = _checkpoint_issue_selection_proof(
             request,
@@ -5115,9 +5116,7 @@ def select_runtime_checkpoint(
 
 
 def _checkpoint_proof_is_authentic(proof: object) -> bool:
-    proof_type = _runtime_checkpoint_records_member(
-        "RuntimeCheckpointSelectionProof"
-    )
+    proof_type = _runtime_checkpoint_records_member("RuntimeCheckpointSelectionProof")
     if type(proof) is not proof_type:
         return False
     checker = _runtime_checkpoint_records_member(
@@ -5135,9 +5134,7 @@ def _checkpoint_envelope_is_authentic(envelope: object) -> bool:
 
 
 def _checkpoint_payload_parameters(payload: object) -> tuple[_Any, ...]:
-    payload_type = _runtime_checkpoint_records_member(
-        "RuntimeCheckpointPayloadRecord"
-    )
+    payload_type = _runtime_checkpoint_records_member("RuntimeCheckpointPayloadRecord")
     if type(payload) is not payload_type:
         raise TypeError("checkpoint payload record must be exact")
     exact_payload = _cast(_Any, payload)
@@ -5288,9 +5285,7 @@ def store_runtime_checkpoint(
     ):
         return _outcome(_records.RepositoryOutcomeKind.CONFLICT)
 
-    payload_type = _runtime_checkpoint_records_member(
-        "RuntimeCheckpointPayloadRecord"
-    )
+    payload_type = _runtime_checkpoint_records_member("RuntimeCheckpointPayloadRecord")
     try:
         payload = payload_type(
             envelope.application_generation_id,
@@ -5395,9 +5390,7 @@ def load_runtime_checkpoint_payload(
         return _outcome(_records.RepositoryOutcomeKind.ABSENT)
     if len(rows) != 1:
         return _integrity()
-    payload_type = _runtime_checkpoint_records_member(
-        "RuntimeCheckpointPayloadRecord"
-    )
+    payload_type = _runtime_checkpoint_records_member("RuntimeCheckpointPayloadRecord")
     try:
         row = rows[0]
         if len(row) != 8:
@@ -5419,8 +5412,7 @@ def load_runtime_checkpoint_payload(
             or payload_parameters[4] != parameters[2]
             or payload_parameters[7] != parameters[3]
             or payload.payload_length != len(payload.payload_bytes)
-            or payload.payload_sha256
-            != _sha256(payload.payload_bytes).hexdigest()
+            or payload.payload_sha256 != _sha256(payload.payload_bytes).hexdigest()
         ):
             return _integrity()
     except (TypeError, ValueError, OverflowError, IndexError):
@@ -5504,8 +5496,7 @@ def load_runtime_checkpoint(
         if (
             not _checkpoint_envelope_is_authentic(envelope)
             or envelope._provenance != "LOADED"
-            or envelope.application_generation_id
-            != request.application_generation_id
+            or envelope.application_generation_id != request.application_generation_id
             or envelope.execution_profile_id != execution_profile_id
             or envelope.market_source_profile_id != market_profile_id
             or envelope.currentness_head_ordinal

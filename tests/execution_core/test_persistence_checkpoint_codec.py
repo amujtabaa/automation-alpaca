@@ -40,9 +40,13 @@ def test_wo0168c_exposes_only_the_frozen_nonserving_checkpoint_surface() -> None
     assert "RuntimeCheckpointPayloadRecord" in records.__all__
     assert hasattr(records, "RuntimeCheckpointPayloadRecord")
     assert "store_runtime_checkpoint_payload" not in repository.__all__
-    assert "load_runtime_checkpoint_payload" not in repository.__all__
     assert not hasattr(repository, "store_runtime_checkpoint_payload")
-    assert not hasattr(repository, "load_runtime_checkpoint_payload")
+    assert {
+        "select_runtime_checkpoint",
+        "store_runtime_checkpoint",
+        "load_runtime_checkpoint_payload",
+        "load_runtime_checkpoint",
+    }.issubset(repository.__all__)
     assert "store_kernel_checkpoint" not in repository.__all__
     assert "advance_kernel_checkpoint" not in repository.__all__
     assert "load_kernel_checkpoint" not in repository.__all__
