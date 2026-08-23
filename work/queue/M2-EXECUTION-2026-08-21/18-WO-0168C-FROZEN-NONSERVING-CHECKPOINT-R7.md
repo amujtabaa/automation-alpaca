@@ -83,11 +83,11 @@ WO-0168b-W00c is exactly:
 | --- | --- | --- |
 | L00 | verification fails before activation | zero activation, zero retirement; rollback per UOW contract |
 | L01 | activation refuses because one exact lease is active | registry unchanged; zero new capability and zero retirement of existing lease |
-| L02 | post-activation verification/body raises | retire once, rollback once, zero commit; original error remains exact unless UOW defines a typed refusal |
+| L02 | post-activation verification/body proxy raises exact test-only `_InjectedUnitOfWorkFault` | retire once, rollback once, zero commit; the same exception propagates after successful rollback |
 | L03 | body returns non-committing/refused result | retire once, rollback once, zero commit |
 | L04 | body succeeds | retire once immediately before one commit, zero rollback |
 | L05 | commit raises/returns ambiguously | retire once before one commit attempt; zero rollback and zero retry; typed reconciliation-only result |
-| L06 | rollback raises | retire once before one rollback attempt; zero commit; rollback error propagates/fails closed and registry is empty |
+| L06 | rollback proxy raises exact test-only `_InjectedRollbackFault` | retire once before one rollback attempt; zero commit; the same rollback exception propagates and registry is empty |
 | L07 | normal T1 commit then T2 on same connection | new generation/identity; every T1 token rejected |
 | L08 | normal T1 rollback then T2 on same connection | new generation/identity; every T1 token rejected |
 
