@@ -1,5 +1,9 @@
 # WO-0168c frozen non-serving checkpoint contract — R2
 
+> **SUPERSEDED — NOT IMPLEMENTATION AUTHORITY.** REV-0077 R2 found eleven P1 and one P2 defect.
+> The authoritative successor is `11-WO-0168C-FROZEN-NONSERVING-CHECKPOINT-R3.md` plus its exact
+> `12-WO-0168C-R3-SQL-MANIFEST.md`. This file remains review evidence only.
+
 Status: **PREFLIGHT CANDIDATE — DOCUMENTATION ONLY; NO SOURCE OR DATABASE AUTHORITY**
 
 Date: 2026-08-23
