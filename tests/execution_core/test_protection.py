@@ -9838,20 +9838,95 @@ def test_m2_protection_checkpoint_component_round_trips_canonically() -> None:
         checkpoint_codec._encode_m2_protection_checkpoint_component(decoded) == encoded
     )
 
+    # Keep the fixed owner-member order observable independently of the
+    # decoder's whole-checkpoint authenticity re-derivation.  Each source
+    # member appears exactly once at its frozen wire position.
+    assert encoded == [
+        "m2.protection.checkpoint/v1",
+        checkpoint_codec._encode_m2_protection_policy(checkpoint.policy),
+        checkpoint_codec._operations._encode_m2_protection_mandate(checkpoint.mandate),
+        checkpoint.raw_quantity,
+        checkpoint.execution_commitment.hex(),
+        checkpoint.formula_available,
+        checkpoint_codec._encode_m2_optional_m1_value(
+            checkpoint.armed_hard_bail_trigger
+        ),
+        checkpoint_codec._encode_m2_optional_m1_value(checkpoint.activation_price),
+        checkpoint_codec._encode_m2_optional_m1_value(checkpoint.high_watermark),
+        checkpoint_codec._encode_m2_optional_m1_value(checkpoint.trail),
+        checkpoint.waiting_buy_resolution,
+        checkpoint.commitment.hex(),
+        checkpoint.cursor_ordinal,
+        checkpoint.cursor_head.hex(),
+        checkpoint.market_occurrence_epoch,
+        checkpoint.market_committed_epoch,
+        checkpoint.market_expected_epoch,
+        checkpoint.market_source_sequence,
+        checkpoint.market_source_time,
+        checkpoint.market_evaluation_time,
+        checkpoint_codec._encode_m2_optional_m1_value(
+            checkpoint.market_occurrence_identity
+        ),
+        checkpoint.market_halted,
+        checkpoint.market_baseline_required,
+        checkpoint.market_exhausted,
+        checkpoint_codec._encode_m2_optional_m1_value(checkpoint.market_last_primary),
+        checkpoint_codec._encode_m2_optional_m1_value(checkpoint.hard_bid_identity),
+        checkpoint.hard_bid_source_time,
+        checkpoint_codec._encode_m2_optional_m1_value(checkpoint.trade_identity),
+        checkpoint.trade_source_time,
+        checkpoint_codec._encode_m2_optional_m1_value(checkpoint.trail_bid_identity),
+        checkpoint.trail_bid_source_time,
+        checkpoint.exit_provenance.hex(),
+    ]
+
     tampered_commitment = [*encoded]
     tampered_commitment[11] = "00" * 32
     with pytest.raises(ValueError, match="checkpoint is not authentic"):
         checkpoint_codec._decode_m2_protection_checkpoint_component(tampered_commitment)
 
-    reordered = [*encoded]
-    reordered[3], reordered[4] = reordered[4], reordered[3]
-    with pytest.raises((TypeError, ValueError)):
-        checkpoint_codec._decode_m2_protection_checkpoint_component(reordered)
-
-    for member_index in range(len(encoded)):
+    wrong_m1_value = checkpoint_codec._operations._encode_m2_m1_atom(Quantity(1))
+    malformed_members = (
+        (0, "wrong-protection-checkpoint-tag", "aggregate must have exact tag"),
+        (1, ["wrong-protection-policy-tag", encoded[1][1]], "policy tag"),
+        (2, [], "ProtectionMandate/v1 aggregate has the wrong member count"),
+        (3, True, "protection checkpoint raw quantity must be an exact integer"),
+        (4, 0, "protection checkpoint execution commitment must be exact text"),
+        (5, 0, "formula availability must be exact bool"),
+        (6, wrong_m1_value, "armed trigger must decode to ReportedPrice"),
+        (7, wrong_m1_value, "activation price must decode to ReportedPrice"),
+        (8, wrong_m1_value, "high watermark must decode to ReportedPrice"),
+        (9, wrong_m1_value, "trail must decode to ReportedPrice"),
+        (10, 0, "waiting-buy resolution must be exact bool"),
+        (11, 0, "protection checkpoint commitment must be exact text"),
+        (12, True, "protection checkpoint cursor ordinal must be an exact integer"),
+        (13, 0, "protection checkpoint cursor head must be exact text"),
+        (14, True, "protection checkpoint occurrence epoch must be an exact integer"),
+        (15, True, "protection checkpoint committed epoch must be an exact integer"),
+        (16, True, "protection checkpoint expected epoch must be an exact integer"),
+        (17, True, "protection checkpoint source sequence must be an exact integer"),
+        (18, True, "protection checkpoint source time must be an exact integer"),
+        (19, True, "protection checkpoint evaluation time must be an exact integer"),
+        (20, wrong_m1_value, "occurrence identity must decode to MarketOccurrenceId"),
+        (21, 0, "market halted must be exact bool"),
+        (22, 0, "market baseline required must be exact bool"),
+        (23, 0, "market exhausted must be exact bool"),
+        (24, wrong_m1_value, "last primary must decode to ReportedPrice"),
+        (25, wrong_m1_value, "hard bid identity must decode to MarketOccurrenceId"),
+        (26, True, "hard bid time must be an exact integer"),
+        (27, wrong_m1_value, "trade identity must decode to MarketOccurrenceId"),
+        (28, True, "trade time must be an exact integer"),
+        (29, wrong_m1_value, "trail bid identity must decode to MarketOccurrenceId"),
+        (30, True, "trail bid time must be an exact integer"),
+        (31, 0, "protection checkpoint exit provenance must be exact text"),
+    )
+    assert {member_index for member_index, _, _ in malformed_members} == set(
+        range(len(encoded))
+    )
+    for member_index, replacement, message in malformed_members:
         malformed = [*encoded]
-        malformed[member_index] = object()
-        with pytest.raises((TypeError, ValueError)):
+        malformed[member_index] = replacement
+        with pytest.raises((TypeError, ValueError), match=message):
             checkpoint_codec._decode_m2_protection_checkpoint_component(malformed)
 
 
