@@ -372,6 +372,168 @@ def _make_radix_node(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class _RadixWitnessNode:
+    """One fully described authenticated node on a direct-key radix proof."""
+
+    has_value: bool
+    value_commitment: bytes
+    children: tuple[tuple[int, bytes], ...]
+
+
+def _radix_witness_node_commitment(node: _RadixWitnessNode) -> bytes:
+    """Rebuild one node only from its complete canonical child tuple."""
+
+    if type(node) is not _RadixWitnessNode:
+        raise TypeError("radix witness node must be exact")
+    if type(node.has_value) is not bool:
+        raise ValueError("radix witness node has invalid value flag")
+    if type(node.value_commitment) is not bytes:
+        raise ValueError("radix witness node value commitment must be bytes")
+    if node.has_value:
+        if len(node.value_commitment) != 32:
+            raise ValueError("present radix witness value must contain 32 bytes")
+    elif node.value_commitment:
+        raise ValueError("absent radix witness value must be empty")
+    if type(node.children) is not tuple or len(node.children) > 256:
+        raise ValueError("radix witness children must be a bounded tuple")
+    previous_label = -1
+    children_commitment = bytes(32)
+    for child in node.children:
+        if type(child) is not tuple or len(child) != 2:
+            raise ValueError(
+                "radix witness child must be one exact labelled commitment"
+            )
+        label, child_commitment = child
+        if (
+            type(label) is not int
+            or label < 0
+            or label > 255
+            or label <= previous_label
+            or type(child_commitment) is not bytes
+            or len(child_commitment) != 32
+        ):
+            raise ValueError("radix witness children are not canonical")
+        previous_label = label
+        children_commitment = _xor_commitments(
+            children_commitment,
+            _radix_edge_commitment(label, child_commitment),
+        )
+    return _commit_parts(
+        b"execution-core/radix-node/v1",
+        b"\x01" if node.has_value else b"\x00",
+        node.value_commitment if node.has_value else b"",
+        children_commitment,
+    )
+
+
+def _radix_witness_child_commitment(
+    node: _RadixWitnessNode,
+    label: int,
+) -> bytes | None:
+    """Return the exact commitment for one canonical labelled child."""
+
+    for current_label, commitment in node.children:
+        if current_label == label:
+            return commitment
+    return None
+
+
+@dataclass(frozen=True, slots=True)
+class _PersistentKeyMapWitness:
+    """Key-bounded full-node proof for one persistent-map membership query."""
+
+    key: bytes
+    size: int
+    nodes: tuple[_RadixWitnessNode, ...]
+
+    @property
+    def commitment(self) -> bytes:
+        """Commit the exact bounded witness shape retained by one direct proof."""
+
+        node_commitments = tuple(
+            _radix_witness_node_commitment(node) for node in self.nodes
+        )
+        return _commit_parts(
+            b"execution-core/persistent-map-witness/v1",
+            self.key,
+            _encode_int(self.size),
+            _encode_int(len(node_commitments)),
+            *node_commitments,
+        )
+
+    def _matches(
+        self,
+        map_commitment: object,
+        expected_key: object,
+        expected_value_commitment: object,
+    ) -> bool:
+        """Verify one exact membership or nonmembership claim without retained history."""
+
+        try:
+            if (
+                type(self.key) is not bytes
+                or not self.key
+                or type(expected_key) is not bytes
+                or expected_key != self.key
+                or type(self.size) is not int
+                or self.size < 0
+                or type(self.nodes) is not tuple
+                or not self.nodes
+                or len(self.nodes) > len(self.key) + 1
+                or type(map_commitment) is not bytes
+                or len(map_commitment) != 32
+                or (
+                    expected_value_commitment is not None
+                    and (
+                        type(expected_value_commitment) is not bytes
+                        or len(expected_value_commitment) != 32
+                    )
+                )
+            ):
+                return False
+            node_commitments = tuple(
+                _radix_witness_node_commitment(node) for node in self.nodes
+            )
+            expected_map = _commit_parts(
+                b"execution-core/persistent-map/v1",
+                _encode_int(self.size),
+                node_commitments[0],
+            )
+            if expected_map != map_commitment:
+                return False
+            for index in range(len(self.nodes) - 1):
+                if index >= len(self.key):
+                    return False
+                child_commitment = _radix_witness_child_commitment(
+                    self.nodes[index],
+                    self.key[index],
+                )
+                if child_commitment != node_commitments[index + 1]:
+                    return False
+            terminal_depth = len(self.nodes) - 1
+            terminal = self.nodes[-1]
+            if terminal_depth < len(self.key):
+                return (
+                    expected_value_commitment is None
+                    and _radix_witness_child_commitment(
+                        terminal,
+                        self.key[terminal_depth],
+                    )
+                    is None
+                )
+            if terminal_depth != len(self.key):
+                return False
+            if expected_value_commitment is None:
+                return not terminal.has_value
+            return (
+                terminal.has_value
+                and terminal.value_commitment == expected_value_commitment
+            )
+        except (TypeError, ValueError, OverflowError):
+            return False
+
+
 def _child_at(
     children: tuple[tuple[int, _RadixNode[_ValueT]], ...],
     label: int,
@@ -450,6 +612,40 @@ class _PersistentKeyMap(Generic[_ValueT]):
 
         _, value = self._lookup(key)
         return value
+
+    def _witness_for(self, key: bytes) -> _PersistentKeyMapWitness:
+        """Return one complete-node bounded proof for this exact direct key."""
+
+        if type(key) is not bytes or not key:
+            raise ValueError("persistent-map key must be nonempty exact bytes")
+        nodes: list[_RadixWitnessNode] = []
+        node = self._root
+        for label in key:
+            nodes.append(
+                _RadixWitnessNode(
+                    has_value=node.has_value,
+                    value_commitment=node.value_commitment if node.has_value else b"",
+                    children=tuple(
+                        (child_label, child.commitment)
+                        for child_label, child in node.children
+                    ),
+                )
+            )
+            _, child = _child_at(node.children, label)
+            if child is None:
+                return _PersistentKeyMapWitness(key, self.size, tuple(nodes))
+            node = child
+        nodes.append(
+            _RadixWitnessNode(
+                has_value=node.has_value,
+                value_commitment=node.value_commitment if node.has_value else b"",
+                children=tuple(
+                    (child_label, child.commitment)
+                    for child_label, child in node.children
+                ),
+            )
+        )
+        return _PersistentKeyMapWitness(key, self.size, tuple(nodes))
 
     def _set(
         self,
@@ -1108,6 +1304,10 @@ class RootHeadIndex:
         _require_type("root_key", root_key, RootFillKey)
         return self._by_root.get(_encode_root_fill_key(root_key))
 
+    def _current_head_witness(self, root_key: RootFillKey) -> _PersistentKeyMapWitness:
+        _require_type("root_key", root_key, RootFillKey)
+        return self._by_root._witness_for(_encode_root_fill_key(root_key))
+
     def broker_root_count(self, scope: ExecutionScope) -> int:
         """Return the indexed broker-authoritative root count for exact scope."""
 
@@ -1487,6 +1687,10 @@ class SeenFactIndex:
         _require_type("key", key, ExecutionFactKey)
         return self._by_key.get(_encode_execution_fact_key(key))
 
+    def _fact_witness(self, key: ExecutionFactKey) -> _PersistentKeyMapWitness:
+        _require_type("key", key, ExecutionFactKey)
+        return self._by_key._witness_for(_encode_execution_fact_key(key))
+
     def observation_at(self, index: int) -> SeenFact:
         """Return one ordered observation without materializing registry history."""
 
@@ -1505,6 +1709,13 @@ class SeenFactIndex:
 
         _require_type("root_key", root_key, RootFillKey)
         return self._observed_roots.get(_encode_root_fill_key(root_key)) is not None
+
+    def _root_claim_witness(
+        self,
+        root_key: RootFillKey,
+    ) -> _PersistentKeyMapWitness:
+        _require_type("root_key", root_key, RootFillKey)
+        return self._observed_roots._witness_for(_encode_root_fill_key(root_key))
 
     def add(self, observation: SeenFact) -> SeenFactIndex:
         _require_type("observation", observation, SeenFact)

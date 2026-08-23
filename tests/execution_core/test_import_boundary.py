@@ -619,6 +619,7 @@ _LEGACY_PROTECTION_E2_FUNCTIONS = {
     # Keeping them in the legacy AST models a semantics-preserving extraction;
     # the public wrappers remain the historical entry points.
     "_m2_optional_acquisition_generation_commitment",
+    "_m2_issue_protection_authority_proof",
     "_m2_position_protection_from_checkpoint",
     "_m2_protection_authority_proof_commitment",
     "_protection_mandate_commitment",

@@ -38,6 +38,7 @@ import typing
 import pytest
 
 import app.execution_core as execution_core
+from app.execution_core import profiles
 from app.execution_core.authority import (
     AuthorityDisposition,
     AuthorityReason,
@@ -67,6 +68,8 @@ from app.execution_core.position import (
     TransitionDisposition,
     apply_broker_execution_fact,
 )
+from app.execution_core.persistence import records
+import app.execution_core.persistence.checkpoint_codec as checkpoint_codec
 from app.execution_core.identity import (
     AcquisitionGenerationId,
     ApplicationGenerationId,
@@ -997,6 +1000,127 @@ def _start(
         assert applied.critical_alert is None
         state = applied.state
     return current_mandate, projection, state
+
+
+def _m2_current_proof(module: ModuleType, state: object, label: str):
+    application_id = ApplicationGenerationId(f"m2-proof-{label}")
+    execution_profile_id = "ce" * 32
+    market_source_profile_id = "df" * 32
+    acquisition_id = AcquisitionGenerationId("ab" * 32)
+    execution_profile = profiles.ExecutionConnectionProfile(
+        connection_profile_id=execution_profile_id,
+        application_generation=application_id.value,
+        broker_provider="ALPACA",
+        environment_class="PAPER",
+        account_identity="aa" * 32,
+        trade_command_origin="https://trade.example.com",
+        order_query_origin="https://query.example.com",
+        order_event_origin="https://stream.example.com",
+        credential_handle_fingerprint="bb" * 32,
+        adapter_contract_version="1.0.0",
+        capability_profile_sha256="cc" * 32,
+        deployment_identity="dd" * 32,
+    )
+    market_profile = profiles.MarketDataSourceProfile(
+        market_source_profile_id=market_source_profile_id,
+        provider="ALPACA",
+        environment_or_feed="iex-feed",
+        source_origin="https://feed.example.com",
+        entitlement_class="IEX",
+        normalization_contract_version="1.0.0",
+        data_capability_profile_sha256="ee" * 32,
+    )
+    authority = records.ProtectionAuthorityRecord(
+        1,
+        "NORMAL",
+        state.mandate.evidence_policy.stream_generation,
+        acquisition_id,
+        module._commit_mandate(state.mandate).hex(),
+        market_source_profile_id,
+        state.mandate.session_id,
+        state.mandate.evidence_policy.sequence_mode.value,
+        state._cursor_ordinal,
+        state.commitment.hex(),
+        1,
+    )
+    return records._issue_current_proof_slice(
+        records._CURRENT_PROOF_ISSUER,
+        records.CurrentProofRequest(application_id, 1),
+        execution_profile,
+        market_profile,
+        records.ApplicationGenerationRecord(
+            application_id,
+            execution_profile_id,
+            market_source_profile_id,
+            1,
+        ),
+        records.ScopeRecord(
+            1,
+            application_id,
+            execution_profile_id,
+            state.mandate.position_scope.symbol_id,
+        ),
+        records.AcquisitionGenerationRecord(
+            acquisition_id,
+            1,
+            "LIVE",
+            1,
+            None,
+            module._commit_mandate(state.mandate).hex(),
+            "ff" * 32,
+        ),
+        records.AcquisitionGenerationCurrentRecord(acquisition_id, 1, 0, 0, 0),
+        records.KernelCheckpointRecord(
+            application_id,
+            state._cursor_ordinal,
+            "11" * 32,
+            1,
+        ),
+        records.SymbolControllerRecord(
+            1,
+            application_id,
+            execution_profile_id,
+            acquisition_id,
+            0,
+            "CONSISTENT",
+            state._cursor_ordinal,
+            1,
+            "ff" * 32,
+        ),
+        authority,
+        records.MarketStreamAuthorityRecord(
+            state.mandate.evidence_policy.stream_generation,
+            1,
+            application_id,
+            acquisition_id,
+            module._commit_mandate(state.mandate).hex(),
+            market_source_profile_id,
+            state.mandate.session_id,
+            state.mandate.evidence_policy.sequence_mode.value,
+        ),
+        records.MarketCursorRecord(
+            state.mandate.evidence_policy.stream_generation,
+            1,
+            application_id,
+            acquisition_id,
+            module._commit_mandate(state.mandate).hex(),
+            market_source_profile_id,
+            state.mandate.session_id,
+            state.mandate.evidence_policy.sequence_mode.value,
+            0,
+            0,
+        ),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
 
 
 def _reduce_projection(
@@ -9605,33 +9729,12 @@ def test_m2_checkpoint_hydrator_rebuilds_only_an_authentic_protection_state() ->
         state._trail_bid_source_time,
         state._exit_provenance,
     )
-    live_generation = AcquisitionGenerationId("1" * 64)
-    authority_rows = module._M2ProtectionAuthorityProof._CurrentRows(
-        application_generation_id=ApplicationGenerationId(
-            "m2-protection-checkpoint-app"
-        ),
-        execution_profile_id="m2-execution-profile",
-        market_source_profile_id="m2-market-profile",
-        scope_id=1,
-        position_scope=state.mandate.position_scope,
-        controller_currentness_head_ordinal=state._cursor_ordinal,
-        live_acquisition_generation_id=live_generation,
-        authority_class="NORMAL",
-        active_stream_generation_id=state.mandate.evidence_policy.stream_generation,
-        active_acquisition_generation_id=live_generation,
-        active_generation_mandate_commitment_sha256=module._commit_mandate(
-            state.mandate
-        ).hex(),
-        active_source_profile_id="m2-market-profile",
-        active_session_id=state.mandate.session_id,
-        active_sequence_mode=state.mandate.evidence_policy.sequence_mode,
-        expected_controller_head_ordinal=state._cursor_ordinal,
-        state_commitment_sha256=state.commitment.hex(),
-        version_ordinal=1,
-        market_source_id=state.mandate.evidence_policy.source_id,
-    )
-    authority_proof = module._M2ProtectionAuthorityProof.from_current_rows(
-        authority_rows
+    current_proof = _m2_current_proof(module, state, "hydrator")
+    authority_proof = (
+        checkpoint_codec._m2_protection_authority_proof_from_current_proof(
+            checkpoint,
+            current_proof,
+        )
     )
     restored = module._m2_position_protection_from_checkpoint(
         checkpoint,
@@ -9643,20 +9746,20 @@ def test_m2_checkpoint_hydrator_rebuilds_only_an_authentic_protection_state() ->
     assert module.reduce_position_protection(state, projection) == (
         module._m2_reduce_position_protection(state, projection)
     )
-    with pytest.raises(ValueError, match="expected controller head is not current"):
-        module._M2ProtectionAuthorityProof.from_current_rows(
-            replace(
-                authority_rows,
-                expected_controller_head_ordinal=state._cursor_ordinal + 1,
-            )
-        )
-    with pytest.raises(ValueError, match="source profile does not match"):
-        module._M2ProtectionAuthorityProof.from_current_rows(
-            replace(authority_rows, active_source_profile_id="other-market-profile")
-        )
-    with pytest.raises(ValueError, match="is not the live generation"):
-        module._M2ProtectionAuthorityProof.from_current_rows(
-            replace(authority_rows, active_acquisition_generation_id=None)
+    with pytest.raises(TypeError, match="repository-issued"):
+        records.CurrentProofSlice()
+    object.__setattr__(
+        current_proof,
+        "protection_authority",
+        replace(
+            current_proof.protection_authority,
+            expected_controller_head_ordinal=state._cursor_ordinal + 1,
+        ),
+    )
+    with pytest.raises(ValueError, match="repository-authentic"):
+        checkpoint_codec._m2_protection_authority_proof_from_current_proof(
+            checkpoint,
+            current_proof,
         )
     with pytest.raises(
         ValueError, match="checkpoint protection state is not authentic"
@@ -9734,30 +9837,10 @@ def test_m2_checkpoint_hydrator_rejects_every_mutated_authority_coordinate(
         state._trail_bid_source_time,
         state._exit_provenance,
     )
-    live_generation = AcquisitionGenerationId("2" * 64)
-    rows = module._M2ProtectionAuthorityProof._CurrentRows(
-        application_generation_id=ApplicationGenerationId("m2-coordinate-app"),
-        execution_profile_id="m2-execution-profile",
-        market_source_profile_id="m2-market-profile",
-        scope_id=1,
-        position_scope=state.mandate.position_scope,
-        controller_currentness_head_ordinal=state._cursor_ordinal,
-        live_acquisition_generation_id=live_generation,
-        authority_class="NORMAL",
-        active_stream_generation_id=state.mandate.evidence_policy.stream_generation,
-        active_acquisition_generation_id=live_generation,
-        active_generation_mandate_commitment_sha256=module._commit_mandate(
-            state.mandate
-        ).hex(),
-        active_source_profile_id="m2-market-profile",
-        active_session_id=state.mandate.session_id,
-        active_sequence_mode=state.mandate.evidence_policy.sequence_mode,
-        expected_controller_head_ordinal=state._cursor_ordinal,
-        state_commitment_sha256=state.commitment.hex(),
-        version_ordinal=1,
-        market_source_id=state.mandate.evidence_policy.source_id,
+    proof = checkpoint_codec._m2_protection_authority_proof_from_current_proof(
+        checkpoint,
+        _m2_current_proof(module, state, f"coordinate-{field_name}"),
     )
-    proof = module._M2ProtectionAuthorityProof.from_current_rows(rows)
 
     object.__setattr__(proof.rows, field_name, None)
 

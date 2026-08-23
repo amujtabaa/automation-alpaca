@@ -28,12 +28,14 @@ from .fills import (
     RootHeadIndex,
     SeenFact,
     SeenFactIndex,
+    _PersistentKeyMapWitness,
     _PersistentSequence,
     _SnapshotBinding,
     _commit_parts,
     _commit_root_fill_key,
     _commit_source_event_id,
     _encode_execution_fact,
+    _encode_execution_fact_key,
     _encode_fraction,
     _encode_int,
     _encode_position_scope,
@@ -553,6 +555,9 @@ class _M2ExecutionState:
     head_ids_commitment: bytes
     root_heads_commitment: bytes
     seen_facts_commitment: bytes
+    root_head_map_commitment: bytes
+    seen_fact_map_commitment: bytes
+    root_claim_map_commitment: bytes
     commitment: bytes
 
     def __init__(self, *args: object, **kwargs: object) -> None:
@@ -570,11 +575,18 @@ class _M2ExecutionObservationProof:
     state_commitment: bytes
     root_heads_commitment: bytes
     seen_facts_commitment: bytes
+    root_head_map_commitment: bytes
+    seen_fact_map_commitment: bytes
+    root_claim_map_commitment: bytes
     fact: BrokerExecutionFact
     prior_observation: SeenFact | None
     root_head: RootHead | None
     predecessor_observation: SeenFact | None
     root_claimed: bool
+    prior_observation_witness: _PersistentKeyMapWitness
+    root_head_witness: _PersistentKeyMapWitness
+    predecessor_observation_witness: _PersistentKeyMapWitness | None
+    root_claim_witness: _PersistentKeyMapWitness
     commitment: bytes
 
     def __init__(self, *args: object, **kwargs: object) -> None:
@@ -608,37 +620,69 @@ class _M2ExecutionObservationProof:
             raise ValueError("state is not the exact coherent snapshot projection")
         prior_observation = snapshot.seen_facts.get(fact.key)
         root_head = snapshot.root_heads.get(fact.root_key)
+        prior_observation_witness = snapshot.seen_facts._fact_witness(fact.key)
+        root_head_witness = snapshot.root_heads._current_head_witness(fact.root_key)
         predecessor_observation = None
+        predecessor_observation_witness = None
         if type(fact) in {BrokerTradeCorrectFact, BrokerTradeBustFact}:
             revision_fact = cast(BrokerTradeCorrectFact | BrokerTradeBustFact, fact)
-            predecessor_observation = snapshot.seen_facts.get(
-                ExecutionFactKey(
-                    broker=revision_fact.key.broker,
-                    environment=revision_fact.key.environment,
-                    account=revision_fact.key.account,
-                    source_event_id=revision_fact.predecessor_source_event_id,
-                )
+            predecessor_key = ExecutionFactKey(
+                broker=revision_fact.key.broker,
+                environment=revision_fact.key.environment,
+                account=revision_fact.key.account,
+                source_event_id=revision_fact.predecessor_source_event_id,
+            )
+            predecessor_observation = snapshot.seen_facts.get(predecessor_key)
+            predecessor_observation_witness = snapshot.seen_facts._fact_witness(
+                predecessor_key
             )
         root_claimed = snapshot.seen_facts.contains_root(fact.root_key)
+        root_claim_witness = snapshot.seen_facts._root_claim_witness(fact.root_key)
         commitment = _m2_execution_observation_proof_commitment(
             state_commitment=state.commitment,
             root_heads_commitment=state.root_heads_commitment,
             seen_facts_commitment=state.seen_facts_commitment,
+            root_head_map_commitment=state.root_head_map_commitment,
+            seen_fact_map_commitment=state.seen_fact_map_commitment,
+            root_claim_map_commitment=state.root_claim_map_commitment,
             fact=fact,
             prior_observation=prior_observation,
             root_head=root_head,
             predecessor_observation=predecessor_observation,
             root_claimed=root_claimed,
+            prior_observation_witness=prior_observation_witness,
+            root_head_witness=root_head_witness,
+            predecessor_observation_witness=predecessor_observation_witness,
+            root_claim_witness=root_claim_witness,
         )
         result = object.__new__(_M2ExecutionObservationProof)
         object.__setattr__(result, "state_commitment", state.commitment)
         object.__setattr__(result, "root_heads_commitment", state.root_heads_commitment)
         object.__setattr__(result, "seen_facts_commitment", state.seen_facts_commitment)
+        object.__setattr__(
+            result, "root_head_map_commitment", state.root_head_map_commitment
+        )
+        object.__setattr__(
+            result, "seen_fact_map_commitment", state.seen_fact_map_commitment
+        )
+        object.__setattr__(
+            result, "root_claim_map_commitment", state.root_claim_map_commitment
+        )
         object.__setattr__(result, "fact", fact)
         object.__setattr__(result, "prior_observation", prior_observation)
         object.__setattr__(result, "root_head", root_head)
         object.__setattr__(result, "predecessor_observation", predecessor_observation)
         object.__setattr__(result, "root_claimed", root_claimed)
+        object.__setattr__(
+            result, "prior_observation_witness", prior_observation_witness
+        )
+        object.__setattr__(result, "root_head_witness", root_head_witness)
+        object.__setattr__(
+            result,
+            "predecessor_observation_witness",
+            predecessor_observation_witness,
+        )
+        object.__setattr__(result, "root_claim_witness", root_claim_witness)
         object.__setattr__(result, "commitment", commitment)
         return result
 
@@ -655,6 +699,9 @@ class _M2ExecutionObservationProof:
                 candidate.state_commitment,
                 candidate.root_heads_commitment,
                 candidate.seen_facts_commitment,
+                candidate.root_head_map_commitment,
+                candidate.seen_fact_map_commitment,
+                candidate.root_claim_map_commitment,
                 candidate.commitment,
             )
         ):
@@ -682,16 +729,34 @@ class _M2ExecutionObservationProof:
             return False
         if type(candidate.root_claimed) is not bool:
             return False
+        if (
+            type(candidate.prior_observation_witness) is not _PersistentKeyMapWitness
+            or type(candidate.root_head_witness) is not _PersistentKeyMapWitness
+            or type(candidate.root_claim_witness) is not _PersistentKeyMapWitness
+            or (
+                candidate.predecessor_observation_witness is not None
+                and type(candidate.predecessor_observation_witness)
+                is not _PersistentKeyMapWitness
+            )
+        ):
+            return False
         try:
             expected = _m2_execution_observation_proof_commitment(
                 state_commitment=candidate.state_commitment,
                 root_heads_commitment=candidate.root_heads_commitment,
                 seen_facts_commitment=candidate.seen_facts_commitment,
+                root_head_map_commitment=candidate.root_head_map_commitment,
+                seen_fact_map_commitment=candidate.seen_fact_map_commitment,
+                root_claim_map_commitment=candidate.root_claim_map_commitment,
                 fact=candidate.fact,
                 prior_observation=candidate.prior_observation,
                 root_head=candidate.root_head,
                 predecessor_observation=candidate.predecessor_observation,
                 root_claimed=candidate.root_claimed,
+                prior_observation_witness=candidate.prior_observation_witness,
+                root_head_witness=candidate.root_head_witness,
+                predecessor_observation_witness=candidate.predecessor_observation_witness,
+                root_claim_witness=candidate.root_claim_witness,
             )
         except (TypeError, ValueError):
             return False
@@ -796,6 +861,9 @@ def _m2_execution_state_commitment(
     head_ids_commitment: bytes,
     root_heads_commitment: bytes,
     seen_facts_commitment: bytes,
+    root_head_map_commitment: bytes,
+    seen_fact_map_commitment: bytes,
+    root_claim_map_commitment: bytes,
 ) -> bytes:
     """Commit only the exact bounded execution members retained by M2."""
 
@@ -824,6 +892,9 @@ def _m2_execution_state_commitment(
         head_ids_commitment,
         root_heads_commitment,
         seen_facts_commitment,
+        root_head_map_commitment,
+        seen_fact_map_commitment,
+        root_claim_map_commitment,
     )
 
 
@@ -832,11 +903,18 @@ def _m2_execution_observation_proof_commitment(
     state_commitment: bytes,
     root_heads_commitment: bytes,
     seen_facts_commitment: bytes,
+    root_head_map_commitment: bytes,
+    seen_fact_map_commitment: bytes,
+    root_claim_map_commitment: bytes,
     fact: BrokerExecutionFact,
     prior_observation: SeenFact | None,
     root_head: RootHead | None,
     predecessor_observation: SeenFact | None,
     root_claimed: bool,
+    prior_observation_witness: _PersistentKeyMapWitness,
+    root_head_witness: _PersistentKeyMapWitness,
+    predecessor_observation_witness: _PersistentKeyMapWitness | None,
+    root_claim_witness: _PersistentKeyMapWitness,
 ) -> bytes:
     """Commit exactly one aggregate-bound direct execution proof slice."""
 
@@ -845,6 +923,9 @@ def _m2_execution_observation_proof_commitment(
         state_commitment,
         root_heads_commitment,
         seen_facts_commitment,
+        root_head_map_commitment,
+        seen_fact_map_commitment,
+        root_claim_map_commitment,
         _encode_execution_fact(fact),
         (
             prior_observation.commitment
@@ -862,6 +943,14 @@ def _m2_execution_observation_proof_commitment(
             else _commit_parts(b"execution-core/m2-predecessor/absent/v1")
         ),
         b"\x01" if root_claimed else b"\x00",
+        prior_observation_witness.commitment,
+        root_head_witness.commitment,
+        (
+            predecessor_observation_witness.commitment
+            if predecessor_observation_witness is not None
+            else _commit_parts(b"execution-core/m2-predecessor-witness/absent/v1")
+        ),
+        root_claim_witness.commitment,
     )
 
 
@@ -883,6 +972,9 @@ def _new_m2_execution_state(
     head_ids_commitment: bytes,
     root_heads_commitment: bytes,
     seen_facts_commitment: bytes,
+    root_head_map_commitment: bytes,
+    seen_fact_map_commitment: bytes,
+    root_claim_map_commitment: bytes,
 ) -> _M2ExecutionState:
     """Construct one sealed bounded execution state through its owning checks."""
 
@@ -922,6 +1014,9 @@ def _new_m2_execution_state(
         ("head_ids_commitment", head_ids_commitment),
         ("root_heads_commitment", root_heads_commitment),
         ("seen_facts_commitment", seen_facts_commitment),
+        ("root_head_map_commitment", root_head_map_commitment),
+        ("seen_fact_map_commitment", seen_fact_map_commitment),
+        ("root_claim_map_commitment", root_claim_map_commitment),
     ):
         if type(value) is not bytes or len(value) != 32:
             raise ValueError(f"{name} must contain exactly 32 bytes")
@@ -953,6 +1048,9 @@ def _new_m2_execution_state(
         head_ids_commitment=head_ids_commitment,
         root_heads_commitment=root_heads_commitment,
         seen_facts_commitment=seen_facts_commitment,
+        root_head_map_commitment=root_head_map_commitment,
+        seen_fact_map_commitment=seen_fact_map_commitment,
+        root_claim_map_commitment=root_claim_map_commitment,
     )
     result = object.__new__(_M2ExecutionState)
     object.__setattr__(result, "scope", scope)
@@ -983,6 +1081,9 @@ def _new_m2_execution_state(
     object.__setattr__(result, "head_ids_commitment", head_ids_commitment)
     object.__setattr__(result, "root_heads_commitment", root_heads_commitment)
     object.__setattr__(result, "seen_facts_commitment", seen_facts_commitment)
+    object.__setattr__(result, "root_head_map_commitment", root_head_map_commitment)
+    object.__setattr__(result, "seen_fact_map_commitment", seen_fact_map_commitment)
+    object.__setattr__(result, "root_claim_map_commitment", root_claim_map_commitment)
     object.__setattr__(result, "commitment", commitment)
     return result
 
@@ -1010,6 +1111,9 @@ def _m2_execution_state_is_authentic(state: object) -> bool:
             head_ids_commitment=state.head_ids_commitment,
             root_heads_commitment=state.root_heads_commitment,
             seen_facts_commitment=state.seen_facts_commitment,
+            root_head_map_commitment=state.root_head_map_commitment,
+            seen_fact_map_commitment=state.seen_fact_map_commitment,
+            root_claim_map_commitment=state.root_claim_map_commitment,
         )
         rebuilt = _new_m2_execution_state(
             scope=state.scope,
@@ -1028,6 +1132,9 @@ def _m2_execution_state_is_authentic(state: object) -> bool:
             head_ids_commitment=state.head_ids_commitment,
             root_heads_commitment=state.root_heads_commitment,
             seen_facts_commitment=state.seen_facts_commitment,
+            root_head_map_commitment=state.root_head_map_commitment,
+            seen_fact_map_commitment=state.seen_fact_map_commitment,
+            root_claim_map_commitment=state.root_claim_map_commitment,
         )
     except (AttributeError, TypeError, ValueError):
         return False
@@ -1066,6 +1173,9 @@ def _m2_execution_state_from_snapshot(snapshot: ExecutionSnapshot) -> _M2Executi
         head_ids_commitment=snapshot.root_heads.head_ids_commitment,
         root_heads_commitment=snapshot.root_heads.commitment,
         seen_facts_commitment=snapshot.seen_facts.commitment,
+        root_head_map_commitment=snapshot.root_heads._by_root.commitment,
+        seen_fact_map_commitment=snapshot.seen_facts._by_key.commitment,
+        root_claim_map_commitment=snapshot.seen_facts._observed_roots.commitment,
     )
 
 
@@ -1080,7 +1190,7 @@ def _m2_execution_state_from_direct_proof(
     if type(state_or_fields) is _M2ExecutionState:
         state = state_or_fields
     elif type(state_or_fields) is tuple:
-        if len(state_or_fields) != 16:
+        if len(state_or_fields) != 19:
             raise ValueError("direct execution state has an invalid field count")
         (
             scope,
@@ -1099,6 +1209,9 @@ def _m2_execution_state_from_direct_proof(
             head_ids_commitment,
             root_heads_commitment,
             seen_facts_commitment,
+            root_head_map_commitment,
+            seen_fact_map_commitment,
+            root_claim_map_commitment,
         ) = state_or_fields
         state = _new_m2_execution_state(
             scope=cast(PositionScope, scope),
@@ -1117,6 +1230,9 @@ def _m2_execution_state_from_direct_proof(
             head_ids_commitment=cast(bytes, head_ids_commitment),
             root_heads_commitment=cast(bytes, root_heads_commitment),
             seen_facts_commitment=cast(bytes, seen_facts_commitment),
+            root_head_map_commitment=cast(bytes, root_head_map_commitment),
+            seen_fact_map_commitment=cast(bytes, seen_fact_map_commitment),
+            root_claim_map_commitment=cast(bytes, root_claim_map_commitment),
         )
     else:
         raise TypeError("state_or_fields must be exact _M2ExecutionState or tuple")
@@ -1129,6 +1245,9 @@ def _m2_execution_state_from_direct_proof(
     if (
         proof.root_heads_commitment != state.root_heads_commitment
         or proof.seen_facts_commitment != state.seen_facts_commitment
+        or proof.root_head_map_commitment != state.root_head_map_commitment
+        or proof.seen_fact_map_commitment != state.seen_fact_map_commitment
+        or proof.root_claim_map_commitment != state.root_claim_map_commitment
     ):
         raise ValueError("direct proof aggregate commitments do not match state")
     if (
@@ -1136,12 +1255,28 @@ def _m2_execution_state_from_direct_proof(
         and proof.prior_observation.fact.key != proof.fact.key
     ):
         raise ValueError("direct proof prior observation does not match fact identity")
+    if not proof.prior_observation_witness._matches(
+        state.seen_fact_map_commitment,
+        _encode_execution_fact_key(proof.fact.key),
+        (
+            proof.prior_observation.commitment
+            if proof.prior_observation is not None
+            else None
+        ),
+    ):
+        raise ValueError("direct proof prior membership does not match state")
     if proof.root_head is not None:
         if (
             proof.root_head.root_key != proof.fact.root_key
             or proof.root_head.scope.position_scope != state.scope
         ):
             raise ValueError("direct proof root head is outside the exact state")
+    if not proof.root_head_witness._matches(
+        state.root_head_map_commitment,
+        _encode_root_fill_key(proof.fact.root_key),
+        proof.root_head.commitment if proof.root_head is not None else None,
+    ):
+        raise ValueError("direct proof root membership does not match state")
     if proof.predecessor_observation is not None:
         if type(proof.fact) not in {BrokerTradeCorrectFact, BrokerTradeBustFact}:
             raise ValueError("only a revision may carry a predecessor observation")
@@ -1151,6 +1286,34 @@ def _m2_execution_state_from_direct_proof(
             != revision_fact.predecessor_source_event_id
         ):
             raise ValueError("direct proof predecessor does not match revision")
+    if type(proof.fact) in {BrokerTradeCorrectFact, BrokerTradeBustFact}:
+        revision_fact = cast(BrokerTradeCorrectFact | BrokerTradeBustFact, proof.fact)
+        predecessor_key = ExecutionFactKey(
+            broker=revision_fact.key.broker,
+            environment=revision_fact.key.environment,
+            account=revision_fact.key.account,
+            source_event_id=revision_fact.predecessor_source_event_id,
+        )
+        if proof.predecessor_observation_witness is None or not (
+            proof.predecessor_observation_witness._matches(
+                state.seen_fact_map_commitment,
+                _encode_execution_fact_key(predecessor_key),
+                (
+                    proof.predecessor_observation.commitment
+                    if proof.predecessor_observation is not None
+                    else None
+                ),
+            )
+        ):
+            raise ValueError("direct proof predecessor membership does not match state")
+    elif proof.predecessor_observation_witness is not None:
+        raise ValueError("only a revision may carry a predecessor witness")
+    if not proof.root_claim_witness._matches(
+        state.root_claim_map_commitment,
+        _encode_root_fill_key(proof.fact.root_key),
+        _commit_root_fill_key(proof.fact.root_key) if proof.root_claimed else None,
+    ):
+        raise ValueError("direct proof root claim membership does not match state")
     return state
 
 

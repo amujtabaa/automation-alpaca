@@ -582,7 +582,7 @@ class _M2ProtectionCheckpoint:
 class _M2ProtectionAuthorityProof:
     """Sealed currentness/authority selection for one protection checkpoint."""
 
-    @_dataclass(frozen=True, slots=True)
+    @_dataclass(frozen=True, slots=True, init=False)
     class _CurrentRows:
         """Typed direct-current rows before their owner seals one proof."""
 
@@ -605,6 +605,9 @@ class _M2ProtectionAuthorityProof:
         version_ordinal: int
         market_source_id: _MarketDataSourceId
 
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            raise TypeError("_CurrentRows is checkpoint-codec constructed")
+
         def __init_subclass__(cls, **kwargs: object) -> None:
             del cls, kwargs
             raise TypeError("_CurrentRows cannot be subclassed")
@@ -616,14 +619,19 @@ class _M2ProtectionAuthorityProof:
         raise TypeError("_M2ProtectionAuthorityProof is owner-constructed")
 
     @classmethod
-    def from_current_rows(
+    def _from_codec_rows(
         cls,
+        issuer: object,
         rows: _CurrentRows,
     ) -> _M2ProtectionAuthorityProof:
-        """Mint one proof only after exact current-row coordinates agree."""
+        """Mint one proof only through the checkpoint-codec issuer."""
 
         if cls is not _M2ProtectionAuthorityProof:
             raise TypeError("_M2ProtectionAuthorityProof rejects subclass instances")
+        if issuer is not _M2ProtectionAuthorityProof:
+            raise TypeError(
+                "only checkpoint codec may issue protection authority proof"
+            )
         _validate_m2_protection_authority_proof_fields(rows)
         result = object.__new__(_M2ProtectionAuthorityProof)
         object.__setattr__(result, "rows", rows)
@@ -650,6 +658,77 @@ class _M2ProtectionAuthorityProof:
     def __init_subclass__(cls, **kwargs: object) -> None:
         del cls, kwargs
         raise TypeError("_M2ProtectionAuthorityProof cannot be subclassed")
+
+
+def _m2_issue_protection_authority_proof(
+    issuer: object,
+    application_generation_id: _ApplicationGenerationId,
+    execution_profile_id: str,
+    market_source_profile_id: str,
+    scope_id: int,
+    position_scope: _PositionScope,
+    controller_currentness_head_ordinal: int,
+    live_acquisition_generation_id: _AcquisitionGenerationId | None,
+    authority_class: str,
+    active_stream_generation_id: _MarketStreamGenerationId,
+    active_acquisition_generation_id: _AcquisitionGenerationId | None,
+    active_generation_mandate_commitment_sha256: str,
+    active_source_profile_id: str,
+    active_session_id: _SessionId,
+    active_sequence_mode: MarketSequenceMode,
+    expected_controller_head_ordinal: int,
+    state_commitment_sha256: str,
+    version_ordinal: int,
+    market_source_id: _MarketDataSourceId,
+) -> _M2ProtectionAuthorityProof:
+    """Build the private row carrier only for the checkpoint codec's issuer."""
+
+    if issuer is not _M2ProtectionAuthorityProof:
+        raise TypeError("only checkpoint codec may build protection authority rows")
+    rows = object.__new__(_M2ProtectionAuthorityProof._CurrentRows)
+    object.__setattr__(rows, "application_generation_id", application_generation_id)
+    object.__setattr__(rows, "execution_profile_id", execution_profile_id)
+    object.__setattr__(rows, "market_source_profile_id", market_source_profile_id)
+    object.__setattr__(rows, "scope_id", scope_id)
+    object.__setattr__(rows, "position_scope", position_scope)
+    object.__setattr__(
+        rows,
+        "controller_currentness_head_ordinal",
+        controller_currentness_head_ordinal,
+    )
+    object.__setattr__(
+        rows,
+        "live_acquisition_generation_id",
+        live_acquisition_generation_id,
+    )
+    object.__setattr__(rows, "authority_class", authority_class)
+    object.__setattr__(
+        rows,
+        "active_stream_generation_id",
+        active_stream_generation_id,
+    )
+    object.__setattr__(
+        rows,
+        "active_acquisition_generation_id",
+        active_acquisition_generation_id,
+    )
+    object.__setattr__(
+        rows,
+        "active_generation_mandate_commitment_sha256",
+        active_generation_mandate_commitment_sha256,
+    )
+    object.__setattr__(rows, "active_source_profile_id", active_source_profile_id)
+    object.__setattr__(rows, "active_session_id", active_session_id)
+    object.__setattr__(rows, "active_sequence_mode", active_sequence_mode)
+    object.__setattr__(
+        rows,
+        "expected_controller_head_ordinal",
+        expected_controller_head_ordinal,
+    )
+    object.__setattr__(rows, "state_commitment_sha256", state_commitment_sha256)
+    object.__setattr__(rows, "version_ordinal", version_ordinal)
+    object.__setattr__(rows, "market_source_id", market_source_id)
+    return _M2ProtectionAuthorityProof._from_codec_rows(issuer, rows)
 
 
 @_dataclass(frozen=True, slots=True, init=False)

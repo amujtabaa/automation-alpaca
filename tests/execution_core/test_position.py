@@ -8,6 +8,7 @@ from fractions import Fraction
 
 import pytest
 
+import app.execution_core.fills as fills_module
 import app.execution_core.position as position_module
 from app.execution_core.fills import (
     BrokerFillFact,
@@ -173,6 +174,34 @@ def _proof(
     )
 
 
+def _resign_m2_execution_proof(
+    proof: position_module._M2ExecutionObservationProof,
+) -> None:
+    """Model an adversary who can recompute a proof's outer self-seal."""
+
+    object.__setattr__(
+        proof,
+        "commitment",
+        position_module._m2_execution_observation_proof_commitment(
+            state_commitment=proof.state_commitment,
+            root_heads_commitment=proof.root_heads_commitment,
+            seen_facts_commitment=proof.seen_facts_commitment,
+            root_head_map_commitment=proof.root_head_map_commitment,
+            seen_fact_map_commitment=proof.seen_fact_map_commitment,
+            root_claim_map_commitment=proof.root_claim_map_commitment,
+            fact=proof.fact,
+            prior_observation=proof.prior_observation,
+            root_head=proof.root_head,
+            predecessor_observation=proof.predecessor_observation,
+            root_claimed=proof.root_claimed,
+            prior_observation_witness=proof.prior_observation_witness,
+            root_head_witness=proof.root_head_witness,
+            predecessor_observation_witness=proof.predecessor_observation_witness,
+            root_claim_witness=proof.root_claim_witness,
+        ),
+    )
+
+
 @pytest.mark.parametrize(
     ("prior_facts", "candidate"),
     (
@@ -267,6 +296,9 @@ def test_m2_execution_state_is_bounded_and_rejects_cross_state_proof() -> None:
             state.head_ids_commitment,
             state.root_heads_commitment,
             state.seen_facts_commitment,
+            state.root_head_map_commitment,
+            state.seen_fact_map_commitment,
+            state.root_claim_map_commitment,
         ),
         proof,
     )
@@ -277,6 +309,76 @@ def test_m2_execution_state_is_bounded_and_rejects_cross_state_proof() -> None:
             state,
             proof,
         )
+
+
+def test_persistent_map_witness_covers_both_prefix_nonmembership_cases() -> None:
+    long_only = fills_module._PersistentKeyMap.empty().insert_new(
+        b"prefix/descendant",
+        "descendant",
+        b"a" * 32,
+    )
+    absent_prefix = long_only._witness_for(b"prefix")
+
+    assert absent_prefix._matches(long_only.commitment, b"prefix", None)
+
+    with_prefix = long_only.insert_new(b"prefix", "prefix", b"b" * 32)
+    present_prefix = with_prefix._witness_for(b"prefix")
+
+    assert present_prefix._matches(with_prefix.commitment, b"prefix", b"b" * 32)
+    assert not present_prefix._matches(with_prefix.commitment, b"prefix", None)
+
+
+def test_m2_execution_direct_proof_rejects_a_resigned_wrong_key_witness() -> None:
+    first = _fill("fill-1", "root-1")
+    second = _fill("fill-2", "root-2")
+    snapshot = _snapshot_after(first, second)
+    state = position_module._m2_execution_state_from_snapshot(snapshot)
+    proof = _proof(snapshot, _correct("correct-1", "root-1", "fill-1"))
+    object.__setattr__(
+        proof,
+        "root_head_witness",
+        snapshot.root_heads._current_head_witness(second.root_key),
+    )
+    _resign_m2_execution_proof(proof)
+
+    assert position_module._M2ExecutionObservationProof._is_authentic(proof)
+    with pytest.raises(ValueError, match="root membership"):
+        position_module._m2_execution_state_from_direct_proof(state, proof)
+
+
+def test_m2_execution_direct_proof_rejects_resigned_wrong_key_witnesses() -> None:
+    first = _fill("fill-1", "root-1")
+    second = _fill("fill-2", "root-2")
+    snapshot = _snapshot_after(first, second)
+    state = position_module._m2_execution_state_from_snapshot(snapshot)
+    candidate = _correct("correct-1", "root-1", "fill-1")
+    mutations = (
+        (
+            "prior_observation_witness",
+            snapshot.seen_facts._fact_witness(second.key),
+            "prior membership",
+        ),
+        (
+            "predecessor_observation_witness",
+            snapshot.seen_facts._fact_witness(second.key),
+            "predecessor membership",
+        ),
+        (
+            "root_claim_witness",
+            snapshot.seen_facts._root_claim_witness(second.root_key),
+            "root claim membership",
+        ),
+    )
+
+    for field_name, wrong_witness, failure in mutations:
+        proof = _proof(snapshot, candidate)
+        assert type(proof) is position_module._M2ExecutionObservationProof
+        object.__setattr__(proof, field_name, wrong_witness)
+        _resign_m2_execution_proof(proof)
+
+        assert position_module._M2ExecutionObservationProof._is_authentic(proof)
+        with pytest.raises(ValueError, match=failure):
+            position_module._m2_execution_state_from_direct_proof(state, proof)
 
 
 @pytest.mark.parametrize(

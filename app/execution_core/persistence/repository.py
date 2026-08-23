@@ -2767,7 +2767,9 @@ def load_current_proof(
             ):
                 raise _ProofFailure
 
-        proof = _records.CurrentProofSlice(
+        proof = _records._issue_current_proof_slice(
+            _records._CURRENT_PROOF_ISSUER,
+            request,
             execution_profile,
             market_profile,
             application,
