@@ -68,6 +68,8 @@ from app.execution_core.position import (
     apply_broker_execution_fact,
 )
 from app.execution_core.identity import (
+    AcquisitionGenerationId,
+    ApplicationGenerationId,
     ClaimOccurrenceId,
     ClientOrderId,
     ClosureId,
@@ -9603,7 +9605,28 @@ def test_m2_checkpoint_hydrator_rebuilds_only_an_authentic_protection_state() ->
         state._trail_bid_source_time,
         state._exit_provenance,
     )
-    restored = module._m2_position_protection_from_checkpoint(checkpoint)
+    authority_row = (
+        1,
+        state.mandate.position_scope,
+        ApplicationGenerationId("m2-protection-checkpoint-app"),
+        "m2-execution-profile",
+        "m2-market-profile",
+        "NORMAL",
+        state.mandate.evidence_policy.stream_generation,
+        AcquisitionGenerationId("1" * 64),
+        module._commit_mandate(state.mandate).hex(),
+        "m2-market-profile",
+        state.mandate.session_id,
+        state.mandate.evidence_policy.sequence_mode,
+        state._cursor_ordinal,
+        state.commitment.hex(),
+        1,
+        state.mandate.evidence_policy.source_id,
+    )
+    restored = module._m2_position_protection_from_checkpoint(
+        checkpoint,
+        authority_row,
+    )
 
     assert restored == state
     assert module._state_is_authentic(restored)
@@ -9614,8 +9637,27 @@ def test_m2_checkpoint_hydrator_rebuilds_only_an_authentic_protection_state() ->
         ValueError, match="checkpoint protection state is not authentic"
     ):
         module._m2_position_protection_from_checkpoint(
-            replace(checkpoint, commitment=b"x" * 32)
+            replace(checkpoint, commitment=b"x" * 32),
+            authority_row,
         )
+    with pytest.raises(ValueError, match="accepted protection authority"):
+        module._m2_position_protection_from_checkpoint(
+            checkpoint,
+            authority_row[:13] + ("00" * 32,) + authority_row[14:],
+        )
+
+
+def test_m2_public_reducers_delegate_to_the_shared_owner_kernels() -> None:
+    module = _protection_module()
+    public_to_kernel = {
+        "reduce_position_protection": "_m2_reduce_position_protection",
+        "reduce_position_protection_market": "_m2_reduce_position_protection_market",
+        "invalidate_position_protection_market": "_m2_invalidate_position_protection_market",
+    }
+
+    for public_name, kernel_name in public_to_kernel.items():
+        source = inspect.getsource(getattr(module, public_name))
+        assert f"return {kernel_name}(" in source
 
 
 def test_formula_uses_fraction_then_one_upward_tick_conversion() -> None:

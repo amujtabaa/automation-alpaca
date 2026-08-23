@@ -532,6 +532,76 @@ class ExecutionTransition:
     original_classification: FirstObservationClassification
 
 
+@dataclass(frozen=True, slots=True, init=False)
+class _M2ExecutionState:
+    """Bounded execution state retained independently of history-shaped indexes."""
+
+    scope: PositionScope
+    raw_quantity: int
+    basis_authority: BasisAuthority
+    cost_basis: ExactBasis | None
+    basis_price_metadata: ReportedPrice | None
+    tail_fold_input: FoldInput | None
+    integrity_floor: PositionIntegrity
+    integrity: PositionIntegrity
+    account_reconciliation_required: bool
+    reconciliation_transition_count: int
+    reconciliation_transition_head: bytes
+    root_count: int
+    root_order_commitment: bytes
+    head_ids_commitment: bytes
+    commitment: bytes
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        raise TypeError("_M2ExecutionState is owner-constructed")
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        del cls, kwargs
+        raise TypeError("_M2ExecutionState cannot be subclassed")
+
+
+@dataclass(frozen=True, slots=True)
+class _M2ExecutionObservationProof:
+    """One direct current-row proof for a broker execution input."""
+
+    state_commitment: bytes
+    fact: BrokerExecutionFact
+    prior_observation: SeenFact | None
+    root_head: RootHead | None
+    predecessor_observation: SeenFact | None
+    root_claimed: bool
+
+    def __post_init__(self) -> None:
+        if type(self) is not _M2ExecutionObservationProof:
+            raise TypeError("_M2ExecutionObservationProof rejects subclass instances")
+        if type(self.state_commitment) is not bytes or len(self.state_commitment) != 32:
+            raise ValueError("state_commitment must contain exactly 32 bytes")
+        if type(self.fact) not in {
+            BrokerFillFact,
+            BrokerTradeCorrectFact,
+            BrokerTradeBustFact,
+        }:
+            raise TypeError("fact must be an exact broker execution fact")
+        if (
+            self.prior_observation is not None
+            and type(self.prior_observation) is not SeenFact
+        ):
+            raise TypeError("prior_observation must be SeenFact or None")
+        if self.root_head is not None and type(self.root_head) is not RootHead:
+            raise TypeError("root_head must be RootHead or None")
+        if (
+            self.predecessor_observation is not None
+            and type(self.predecessor_observation) is not SeenFact
+        ):
+            raise TypeError("predecessor_observation must be SeenFact or None")
+        if type(self.root_claimed) is not bool:
+            raise TypeError("root_claimed must be bool")
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        del cls, kwargs
+        raise TypeError("_M2ExecutionObservationProof cannot be subclassed")
+
+
 @dataclass(frozen=True, slots=True)
 class BasisCandidate:
     """Uncommitted result of an explicit immutable-snapshot ordered fold."""
@@ -606,6 +676,445 @@ def _next_metadata(
     if reference is not None:
         return reference
     return reported
+
+
+def _m2_execution_state_commitment(
+    *,
+    scope: PositionScope,
+    raw_quantity: int,
+    basis_authority: BasisAuthority,
+    cost_basis: ExactBasis | None,
+    basis_price_metadata: ReportedPrice | None,
+    tail_fold_input: FoldInput | None,
+    integrity_floor: PositionIntegrity,
+    integrity: PositionIntegrity,
+    account_reconciliation_required: bool,
+    reconciliation_transition_count: int,
+    reconciliation_transition_head: bytes,
+    root_count: int,
+    root_order_commitment: bytes,
+    head_ids_commitment: bytes,
+) -> bytes:
+    """Commit only the exact bounded execution members retained by M2."""
+
+    return _commit_parts(
+        b"execution-core/m2-execution-state/v1",
+        _encode_position_scope(scope),
+        _encode_int(raw_quantity),
+        basis_authority.value.encode("ascii"),
+        _encode_fraction(cost_basis.value) if cost_basis is not None else b"",
+        _encode_reported_price(basis_price_metadata),
+        (
+            _commit_parts(
+                b"execution-core/m2-execution-tail/present/v1",
+                tail_fold_input.commitment,
+            )
+            if tail_fold_input is not None
+            else _commit_parts(b"execution-core/m2-execution-tail/absent/v1")
+        ),
+        _encode_int(integrity_floor.value),
+        _encode_int(integrity.value),
+        _encode_int(int(account_reconciliation_required)),
+        _encode_int(reconciliation_transition_count),
+        reconciliation_transition_head,
+        _encode_int(root_count),
+        root_order_commitment,
+        head_ids_commitment,
+    )
+
+
+def _new_m2_execution_state(
+    *,
+    scope: PositionScope,
+    raw_quantity: int,
+    basis_authority: BasisAuthority,
+    cost_basis: ExactBasis | None,
+    basis_price_metadata: ReportedPrice | None,
+    tail_fold_input: FoldInput | None,
+    integrity_floor: PositionIntegrity,
+    integrity: PositionIntegrity,
+    account_reconciliation_required: bool,
+    reconciliation_transition_count: int,
+    reconciliation_transition_head: bytes,
+    root_count: int,
+    root_order_commitment: bytes,
+    head_ids_commitment: bytes,
+) -> _M2ExecutionState:
+    """Construct one sealed bounded execution state through its owning checks."""
+
+    if type(scope) is not PositionScope:
+        raise TypeError("scope must be PositionScope")
+    _require_signed_integer("raw_quantity", raw_quantity)
+    if type(basis_authority) is not BasisAuthority:
+        raise TypeError("basis_authority must be BasisAuthority")
+    if cost_basis is not None:
+        _require_exact_basis("cost_basis", cost_basis)
+    if basis_price_metadata is not None:
+        _require_exact_reported_price("basis_price_metadata", basis_price_metadata)
+    if tail_fold_input is not None and type(tail_fold_input) is not FoldInput:
+        raise TypeError("tail_fold_input must be FoldInput or None")
+    if type(integrity_floor) is not PositionIntegrity:
+        raise TypeError("integrity_floor must be PositionIntegrity")
+    if type(integrity) is not PositionIntegrity:
+        raise TypeError("integrity must be PositionIntegrity")
+    if integrity_floor & integrity != integrity_floor:
+        raise ValueError("integrity cannot clear the position integrity floor")
+    if type(account_reconciliation_required) is not bool:
+        raise TypeError("account_reconciliation_required must be bool")
+    if (
+        type(reconciliation_transition_count) is not int
+        or reconciliation_transition_count < 0
+    ):
+        raise ValueError("reconciliation_transition_count must be non-negative")
+    if (
+        type(reconciliation_transition_head) is not bytes
+        or len(reconciliation_transition_head) != 32
+    ):
+        raise ValueError("reconciliation_transition_head must contain exactly 32 bytes")
+    if type(root_count) is not int or root_count < 0:
+        raise ValueError("root_count must be a non-negative exact integer")
+    for name, value in (
+        ("root_order_commitment", root_order_commitment),
+        ("head_ids_commitment", head_ids_commitment),
+    ):
+        if type(value) is not bytes or len(value) != 32:
+            raise ValueError(f"{name} must contain exactly 32 bytes")
+    if basis_authority is BasisAuthority.AVAILABLE:
+        if type(cost_basis) is not ExactBasis:
+            raise ValueError("available basis requires an exact cost basis")
+        if raw_quantity <= 0 and cost_basis.value != 0:
+            raise ValueError("a non-positive position cannot carry long basis")
+    elif (
+        cost_basis is not None
+        or basis_price_metadata is not None
+        or tail_fold_input is not None
+    ):
+        raise ValueError("pending basis cannot retain basis-derived cache")
+    commitment = _m2_execution_state_commitment(
+        scope=scope,
+        raw_quantity=raw_quantity,
+        basis_authority=basis_authority,
+        cost_basis=cost_basis,
+        basis_price_metadata=basis_price_metadata,
+        tail_fold_input=tail_fold_input,
+        integrity_floor=integrity_floor,
+        integrity=integrity,
+        account_reconciliation_required=account_reconciliation_required,
+        reconciliation_transition_count=reconciliation_transition_count,
+        reconciliation_transition_head=reconciliation_transition_head,
+        root_count=root_count,
+        root_order_commitment=root_order_commitment,
+        head_ids_commitment=head_ids_commitment,
+    )
+    result = object.__new__(_M2ExecutionState)
+    object.__setattr__(result, "scope", scope)
+    object.__setattr__(result, "raw_quantity", raw_quantity)
+    object.__setattr__(result, "basis_authority", basis_authority)
+    object.__setattr__(result, "cost_basis", cost_basis)
+    object.__setattr__(result, "basis_price_metadata", basis_price_metadata)
+    object.__setattr__(result, "tail_fold_input", tail_fold_input)
+    object.__setattr__(result, "integrity_floor", integrity_floor)
+    object.__setattr__(result, "integrity", integrity)
+    object.__setattr__(
+        result,
+        "account_reconciliation_required",
+        account_reconciliation_required,
+    )
+    object.__setattr__(
+        result,
+        "reconciliation_transition_count",
+        reconciliation_transition_count,
+    )
+    object.__setattr__(
+        result,
+        "reconciliation_transition_head",
+        reconciliation_transition_head,
+    )
+    object.__setattr__(result, "root_count", root_count)
+    object.__setattr__(result, "root_order_commitment", root_order_commitment)
+    object.__setattr__(result, "head_ids_commitment", head_ids_commitment)
+    object.__setattr__(result, "commitment", commitment)
+    return result
+
+
+def _m2_execution_state_is_authentic(state: object) -> bool:
+    """Return whether an opaque M2 execution state re-derives exactly."""
+
+    if type(state) is not _M2ExecutionState:
+        return False
+    try:
+        expected = _m2_execution_state_commitment(
+            scope=state.scope,
+            raw_quantity=state.raw_quantity,
+            basis_authority=state.basis_authority,
+            cost_basis=state.cost_basis,
+            basis_price_metadata=state.basis_price_metadata,
+            tail_fold_input=state.tail_fold_input,
+            integrity_floor=state.integrity_floor,
+            integrity=state.integrity,
+            account_reconciliation_required=state.account_reconciliation_required,
+            reconciliation_transition_count=state.reconciliation_transition_count,
+            reconciliation_transition_head=state.reconciliation_transition_head,
+            root_count=state.root_count,
+            root_order_commitment=state.root_order_commitment,
+            head_ids_commitment=state.head_ids_commitment,
+        )
+        rebuilt = _new_m2_execution_state(
+            scope=state.scope,
+            raw_quantity=state.raw_quantity,
+            basis_authority=state.basis_authority,
+            cost_basis=state.cost_basis,
+            basis_price_metadata=state.basis_price_metadata,
+            tail_fold_input=state.tail_fold_input,
+            integrity_floor=state.integrity_floor,
+            integrity=state.integrity,
+            account_reconciliation_required=state.account_reconciliation_required,
+            reconciliation_transition_count=state.reconciliation_transition_count,
+            reconciliation_transition_head=state.reconciliation_transition_head,
+            root_count=state.root_count,
+            root_order_commitment=state.root_order_commitment,
+            head_ids_commitment=state.head_ids_commitment,
+        )
+    except (AttributeError, TypeError, ValueError):
+        return False
+    return state.commitment == expected == rebuilt.commitment
+
+
+def _m2_execution_state_from_snapshot(snapshot: ExecutionSnapshot) -> _M2ExecutionState:
+    """Project one coherent in-memory snapshot to its bounded M2 state."""
+
+    if type(snapshot) is not ExecutionSnapshot:
+        raise TypeError("snapshot must be ExecutionSnapshot")
+    if not _snapshot_is_coherent(
+        snapshot.position,
+        snapshot.integrity,
+        snapshot.root_heads,
+        snapshot.seen_facts,
+    ):
+        raise ValueError("snapshot must be coherently bound")
+    binding = snapshot.position.binding
+    if binding is None:
+        raise ValueError("coherent snapshot has no binding")
+    return _new_m2_execution_state(
+        scope=snapshot.position.scope,
+        raw_quantity=snapshot.position.raw_quantity,
+        basis_authority=snapshot.position.basis_authority,
+        cost_basis=snapshot.position.cost_basis,
+        basis_price_metadata=snapshot.position.basis_price_metadata,
+        tail_fold_input=snapshot.position.tail_fold_input,
+        integrity_floor=snapshot.position.integrity_floor,
+        integrity=snapshot.integrity,
+        account_reconciliation_required=binding.account_reconciliation_required,
+        reconciliation_transition_count=binding.reconciliation_transition_count,
+        reconciliation_transition_head=binding.reconciliation_transition_head,
+        root_count=snapshot.root_heads.count,
+        root_order_commitment=snapshot.root_heads.root_order_commitment,
+        head_ids_commitment=snapshot.root_heads.head_ids_commitment,
+    )
+
+
+def _m2_execution_state_from_direct_proof(
+    state_or_fields: _M2ExecutionState | tuple[object, ...],
+    proof: _M2ExecutionObservationProof,
+) -> _M2ExecutionState:
+    """Construct/authenticate bounded state from exact direct-current fields."""
+
+    if type(proof) is not _M2ExecutionObservationProof:
+        raise TypeError("proof must be exact _M2ExecutionObservationProof")
+    if type(state_or_fields) is _M2ExecutionState:
+        state = state_or_fields
+    elif type(state_or_fields) is tuple:
+        if len(state_or_fields) != 14:
+            raise ValueError("direct execution state has an invalid field count")
+        (
+            scope,
+            raw_quantity,
+            basis_authority,
+            cost_basis,
+            basis_price_metadata,
+            tail_fold_input,
+            integrity_floor,
+            integrity,
+            account_reconciliation_required,
+            reconciliation_transition_count,
+            reconciliation_transition_head,
+            root_count,
+            root_order_commitment,
+            head_ids_commitment,
+        ) = state_or_fields
+        state = _new_m2_execution_state(
+            scope=cast(PositionScope, scope),
+            raw_quantity=cast(int, raw_quantity),
+            basis_authority=cast(BasisAuthority, basis_authority),
+            cost_basis=cast(ExactBasis | None, cost_basis),
+            basis_price_metadata=cast(ReportedPrice | None, basis_price_metadata),
+            tail_fold_input=cast(FoldInput | None, tail_fold_input),
+            integrity_floor=cast(PositionIntegrity, integrity_floor),
+            integrity=cast(PositionIntegrity, integrity),
+            account_reconciliation_required=cast(bool, account_reconciliation_required),
+            reconciliation_transition_count=cast(int, reconciliation_transition_count),
+            reconciliation_transition_head=cast(bytes, reconciliation_transition_head),
+            root_count=cast(int, root_count),
+            root_order_commitment=cast(bytes, root_order_commitment),
+            head_ids_commitment=cast(bytes, head_ids_commitment),
+        )
+    else:
+        raise TypeError("state_or_fields must be exact _M2ExecutionState or tuple")
+    if not _m2_execution_state_is_authentic(state):
+        raise ValueError("execution state is not authentic")
+    if proof.state_commitment != state.commitment:
+        raise ValueError("direct proof state commitment does not match state")
+    if (
+        proof.prior_observation is not None
+        and proof.prior_observation.fact.key != proof.fact.key
+    ):
+        raise ValueError("direct proof prior observation does not match fact identity")
+    if proof.root_head is not None:
+        if (
+            proof.root_head.root_key != proof.fact.root_key
+            or proof.root_head.scope.position_scope != state.scope
+        ):
+            raise ValueError("direct proof root head is outside the exact state")
+    if proof.predecessor_observation is not None:
+        if type(proof.fact) not in {BrokerTradeCorrectFact, BrokerTradeBustFact}:
+            raise ValueError("only a revision may carry a predecessor observation")
+        revision_fact = cast(BrokerTradeCorrectFact | BrokerTradeBustFact, proof.fact)
+        if (
+            proof.predecessor_observation.fact.key.source_event_id
+            != revision_fact.predecessor_source_event_id
+        ):
+            raise ValueError("direct proof predecessor does not match revision")
+    return state
+
+
+def _m2_tail_proof_is_valid(
+    state: _M2ExecutionState,
+    head: RootHead,
+) -> bool:
+    """Validate the bounded tail proof against one direct current root row."""
+
+    fold_input = state.tail_fold_input
+    return bool(
+        fold_input is not None
+        and fold_input.is_bound
+        and state.root_count > 0
+        and head.original_sequence == state.root_count - 1
+        and fold_input.position_scope == state.scope
+        and fold_input.tail_root_key == head.root_key
+        and fold_input.prefix_count == head.original_sequence
+        and fold_input.prefix_heads_commitment == head.prefix_heads_commitment
+        and fold_input.commitment == head.prefix_proof_commitment
+        and fold_input.raw_quantity == state.raw_quantity - head.signed_quantity
+    )
+
+
+def _m2_apply_broker_execution_fact(
+    state: _M2ExecutionState,
+    proof: _M2ExecutionObservationProof,
+) -> tuple[TransitionDisposition, FirstObservationClassification]:
+    """Classify broker economics from bounded state plus exact direct proof."""
+
+    state = _m2_execution_state_from_direct_proof(state, proof)
+    fact = proof.fact
+    prior = proof.prior_observation
+    if prior is not None:
+        if prior.position_scope != state.scope:
+            if prior.fact != fact:
+                return (
+                    TransitionDisposition.FACT_CONFLICT,
+                    prior.classification,
+                )
+            return (
+                TransitionDisposition.RECONCILIATION_REQUIRED,
+                prior.classification,
+            )
+        if prior.fact == fact:
+            return TransitionDisposition.EXACT_REPLAY, prior.classification
+        return TransitionDisposition.FACT_CONFLICT, prior.classification
+
+    if type(fact) is BrokerFillFact:
+        if (
+            fact.scope.position_scope != state.scope
+            or proof.root_head is not None
+            or proof.root_claimed
+        ):
+            return (
+                TransitionDisposition.RECONCILIATION_REQUIRED,
+                FirstObservationClassification.RECONCILIATION_REQUIRED,
+            )
+        quantity_delta = (
+            fact.quantity.value
+            if fact.scope.side is ExecutionSide.BUY
+            else -fact.quantity.value
+        )
+        next_raw_quantity = state.raw_quantity + quantity_delta
+        pending = True
+        if (
+            state.basis_authority is BasisAuthority.AVAILABLE
+            and state.cost_basis is not None
+            and _metadata_accepts(state.basis_price_metadata, fact.price)
+        ):
+            folded_quantity, _ = _fold_one(
+                state.raw_quantity,
+                state.cost_basis.value,
+                fact.scope.side,
+                fact.quantity.value,
+                fact.price,
+            )
+            pending = folded_quantity != next_raw_quantity
+        return (
+            TransitionDisposition.APPLIED,
+            _classification(pending=pending, raw_quantity=next_raw_quantity),
+        )
+
+    head = proof.root_head
+    predecessor = proof.predecessor_observation
+    revision_fact = cast(BrokerTradeCorrectFact | BrokerTradeBustFact, fact)
+    if (
+        revision_fact.scope.position_scope != state.scope
+        or head is None
+        or head.authority is not ExecutionAuthority.BROKER_AUTHORITATIVE
+        or head.scope != revision_fact.scope
+        or head.current_source_event_id != revision_fact.predecessor_source_event_id
+        or predecessor is None
+        or predecessor.classification
+        is FirstObservationClassification.RECONCILIATION_REQUIRED
+        or not _observation_matches_head(predecessor, head)
+    ):
+        return (
+            TransitionDisposition.RECONCILIATION_REQUIRED,
+            FirstObservationClassification.RECONCILIATION_REQUIRED,
+        )
+    revised_quantity, revised_price = _revision_economics(revision_fact)
+    signed_change = revised_quantity.value - head.quantity.value
+    if head.scope.side is ExecutionSide.SELL:
+        signed_change = -signed_change
+    next_raw_quantity = state.raw_quantity + signed_change
+    pending = True
+    if (
+        state.basis_authority is BasisAuthority.AVAILABLE
+        and state.cost_basis is not None
+        and _m2_tail_proof_is_valid(state, head)
+        and _metadata_accepts(
+            state.tail_fold_input.price_metadata
+            if state.tail_fold_input is not None
+            else None,
+            revised_price,
+        )
+    ):
+        assert state.tail_fold_input is not None
+        folded_quantity, _ = _fold_one(
+            state.tail_fold_input.raw_quantity,
+            state.tail_fold_input.cost_basis.value,
+            head.scope.side,
+            revised_quantity.value,
+            revised_price,
+        )
+        pending = folded_quantity != next_raw_quantity
+    return (
+        TransitionDisposition.APPLIED,
+        _classification(pending=pending, raw_quantity=next_raw_quantity),
+    )
 
 
 def _snapshot_parts_share_binding(
@@ -1516,6 +2025,12 @@ def _apply_canonical_execution_fact(
     root_heads: RootHeadIndex,
     seen_facts: SeenFactIndex,
     fact: CanonicalExecutionFact,
+    *,
+    m2_classification: tuple[
+        TransitionDisposition,
+        FirstObservationClassification,
+    ]
+    | None = None,
 ) -> ExecutionTransition:
     if not _snapshot_is_coherent(position, integrity, root_heads, seen_facts):
         return _incoherent_snapshot_transition(
@@ -1525,6 +2040,68 @@ def _apply_canonical_execution_fact(
             seen_facts,
             fact,
         )
+
+    if m2_classification is not None:
+        if (
+            type(m2_classification) is not tuple
+            or len(m2_classification) != 2
+            or type(m2_classification[0]) is not TransitionDisposition
+            or type(m2_classification[1]) is not FirstObservationClassification
+        ):
+            raise TypeError("m2_classification must be one exact disposition pair")
+        disposition, original_classification = m2_classification
+        first_observation = seen_facts.get(fact.key)
+        if first_observation is not None:
+            next_integrity = integrity
+            if first_observation.position_scope != position.scope:
+                next_integrity |= PositionIntegrity.EXECUTION_RECONCILIATION_REQUIRED
+            if disposition is TransitionDisposition.FACT_CONFLICT:
+                next_integrity |= PositionIntegrity.EXECUTION_FACT_CONFLICT
+            if disposition is TransitionDisposition.APPLIED:
+                raise RuntimeError("M2 classification cannot apply an existing fact")
+            return _unchanged_transition(
+                position,
+                next_integrity,
+                root_heads,
+                seen_facts,
+                disposition=disposition,
+                original_classification=original_classification,
+            )
+        if disposition is TransitionDisposition.RECONCILIATION_REQUIRED:
+            return _reconciliation_transition(
+                position,
+                integrity,
+                root_heads,
+                seen_facts,
+                fact,
+            )
+        if disposition is not TransitionDisposition.APPLIED:
+            raise RuntimeError(
+                "M2 classification requires a retained first observation"
+            )
+        transition = (
+            _apply_root_fill(
+                position,
+                integrity,
+                root_heads,
+                seen_facts,
+                cast(CanonicalRootFillFact, fact),
+            )
+            if type(fact) is BrokerFillFact
+            else _apply_revision(
+                position,
+                integrity,
+                root_heads,
+                seen_facts,
+                cast(BrokerTradeCorrectFact | BrokerTradeBustFact, fact),
+            )
+        )
+        if (
+            transition.disposition is not disposition
+            or transition.original_classification is not original_classification
+        ):
+            raise RuntimeError("M2 execution classification disagrees with transition")
+        return transition
 
     first_observation = seen_facts.get(fact.key)
     if first_observation is not None:
@@ -1595,12 +2172,48 @@ def apply_broker_execution_fact(
         BrokerTradeBustFact,
     }:
         raise TypeError("fact must be an exact canonical broker execution fact")
+    if not _snapshot_is_coherent(position, integrity, root_heads, seen_facts):
+        return _incoherent_snapshot_transition(
+            position,
+            integrity,
+            root_heads,
+            seen_facts,
+            fact,
+        )
+    snapshot = ExecutionSnapshot(
+        position=position,
+        integrity=integrity,
+        root_heads=root_heads,
+        seen_facts=seen_facts,
+    )
+    state = _m2_execution_state_from_snapshot(snapshot)
+    predecessor_observation = None
+    if type(fact) in {BrokerTradeCorrectFact, BrokerTradeBustFact}:
+        revision_fact = cast(BrokerTradeCorrectFact | BrokerTradeBustFact, fact)
+        predecessor_observation = seen_facts.get(
+            ExecutionFactKey(
+                broker=revision_fact.key.broker,
+                environment=revision_fact.key.environment,
+                account=revision_fact.key.account,
+                source_event_id=revision_fact.predecessor_source_event_id,
+            )
+        )
+    proof = _M2ExecutionObservationProof(
+        state_commitment=state.commitment,
+        fact=fact,
+        prior_observation=seen_facts.get(fact.key),
+        root_head=root_heads.get(fact.root_key),
+        predecessor_observation=predecessor_observation,
+        root_claimed=seen_facts.contains_root(fact.root_key),
+    )
+    m2_classification = _m2_apply_broker_execution_fact(state, proof)
     return _apply_canonical_execution_fact(
         position,
         integrity,
         root_heads,
         seen_facts,
         fact,
+        m2_classification=m2_classification,
     )
 
 

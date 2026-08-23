@@ -614,10 +614,10 @@ _LEGACY_PROTECTION_E2_FUNCTIONS = {
     "_project_acquisition_preemption_intent",
     "_project_acquisition_protection_exit_intent",
     "_project_protection_venue_owned",
-    "_m2_invalidate_position_protection_market",
+    # WO-0168a: these three kernels now own the retained public reducer bodies.
+    # Keeping them in the legacy AST models a semantics-preserving extraction;
+    # the public wrappers remain the historical entry points.
     "_m2_position_protection_from_checkpoint",
-    "_m2_reduce_position_protection",
-    "_m2_reduce_position_protection_market",
     "_protection_mandate_commitment",
     "_protection_mandate_is_authentic",
     "_protection_transition_is_authentic",

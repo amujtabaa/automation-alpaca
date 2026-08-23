@@ -2502,11 +2502,73 @@ def _state_is_authentic(state: PositionProtectionState) -> bool:
 
 def _m2_position_protection_from_checkpoint(
     checkpoint: _M2ProtectionCheckpoint,
+    accepted_authority_row: tuple[object, ...],
 ) -> PositionProtectionState:
-    """Rebuild one fixed-size protection state through its owning constructor."""
+    """Rebuild one fixed-size state only against its accepted authority row.
+
+    ``accepted_authority_row`` is the fixed, persistence-adapted direct-proof
+    tuple supplied by the checkpoint owner.  It deliberately is not a generic
+    record/object decoder: its ordered fields are the authority row together
+    with the enclosing checkpoint's scope/profile coordinates.  The future
+    checkpoint codec owns translation from its typed repository records to
+    this exact tuple.
+    """
 
     if type(checkpoint) is not _M2ProtectionCheckpoint:
         raise TypeError("checkpoint must be exact _M2ProtectionCheckpoint")
+    if type(accepted_authority_row) is not tuple:
+        raise TypeError("accepted_authority_row must be an exact tuple")
+    if len(accepted_authority_row) != 16:
+        raise ValueError("accepted_authority_row has an invalid field count")
+    (
+        scope_id,
+        position_scope,
+        application_generation_id,
+        execution_profile_id,
+        market_source_profile_id,
+        authority_class,
+        active_stream_generation_id,
+        active_acquisition_generation_id,
+        active_generation_mandate_commitment_sha256,
+        active_source_profile_id,
+        active_session_id,
+        active_sequence_mode,
+        expected_controller_head_ordinal,
+        state_commitment_sha256,
+        version_ordinal,
+        market_source_id,
+    ) = accepted_authority_row
+    if (
+        type(scope_id) is not int
+        or scope_id < 0
+        or type(position_scope) is not _PositionScope
+        or type(application_generation_id) is not _ApplicationGenerationId
+        or type(execution_profile_id) is not str
+        or not execution_profile_id
+        or type(market_source_profile_id) is not str
+        or not market_source_profile_id
+        or type(authority_class) is not str
+        or authority_class not in {"NORMAL", "HARD_BAIL"}
+        or type(active_stream_generation_id) is not _MarketStreamGenerationId
+        or (
+            active_acquisition_generation_id is not None
+            and type(active_acquisition_generation_id) is not _AcquisitionGenerationId
+        )
+        or type(active_generation_mandate_commitment_sha256) is not str
+        or len(active_generation_mandate_commitment_sha256) != 64
+        or type(active_source_profile_id) is not str
+        or not active_source_profile_id
+        or type(active_session_id) is not _SessionId
+        or type(active_sequence_mode) is not MarketSequenceMode
+        or type(expected_controller_head_ordinal) is not int
+        or expected_controller_head_ordinal < 0
+        or type(state_commitment_sha256) is not str
+        or len(state_commitment_sha256) != 64
+        or type(version_ordinal) is not int
+        or version_ordinal < 1
+        or type(market_source_id) is not _MarketDataSourceId
+    ):
+        raise ValueError("accepted_authority_row is not an exact authority proof")
     state = _new_position_protection_state(
         checkpoint.policy,
         checkpoint.mandate,
@@ -2542,6 +2604,19 @@ def _m2_position_protection_from_checkpoint(
     )
     if not _state_is_authentic(state):
         raise ValueError("checkpoint protection state is not authentic")
+    if (
+        position_scope != state.mandate.position_scope
+        or market_source_id != state.mandate.evidence_policy.source_id
+        or active_stream_generation_id
+        != state.mandate.evidence_policy.stream_generation
+        or active_generation_mandate_commitment_sha256
+        != _commit_mandate(state.mandate).hex()
+        or active_source_profile_id != market_source_profile_id
+        or active_session_id != state.mandate.session_id
+        or active_sequence_mode is not state.mandate.evidence_policy.sequence_mode
+        or state_commitment_sha256 != state.commitment.hex()
+    ):
+        raise ValueError("checkpoint does not match accepted protection authority")
     return state
 
 
@@ -4524,7 +4599,7 @@ def _reduce_acquisition_mixed_recovery(
         state.mandate,
         require_mandate_identity=False,
     )
-    return reduce_position_protection(state, projection)
+    return _m2_reduce_position_protection(state, projection)
 
 
 def initialize_position_protection(
@@ -4549,6 +4624,15 @@ def initialize_position_protection(
 
 
 def reduce_position_protection(
+    state: PositionProtectionState,
+    projection: ProtectionVenueProjection,
+) -> ProtectionTransition:
+    """Apply the shared protection transition kernel through the public API."""
+
+    return _m2_reduce_position_protection(state, projection)
+
+
+def _m2_reduce_position_protection(
     state: PositionProtectionState,
     projection: ProtectionVenueProjection,
 ) -> ProtectionTransition:
@@ -4637,14 +4721,17 @@ def reduce_position_protection(
     )
 
 
-def _m2_reduce_position_protection(
+def reduce_position_protection_market(
     state: PositionProtectionState,
     projection: ProtectionVenueProjection,
+    occurrence: MarketOccurrence,
 ) -> ProtectionTransition:
-    return reduce_position_protection(state, projection)
+    """Apply the shared market-occurrence kernel through the public API."""
+
+    return _m2_reduce_position_protection_market(state, projection, occurrence)
 
 
-def reduce_position_protection_market(
+def _m2_reduce_position_protection_market(
     state: PositionProtectionState,
     projection: ProtectionVenueProjection,
     occurrence: MarketOccurrence,
@@ -4667,15 +4754,16 @@ def reduce_position_protection_market(
     return _reduce_market_occurrence(state, projection, occurrence)
 
 
-def _m2_reduce_position_protection_market(
+def invalidate_position_protection_market(
     state: PositionProtectionState,
     projection: ProtectionVenueProjection,
-    occurrence: MarketOccurrence,
 ) -> ProtectionTransition:
-    return reduce_position_protection_market(state, projection, occurrence)
+    """Apply the shared market-invalidation kernel through the public API."""
+
+    return _m2_invalidate_position_protection_market(state, projection)
 
 
-def invalidate_position_protection_market(
+def _m2_invalidate_position_protection_market(
     state: PositionProtectionState,
     projection: ProtectionVenueProjection,
 ) -> ProtectionTransition:
@@ -4724,13 +4812,6 @@ def invalidate_position_protection_market(
         None,
         invalidation_alert,
     )
-
-
-def _m2_invalidate_position_protection_market(
-    state: PositionProtectionState,
-    projection: ProtectionVenueProjection,
-) -> ProtectionTransition:
-    return invalidate_position_protection_market(state, projection)
 
 
 __all__ = (
