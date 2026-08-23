@@ -1,0 +1,15 @@
+# REV-0074 independent review result
+
+### [P1] Preflight does not freeze the implementation contract it would authorize
+
+- Location: `work/queue/WO-0168a-m2-i3-5-runtime-state-checkpoint.md:42`, `work/queue/WO-0168a-m2-i3-5-runtime-state-checkpoint.md:133`, `work/queue/WO-0168a-m2-i3-5-runtime-state-checkpoint.md:158`
+- Governing requirement: REV-0074 lenses 1, 2, 5, and 7 require a complete, finite, testable prerequisite with no hidden semantic-authority choice; WO-0168a FR-1/FR-2 require an exact head-bound input/reducer/write matrix and complete authenticated state-member inventory; its API contract says preflight freezes names and exact type unions before source implementation.
+- Evidence (`reproduced-live`): branch `codex/m2-i3-5-runtime-checkpoint-r1` is at request-administration HEAD `52a2a404d611e428987739f42f7acba019752288`, whose sole delta from candidate `91449845909daa977e7d627e240abbab943d8f14` is `work/review/REV-0074/request.md`. The candidate has the required tree `456b4f1530c452956f2b0360e995013628085322`, parent/base `0777fab62598f85ce189f40eb1a69319791282c2`, exactly the two declared changed paths, and a clean `git diff --check`. Evidence (`static-reasoning`): the work order tells the implementation seat to create the matrix and enumerate state members, but neither candidate file contains that matrix or inventory. It likewise supplies no frozen API names/type unions, exact checkpoint byte contract, input/outcome/receipt disposition-to-write rules, runtime-versus-setup capability issuance contract, or implementation source/test path set. Instead, line 158 defers exact paths until a later activation replacement derived from the still-absent matrix.
+- Impact: P0=0/P1=0 preflight acceptance would release source implementation while leaving the admitted input universe, reducer ownership, authenticated state, durable write/fault behavior, persistence/API compatibility, and edit scope for the implementer to choose. Two incompatible implementations could satisfy the prose, and the required refusal of unenumerated or caller-shaped authority cannot be reviewed or failure-pinned before activation. This is the same missing-authority class the prerequisite is intended to remove.
+- Smallest complete correction: before activation, add and head-bind the finite matrix and state inventory; freeze each exact public input type, owning reducer entry point, authenticated members and verified hydration constructor, dispositions, durable write set, and fault edges; freeze the immutable checkpoint/input/outcome/receipt types and exact versioned encoding; define the non-mintable runtime capability and distinct explicit setup capability; and replace the provisional allowed paths with exact source/test/governance paths. Submit that exact documentation candidate for fresh independent preflight.
+
+Verdict: ACCEPT-WITH-CHANGES
+P0: 0
+P1: 1
+P2: 0
+Unverified: Exact body-level reconciliation of downstream WO-0169, WO-0170, and M3 preparation orders; executable runtime and SQLite behavior was not exercised because the packet prohibits database/runtime activity and the user stopped further exploration.
