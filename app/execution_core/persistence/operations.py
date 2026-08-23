@@ -1130,6 +1130,11 @@ def _encode_m2_record_broker_revision_evidence(value: object) -> list[object]:
         raise TypeError(
             "broker revision evidence must be exact RecordBrokerRevisionEvidence"
         )
+    if type(value.fact) not in {
+        _fills.BrokerTradeCorrectFact,
+        _fills.BrokerTradeBustFact,
+    }:
+        raise TypeError("broker revision evidence requires correction or bust fact")
     return [
         "m1.recovery.RecordBrokerRevisionEvidence/v1",
         _encode_m2_m1_atom(value.input_id),
@@ -2490,6 +2495,10 @@ class BeginAcquisitionGenerationOperation:
             raise ValueError(
                 "successor_mandate must be an authentic acquisition mandate"
             )
+        if self.successor_mandate.session_id != self.coordinates.session_id:
+            raise ValueError(
+                "successor_mandate session must match acquisition coordinates"
+            )
 
     def __init_subclass__(cls, **kwargs: object) -> None:
         del cls, kwargs
@@ -2592,6 +2601,12 @@ class MarketOccurrenceOperation:
             raise TypeError("coordinates must be MarketOperationCoordinates")
         if type(self.occurrence) is not _protection.MarketOccurrence:
             raise TypeError("occurrence must be MarketOccurrence")
+        if not _protection._market_occurrence_is_authentic(self.occurrence):
+            raise ValueError("occurrence must be an authentic market occurrence")
+        if self.occurrence.session_id != self.coordinates.session_id:
+            raise ValueError("occurrence session must match market coordinates")
+        if self.occurrence.stream_generation != self.coordinates.stream_generation_id:
+            raise ValueError("occurrence stream must match market coordinates")
 
     def __init_subclass__(cls, **kwargs: object) -> None:
         del cls, kwargs

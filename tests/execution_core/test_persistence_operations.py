@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import fields
+from dataclasses import fields, replace
 from decimal import Decimal
 from fractions import Fraction
 from hashlib import sha256
@@ -111,15 +111,20 @@ def _operation_coordinates() -> tuple[
     )
 
 
-def _operation_mandate() -> acquisition.AcquisitionMandate:
+def _operation_mandate(
+    *,
+    session_id: identity.SessionId | None = None,
+) -> acquisition.AcquisitionMandate:
     position_scope = _operation_position_scope()
-    session_id = identity.SessionId("session")
+    resolved_session_id = (
+        identity.SessionId("session") if session_id is None else session_id
+    )
     price = _operation_price()
     emergency_guard = protection.ExecutionGuard("emergency", b"e" * 32)
     compatibility = protection.EmergencyRecoveryCompatibility(
         identity.EmergencyRecoveryCompatibilityId("compatibility"),
         position_scope,
-        session_id,
+        resolved_session_id,
         "compatibility-v1",
         b"c" * 32,
         emergency_guard,
@@ -131,7 +136,7 @@ def _operation_mandate() -> acquisition.AcquisitionMandate:
     protection_mandate = protection.ProtectionMandate(
         identity.MandateId("protection-mandate"),
         position_scope,
-        session_id,
+        resolved_session_id,
         "protection-v1",
         Fraction(1, 10),
         Fraction(1, 5),
@@ -156,7 +161,7 @@ def _operation_mandate() -> acquisition.AcquisitionMandate:
     return acquisition._m2_hydrate_acquisition_mandate(
         acquisition_mandate_id=identity.AcquisitionMandateId("acquisition-mandate"),
         position_scope=position_scope,
-        session_id=session_id,
+        session_id=resolved_session_id,
         configuration_version="acquisition-v1",
         maximum_quantity=values.Quantity(10),
         maximum_notional=Fraction(1_000),
@@ -992,6 +997,64 @@ def test_missing_venue_session_is_limited_to_passive_status_observation() -> Non
         )
 
 
+def test_operations_bind_payload_sessions_and_market_stream_to_coordinates() -> None:
+    (
+        _,
+        _,
+        _,
+        acquisition_coordinates,
+        market_coordinates,
+    ) = _operation_coordinates()
+    market_operation = next(
+        operation
+        for operation in _all_exact_operations()
+        if type(operation) is operations.MarketOccurrenceOperation
+    )
+    assert type(market_operation) is operations.MarketOccurrenceOperation
+
+    with pytest.raises(ValueError, match="successor_mandate session"):
+        operations.BeginAcquisitionGenerationOperation(
+            acquisition_coordinates,
+            identity.AuthorityInputId("mismatched-generation"),
+            _operation_mandate(session_id=identity.SessionId("other-session")),
+        )
+    with pytest.raises(ValueError, match="occurrence session"):
+        operations.MarketOccurrenceOperation(
+            market_coordinates,
+            replace(
+                market_operation.occurrence,
+                session_id=identity.SessionId("other-session"),
+            ),
+        )
+    with pytest.raises(ValueError, match="occurrence stream"):
+        operations.MarketOccurrenceOperation(
+            market_coordinates,
+            replace(
+                market_operation.occurrence,
+                stream_generation=identity.MarketStreamGenerationId("01" * 32),
+            ),
+        )
+
+
+def test_revision_evidence_encode_rechecks_its_closed_fact_union() -> None:
+    operations_under_test = _all_exact_operations()
+    broker_fill_operation = operations_under_test[0]
+    revision_operation = next(
+        operation
+        for operation in operations_under_test
+        if type(operation) is operations.VenueRecoveryOperation
+        and type(operation.item) is recovery.RecordBrokerRevisionEvidence
+    )
+    assert type(broker_fill_operation) is operations.BrokerExecutionOperation
+    assert type(revision_operation) is operations.VenueRecoveryOperation
+    assert type(revision_operation.item) is recovery.RecordBrokerRevisionEvidence
+
+    object.__setattr__(revision_operation.item, "fact", broker_fill_operation.fact)
+
+    with pytest.raises(TypeError, match="correction or bust"):
+        operations.encode_m2_operation(revision_operation)
+
+
 def test_private_operation_wire_foundation_is_canonical_and_typed() -> None:
     application_generation_id = identity.ApplicationGenerationId("ab" * 32)
     coordinates = operations.ExecutionOperationCoordinates(
@@ -1130,17 +1193,21 @@ def test_operation_decode_refuses_domain_coordinate_payload_and_canonicality_mut
 ):
     encoded = operations.encode_m2_operation(_all_exact_operations()[0])
     document = operations._decode_m2_document(encoded)
+    coordinates = document[3]
+    payload = document[4]
+    assert type(coordinates) is list
+    assert type(payload) is list
 
     wrong_domain = list(document)
     wrong_domain[2] = ["m2.operations.OperationDomain", "VENUE_RECOVERY"]
     wrong_coordinate = list(document)
     wrong_coordinate[3] = [
         "m2.operations.VenueOperationCoordinates/v1",
-        *document[3][1:],
+        *coordinates[1:],
         None,
     ]
     wrong_payload = list(document)
-    wrong_payload[4] = ["m1.venue.RecoverClaimedEffect/v1", *document[4][1:]]
+    wrong_payload[4] = ["m1.venue.RecoverClaimedEffect/v1", *payload[1:]]
 
     for mutant in (wrong_domain, wrong_coordinate, wrong_payload):
         with pytest.raises((TypeError, ValueError)):
@@ -1174,7 +1241,7 @@ def test_acquisition_hydration_rebuilds_the_private_binding_from_terms_only() ->
 
 
 def test_operation_foundation_public_exports_are_exact_and_inert() -> None:
-    expected = {
+    expected = (
         "AcquisitionOperationCoordinates",
         "AuthorityOperation",
         "BeginAcquisitionGenerationOperation",
@@ -1197,7 +1264,9 @@ def test_operation_foundation_public_exports_are_exact_and_inert() -> None:
         "decode_m2_semantic_key",
         "encode_m2_operation",
         "encode_m2_semantic_key",
-    }
+    )
 
-    assert set(operations.__all__) == expected
-    assert {name for name in vars(operations) if not name.startswith("_")} == expected
+    assert operations.__all__ == expected
+    assert {name for name in vars(operations) if not name.startswith("_")} == set(
+        expected
+    )
