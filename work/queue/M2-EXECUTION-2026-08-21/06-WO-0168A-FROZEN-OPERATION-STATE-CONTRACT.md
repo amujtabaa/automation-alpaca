@@ -571,6 +571,7 @@ After fresh preflight acceptance, WO-0168a activation may name only these source
 
 ```yaml
 source_paths:
+  - app/execution_core/fills.py
   - app/execution_core/position.py
   - app/execution_core/venue.py
   - app/execution_core/recovery.py
@@ -636,6 +637,31 @@ at either proof boundary and requires mutation tests for every previously unboun
 No source or test change implementing this amendment may be made until a fresh REV-0074 R7
 documentation review accepts this exact amendment with P0=0/P1=0. The normal REV-0075
 implementation review and any changed-DDL human gate remain independent.
+
+### R8 authenticated direct-proof amendment
+
+R7's aggregate commitments are necessary but do not themselves prove that a selected direct row is
+a member (or non-member) of the committed current index. `fills.py` therefore provides exact,
+key-bounded radix membership and non-membership witnesses for the direct `root_head`, `seen_fact`,
+and root-claim maps. A witness retains only the queried key, key-bounded path commitments, and at a
+non-member terminal the at-most-256 labelled child commitments needed to prove the requested edge is
+absent. It never retains a map, history, arbitrary container, or replay input. `_M2ExecutionState`
+retains the corresponding three map commitments; `_M2ExecutionObservationProof` carries one exact
+witness for each selected or absent direct row and the owner validates each against its map
+commitment before classification.
+
+`_M2ProtectionAuthorityProof` no longer accepts a caller-constructed current-row carrier. Its only
+issuance route is the package-private checkpoint-codec adapter after it verifies one typed
+repository `CurrentProofSlice`: selected application/profile/scope rows, current controller head,
+live acquisition generation, and protection-authority row must agree exactly before the owner seals
+the proof. The pure hydrator receives only that sealed proof and rechecks all state-relevant
+coordinates; a direct tuple, raw rows, or independently selected envelope is forbidden.
+
+This amendment adds only `app/execution_core/fills.py` to the R8 implementation surface. It adds no
+new operation, schema family, database execution, runtime composition, external activity, or safety
+exception. No source or test change implementing R8 may be made until a fresh REV-0074 R8
+documentation review accepts this exact amendment with P0=0/P1=0. The normal REV-0075
+implementation review and changed-DDL human gate remain independent.
 
 Governance paths are the queue/active/completed WO-0168a file, this frozen contract, the additive
 post-I3 map, `work/ledger.jsonl`, and `work/review/REV-0074/**` plus the separately assigned

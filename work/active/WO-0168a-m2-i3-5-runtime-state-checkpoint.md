@@ -162,6 +162,7 @@ contract; this summary table does not grant implementation discretion.
 
 ```yaml
 allowed_paths:
+  - app/execution_core/fills.py
   - app/execution_core/position.py
   - app/execution_core/venue.py
   - app/execution_core/recovery.py
@@ -297,6 +298,21 @@ REV-0074 R7 accepted the exact owner-proof amendment candidate
 execution proof, typed protection-currentness proof, and associated parity/mutation coverage.
 This acceptance does not relax the normal REV-0075 implementation review or the changed-DDL human
 gate.
+
+## R8 authenticated direct-proof amendment checkpoint
+
+REV-0075 R2 showed that self-consistent proof commitments do not establish direct-row membership,
+and that a constructible current-row carrier cannot authenticate an envelope selection. The R8
+companion-contract amendment therefore requires bounded radix membership/non-membership witnesses
+for every execution direct row and checkpoint-codec-only issuance of the protection proof from a
+typed repository current-proof slice. It adds only `app/execution_core/fills.py` to the activated
+source surface; the existing checkpoint-codec and test paths were already named. It adds no new
+operation, schema family, database execution, runtime composition, credential, network, broker,
+order, promotion, merge, or safety relaxation.
+
+No source or test change implementing R8 may be made until a fresh REV-0074 R8 documentation review
+accepts the exact amendment with `P0=0/P1=0`. Normal REV-0075 implementation review and the
+changed-DDL human gate remain independently required.
 
 ## Out of scope
 
