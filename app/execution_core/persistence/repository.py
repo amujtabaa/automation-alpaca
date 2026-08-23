@@ -150,6 +150,44 @@ def _classify_sqlite_failure(
     return _integrity()
 
 
+_RUNTIME_CHECKPOINT_PAYLOAD_CONFLICT_MESSAGE = (
+    "runtime checkpoint payload identity is already retained"
+)
+
+
+def _classify_runtime_checkpoint_sqlite_failure(
+    caught: Exception,
+    *,
+    payload_insert: bool,
+) -> _records.RepositoryOutcome[_Any]:
+    """Apply the closed checkpoint-only SQLite exception partition."""
+
+    if type(payload_insert) is not bool:
+        raise TypeError("payload_insert must be exact bool")
+    loaded_modules = getattr(__import__("sys"), "modules")
+    sqlite_module = loaded_modules.get("sqlite3")
+    sqlite_error = (
+        None if sqlite_module is None else getattr(sqlite_module, "Error", None)
+    )
+    sqlite_integrity_error = (
+        None
+        if sqlite_module is None
+        else getattr(sqlite_module, "IntegrityError", None)
+    )
+    if not isinstance(sqlite_error, type) or not isinstance(caught, sqlite_error):
+        raise caught
+    if isinstance(sqlite_integrity_error, type) and isinstance(
+        caught, sqlite_integrity_error
+    ):
+        code = getattr(caught, "sqlite_errorcode", None)
+        if code in (1555, 2067) or (
+            payload_insert
+            and str(caught) == _RUNTIME_CHECKPOINT_PAYLOAD_CONFLICT_MESSAGE
+        ):
+            return _outcome(_records.RepositoryOutcomeKind.CONFLICT)
+    return _integrity()
+
+
 def _insert(
     capability: _WriteCapability,
     connection: _SQLiteConnectionProtocol,
