@@ -1,5 +1,9 @@
 # WO-0168c frozen anchored-checkpoint contract
 
+> **SUPERSEDED — NOT IMPLEMENTATION AUTHORITY.** REV-0077 R0 disproved this serving-composition
+> design. The authoritative successor is
+> `09-WO-0168C-FROZEN-NONSERVING-CHECKPOINT-R1.md`. This file is retained only as review evidence.
+
 Status: **PREFLIGHT CANDIDATE — DOCUMENTATION ONLY; NO SOURCE OR DATABASE AUTHORITY**
 
 Date: 2026-08-23
