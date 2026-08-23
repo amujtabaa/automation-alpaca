@@ -309,6 +309,57 @@ def _assert_found(outcome: records.RepositoryOutcome[Any], expected: Any) -> Non
     assert outcome.record == expected
 
 
+def test_current_proof_optional_record_binding_covers_every_declared_field() -> None:
+    owner = _owner(1, root_fill_key_id=1)
+    optional_records = (
+        _root(),
+        records.AcquisitionRootRouteRecord(
+            1,
+            1,
+            APP_ID,
+            EXECUTION_PROFILE_ID,
+            ACQUISITION_ID,
+            1,
+            owner.owner_id,
+            owner.observation_id,
+        ),
+        records.ExecutionFactHeadRecord(1, 1, 1),
+        _fact(),
+        _effect(1, controller_head=0, protection_version=1),
+        _claim(1),
+        owner,
+        records.AcceptanceSetRecord(1, 1),
+        records.AcceptanceEvidenceRecord(
+            1,
+            1,
+            1,
+            "OBSERVATION",
+            None,
+            "a1" * 32,
+            1,
+            None,
+            None,
+        ),
+        records.ClosureChainRecord(
+            1,
+            1,
+            owner.owner_id,
+            1,
+            1,
+            "TERMINAL_LEG",
+            None,
+        ),
+    )
+
+    for record in optional_records:
+        assert records._current_proof_optional_record_binding(record)
+        for field in dataclasses.fields(record):
+            mutant = dataclasses.replace(record)
+            object.__setattr__(mutant, field.name, object())
+            with pytest.raises(ValueError, match="current proof record"):
+                records._current_proof_optional_record_binding(mutant)
+
+
 def test_exact_exports_and_outcome_invariants() -> None:
     expected_repository_exports = (
         "advance_kernel_checkpoint",
