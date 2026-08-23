@@ -161,9 +161,7 @@ class KernelCheckpointRecord:
 
 _RUNTIME_CHECKPOINT_MAX_PAYLOAD_BYTES = 268_435_456
 _RUNTIME_CHECKPOINT_REGISTRY_LOCK = _RLock()
-_RUNTIME_CHECKPOINT_REGISTRY: dict[
-    int, tuple[_ReferenceType[object], bytes, str]
-] = {}
+_RUNTIME_CHECKPOINT_REGISTRY: dict[int, tuple[_ReferenceType[object], bytes, str]] = {}
 _RUNTIME_CHECKPOINT_ABSENCE_FIELDS = (
     ("owner_effect_absences", "owner/effect", "owner-effect"),
     ("claim_effect_absences", "claim/effect", "claim-effect"),
@@ -291,9 +289,7 @@ def _runtime_checkpoint_field_m1(value: object) -> bytes:
     )
 
 
-def _runtime_checkpoint_record_binding(
-    tag: str, fields: tuple[bytes, ...]
-) -> bytes:
+def _runtime_checkpoint_record_binding(tag: str, fields: tuple[bytes, ...]) -> bytes:
     if type(tag) is not str or type(fields) is not tuple:
         raise TypeError("runtime checkpoint record binding is invalid")
     if any(type(field) is not bytes for field in fields):
@@ -315,7 +311,9 @@ def _runtime_checkpoint_optional_record_binding(value: bytes | None) -> bytes:
     )
 
 
-def _runtime_checkpoint_sequence_binding(domain: str, items: tuple[bytes, ...]) -> bytes:
+def _runtime_checkpoint_sequence_binding(
+    domain: str, items: tuple[bytes, ...]
+) -> bytes:
     if type(domain) is not str or type(items) is not tuple:
         raise TypeError("runtime checkpoint sequence binding is invalid")
     if any(type(item) is not bytes for item in items):
@@ -379,19 +377,25 @@ def _runtime_checkpoint_price_columns(
     )
 
 
-def _runtime_checkpoint_storage_record(record: object) -> tuple[str, tuple[object, ...]]:
+def _runtime_checkpoint_storage_record(
+    record: object,
+) -> tuple[str, tuple[object, ...]]:
     identity = _runtime_checkpoint_identity_text
     if type(record) is ScopeRecord:
         return "scope/v1", (
             record.scope_id,
-            identity(record.application_generation_id, _identity.ApplicationGenerationId),
+            identity(
+                record.application_generation_id, _identity.ApplicationGenerationId
+            ),
             record.execution_profile_id,
             identity(record.symbol, _identity.SymbolId),
         )
     if type(record) is SymbolControllerRecord:
         return "controller/v1", (
             record.scope_id,
-            identity(record.application_generation_id, _identity.ApplicationGenerationId),
+            identity(
+                record.application_generation_id, _identity.ApplicationGenerationId
+            ),
             record.execution_profile_id,
             None
             if record.live_acquisition_generation_id is None
@@ -461,7 +465,9 @@ def _runtime_checkpoint_storage_record(record: object) -> tuple[str, tuple[objec
             record.effect_id,
             identity(record.effect_external, _identity.EffectId),
             record.scope_id,
-            identity(record.application_generation_id, _identity.ApplicationGenerationId),
+            identity(
+                record.application_generation_id, _identity.ApplicationGenerationId
+            ),
             record.execution_profile_id,
             identity(
                 record.acquisition_generation_id, _identity.AcquisitionGenerationId
@@ -543,7 +549,9 @@ def _runtime_checkpoint_storage_record(record: object) -> tuple[str, tuple[objec
         return "route/v1", (
             record.root_fill_key_id,
             record.scope_id,
-            identity(record.application_generation_id, _identity.ApplicationGenerationId),
+            identity(
+                record.application_generation_id, _identity.ApplicationGenerationId
+            ),
             record.execution_profile_id,
             identity(
                 record.acquisition_generation_id, _identity.AcquisitionGenerationId
@@ -556,7 +564,9 @@ def _runtime_checkpoint_storage_record(record: object) -> tuple[str, tuple[objec
         return "root/v1", (
             record.root_fill_key_id,
             record.scope_id,
-            identity(record.application_generation_id, _identity.ApplicationGenerationId),
+            identity(
+                record.application_generation_id, _identity.ApplicationGenerationId
+            ),
             record.execution_profile_id,
             identity(record.owner_generation_id, _identity.AcquisitionGenerationId),
             identity(record.root_fill_id, _identity.RootFillId),
@@ -580,7 +590,9 @@ def _runtime_checkpoint_storage_record(record: object) -> tuple[str, tuple[objec
         return "fact/v1", (
             record.fact_id,
             record.scope_id,
-            identity(record.application_generation_id, _identity.ApplicationGenerationId),
+            identity(
+                record.application_generation_id, _identity.ApplicationGenerationId
+            ),
             record.execution_profile_id,
             record.root_fill_key_id,
             identity(record.source_event_id, _identity.SourceEventId),
@@ -610,11 +622,11 @@ def _runtime_checkpoint_storage_record(record: object) -> tuple[str, tuple[objec
         )
     if type(record) is MarketStreamAuthorityRecord:
         return "stream/v1", (
-            identity(
-                record.stream_generation_id, _identity.MarketStreamGenerationId
-            ),
+            identity(record.stream_generation_id, _identity.MarketStreamGenerationId),
             record.scope_id,
-            identity(record.application_generation_id, _identity.ApplicationGenerationId),
+            identity(
+                record.application_generation_id, _identity.ApplicationGenerationId
+            ),
             identity(
                 record.acquisition_generation_id, _identity.AcquisitionGenerationId
             ),
@@ -625,11 +637,11 @@ def _runtime_checkpoint_storage_record(record: object) -> tuple[str, tuple[objec
         )
     if type(record) is MarketCursorRecord:
         return "cursor/v1", (
-            identity(
-                record.stream_generation_id, _identity.MarketStreamGenerationId
-            ),
+            identity(record.stream_generation_id, _identity.MarketStreamGenerationId),
             record.scope_id,
-            identity(record.application_generation_id, _identity.ApplicationGenerationId),
+            identity(
+                record.application_generation_id, _identity.ApplicationGenerationId
+            ),
             identity(
                 record.acquisition_generation_id, _identity.AcquisitionGenerationId
             ),
@@ -728,7 +740,9 @@ class _RuntimeCheckpointSelectionSet:
                     raise ValueError(f"runtime checkpoint {name} is not canonical")
                 prior_key = item[1]
         if type(self.query_row_counts) is not tuple or len(self.query_row_counts) != 13:
-            raise ValueError("runtime checkpoint requires exactly thirteen query counts")
+            raise ValueError(
+                "runtime checkpoint requires exactly thirteen query counts"
+            )
         for count in self.query_row_counts:
             _runtime_checkpoint_require_nonnegative_int(
                 "runtime checkpoint query count", count
@@ -759,7 +773,9 @@ _RUNTIME_CHECKPOINT_SELECTION_FIELDS = (
 )
 
 
-def _runtime_checkpoint_selection_record_key(name: str, record: object) -> tuple[object, ...]:
+def _runtime_checkpoint_selection_record_key(
+    name: str, record: object
+) -> tuple[object, ...]:
     identity = _runtime_checkpoint_identity_text
     if name == "scopes" and type(record) is ScopeRecord:
         return (record.scope_id,)
@@ -767,9 +783,10 @@ def _runtime_checkpoint_selection_record_key(name: str, record: object) -> tuple
         return (record.scope_id,)
     if name == "protection_authorities" and type(record) is ProtectionAuthorityRecord:
         return (record.scope_id,)
-    if name in {"live_generations", "unresolved_generations"} and type(
-        record
-    ) is AcquisitionGenerationRecord:
+    if (
+        name in {"live_generations", "unresolved_generations"}
+        and type(record) is AcquisitionGenerationRecord
+    ):
         return (
             record.scope_id,
             record.successor_ordinal,
@@ -777,10 +794,14 @@ def _runtime_checkpoint_selection_record_key(name: str, record: object) -> tuple
                 record.acquisition_generation_id, _identity.AcquisitionGenerationId
             ),
         )
-    if name in {
-        "live_generation_current",
-        "unresolved_generation_current",
-    } and type(record) is AcquisitionGenerationCurrentRecord:
+    if (
+        name
+        in {
+            "live_generation_current",
+            "unresolved_generation_current",
+        }
+        and type(record) is AcquisitionGenerationCurrentRecord
+    ):
         return (
             record.scope_id,
             identity(
@@ -824,18 +845,14 @@ def _runtime_checkpoint_selection_record_key(name: str, record: object) -> tuple
             identity(
                 record.acquisition_generation_id, _identity.AcquisitionGenerationId
             ),
-            identity(
-                record.stream_generation_id, _identity.MarketStreamGenerationId
-            ),
+            identity(record.stream_generation_id, _identity.MarketStreamGenerationId),
         )
     if name == "cursors" and type(record) is MarketCursorRecord:
         return (
             identity(
                 record.acquisition_generation_id, _identity.AcquisitionGenerationId
             ),
-            identity(
-                record.stream_generation_id, _identity.MarketStreamGenerationId
-            ),
+            identity(record.stream_generation_id, _identity.MarketStreamGenerationId),
         )
     raise TypeError(f"runtime checkpoint {name} contains an invalid record class")
 
@@ -879,8 +896,7 @@ def _runtime_checkpoint_validate_selection_set(
             )
         if any(
             generation.scope_id != current.scope_id
-            or generation.acquisition_generation_id
-            != current.acquisition_generation_id
+            or generation.acquisition_generation_id != current.acquisition_generation_id
             for generation, current in zip(generations, current_rows, strict=True)
         ):
             raise ValueError(
@@ -896,9 +912,7 @@ def _runtime_checkpoint_validate_selection_set(
             raise ValueError("runtime checkpoint root rows do not agree")
         route_order_by_root[root.root_fill_key_id] = (
             route.effect_id,
-            _runtime_checkpoint_identity_text(
-                route.owner_id, _identity.OrderId
-            ),
+            _runtime_checkpoint_identity_text(route.owner_id, _identity.OrderId),
             route.root_fill_key_id,
         )
 
@@ -976,8 +990,7 @@ def _runtime_checkpoint_selection_set_binding(
     query_counts = _runtime_checkpoint_sequence_binding(
         "execution-core/runtime-checkpoint/query-counts/v1",
         tuple(
-            _runtime_checkpoint_field_int(count)
-            for count in selection.query_row_counts
+            _runtime_checkpoint_field_int(count) for count in selection.query_row_counts
         ),
     )
     return _commit_parts(
@@ -1260,7 +1273,9 @@ def _runtime_checkpoint_load_proof_binding(
     )
 
 
-def _runtime_checkpoint_register(value: object, binding: bytes, provenance: str) -> None:
+def _runtime_checkpoint_register(
+    value: object, binding: bytes, provenance: str
+) -> None:
     exact_binding = _runtime_checkpoint_require_binding(
         "runtime checkpoint registry binding", binding
     )
@@ -1343,9 +1358,7 @@ class RuntimeCheckpointSelectionProof(_RuntimeCheckpointNonCopyable):
             return bool(
                 type(value._binding) is bytes
                 and value._binding == binding
-                and _runtime_checkpoint_registry_authentic(
-                    value, binding, "SELECTION"
-                )
+                and _runtime_checkpoint_registry_authentic(value, binding, "SELECTION")
             )
         except (AttributeError, TypeError, ValueError, OverflowError):
             return False
@@ -1406,8 +1419,7 @@ def _runtime_checkpoint_selection_proof_binding(
             raise ValueError("runtime checkpoint genesis target version must be one")
     elif (
         target_head < proof.predecessor_checkpoint.currentness_head_ordinal
-        or target_version
-        != proof.predecessor_checkpoint.checkpoint_version_ordinal + 1
+        or target_version != proof.predecessor_checkpoint.checkpoint_version_ordinal + 1
     ):
         raise ValueError("runtime checkpoint target does not advance its predecessor")
     return _commit_parts(

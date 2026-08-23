@@ -262,9 +262,7 @@ def _field_m1(value: object) -> bytes:
     return _commit_runtime_parts(
         b"execution-core/runtime-checkpoint/field/m1-value/v1",
         _atom_binding(
-            _durable_codec.encode_m1_value(
-                _cast(_durable_codec._OwningValue, value)
-            )
+            _durable_codec.encode_m1_value(_cast(_durable_codec._OwningValue, value))
         ),
     )
 

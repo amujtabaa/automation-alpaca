@@ -9,7 +9,9 @@ from pathlib import Path
 from app.execution_core.persistence import checkpoint_codec, records, repository
 
 
-def test_checkpoint_codec_is_inert_and_exposes_only_nonserving_checkpoint_surface() -> None:
+def test_checkpoint_codec_is_inert_and_exposes_only_nonserving_checkpoint_surface() -> (
+    None
+):
     assert checkpoint_codec.__all__ == (
         "InertRuntimeCheckpointComponent",
         "RuntimeCheckpointEnvelope",
