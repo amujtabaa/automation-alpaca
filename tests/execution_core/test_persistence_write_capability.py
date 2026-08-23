@@ -167,10 +167,44 @@ def _exact_arguments(
 
 
 def _support_import_is_exact(tree: ast.Module) -> bool:
+    support_imports: list[tuple[str | None, str, str | None]] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if (alias.asname or alias.name.split(".", 1)[0]) == "setup_support":
+                    support_imports.append((None, alias.name, alias.asname))
+        elif isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                if (alias.asname or alias.name) == "setup_support":
+                    support_imports.append((node.module, alias.name, alias.asname))
     return bool(
-        _import_bindings(tree, "setup_support")
-        == ((None, "persistence_setup_support", "setup_support"),)
+        support_imports == [(None, "persistence_setup_support", "setup_support")]
         and not _has_rebinding(tree, name="setup_support")
+    )
+
+
+def _support_module_use_is_exact(
+    tree: ast.Module,
+    *,
+    helper: ast.FunctionDef,
+    issuer_call: ast.Call,
+) -> bool:
+    """Allow the support module only in the one frozen issuer expression."""
+
+    if not (
+        isinstance(issuer_call.func, ast.Attribute)
+        and isinstance(issuer_call.func.value, ast.Name)
+        and issuer_call.func.value.id == "setup_support"
+    ):
+        return False
+    allowed = issuer_call.func.value
+    return (
+        all(
+            node is allowed
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Name) and node.id == "setup_support"
+        )
+        and helper in tree.body
     )
 
 
@@ -212,6 +246,11 @@ def _fixture_setup_helper_is_exact(tree: ast.Module) -> bool:
         and not call.keywords
         and isinstance(call.args[0], ast.Name)
         and call.args[0].id == "connection"
+        and _support_module_use_is_exact(
+            tree,
+            helper=helper,
+            issuer_call=call,
+        )
     )
 
 
@@ -447,6 +486,306 @@ def _fixture_mutator_aliases(
     )
 
 
+def _call_member_name(value: ast.expr) -> str | None:
+    if isinstance(value, ast.Name):
+        return value.id
+    if isinstance(value, ast.Attribute):
+        return value.attr
+    return None
+
+
+def _literal_text(value: ast.expr) -> str | None:
+    if isinstance(value, ast.Constant) and isinstance(value.value, str):
+        return value.value
+    return None
+
+
+def _repository_alias_violations(
+    tree: ast.Module,
+    *,
+    repository_aliases: frozenset[str],
+    package_aliases: frozenset[str],
+) -> tuple[str, ...]:
+    """Keep fixture repository access in the one explicit lexical namespace.
+
+    The fixtures deliberately use direct ``repository`` calls and the frozen
+    ``_apply_mutator`` helper.  They do not need a second module alias, a
+    package alias, or a default-valued repository reference.  Refusing those
+    forms is smaller and safer than trying to emulate arbitrary Python name
+    binding.
+    """
+
+    violations: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if (
+                    alias.name == "app.execution_core.persistence.repository"
+                    and alias.asname not in (None, "repository")
+                ):
+                    violations.append("repository-import-alias")
+                if (
+                    alias.name == "app.execution_core.persistence"
+                    and alias.asname is not None
+                ):
+                    violations.append("persistence-package-alias")
+        elif isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                if (
+                    node.module == "app.execution_core.persistence"
+                    and alias.name == "repository"
+                    and alias.asname not in (None, "repository")
+                ):
+                    violations.append("repository-import-alias")
+                if (
+                    node.module == "app.execution_core.persistence.repository"
+                    and alias.name in _mutator_names()
+                ):
+                    violations.append("repository-mutator-import")
+        if isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None:
+            if _is_repository_expression(
+                node.value,
+                repository_aliases=repository_aliases,
+                package_aliases=package_aliases,
+            ):
+                violations.append("repository-assignment-alias")
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            defaults = (*node.args.defaults, *node.args.kw_defaults)
+            for default in defaults:
+                if default is not None and _is_repository_expression(
+                    default,
+                    repository_aliases=repository_aliases,
+                    package_aliases=package_aliases,
+                ):
+                    violations.append("repository-default-alias")
+    if _has_rebinding(tree, name="repository"):
+        violations.append("repository-rebinding")
+    return tuple(sorted(violations))
+
+
+def _repository_dynamic_access_violations(
+    tree: ast.Module,
+    *,
+    repository_aliases: frozenset[str],
+    package_aliases: frozenset[str],
+    getter_aliases: frozenset[str],
+) -> tuple[str, ...]:
+    """Reject reflective repository dispatch outside the finite fixture rule."""
+
+    def is_repository(value: ast.expr) -> bool:
+        return _is_repository_expression(
+            value,
+            repository_aliases=repository_aliases,
+            package_aliases=package_aliases,
+        )
+
+    violations: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            member = _call_member_name(node.func)
+            if (
+                member == "getattr"
+                and len(node.args) >= 2
+                and is_repository(node.args[0])
+            ):
+                violations.append("repository-dynamic-member-access")
+            if (
+                member == "__getattribute__"
+                and node.args
+                and is_repository(node.args[0])
+            ):
+                violations.append("repository-dynamic-member-access")
+            if (
+                member in {"setattr", "delattr"}
+                and len(node.args) >= 2
+                and isinstance(node.args[0], ast.Name)
+                and node.args[0].id == "setup_support"
+                and _literal_text(node.args[1]) == "issue_setup_write_capability"
+            ):
+                violations.append("support-issuer-mutation")
+            if (
+                isinstance(node.func, ast.Attribute)
+                and node.func.attr == "__getattribute__"
+                and node.args
+                and is_repository(node.func.value)
+            ):
+                violations.append("repository-dynamic-member-access")
+        if (
+            isinstance(node, ast.Attribute)
+            and node.attr == "__dict__"
+            and is_repository(node.value)
+        ):
+            violations.append("repository-dynamic-member-access")
+        if (
+            isinstance(node, ast.Subscript)
+            and isinstance(node.value, ast.Call)
+            and _call_member_name(node.value.func) == "vars"
+            and node.value.args
+            and is_repository(node.value.args[0])
+        ):
+            violations.append("repository-dynamic-member-access")
+        if isinstance(node, ast.Attribute) and node.attr in {"getattr", "attrgetter"}:
+            violations.append("repository-dynamic-member-access")
+        if (
+            isinstance(node, (ast.Assign, ast.AnnAssign))
+            and node.value is not None
+            and isinstance(node.value, ast.Attribute)
+            and isinstance(node.value.value, ast.Name)
+            and node.value.value.id == "setup_support"
+            and node.value.attr == "issue_setup_write_capability"
+        ):
+            violations.append("support-issuer-alias")
+    del getter_aliases
+    return tuple(sorted(violations))
+
+
+def _container_dispatch_violations(
+    tree: ast.Module,
+    *,
+    repository_aliases: frozenset[str],
+    package_aliases: frozenset[str],
+    getter_aliases: frozenset[str],
+    mutator_aliases: dict[str, str],
+    unresolved_aliases: frozenset[str],
+) -> tuple[str, ...]:
+    """Refuse direct indexed dispatch from a container holding a mutator.
+
+    Existing fixtures may use a literal tuple solely to feed the exact
+    ``_apply_mutator`` helper.  Indexed container dispatch is not part of that
+    grammar and would otherwise hide a callable behind an ordinary name.
+    """
+
+    containers: dict[str, ast.expr] = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.Assign, ast.AnnAssign)) or node.value is None:
+            continue
+        if isinstance(node.value, (ast.Tuple, ast.List, ast.Set, ast.Dict)):
+            for target in _assignment_names(node):
+                containers[target] = node.value
+
+    def contains_mutator(value: ast.expr, seen: frozenset[str] = frozenset()) -> bool:
+        if isinstance(value, ast.Name) and value.id in containers:
+            if value.id in seen:
+                return False
+            return contains_mutator(containers[value.id], seen | {value.id})
+        if isinstance(value, ast.Dict):
+            items = (*value.keys, *value.values)
+        elif isinstance(value, (ast.Tuple, ast.List, ast.Set)):
+            items = tuple(value.elts)
+        else:
+            member, unresolved = _dispatch_from_expression(
+                value,
+                repository_aliases=repository_aliases,
+                package_aliases=package_aliases,
+                getter_aliases=getter_aliases,
+                mutator_aliases=mutator_aliases,
+                unresolved_aliases=unresolved_aliases,
+            )
+            return member is not None or unresolved
+        return any(item is not None and contains_mutator(item, seen) for item in items)
+
+    violations: list[str] = []
+    container_aliases: set[str] = set()
+    changed = True
+    while changed:
+        changed = False
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.Assign, ast.AnnAssign)) or node.value is None:
+                continue
+            if isinstance(node.value, ast.Subscript) and contains_mutator(
+                node.value.value
+            ):
+                for target in _assignment_names(node):
+                    if target not in container_aliases:
+                        container_aliases.add(target)
+                        changed = True
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        if isinstance(node.func, ast.Subscript) and contains_mutator(node.func.value):
+            violations.append("container-repository-dispatch")
+        elif isinstance(node.func, ast.Name) and node.func.id in container_aliases:
+            violations.append("container-repository-dispatch")
+
+    def target_names(target: ast.expr) -> tuple[str, ...]:
+        if isinstance(target, ast.Name):
+            return (target.id,)
+        if isinstance(target, (ast.Tuple, ast.List)):
+            return tuple(name for item in target.elts for name in target_names(item))
+        return ()
+
+    def resolved_container(
+        value: ast.expr, seen: frozenset[str] = frozenset()
+    ) -> ast.expr:
+        if (
+            isinstance(value, ast.Name)
+            and value.id in containers
+            and value.id not in seen
+        ):
+            return resolved_container(containers[value.id], seen | {value.id})
+        return value
+
+    def mutator_target_names(target: ast.expr, iterable: ast.expr) -> frozenset[str]:
+        source = resolved_container(iterable)
+        if isinstance(target, ast.Name):
+            return frozenset((target.id,)) if contains_mutator(source) else frozenset()
+        if not isinstance(target, (ast.Tuple, ast.List)) or not isinstance(
+            source, (ast.Tuple, ast.List)
+        ):
+            return frozenset()
+        positions: set[int] = set()
+        for row in source.elts:
+            row = resolved_container(row)
+            if not isinstance(row, (ast.Tuple, ast.List)):
+                continue
+            positions.update(
+                index for index, item in enumerate(row.elts) if contains_mutator(item)
+            )
+        return frozenset(
+            name
+            for index in positions
+            if index < len(target.elts)
+            for name in target_names(target.elts[index])
+        )
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.For) or not contains_mutator(node.iter):
+            continue
+        names = mutator_target_names(node.target, node.iter)
+        for child in ast.walk(ast.Module(body=node.body, type_ignores=[])):
+            if not isinstance(child, ast.Call):
+                continue
+            if isinstance(child.func, ast.Name) and child.func.id in names:
+                capability_values = [
+                    keyword.value
+                    for keyword in child.keywords
+                    if keyword.arg == "capability"
+                ]
+                if (
+                    not child.args
+                    or len(capability_values) != 1
+                    or not _is_issued_setup_capability(
+                        capability_values[0], connection=child.args[0]
+                    )
+                ):
+                    violations.append("loop-repository-dispatch")
+            for index, argument in enumerate(child.args):
+                if not isinstance(argument, ast.Name) or argument.id not in names:
+                    continue
+                if not (
+                    isinstance(child.func, ast.Name)
+                    and child.func.id == "_apply_mutator"
+                    and index == 1
+                ):
+                    violations.append("loop-repository-dispatch")
+            if any(
+                isinstance(keyword.value, ast.Name) and keyword.value.id in names
+                for keyword in child.keywords
+            ):
+                violations.append("loop-repository-dispatch")
+    return tuple(sorted(violations))
+
+
 def _is_issued_setup_capability(
     expression: ast.expr,
     *,
@@ -534,6 +873,31 @@ def _fixture_mutator_capability_violations(source: str) -> tuple[str, ...]:
                 violations.append("unresolved-repository-dispatch")
             elif mutator_name is not None:
                 violations.append(mutator_name)
+    violations.extend(
+        _repository_alias_violations(
+            tree,
+            repository_aliases=repository_aliases,
+            package_aliases=package_aliases,
+        )
+    )
+    violations.extend(
+        _repository_dynamic_access_violations(
+            tree,
+            repository_aliases=repository_aliases,
+            package_aliases=package_aliases,
+            getter_aliases=getter_aliases,
+        )
+    )
+    violations.extend(
+        _container_dispatch_violations(
+            tree,
+            repository_aliases=repository_aliases,
+            package_aliases=package_aliases,
+            getter_aliases=getter_aliases,
+            mutator_aliases=mutator_aliases,
+            unresolved_aliases=unresolved_aliases,
+        )
+    )
     return tuple(sorted(violations))
 
 
@@ -693,12 +1057,59 @@ lookup = getattr
 lookup(repository, "store_scope")(connection, record, capability=object())
 getattr(repository, dynamic_member)(connection, record, capability=object())
 """
-    assert _fixture_mutator_capability_violations(module_getter_and_alias_chain) == (
-        "store_scope",
-        "store_scope",
-        "store_scope",
+    alias_violations = set(
+        _fixture_mutator_capability_violations(module_getter_and_alias_chain)
+    )
+    assert {
+        "persistence-package-alias",
+        "repository-assignment-alias",
+        "repository-dynamic-member-access",
+        "repository-import-alias",
         "store_scope",
         "unresolved-repository-dispatch",
+    } <= alias_violations
+
+    qualified_dynamic_lookup = """
+import builtins
+
+issue = builtins.getattr(repository, "_issue_setup_write_capability")
+write = builtins.getattr(repository, "store_scope")
+write(connection, record, capability=issue(connection))
+"""
+    assert "repository-dynamic-member-access" in set(
+        _fixture_mutator_capability_violations(qualified_dynamic_lookup)
+    )
+
+    callable_container = """
+writers = {"scope": repository.store_scope}
+writers["scope"](connection, record, capability=object())
+"""
+    assert "container-repository-dispatch" in set(
+        _fixture_mutator_capability_violations(callable_container)
+    )
+
+    looped_callable = """
+for operation, value in ((repository.store_scope, record),):
+    operation(connection, value, capability=object())
+"""
+    assert "loop-repository-dispatch" in set(
+        _fixture_mutator_capability_violations(looped_callable)
+    )
+
+    looped_callable_escape = """
+for operation, value in ((repository.store_scope, record),):
+    dispatch(operation=operation)
+"""
+    assert "loop-repository-dispatch" in set(
+        _fixture_mutator_capability_violations(looped_callable_escape)
+    )
+
+    repository_default_alias = """
+def write(repo=repository):
+    return repo.store_scope(connection, record, capability=object())
+"""
+    assert "repository-default-alias" in set(
+        _fixture_mutator_capability_violations(repository_default_alias)
     )
 
     wrong_connection_and_proxy = """
@@ -767,6 +1178,34 @@ setup_support = object()
     )
     assert not _fixture_helper_shape_is_exact(
         shadowed_issuer,
+        require_apply_helper=False,
+    )
+
+    rebound_support_member = (
+        valid_setup_helper
+        + """
+
+setup_support.issue_setup_write_capability = lambda connection: object()
+"""
+    )
+    assert not _fixture_helper_shape_is_exact(
+        rebound_support_member,
+        require_apply_helper=False,
+    )
+
+    monkeypatched_support_member = (
+        valid_setup_helper
+        + """
+
+monkeypatch.setattr(
+    setup_support,
+    "issue_setup_write_capability",
+    lambda connection: object(),
+)
+"""
+    )
+    assert not _fixture_helper_shape_is_exact(
+        monkeypatched_support_member,
         require_apply_helper=False,
     )
 
