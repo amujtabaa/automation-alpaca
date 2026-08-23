@@ -1,5 +1,12 @@
 # WO-0168h frozen owner-state wire and sealed-proof contract
 
+> **SUPERSEDED — NOT IMPLEMENTATION AUTHORITY (2026-08-23).** REV-0076 R5 proved that this
+> standalone partition cannot satisfy its owner-local and non-serving claims: exact selection
+> requires repository facts, decoding existing proof bytes can recreate serving authority, and
+> normative venue rows change reducer behavior. No source authority was released. WO-0168c
+> replaces this contract with one checkpoint/repository/serving-composition preflight. Everything
+> below is retained only as design and negative-review evidence.
+
 Status: **PREFLIGHT CANDIDATE — DOCUMENTATION ONLY; NO SOURCE AUTHORITY**
 
 Date: 2026-08-23

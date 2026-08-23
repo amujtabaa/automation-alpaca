@@ -1,12 +1,12 @@
 ---
 type: Work Order
 title: M2-I3.5 owner-state wire and sealed-proof closure
-status: ACTIVE
+status: SUPERSEDED
 work_order_id: WO-0168h
 wave: M2-I3.5-R13-H
 model_tier: strong
 risk: critical
-disposition: []
+disposition: [SUPERSEDED, RESULT_SUMMARY_KEPT, ARCHIVED]
 owner: Codex orchestrator and implementation seat; fresh-context reviewers required
 created: 2026-08-23
 predecessor: WO-0168a closeout 58f23ff9ea6d446379f7339075e1203c42a33e96
@@ -40,9 +40,15 @@ forbidden_paths:
 
 # Work Order: WO-0168h — M2 owner-state wire closure
 
+> **Superseded 2026-08-23.** Five documentation review rounds disproved the premise that a
+> complete bounded owner-state snapshot can be implemented independently of repository provenance
+> and serving composition. REV-0076 R5 found repository-only selection facts, serving authority
+> mintable from proof bytes, and proposed venue-wire behavior changes. No R13-H source, test, DDL,
+> or SQLite work occurred. WO-0168c succeeds this work with one indivisible checkpoint boundary.
+
 **Author:** Codex orchestrator seat
 **Date:** 2026-08-23
-**Status:** Active, documentation-only preflight
+**Status:** Superseded after failed documentation-only preflight
 
 `[FABLE • FULL • spec-first/TDD • owner-local hydration • no external I/O]`
 
@@ -175,3 +181,11 @@ and repository freshness do not belong inside checkpoint state bytes. R5 therefo
 to owner-local non-serving snapshots and moves all repository observation, operation capability,
 behavioral commitment activation, mutable generation state, FACT membership, and DDL to a fresh
 R13-C contract/review. This is a fail-closed scope split, not a default-empty or bypass path.
+
+## Terminal disposition — 2026-08-23
+
+`SUPERSEDED`, `RESULT_SUMMARY_KEPT`, and `ARCHIVED`. REV-0076 never accepted the contract and the
+source hold was never released. The durable correction carried into WO-0168c is that inert bytes
+may preserve integrity, but repository provenance and serving-proof issuance must be reviewed and
+implemented with the complete checkpoint boundary, not reconstructed by a standalone owner-local
+decoder.
