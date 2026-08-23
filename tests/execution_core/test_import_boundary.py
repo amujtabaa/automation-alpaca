@@ -582,6 +582,7 @@ _LEGACY_PROTECTION_E2_CLASSES = {
     "AcquisitionProtectionRebaseProjection",
     "_AcquisitionPreemptionIntent",
     "_AcquisitionProtectionExitIntent",
+    "_M2ProtectionAuthorityProof",
     "_M2ProtectionCheckpoint",
 }
 
@@ -617,7 +618,9 @@ _LEGACY_PROTECTION_E2_FUNCTIONS = {
     # WO-0168a: these three kernels now own the retained public reducer bodies.
     # Keeping them in the legacy AST models a semantics-preserving extraction;
     # the public wrappers remain the historical entry points.
+    "_m2_optional_acquisition_generation_commitment",
     "_m2_position_protection_from_checkpoint",
+    "_m2_protection_authority_proof_commitment",
     "_protection_mandate_commitment",
     "_protection_mandate_is_authentic",
     "_protection_transition_is_authentic",
@@ -627,6 +630,7 @@ _LEGACY_PROTECTION_E2_FUNCTIONS = {
     "_source_venue_transition_commitment",
     "_state_matches_projection_current",
     "_state_matches_projection_predecessor",
+    "_validate_m2_protection_authority_proof_fields",
     "force_acquisition_mixed_recovery",
     "project_acquisition_protection_context",
     "project_acquisition_protection_rebase",

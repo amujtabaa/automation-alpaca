@@ -579,6 +579,80 @@ class _M2ProtectionCheckpoint:
 
 
 @_dataclass(frozen=True, slots=True, init=False)
+class _M2ProtectionAuthorityProof:
+    """Sealed currentness/authority selection for one protection checkpoint."""
+
+    @_dataclass(frozen=True, slots=True)
+    class _CurrentRows:
+        """Typed direct-current rows before their owner seals one proof."""
+
+        application_generation_id: _ApplicationGenerationId
+        execution_profile_id: str
+        market_source_profile_id: str
+        scope_id: int
+        position_scope: _PositionScope
+        controller_currentness_head_ordinal: int
+        live_acquisition_generation_id: _AcquisitionGenerationId | None
+        authority_class: str
+        active_stream_generation_id: _MarketStreamGenerationId
+        active_acquisition_generation_id: _AcquisitionGenerationId | None
+        active_generation_mandate_commitment_sha256: str
+        active_source_profile_id: str
+        active_session_id: _SessionId
+        active_sequence_mode: MarketSequenceMode
+        expected_controller_head_ordinal: int
+        state_commitment_sha256: str
+        version_ordinal: int
+        market_source_id: _MarketDataSourceId
+
+        def __init_subclass__(cls, **kwargs: object) -> None:
+            del cls, kwargs
+            raise TypeError("_CurrentRows cannot be subclassed")
+
+    rows: _CurrentRows
+    commitment: bytes
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        raise TypeError("_M2ProtectionAuthorityProof is owner-constructed")
+
+    @classmethod
+    def from_current_rows(
+        cls,
+        rows: _CurrentRows,
+    ) -> _M2ProtectionAuthorityProof:
+        """Mint one proof only after exact current-row coordinates agree."""
+
+        if cls is not _M2ProtectionAuthorityProof:
+            raise TypeError("_M2ProtectionAuthorityProof rejects subclass instances")
+        _validate_m2_protection_authority_proof_fields(rows)
+        result = object.__new__(_M2ProtectionAuthorityProof)
+        object.__setattr__(result, "rows", rows)
+        object.__setattr__(
+            result,
+            "commitment",
+            _m2_protection_authority_proof_commitment(rows),
+        )
+        return result
+
+    @classmethod
+    def _is_authentic(cls, proof: _M2ProtectionAuthorityProof) -> bool:
+        """Return whether all proof rows still match their owner commitment."""
+
+        if cls is not _M2ProtectionAuthorityProof or type(proof) is not cls:
+            return False
+        try:
+            _validate_m2_protection_authority_proof_fields(proof.rows)
+            expected = _m2_protection_authority_proof_commitment(proof.rows)
+        except (AttributeError, TypeError, ValueError):
+            return False
+        return type(proof.commitment) is bytes and proof.commitment == expected
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        del cls, kwargs
+        raise TypeError("_M2ProtectionAuthorityProof cannot be subclassed")
+
+
+@_dataclass(frozen=True, slots=True, init=False)
 class ProtectionVenueProjection:
     predecessor_cursor_ordinal: int
     predecessor_cursor_head: bytes
@@ -2500,75 +2574,120 @@ def _state_is_authentic(state: PositionProtectionState) -> bool:
     )
 
 
+def _validate_m2_protection_authority_proof_fields(
+    rows: _M2ProtectionAuthorityProof._CurrentRows,
+) -> None:
+    """Reject a proof whose selected direct-current rows disagree."""
+
+    if (
+        type(rows) is not _M2ProtectionAuthorityProof._CurrentRows
+        or type(rows.application_generation_id) is not _ApplicationGenerationId
+        or type(rows.execution_profile_id) is not str
+        or not rows.execution_profile_id
+        or type(rows.market_source_profile_id) is not str
+        or not rows.market_source_profile_id
+        or type(rows.scope_id) is not int
+        or rows.scope_id < 0
+        or type(rows.position_scope) is not _PositionScope
+        or type(rows.controller_currentness_head_ordinal) is not int
+        or rows.controller_currentness_head_ordinal < 0
+        or (
+            rows.live_acquisition_generation_id is not None
+            and type(rows.live_acquisition_generation_id)
+            is not _AcquisitionGenerationId
+        )
+        or type(rows.authority_class) is not str
+        or (rows.authority_class != "NORMAL" and rows.authority_class != "HARD_BAIL")
+        or type(rows.active_stream_generation_id) is not _MarketStreamGenerationId
+        or (
+            rows.active_acquisition_generation_id is not None
+            and type(rows.active_acquisition_generation_id)
+            is not _AcquisitionGenerationId
+        )
+        or type(rows.active_generation_mandate_commitment_sha256) is not str
+        or len(rows.active_generation_mandate_commitment_sha256) != 64
+        or type(rows.active_source_profile_id) is not str
+        or not rows.active_source_profile_id
+        or type(rows.active_session_id) is not _SessionId
+        or type(rows.active_sequence_mode) is not MarketSequenceMode
+        or type(rows.expected_controller_head_ordinal) is not int
+        or rows.expected_controller_head_ordinal < 0
+        or type(rows.state_commitment_sha256) is not str
+        or len(rows.state_commitment_sha256) != 64
+        or type(rows.version_ordinal) is not int
+        or rows.version_ordinal < 1
+        or type(rows.market_source_id) is not _MarketDataSourceId
+    ):
+        raise ValueError("protection authority proof has invalid exact fields")
+    if rows.active_source_profile_id != rows.market_source_profile_id:
+        raise ValueError("authority source profile does not match selected profile")
+    if (
+        rows.expected_controller_head_ordinal
+        != rows.controller_currentness_head_ordinal
+    ):
+        raise ValueError("authority expected controller head is not current")
+    if rows.active_acquisition_generation_id != rows.live_acquisition_generation_id:
+        raise ValueError("authority acquisition generation is not the live generation")
+
+
+def _m2_optional_acquisition_generation_commitment(
+    domain: bytes,
+    value: _AcquisitionGenerationId | None,
+) -> bytes:
+    return (
+        _commit_parts(domain, _encode_text(value.value))
+        if value is not None
+        else _commit_parts(domain, b"absent")
+    )
+
+
+def _m2_protection_authority_proof_commitment(
+    rows: _M2ProtectionAuthorityProof._CurrentRows,
+) -> bytes:
+    """Commit the exact selected envelope/currentness/authority slice."""
+
+    return _commit_parts(
+        b"execution-core/m2-protection-authority-proof/v1",
+        _encode_text(rows.application_generation_id.value),
+        _encode_text(rows.execution_profile_id),
+        _encode_text(rows.market_source_profile_id),
+        _encode_int(rows.scope_id),
+        _encode_position_scope(rows.position_scope),
+        _encode_int(rows.controller_currentness_head_ordinal),
+        _m2_optional_acquisition_generation_commitment(
+            b"execution-core/m2-protection-live-generation/v1",
+            rows.live_acquisition_generation_id,
+        ),
+        _encode_text(rows.authority_class),
+        _encode_text(rows.active_stream_generation_id.value),
+        _m2_optional_acquisition_generation_commitment(
+            b"execution-core/m2-protection-active-generation/v1",
+            rows.active_acquisition_generation_id,
+        ),
+        _encode_text(rows.active_generation_mandate_commitment_sha256),
+        _encode_text(rows.active_source_profile_id),
+        _encode_text(rows.active_session_id.value),
+        _encode_text(rows.active_sequence_mode.value),
+        _encode_int(rows.expected_controller_head_ordinal),
+        _encode_text(rows.state_commitment_sha256),
+        _encode_int(rows.version_ordinal),
+        _encode_text(rows.market_source_id.value),
+    )
+
+
 def _m2_position_protection_from_checkpoint(
     checkpoint: _M2ProtectionCheckpoint,
-    accepted_authority_row: tuple[object, ...],
+    authority_proof: _M2ProtectionAuthorityProof,
 ) -> PositionProtectionState:
-    """Rebuild one fixed-size state only against its accepted authority row.
-
-    ``accepted_authority_row`` is the fixed, persistence-adapted direct-proof
-    tuple supplied by the checkpoint owner.  It deliberately is not a generic
-    record/object decoder: its ordered fields are the authority row together
-    with the enclosing checkpoint's scope/profile coordinates.  The future
-    checkpoint codec owns translation from its typed repository records to
-    this exact tuple.
-    """
+    """Rebuild one state only against its sealed exact currentness proof."""
 
     if type(checkpoint) is not _M2ProtectionCheckpoint:
         raise TypeError("checkpoint must be exact _M2ProtectionCheckpoint")
-    if type(accepted_authority_row) is not tuple:
-        raise TypeError("accepted_authority_row must be an exact tuple")
-    if len(accepted_authority_row) != 16:
-        raise ValueError("accepted_authority_row has an invalid field count")
-    (
-        scope_id,
-        position_scope,
-        application_generation_id,
-        execution_profile_id,
-        market_source_profile_id,
-        authority_class,
-        active_stream_generation_id,
-        active_acquisition_generation_id,
-        active_generation_mandate_commitment_sha256,
-        active_source_profile_id,
-        active_session_id,
-        active_sequence_mode,
-        expected_controller_head_ordinal,
-        state_commitment_sha256,
-        version_ordinal,
-        market_source_id,
-    ) = accepted_authority_row
-    if (
-        type(scope_id) is not int
-        or scope_id < 0
-        or type(position_scope) is not _PositionScope
-        or type(application_generation_id) is not _ApplicationGenerationId
-        or type(execution_profile_id) is not str
-        or not execution_profile_id
-        or type(market_source_profile_id) is not str
-        or not market_source_profile_id
-        or type(authority_class) is not str
-        or authority_class not in {"NORMAL", "HARD_BAIL"}
-        or type(active_stream_generation_id) is not _MarketStreamGenerationId
-        or (
-            active_acquisition_generation_id is not None
-            and type(active_acquisition_generation_id) is not _AcquisitionGenerationId
-        )
-        or type(active_generation_mandate_commitment_sha256) is not str
-        or len(active_generation_mandate_commitment_sha256) != 64
-        or type(active_source_profile_id) is not str
-        or not active_source_profile_id
-        or type(active_session_id) is not _SessionId
-        or type(active_sequence_mode) is not MarketSequenceMode
-        or type(expected_controller_head_ordinal) is not int
-        or expected_controller_head_ordinal < 0
-        or type(state_commitment_sha256) is not str
-        or len(state_commitment_sha256) != 64
-        or type(version_ordinal) is not int
-        or version_ordinal < 1
-        or type(market_source_id) is not _MarketDataSourceId
-    ):
-        raise ValueError("accepted_authority_row is not an exact authority proof")
+    if type(authority_proof) is not _M2ProtectionAuthorityProof:
+        raise TypeError("authority_proof must be exact _M2ProtectionAuthorityProof")
+    if not _M2ProtectionAuthorityProof._is_authentic(authority_proof):
+        raise ValueError("protection authority proof is not authentic")
+    rows = authority_proof.rows
     state = _new_position_protection_state(
         checkpoint.policy,
         checkpoint.mandate,
@@ -2605,18 +2724,23 @@ def _m2_position_protection_from_checkpoint(
     if not _state_is_authentic(state):
         raise ValueError("checkpoint protection state is not authentic")
     if (
-        position_scope != state.mandate.position_scope
-        or market_source_id != state.mandate.evidence_policy.source_id
-        or active_stream_generation_id
+        rows.position_scope != state.mandate.position_scope
+        or rows.market_source_id != state.mandate.evidence_policy.source_id
+        or rows.active_stream_generation_id
         != state.mandate.evidence_policy.stream_generation
-        or active_generation_mandate_commitment_sha256
+        or rows.active_generation_mandate_commitment_sha256
         != _commit_mandate(state.mandate).hex()
-        or active_source_profile_id != market_source_profile_id
-        or active_session_id != state.mandate.session_id
-        or active_sequence_mode is not state.mandate.evidence_policy.sequence_mode
-        or state_commitment_sha256 != state.commitment.hex()
+        or rows.active_source_profile_id != rows.market_source_profile_id
+        or rows.active_session_id != state.mandate.session_id
+        or rows.active_sequence_mode is not state.mandate.evidence_policy.sequence_mode
+        or rows.state_commitment_sha256 != state.commitment.hex()
+        or rows.expected_controller_head_ordinal
+        != rows.controller_currentness_head_ordinal
+        or rows.active_acquisition_generation_id != rows.live_acquisition_generation_id
     ):
-        raise ValueError("checkpoint does not match accepted protection authority")
+        raise ValueError(
+            "checkpoint does not match accepted protection authority proof"
+        )
     return state
 
 
