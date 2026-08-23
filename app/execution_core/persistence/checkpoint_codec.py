@@ -13,6 +13,7 @@ from typing import cast as _cast
 
 from .. import durable_codec as _durable_codec
 from .. import identity as _identity
+from .. import position as _position
 from .. import protection as _protection
 from .. import values as _values
 from . import operations as _operations
@@ -20,6 +21,8 @@ from . import records as _records
 
 
 _M2_PROTECTION_CHECKPOINT_TAG = "m2.protection.checkpoint/v1"
+_M2_EXECUTION_STATE_TAG = "m2.position.execution-state/v1"
+_M2_TAIL_FOLD_INPUT_TAG = "m2.position.tail-fold-input/v1"
 _M1ValueT = _TypeVar("_M1ValueT")
 
 
@@ -106,6 +109,230 @@ def _decode_m2_exact_bool(name: str, value: object) -> bool:
     if type(value) is not bool:
         raise TypeError(f"{name} must be exact bool")
     return value
+
+
+def _encode_m2_basis_authority(value: object) -> list[str]:
+    """Encode the closed M2 execution basis-authority enum."""
+
+    if type(value) is not _position.BasisAuthority:
+        raise TypeError("basis authority must be exact BasisAuthority")
+    return ["m2.position.BasisAuthority", value.value]
+
+
+def _decode_m2_basis_authority(value: object) -> _position.BasisAuthority:
+    """Decode one exact M2 execution basis-authority enum pair."""
+
+    if type(value) is not list or len(value) != 2:
+        raise ValueError("basis authority must be a two-member array")
+    owner_tag, member = value
+    if owner_tag != "m2.position.BasisAuthority" or type(member) is not str:
+        raise ValueError("basis authority tag is not admitted")
+    try:
+        decoded = _position.BasisAuthority(member)
+    except ValueError as error:
+        raise ValueError("basis authority value is not admitted") from error
+    if _encode_m2_basis_authority(decoded) != value:
+        raise ValueError("basis authority is not canonical")
+    return decoded
+
+
+def _encode_m2_position_integrity(value: object) -> list[object]:
+    """Encode the exact closed bit set for one M2 execution state."""
+
+    if type(value) is not _position.PositionIntegrity:
+        raise TypeError("position integrity must be exact PositionIntegrity")
+    return ["m2.position.PositionIntegrity", value.value]
+
+
+def _decode_m2_position_integrity(value: object) -> _position.PositionIntegrity:
+    """Decode one exact closed M2 position-integrity enum pair."""
+
+    if type(value) is not list or len(value) != 2:
+        raise ValueError("position integrity must be a two-member array")
+    owner_tag, member = value
+    if owner_tag != "m2.position.PositionIntegrity" or type(member) is not int:
+        raise ValueError("position integrity tag is not admitted")
+    try:
+        decoded = _position.PositionIntegrity(member)
+    except ValueError as error:
+        raise ValueError("position integrity value is not admitted") from error
+    if _encode_m2_position_integrity(decoded) != value:
+        raise ValueError("position integrity is not canonical")
+    return decoded
+
+
+def _encode_m2_optional_exact_basis(
+    value: _values.ExactBasis | None,
+) -> list[object] | None:
+    """Encode one explicitly optional exact long-basis value."""
+
+    if value is None:
+        return None
+    if type(value) is not _values.ExactBasis:
+        raise TypeError("cost basis must be exact ExactBasis")
+    return _operations._encode_m2_fraction(value.value)
+
+
+def _decode_m2_optional_exact_basis(value: object) -> _values.ExactBasis | None:
+    """Decode one explicitly optional exact long-basis value."""
+
+    if value is None:
+        return None
+    return _values.ExactBasis(_operations._decode_m2_fraction(value))
+
+
+def _encode_m2_tail_fold_input(value: object) -> list[object]:
+    """Encode the exact bounded predecessor proof for one tail fold."""
+
+    if type(value) is not _position.FoldInput:
+        raise TypeError("tail fold input must be exact FoldInput")
+    return [
+        _M2_TAIL_FOLD_INPUT_TAG,
+        value.raw_quantity,
+        _operations._encode_m2_fraction(value.cost_basis.value),
+        _encode_m2_optional_m1_value(value.price_metadata),
+        (
+            None
+            if value.position_scope is None
+            else _operations._encode_m2_position_scope(value.position_scope)
+        ),
+        _encode_m2_optional_m1_value(value.tail_root_key),
+        value.prefix_count,
+        _operations._encode_m2_bytes(value.prefix_heads_commitment),
+    ]
+
+
+def _decode_m2_tail_fold_input(value: object) -> _position.FoldInput:
+    """Decode and re-encode one exact bounded tail-fold predecessor proof."""
+
+    fields = _operations._require_m2_aggregate(value, _M2_TAIL_FOLD_INPUT_TAG, 7)
+    scope = (
+        None if fields[3] is None else _operations._decode_m2_position_scope(fields[3])
+    )
+    decoded = _position.FoldInput(
+        _operations._require_exact_int("tail fold raw quantity", fields[0]),
+        _values.ExactBasis(_operations._decode_m2_fraction(fields[1])),
+        _decode_m2_optional_m1_value(
+            "tail fold price metadata",
+            fields[2],
+            _values.ReportedPrice,
+        ),
+        scope,
+        _decode_m2_optional_m1_value(
+            "tail fold root key",
+            fields[4],
+            _identity.RootFillKey,
+        ),
+        _operations._require_exact_int("tail fold prefix count", fields[5]),
+        _operations._decode_m2_bytes("tail fold prefix commitment", fields[6]),
+    )
+    if _encode_m2_tail_fold_input(decoded) != value:
+        raise ValueError("tail fold input is not canonical")
+    return decoded
+
+
+def _encode_m2_execution_state_component(state: object) -> list[object]:
+    """Encode every bounded execution-state member in frozen field order."""
+
+    if type(state) is not _position._M2ExecutionState:
+        raise TypeError("state must be exact _M2ExecutionState")
+    if not _position._m2_execution_state_is_authentic(state):
+        raise ValueError("execution state is not authentic")
+    return [
+        _M2_EXECUTION_STATE_TAG,
+        _operations._encode_m2_position_scope(state.scope),
+        state.raw_quantity,
+        _encode_m2_basis_authority(state.basis_authority),
+        _encode_m2_optional_exact_basis(state.cost_basis),
+        _encode_m2_optional_m1_value(state.basis_price_metadata),
+        None
+        if state.tail_fold_input is None
+        else _encode_m2_tail_fold_input(state.tail_fold_input),
+        _encode_m2_position_integrity(state.integrity_floor),
+        _encode_m2_position_integrity(state.integrity),
+        state.account_reconciliation_required,
+        state.reconciliation_transition_count,
+        _operations._encode_m2_bytes(state.reconciliation_transition_head),
+        state.root_count,
+        _operations._encode_m2_bytes(state.root_order_commitment),
+        _operations._encode_m2_bytes(state.head_ids_commitment),
+        _operations._encode_m2_bytes(state.root_heads_commitment),
+        _operations._encode_m2_bytes(state.seen_facts_commitment),
+        _operations._encode_m2_bytes(state.root_head_map_commitment),
+        _operations._encode_m2_bytes(state.seen_fact_map_commitment),
+        _operations._encode_m2_bytes(state.root_claim_map_commitment),
+        _operations._encode_m2_bytes(state.commitment),
+    ]
+
+
+def _decode_m2_execution_state_component(
+    value: object,
+) -> _position._M2ExecutionState:
+    """Decode and re-encode one exact bounded execution-state component."""
+
+    fields = _operations._require_m2_aggregate(value, _M2_EXECUTION_STATE_TAG, 20)
+    decoded = _position._new_m2_execution_state(
+        scope=_operations._decode_m2_position_scope(fields[0]),
+        raw_quantity=_operations._require_exact_int(
+            "execution state raw quantity", fields[1]
+        ),
+        basis_authority=_decode_m2_basis_authority(fields[2]),
+        cost_basis=_decode_m2_optional_exact_basis(fields[3]),
+        basis_price_metadata=_decode_m2_optional_m1_value(
+            "execution state basis price metadata",
+            fields[4],
+            _values.ReportedPrice,
+        ),
+        tail_fold_input=(
+            None if fields[5] is None else _decode_m2_tail_fold_input(fields[5])
+        ),
+        integrity_floor=_decode_m2_position_integrity(fields[6]),
+        integrity=_decode_m2_position_integrity(fields[7]),
+        account_reconciliation_required=_decode_m2_exact_bool(
+            "execution state reconciliation required", fields[8]
+        ),
+        reconciliation_transition_count=_operations._require_exact_int(
+            "execution state reconciliation transition count", fields[9]
+        ),
+        reconciliation_transition_head=_operations._decode_m2_bytes(
+            "execution state reconciliation transition head", fields[10]
+        ),
+        root_count=_operations._require_exact_int(
+            "execution state root count", fields[11]
+        ),
+        root_order_commitment=_operations._decode_m2_bytes(
+            "execution state root order commitment", fields[12]
+        ),
+        head_ids_commitment=_operations._decode_m2_bytes(
+            "execution state head ids commitment", fields[13]
+        ),
+        root_heads_commitment=_operations._decode_m2_bytes(
+            "execution state root heads commitment", fields[14]
+        ),
+        seen_facts_commitment=_operations._decode_m2_bytes(
+            "execution state seen facts commitment", fields[15]
+        ),
+        root_head_map_commitment=_operations._decode_m2_bytes(
+            "execution state root head map commitment", fields[16]
+        ),
+        seen_fact_map_commitment=_operations._decode_m2_bytes(
+            "execution state seen fact map commitment", fields[17]
+        ),
+        root_claim_map_commitment=_operations._decode_m2_bytes(
+            "execution state root claim map commitment", fields[18]
+        ),
+    )
+    retained_commitment = _operations._decode_m2_bytes(
+        "execution state commitment", fields[19]
+    )
+    if (
+        retained_commitment != decoded.commitment
+        or not _position._m2_execution_state_is_authentic(decoded)
+    ):
+        raise ValueError("execution state is not authentic")
+    if _encode_m2_execution_state_component(decoded) != value:
+        raise ValueError("execution state component is not canonical")
+    return decoded
 
 
 def _encode_m2_protection_checkpoint_component(

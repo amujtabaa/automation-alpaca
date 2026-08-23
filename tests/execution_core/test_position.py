@@ -28,6 +28,7 @@ from app.execution_core.identity import (
     SourceEventId,
     SymbolId,
 )
+from app.execution_core.persistence import checkpoint_codec
 from app.execution_core.position import ExecutionSnapshot, apply_broker_execution_fact
 from app.execution_core.values import (
     PriceScale,
@@ -309,6 +310,133 @@ def test_m2_execution_state_is_bounded_and_rejects_cross_state_proof() -> None:
             state,
             proof,
         )
+
+
+def test_m2_execution_checkpoint_component_round_trips_canonically() -> None:
+    state = position_module._m2_execution_state_from_snapshot(
+        _snapshot_after(
+            _fill("codec-fill-1", "codec-root-1"),
+            _fill("codec-fill-2", "codec-root-2"),
+        )
+    )
+    assert state.cost_basis is not None
+    assert state.basis_price_metadata is not None
+    assert state.tail_fold_input is not None
+
+    encoded = checkpoint_codec._encode_m2_execution_state_component(state)
+    decoded = checkpoint_codec._decode_m2_execution_state_component(encoded)
+
+    assert decoded == state
+    assert position_module._m2_execution_state_is_authentic(decoded)
+    assert checkpoint_codec._encode_m2_execution_state_component(decoded) == encoded
+    assert encoded == [
+        "m2.position.execution-state/v1",
+        checkpoint_codec._operations._encode_m2_position_scope(state.scope),
+        state.raw_quantity,
+        checkpoint_codec._encode_m2_basis_authority(state.basis_authority),
+        checkpoint_codec._encode_m2_optional_exact_basis(state.cost_basis),
+        checkpoint_codec._encode_m2_optional_m1_value(state.basis_price_metadata),
+        checkpoint_codec._encode_m2_tail_fold_input(state.tail_fold_input),
+        checkpoint_codec._encode_m2_position_integrity(state.integrity_floor),
+        checkpoint_codec._encode_m2_position_integrity(state.integrity),
+        state.account_reconciliation_required,
+        state.reconciliation_transition_count,
+        state.reconciliation_transition_head.hex(),
+        state.root_count,
+        state.root_order_commitment.hex(),
+        state.head_ids_commitment.hex(),
+        state.root_heads_commitment.hex(),
+        state.seen_facts_commitment.hex(),
+        state.root_head_map_commitment.hex(),
+        state.seen_fact_map_commitment.hex(),
+        state.root_claim_map_commitment.hex(),
+        state.commitment.hex(),
+    ]
+
+    tampered_commitment = [*encoded]
+    tampered_commitment[-1] = "00" * 32
+    with pytest.raises(ValueError, match="execution state is not authentic"):
+        checkpoint_codec._decode_m2_execution_state_component(tampered_commitment)
+
+    wrong_m1_value = checkpoint_codec._operations._encode_m2_m1_atom(Quantity(1))
+    malformed_members = (
+        (0, "wrong-execution-state-tag", "aggregate must have exact tag"),
+        (1, [], "PositionScope/v1 aggregate has the wrong member count"),
+        (2, True, "execution state raw quantity must be an exact integer"),
+        (3, ["wrong-basis-authority-tag", encoded[3][1]], "basis authority tag"),
+        (4, [], "m2.scalar.Fraction/v1 aggregate has the wrong member count"),
+        (5, wrong_m1_value, "basis price metadata must decode to ReportedPrice"),
+        (6, [], "tail-fold-input/v1 aggregate has the wrong member count"),
+        (7, ["wrong-integrity-tag", encoded[7][1]], "position integrity tag"),
+        (8, ["wrong-integrity-tag", encoded[8][1]], "position integrity tag"),
+        (9, 0, "reconciliation required must be exact bool"),
+        (10, True, "reconciliation transition count must be an exact integer"),
+        (11, 0, "reconciliation transition head must be exact text"),
+        (12, True, "execution state root count must be an exact integer"),
+        (13, 0, "root order commitment must be exact text"),
+        (14, 0, "head ids commitment must be exact text"),
+        (15, 0, "root heads commitment must be exact text"),
+        (16, 0, "seen facts commitment must be exact text"),
+        (17, 0, "root head map commitment must be exact text"),
+        (18, 0, "seen fact map commitment must be exact text"),
+        (19, 0, "root claim map commitment must be exact text"),
+        (20, 0, "execution state commitment must be exact text"),
+    )
+    assert {member_index for member_index, _, _ in malformed_members} == set(
+        range(len(encoded))
+    )
+    for member_index, replacement, message in malformed_members:
+        malformed = [*encoded]
+        malformed[member_index] = replacement
+        with pytest.raises((TypeError, ValueError), match=message):
+            checkpoint_codec._decode_m2_execution_state_component(malformed)
+
+
+def test_m2_tail_fold_checkpoint_component_round_trips_canonically() -> None:
+    state = position_module._m2_execution_state_from_snapshot(
+        _snapshot_after(
+            _fill("codec-tail-fill-1", "codec-tail-root-1"),
+            _fill("codec-tail-fill-2", "codec-tail-root-2"),
+        )
+    )
+    tail = state.tail_fold_input
+    assert tail is not None
+
+    encoded = checkpoint_codec._encode_m2_tail_fold_input(tail)
+    decoded = checkpoint_codec._decode_m2_tail_fold_input(encoded)
+
+    assert decoded == tail
+    assert checkpoint_codec._encode_m2_tail_fold_input(decoded) == encoded
+    assert encoded == [
+        "m2.position.tail-fold-input/v1",
+        tail.raw_quantity,
+        checkpoint_codec._operations._encode_m2_fraction(tail.cost_basis.value),
+        checkpoint_codec._encode_m2_optional_m1_value(tail.price_metadata),
+        checkpoint_codec._operations._encode_m2_position_scope(tail.position_scope),
+        checkpoint_codec._encode_m2_optional_m1_value(tail.tail_root_key),
+        tail.prefix_count,
+        tail.prefix_heads_commitment.hex(),
+    ]
+
+    wrong_m1_value = checkpoint_codec._operations._encode_m2_m1_atom(Quantity(1))
+    malformed_members = (
+        (0, "wrong-tail-fold-tag", "aggregate must have exact tag"),
+        (1, True, "tail fold raw quantity must be an exact integer"),
+        (2, [], "m2.scalar.Fraction/v1 aggregate has the wrong member count"),
+        (3, wrong_m1_value, "tail fold price metadata must decode to ReportedPrice"),
+        (4, [], "PositionScope/v1 aggregate has the wrong member count"),
+        (5, wrong_m1_value, "tail fold root key must decode to RootFillKey"),
+        (6, True, "tail fold prefix count must be an exact integer"),
+        (7, 0, "tail fold prefix commitment must be exact text"),
+    )
+    assert {member_index for member_index, _, _ in malformed_members} == set(
+        range(len(encoded))
+    )
+    for member_index, replacement, message in malformed_members:
+        malformed = [*encoded]
+        malformed[member_index] = replacement
+        with pytest.raises((TypeError, ValueError), match=message):
+            checkpoint_codec._decode_m2_tail_fold_input(malformed)
 
 
 def test_persistent_map_witness_covers_both_prefix_nonmembership_cases() -> None:
