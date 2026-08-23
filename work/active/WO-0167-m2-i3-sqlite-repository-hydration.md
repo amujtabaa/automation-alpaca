@@ -219,3 +219,40 @@ keys and recursive triggers enabled. No configured or in-memory database, DDL/sc
 migration, runtime composition, credential, broker/network call, order, M2-I4+ implementation,
 promotion, PR, or merge occurred. REV-0073 must independently re-derive the candidate; these author
 results are reproduction inputs, not an acceptance verdict.
+
+## REV-0073 BLOCK disposition and remediation R1 (2026-08-22)
+
+The independent result at `356297b042fc3b5ba00ccb36526717ffc5aa6dde` returned `BLOCK`
+(P0=1/P1=2). Two additional independent test/schema lenses reproduced adjacent defects. The result
+is preserved unchanged. Codex accepted every reproduced mechanism and corrected the owning
+boundaries in implementation commit `fe23558cee249906af8286e73f77ad498d6c24f1`, tree
+`3c5b40988c9a63b0db0631d46e7f53679020b9e9`.
+
+- Composite proof now rejects stale checkpoint/controller heads and unrelated root/effect/owner
+  chains; claim, acceptance-evidence, and closure coordinates are also exact.
+- Controller, effect, and cursor advances authenticate immutable retained authority before update;
+  a mismatched record is integrity failure while stale expected state remains conflict.
+- SQLite exceptions are authenticated against the exact already-loaded driver classes on the
+  failure path without a forbidden direct kernel import. Conflict probes compare retained canonical
+  content and cannot hide a broken-authority candidate.
+- Every query coordinate is exact-scalar validated, so booleans cannot alias integer identities.
+- Exact exports are literal ordered pins. The import probe uses an audit hook that detects writes
+  outside its scratch tree. Repository source is statically forbidden from beginning, committing,
+  or rolling back caller transactions, and retirement has positive/rollback proof.
+- Repository decoder provenance is pinned across all durable identity/value families. Composite
+  proof tests capture actual production SQL/EXPLAIN plans under 500-row same-family stress and
+  independently omit each of 21 required row families with every other member present.
+
+Failure-capable controls were demonstrated directly: codec-bypass, unkeyed composite-checkpoint,
+and repository-commit mutants each failed their exact selected test for the intended reason.
+
+| R1 evidence | Exact result |
+| --- | --- |
+| Focused repository/directness | 53 passed |
+| Codec/profile/value/schema/import integration | 426 passed, 0 failed/skipped in 39.193 seconds |
+| R2 conformance oracle | 61 passed |
+| Full `tests/execution_core` | 1,743 passed, 0 failed/skipped in 600.014 seconds |
+| Static/architecture | Ruff check/format; mypy `app/` 93 files; Import Linter 6 kept/0 broken |
+| Governance | install, version v0.9.2, ledger, PKL, disposition, exact scope, whitespace all passed |
+
+R1 awaits fresh `REV-0073/result-r1.md`. It is not accepted or closed by author evidence.
