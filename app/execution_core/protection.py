@@ -477,6 +477,7 @@ class MarketOccurrence:
             market_epoch=self.market_epoch,
             source_sequence=self.source_sequence,
             source_time=self.source_time,
+            evaluation_time=self.evaluation_time,
             kind=self.kind.value,
             best_bid=self.best_bid,
             best_ask=self.best_ask,
@@ -534,6 +535,47 @@ class PositionProtectionState:
 
     def __init_subclass__(cls, **kwargs: object) -> None:
         raise TypeError("PositionProtectionState cannot be subclassed")
+
+
+@_dataclass(frozen=True, slots=True)
+class _M2ProtectionCheckpoint:
+    """Exact durable member carrier for one fixed-size protection state."""
+
+    policy: ProtectionPolicy
+    mandate: ProtectionMandate
+    raw_quantity: int
+    execution_commitment: bytes
+    formula_available: bool
+    armed_hard_bail_trigger: _ReportedPrice | None
+    activation_price: _ReportedPrice | None
+    high_watermark: _ReportedPrice | None
+    trail: _ReportedPrice | None
+    waiting_buy_resolution: bool
+    commitment: bytes
+    cursor_ordinal: int
+    cursor_head: bytes
+    market_occurrence_epoch: int | None
+    market_committed_epoch: int | None
+    market_expected_epoch: int | None
+    market_source_sequence: int | None
+    market_source_time: int | None
+    market_evaluation_time: int | None
+    market_occurrence_identity: _MarketOccurrenceId | None
+    market_halted: bool
+    market_baseline_required: bool
+    market_exhausted: bool
+    market_last_primary: _ReportedPrice | None
+    hard_bid_identity: _MarketOccurrenceId | None
+    hard_bid_source_time: int | None
+    trade_identity: _MarketOccurrenceId | None
+    trade_source_time: int | None
+    trail_bid_identity: _MarketOccurrenceId | None
+    trail_bid_source_time: int | None
+    exit_provenance: bytes
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        del cls, kwargs
+        raise TypeError("_M2ProtectionCheckpoint cannot be subclassed")
 
 
 @_dataclass(frozen=True, slots=True, init=False)
@@ -2164,6 +2206,7 @@ def _market_occurrence_preimage(
     market_epoch: int,
     source_sequence: int | None,
     source_time: int,
+    evaluation_time: int,
     kind: str,
     best_bid: _ReportedPrice | None,
     best_ask: _ReportedPrice | None,
@@ -2197,6 +2240,7 @@ def _market_occurrence_preimage(
         b"\x01" if sequence_present else b"\x00",
         _u64_bytes(source_sequence) if source_sequence is not None else b"\x00" * 8,
         _u64_bytes(source_time),
+        _u64_bytes(evaluation_time),
         _encode_text(kind),
         _encode_reported_price(best_bid),
         _encode_reported_price(best_ask),
@@ -2454,6 +2498,51 @@ def _state_is_authentic(state: PositionProtectionState) -> bool:
         state._trail_bid_source_time,
         state._exit_provenance,
     )
+
+
+def _m2_position_protection_from_checkpoint(
+    checkpoint: _M2ProtectionCheckpoint,
+) -> PositionProtectionState:
+    """Rebuild one fixed-size protection state through its owning constructor."""
+
+    if type(checkpoint) is not _M2ProtectionCheckpoint:
+        raise TypeError("checkpoint must be exact _M2ProtectionCheckpoint")
+    state = _new_position_protection_state(
+        checkpoint.policy,
+        checkpoint.mandate,
+        checkpoint.raw_quantity,
+        checkpoint.execution_commitment,
+        checkpoint.formula_available,
+        checkpoint.armed_hard_bail_trigger,
+        checkpoint.activation_price,
+        checkpoint.high_watermark,
+        checkpoint.trail,
+        checkpoint.waiting_buy_resolution,
+        checkpoint.commitment,
+        checkpoint.cursor_ordinal,
+        checkpoint.cursor_head,
+        checkpoint.market_occurrence_epoch,
+        checkpoint.market_committed_epoch,
+        checkpoint.market_expected_epoch,
+        checkpoint.market_source_sequence,
+        checkpoint.market_source_time,
+        checkpoint.market_evaluation_time,
+        checkpoint.market_occurrence_identity,
+        checkpoint.market_halted,
+        checkpoint.market_baseline_required,
+        checkpoint.market_exhausted,
+        checkpoint.market_last_primary,
+        checkpoint.hard_bid_identity,
+        checkpoint.hard_bid_source_time,
+        checkpoint.trade_identity,
+        checkpoint.trade_source_time,
+        checkpoint.trail_bid_identity,
+        checkpoint.trail_bid_source_time,
+        checkpoint.exit_provenance,
+    )
+    if not _state_is_authentic(state):
+        raise ValueError("checkpoint protection state is not authentic")
+    return state
 
 
 def _execution_goal_commitment(goal: ExecutionGoal | None) -> bytes | None:
@@ -3661,6 +3750,7 @@ def _market_occurrence_is_authentic(occurrence: MarketOccurrence) -> bool:
                 market_epoch=occurrence.market_epoch,
                 source_sequence=occurrence.source_sequence,
                 source_time=occurrence.source_time,
+                evaluation_time=occurrence.evaluation_time,
                 kind=occurrence.kind.value,
                 best_bid=occurrence.best_bid,
                 best_ask=occurrence.best_ask,
@@ -4547,6 +4637,13 @@ def reduce_position_protection(
     )
 
 
+def _m2_reduce_position_protection(
+    state: PositionProtectionState,
+    projection: ProtectionVenueProjection,
+) -> ProtectionTransition:
+    return reduce_position_protection(state, projection)
+
+
 def reduce_position_protection_market(
     state: PositionProtectionState,
     projection: ProtectionVenueProjection,
@@ -4568,6 +4665,14 @@ def reduce_position_protection_market(
             None,
         )
     return _reduce_market_occurrence(state, projection, occurrence)
+
+
+def _m2_reduce_position_protection_market(
+    state: PositionProtectionState,
+    projection: ProtectionVenueProjection,
+    occurrence: MarketOccurrence,
+) -> ProtectionTransition:
+    return reduce_position_protection_market(state, projection, occurrence)
 
 
 def invalidate_position_protection_market(
@@ -4619,6 +4724,13 @@ def invalidate_position_protection_market(
         None,
         invalidation_alert,
     )
+
+
+def _m2_invalidate_position_protection_market(
+    state: PositionProtectionState,
+    projection: ProtectionVenueProjection,
+) -> ProtectionTransition:
+    return invalidate_position_protection_market(state, projection)
 
 
 __all__ = (

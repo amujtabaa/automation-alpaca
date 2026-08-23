@@ -28,6 +28,23 @@ import app.execution_core.persistence.operations as operations
 
 _KEY_PREFIX = b"execution-core/m2-semantic-key/v1\n"
 
+_EXPECTED_OPTIONAL_SHAPE_DOCUMENT_SHA256 = {
+    "observe-none": "b2832dcfc684fd557988f92f771dfdef6c92cc4c093b7bc2882185951f9ceeab",
+    "observe-closure-only": "e754b6338cd4e0558f524b4174e76f9ac008f18b488b6106de93f3eef542ae08",
+    "observe-evidence-only": "dad8ed66afb8c369ccf254c5a60eb868fc35fa1fc51a69367da67beed0e87a32",
+    "observe-both": "ab0f54f817892dc854e3bc6eb7a8a6df4a960f4a96c48441715b3e68d2b0f8d0",
+    "fill-absent": "2b3c27b55c48ace5661eba7713764facd9535581c373bb5f4e730350cffb4b0b",
+    "fill-populated": "f8210db4a1df9508071cdb449f2685a77ef0e07a3aacc4e515f160ec22c76a18",
+    "revision-absent": "6c4a401ebe0a20b8a3a29df46a9bc9a68dba013e425c88e87c401caf5ad36751",
+    "revision-populated": "cb696f652d77557bb43674d7eab780b7ce866716b9cc818670440c2c6a956090",
+    "market-best-sequenced": "99fad9074825f7e4dd1e8c3a07e054e4ff000169e6518826ba46f7c8e2711036",
+    "market-best-source-time": "da09f521b52c5a8fc3cb50583f15f8ad300708bfacd12bfe8356f1dea5f3a455",
+    "market-best-atr": "ec0bd5ae70a3642396dd47be28929685eaf654a0af3118418a4ee60bc1ceea93",
+    "market-best-structure": "1ad9d5ded7981d0b8fd0dca830b38a281eb333fed2bc49c21f042925cec3e58f",
+    "market-best-both-trails": "82d8293294333b656101288c11e25ab4e6ea08f57ff23fcf0cb19d3c169608c1",
+    "market-trade": "bbbe0bb27fef4e899649fd0af61cb26bb5b5f08993659c4c97cf0c747528c1bb",
+}
+
 
 def _operation_price(units: int = 100) -> values.ReportedPrice:
     scale = values.PriceScale(Decimal("0.01"))
@@ -479,6 +496,140 @@ def _operation_for_payload_tag(payload_tag: str) -> operations.M2Operation:
         if payload[0] == payload_tag:
             return operation
     raise AssertionError(f"no exact operation has payload tag {payload_tag}")
+
+
+def _all_legal_optional_shape_operations() -> tuple[
+    tuple[str, operations.M2Operation], ...
+]:
+    """Enumerate every independently legal optional representation once."""
+
+    observe = _operation_for_payload_tag("m1.venue.ObserveVenueStatus/v1")
+    fill = _operation_for_payload_tag("m1.recovery.RecordBrokerFillEvidence/v1")
+    revision = _operation_for_payload_tag("m1.recovery.RecordBrokerRevisionEvidence/v1")
+    market = _operation_for_payload_tag("m2.protection.MarketOccurrenceOperation/v1")
+    assert type(observe) is operations.VenueRecoveryOperation
+    assert type(observe.item) is venue.ObserveVenueStatus
+    assert type(fill) is operations.VenueRecoveryOperation
+    assert type(fill.item) is recovery.RecordBrokerFillEvidence
+    assert type(revision) is operations.VenueRecoveryOperation
+    assert type(revision.item) is recovery.RecordBrokerRevisionEvidence
+    assert type(market) is operations.MarketOccurrenceOperation
+
+    observed_none = replace(
+        observe.item,
+        input_id=identity.VenueInputId("optional-observe-none"),
+        observation_id=identity.VenueObservationId("optional-observe-none"),
+        closure_id=None,
+        evidence_reference=None,
+    )
+    observed_closure = replace(
+        observe.item,
+        input_id=identity.VenueInputId("optional-observe-closure"),
+        observation_id=identity.VenueObservationId("optional-observe-closure"),
+        evidence_reference=None,
+    )
+    observed_evidence = replace(
+        observe.item,
+        input_id=identity.VenueInputId("optional-observe-evidence"),
+        observation_id=identity.VenueObservationId("optional-observe-evidence"),
+        closure_id=None,
+    )
+    observed_both = replace(
+        observe.item,
+        input_id=identity.VenueInputId("optional-observe-both"),
+        observation_id=identity.VenueObservationId("optional-observe-both"),
+    )
+
+    fill_absent = replace(fill.item, closure_id=None, evidence_reference=None)
+    revision_absent = replace(
+        revision.item,
+        closure_id=None,
+        evidence_reference=None,
+    )
+
+    base_occurrence = market.occurrence
+    market_without_sequence = replace(base_occurrence, source_sequence=None)
+    market_with_atr = replace(
+        base_occurrence,
+        atr_distance=_operation_price(3),
+    )
+    market_with_structure = replace(
+        base_occurrence,
+        structure_trail=_operation_price(98),
+    )
+    market_with_both_trails = replace(
+        base_occurrence,
+        atr_distance=_operation_price(3),
+        structure_trail=_operation_price(98),
+    )
+    trade_occurrence = replace(
+        base_occurrence,
+        kind=protection.MarketKind.TRADE,
+        best_bid=None,
+        best_ask=None,
+        trade_price=_operation_price(100),
+        atr_distance=None,
+        structure_trail=None,
+    )
+
+    return (
+        (
+            "observe-none",
+            operations.VenueRecoveryOperation(observe.coordinates, observed_none),
+        ),
+        (
+            "observe-closure-only",
+            operations.VenueRecoveryOperation(observe.coordinates, observed_closure),
+        ),
+        (
+            "observe-evidence-only",
+            operations.VenueRecoveryOperation(observe.coordinates, observed_evidence),
+        ),
+        (
+            "observe-both",
+            operations.VenueRecoveryOperation(observe.coordinates, observed_both),
+        ),
+        (
+            "fill-absent",
+            operations.VenueRecoveryOperation(fill.coordinates, fill_absent),
+        ),
+        ("fill-populated", fill),
+        (
+            "revision-absent",
+            operations.VenueRecoveryOperation(revision.coordinates, revision_absent),
+        ),
+        ("revision-populated", revision),
+        ("market-best-sequenced", market),
+        (
+            "market-best-source-time",
+            operations.MarketOccurrenceOperation(
+                market.coordinates,
+                market_without_sequence,
+            ),
+        ),
+        (
+            "market-best-atr",
+            operations.MarketOccurrenceOperation(market.coordinates, market_with_atr),
+        ),
+        (
+            "market-best-structure",
+            operations.MarketOccurrenceOperation(
+                market.coordinates,
+                market_with_structure,
+            ),
+        ),
+        (
+            "market-best-both-trails",
+            operations.MarketOccurrenceOperation(
+                market.coordinates,
+                market_with_both_trails,
+            ),
+        ),
+        (
+            "market-trade",
+            operations.MarketOccurrenceOperation(market.coordinates, trade_occurrence),
+        ),
+    )
 
 
 @pytest.mark.parametrize(
@@ -1507,50 +1658,93 @@ def test_public_decode_rejects_noncanonical_atoms_enums_hex_and_fractions() -> N
             _decode_operation_document(mutant)
 
 
-def test_optional_payload_slots_are_proven_for_populated_and_absent_forms() -> None:
-    populated_operation = _operation_for_payload_tag("m1.venue.ObserveVenueStatus/v1")
-    assert type(populated_operation) is operations.VenueRecoveryOperation
-    assert type(populated_operation.item) is venue.ObserveVenueStatus
-    populated_document = _operation_document(populated_operation)
-    populated_payload = populated_document[4]
-    assert type(populated_payload) is list
-    assert populated_payload[-2] is not None
-    assert populated_payload[-1] is not None
+def test_every_legal_optional_payload_shape_has_a_known_answer_and_round_trip() -> None:
+    cases = _all_legal_optional_shape_operations()
+    actual_names = tuple(name for name, _ in cases)
 
-    swapped_populated_optionals = deepcopy(populated_document)
-    swapped_payload = swapped_populated_optionals[4]
-    assert type(swapped_payload) is list
-    swapped_payload[-2], swapped_payload[-1] = swapped_payload[-1], swapped_payload[-2]
-    with pytest.raises((TypeError, ValueError)):
-        _decode_operation_document(swapped_populated_optionals)
+    assert len(actual_names) == len(set(actual_names))
+    assert set(actual_names) == set(_EXPECTED_OPTIONAL_SHAPE_DOCUMENT_SHA256)
+    for name, operation in cases:
+        encoded = operations.encode_m2_operation(operation)
+        decoded = operations.decode_m2_operation(encoded)
 
-    _, _, passive_coordinates, _, _ = _operation_coordinates()
-    absent_operation = operations.VenueRecoveryOperation(
-        passive_coordinates,
-        venue.ObserveVenueStatus(
-            identity.VenueInputId("absent-status"),
-            populated_operation.item.leg_key,
-            venue.VenueAttemptState.WORKING,
-            identity.VenueObservationId("absent-status-observation"),
-            values.Quantity(31),
-        ),
+        assert (
+            sha256(encoded).hexdigest()
+            == _EXPECTED_OPTIONAL_SHAPE_DOCUMENT_SHA256[name]
+        )
+        assert decoded == operation
+        assert operations.encode_m2_operation(decoded) == encoded
+
+
+def test_optional_payload_slots_reject_incoherent_pairs_and_wrong_types() -> None:
+    legal = dict(_all_legal_optional_shape_operations())
+
+    observed_both = _operation_document(legal["observe-both"])
+    observed_payload = _require_wire_list(observed_both[4])
+    bad_observed_closure = deepcopy(observed_both)
+    bad_observed_evidence = deepcopy(observed_both)
+    _require_wire_list(bad_observed_closure[4])[-2] = deepcopy(observed_payload[-1])
+    _require_wire_list(bad_observed_evidence[4])[-1] = deepcopy(observed_payload[-2])
+
+    rejected: list[list[object]] = [bad_observed_closure, bad_observed_evidence]
+    for family in ("fill", "revision"):
+        absent = _operation_document(legal[f"{family}-absent"])
+        populated = _operation_document(legal[f"{family}-populated"])
+        absent_payload = _require_wire_list(absent[4])
+        populated_payload = _require_wire_list(populated[4])
+
+        missing_closure = deepcopy(populated)
+        missing_evidence = deepcopy(populated)
+        only_closure = deepcopy(absent)
+        only_evidence = deepcopy(absent)
+        _require_wire_list(missing_closure[4])[-2] = None
+        _require_wire_list(missing_evidence[4])[-1] = None
+        _require_wire_list(only_closure[4])[-2] = deepcopy(populated_payload[-2])
+        _require_wire_list(only_evidence[4])[-1] = deepcopy(populated_payload[-1])
+        assert absent_payload[-2:] == [None, None]
+        rejected.extend(
+            (missing_closure, missing_evidence, only_closure, only_evidence)
+        )
+
+    market_best = _operation_document(legal["market-best-both-trails"])
+    market_trade = _operation_document(legal["market-trade"])
+    best_payload = _require_wire_list(_require_wire_list(market_best[4])[1])
+    malformed_sequence = deepcopy(market_best)
+    malformed_bid = deepcopy(market_trade)
+    malformed_ask = deepcopy(market_trade)
+    malformed_trade = deepcopy(market_best)
+    malformed_atr = deepcopy(market_best)
+    malformed_structure = deepcopy(market_best)
+    _require_wire_list(_require_wire_list(malformed_sequence[4])[1])[6] = True
+    _require_wire_list(_require_wire_list(malformed_bid[4])[1])[10] = deepcopy(
+        best_payload[10]
     )
-    absent_document = _operation_document(absent_operation)
-    absent_payload = absent_document[4]
-    assert type(absent_payload) is list
-    assert absent_payload[-2:] == [None, None]
-    assert _decode_operation_document(absent_document) == absent_operation
+    _require_wire_list(_require_wire_list(malformed_ask[4])[1])[11] = deepcopy(
+        best_payload[11]
+    )
+    _require_wire_list(_require_wire_list(malformed_trade[4])[1])[12] = deepcopy(
+        best_payload[10]
+    )
+    _require_wire_list(_require_wire_list(malformed_atr[4])[1])[13] = deepcopy(
+        best_payload[1]
+    )
+    _require_wire_list(_require_wire_list(malformed_structure[4])[1])[14] = deepcopy(
+        best_payload[1]
+    )
+    rejected.extend(
+        (
+            malformed_sequence,
+            malformed_bid,
+            malformed_ask,
+            malformed_trade,
+            malformed_atr,
+            malformed_structure,
+        )
+    )
 
-    for payload_tag in (
-        "m1.recovery.RecordBrokerFillEvidence/v1",
-        "m1.recovery.RecordBrokerRevisionEvidence/v1",
-    ):
-        malformed_pair = _operation_document(_operation_for_payload_tag(payload_tag))
-        payload = malformed_pair[4]
-        assert type(payload) is list
-        payload[-2] = None
+    for document in rejected:
         with pytest.raises((TypeError, ValueError)):
-            _decode_operation_document(malformed_pair)
+            _decode_operation_document(document)
 
 
 def test_nested_protection_mandate_tamper_is_refused_by_owner_and_public_codec() -> (
@@ -1593,10 +1787,17 @@ def test_nested_protection_mandate_tamper_is_refused_by_owner_and_public_codec()
         operations.encode_m2_operation(operation)
 
 
-def test_market_occurrence_tamper_is_refused_by_wrapper_and_public_codec() -> None:
+@pytest.mark.parametrize(
+    ("attribute", "value"),
+    (("source_time", 102), ("evaluation_time", 102)),
+)
+def test_market_occurrence_tamper_is_refused_by_wrapper_and_public_codec(
+    attribute: str,
+    value: int,
+) -> None:
     operation = _operation_for_payload_tag("m2.protection.MarketOccurrenceOperation/v1")
     assert type(operation) is operations.MarketOccurrenceOperation
-    object.__setattr__(operation.occurrence, "source_time", 102)
+    object.__setattr__(operation.occurrence, attribute, value)
 
     with pytest.raises(ValueError, match="authentic market occurrence"):
         operations.MarketOccurrenceOperation(

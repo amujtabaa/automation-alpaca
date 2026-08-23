@@ -582,6 +582,7 @@ _LEGACY_PROTECTION_E2_CLASSES = {
     "AcquisitionProtectionRebaseProjection",
     "_AcquisitionPreemptionIntent",
     "_AcquisitionProtectionExitIntent",
+    "_M2ProtectionCheckpoint",
 }
 
 _LEGACY_PROTECTION_E2_FUNCTIONS = {
@@ -613,6 +614,10 @@ _LEGACY_PROTECTION_E2_FUNCTIONS = {
     "_project_acquisition_preemption_intent",
     "_project_acquisition_protection_exit_intent",
     "_project_protection_venue_owned",
+    "_m2_invalidate_position_protection_market",
+    "_m2_position_protection_from_checkpoint",
+    "_m2_reduce_position_protection",
+    "_m2_reduce_position_protection_market",
     "_protection_mandate_commitment",
     "_protection_mandate_is_authentic",
     "_protection_transition_is_authentic",

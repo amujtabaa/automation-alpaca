@@ -3454,6 +3454,7 @@ def _market_occurrence_validation_prefix(
         ("market_epoch", "self.market_epoch"),
         ("source_sequence", "self.source_sequence"),
         ("source_time", "self.source_time"),
+        ("evaluation_time", "self.evaluation_time"),
         ("kind", "self.kind.value"),
         ("best_bid", "self.best_bid"),
         ("best_ask", "self.best_ask"),
@@ -7332,7 +7333,10 @@ def test_market_identity_authenticity_binds_text_to_cached_bytes() -> None:
         projection,
         replace(occurrence, evaluation_time=occurrence.evaluation_time + 1),
     )
-    assert replay.disposition is disposition.EXACT_REPLAY
+    (alert,) = _required(module, "ProtectionAlert")
+    assert replay.disposition is disposition.APPLIED
+    assert replay.state._market_baseline_required is True
+    assert replay.critical_alert is alert.MARKET_BASELINE_REQUIRED
 
     forged_identity = copy(applied.state._market_occurrence_identity)
     object.__setattr__(forged_identity, "value", "ff" * 32)
@@ -8452,10 +8456,7 @@ def test_late_owned_buy_after_flat_restores_hard_bail_and_alert() -> None:
             module,
             recovered.state,
             late_projection,
-            replace(
-                replayed_occurrence,
-                evaluation_time=replayed_occurrence.evaluation_time + 100,
-            ),
+            replayed_occurrence,
         )
         assert replayed.disposition is expected_disposition
         assert replayed.state == recovered.state
@@ -9564,6 +9565,59 @@ def test_authentic_projection_rejects_changed_mandate_authority_and_scope() -> N
         )
 
 
+def test_m2_checkpoint_hydrator_rebuilds_only_an_authentic_protection_state() -> None:
+    module = _protection_module()
+    venue_transition = _owned_fill_transition(label="m2-checkpoint-hydrator")
+    _, projection, state = _start(module, venue_transition)
+
+    checkpoint = module._M2ProtectionCheckpoint(
+        state.policy,
+        state.mandate,
+        state.raw_quantity,
+        state.execution_commitment,
+        state.formula_available,
+        state.armed_hard_bail_trigger,
+        state.activation_price,
+        state.high_watermark,
+        state.trail,
+        state.waiting_buy_resolution,
+        state.commitment,
+        state._cursor_ordinal,
+        state._cursor_head,
+        state._market_occurrence_epoch,
+        state._market_committed_epoch,
+        state._market_expected_epoch,
+        state._market_source_sequence,
+        state._market_source_time,
+        state._market_evaluation_time,
+        state._market_occurrence_identity,
+        state._market_halted,
+        state._market_baseline_required,
+        state._market_exhausted,
+        state._market_last_primary,
+        state._hard_bid_identity,
+        state._hard_bid_source_time,
+        state._trade_identity,
+        state._trade_source_time,
+        state._trail_bid_identity,
+        state._trail_bid_source_time,
+        state._exit_provenance,
+    )
+    restored = module._m2_position_protection_from_checkpoint(checkpoint)
+
+    assert restored == state
+    assert module._state_is_authentic(restored)
+    assert module.reduce_position_protection(state, projection) == (
+        module._m2_reduce_position_protection(state, projection)
+    )
+    with pytest.raises(
+        ValueError, match="checkpoint protection state is not authentic"
+    ):
+        module._m2_position_protection_from_checkpoint(
+            replace(checkpoint, commitment=b"x" * 32)
+        )
+
+
 def test_formula_uses_fraction_then_one_upward_tick_conversion() -> None:
     module = _protection_module()
     venue_transition = _owned_fill_transition(quantity=4, units=100)
@@ -10531,7 +10585,7 @@ def test_trade_plus_distinct_bid_within_window_triggers_hard_bail() -> None:
 
 @pytest.mark.parametrize("sequence_mode", ["SEQUENCED", "SOURCE_TIME"])
 @pytest.mark.parametrize("first_kind", ["BEST_BID", "TRADE"])
-def test_changed_delivery_context_replay_is_exact_for_every_occurrence_form(
+def test_exact_replay_is_exact_for_every_occurrence_form(
     first_kind: str,
     sequence_mode: str,
 ) -> None:
@@ -10557,7 +10611,7 @@ def test_changed_delivery_context_replay_is_exact_for_every_occurrence_form(
         evaluation_time=104,
     )
     first = _reduce_market(module, state, projection, occurrence)
-    replay_occurrence = replace(occurrence, evaluation_time=105)
+    replay_occurrence = occurrence
     replay = _reduce_market(module, first.state, projection, replay_occurrence)
     disposition, policy = _required(
         module,
@@ -10826,7 +10880,7 @@ def test_trigger_ratchet_cannot_reuse_evidence_from_the_old_trigger() -> None:
         module,
         synced.state,
         _projection(module, higher, mandate),
-        replace(old_occurrence, evaluation_time=110),
+        old_occurrence,
     )
     (disposition,) = _required(module, "ProtectionDisposition")
     assert ratchet_replay.disposition is disposition.EXACT_REPLAY
@@ -11602,7 +11656,7 @@ def test_recovery_epoch_preserves_generation_global_coordinates_and_watermarks()
         module,
         regressed.state,
         projection,
-        replace(regressed_baseline_occurrence, evaluation_time=111),
+        regressed_baseline_occurrence,
     )
     assert corrected_same_coordinate.disposition is disposition.EXACT_REPLAY
     assert corrected_same_coordinate.state == regressed.state
@@ -14658,6 +14712,7 @@ def _literal_occurrence_preimage(
     market_epoch: int,
     source_sequence: int | None,
     source_time: int,
+    evaluation_time: int = 0,
     kind: str,
     best_bid: ReportedPrice | None,
     best_ask: ReportedPrice | None,
@@ -14667,7 +14722,6 @@ def _literal_occurrence_preimage(
     halted: bool,
     domain: bytes = _OCCURRENCE_DOMAIN,
     endian: str = "big",
-    include_evaluation_time: int | None = None,
     swap_part_indices: tuple[int, int] | None = None,
     domain_prefix_width: int = 4,
     part_prefix_width: int = 8,
@@ -14692,6 +14746,7 @@ def _literal_occurrence_preimage(
             else absent_sequence_payload
         ),
         source_time.to_bytes(8, endian),
+        evaluation_time.to_bytes(8, endian),
         _literal_encode_text(kind),
         _literal_encode_reported_price(best_bid),
         _literal_encode_reported_price(best_ask),
@@ -14700,8 +14755,6 @@ def _literal_occurrence_preimage(
         _literal_encode_reported_price(structure_trail),
         b"\x01" if halted else b"\x00",
     ]
-    if include_evaluation_time is not None:
-        parts.append(include_evaluation_time.to_bytes(8, endian))
     if swap_part_indices is not None:
         left, right = swap_part_indices
         parts[left], parts[right] = parts[right], parts[left]
@@ -14770,7 +14823,7 @@ def _literal_cursor_preimage(
     return _literal_pack_parts(_CURSOR_DOMAIN, *parts)
 
 
-_SEQUENCED_OCCURRENCE_PREIMAGE_HEX = (
+_MISSING_EVALUATION_TIME_SEQUENCED_OCCURRENCE_PREIMAGE_HEX = (
     "00000023657865637574696f6e2d636f72652f6d61726b65742d6f6363757272656e63652f7631000000000000001300"
     "0000000000000b7369702d7072696d617279000000000000007e00000020657865637574696f6e2d636f72652f706f73"
     "6974696f6e2d73636f70652f7631000000000000000e0000000000000006616c70616361000000000000000d00000000"
@@ -14784,7 +14837,7 @@ _SEQUENCED_OCCURRENCE_PREIMAGE_HEX = (
     "9ef794de421a13efa87be274fbaa9374838910b4aa0b4051fd3ccc7ef7890000000000000020ff749ef794de421a13ef"
     "a87be274fbaa9374838910b4aa0b4051fd3ccc7ef789000000000000000100"
 )
-_SOURCE_TIME_OCCURRENCE_PREIMAGE_HEX = (
+_MISSING_EVALUATION_TIME_SOURCE_TIME_OCCURRENCE_PREIMAGE_HEX = (
     "00000023657865637574696f6e2d636f72652f6d61726b65742d6f6363757272656e63652f7631000000000000001300"
     "0000000000000b7369702d7072696d617279000000000000007e00000020657865637574696f6e2d636f72652f706f73"
     "6974696f6e2d73636f70652f7631000000000000000e0000000000000006616c70616361000000000000000d00000000"
@@ -14798,7 +14851,7 @@ _SOURCE_TIME_OCCURRENCE_PREIMAGE_HEX = (
     "a555f8203fe03a16045a018e183545acb5e7a44ef4f0786d7e1194be60f70000000000000020e3020031fc165c1188e4"
     "8e795154d44bedbf772df76b1aed0f7b3dc3d6496d16000000000000000100"
 )
-_TRADE_OCCURRENCE_PREIMAGE_HEX = (
+_MISSING_EVALUATION_TIME_TRADE_OCCURRENCE_PREIMAGE_HEX = (
     "00000023657865637574696f6e2d636f72652f6d61726b65742d6f6363757272656e63652f7631000000000000001300"
     "0000000000000b7369702d7072696d617279000000000000007e00000020657865637574696f6e2d636f72652f706f73"
     "6974696f6e2d73636f70652f7631000000000000000e0000000000000006616c70616361000000000000000d00000000"
@@ -14812,6 +14865,51 @@ _TRADE_OCCURRENCE_PREIMAGE_HEX = (
     "de421a13efa87be274fbaa9374838910b4aa0b4051fd3ccc7ef7890000000000000020ff749ef794de421a13efa87be274"
     "fbaa9374838910b4aa0b4051fd3ccc7ef789000000000000000100"
 )
+# These frozen pre-fix vectors prove that omitting evaluation_time produces a
+# different occurrence commitment.
+_SEQUENCED_OCCURRENCE_PREIMAGE_HEX = (
+    "00000023657865637574696f6e2d636f72652f6d61726b65742d6f6363757272656e63652f76310000000000000013000000"
+    "000000000b7369702d7072696d617279000000000000007e00000020657865637574696f6e2d636f72652f706f736974696f"
+    "6e2d73636f70652f7631000000000000000e0000000000000006616c70616361000000000000000d00000000000000057061"
+    "7065720000000000000013000000000000000b6163636f756e742d303031000000000000000c00000000000000044141504c"
+    "0000000000000015000000000000000d73657373696f6e2d7274682d31000000000000002011111111111111111111111111"
+    "1111111111111111111111111111111111111100000000000000080000000000000000000000000000000101000000000000"
+    "0008000000000000000000000000000000080000000000000000000000000000000800000000000000110000000000000010"
+    "0000000000000008424553545f4249440000000000000020b7e19ab62a158aea307a7e8c5361922d3effcfb7161414f2430f"
+    "f180e5b155be00000000000000206b3ed3cdd0d94d0d276896b235600d24cb38bdb3d89c6a92b4b5b8a299a2a5d000000000"
+    "00000020ff749ef794de421a13efa87be274fbaa9374838910b4aa0b4051fd3ccc7ef7890000000000000020ff749ef794de"
+    "421a13efa87be274fbaa9374838910b4aa0b4051fd3ccc7ef7890000000000000020ff749ef794de421a13efa87be274fbaa"
+    "9374838910b4aa0b4051fd3ccc7ef789000000000000000100"
+)
+_SOURCE_TIME_OCCURRENCE_PREIMAGE_HEX = (
+    "00000023657865637574696f6e2d636f72652f6d61726b65742d6f6363757272656e63652f76310000000000000013000000"
+    "000000000b7369702d7072696d617279000000000000007e00000020657865637574696f6e2d636f72652f706f736974696f"
+    "6e2d73636f70652f7631000000000000000e0000000000000006616c70616361000000000000000d00000000000000057061"
+    "7065720000000000000013000000000000000b6163636f756e742d303031000000000000000c00000000000000044141504c"
+    "0000000000000015000000000000000d73657373696f6e2d7274682d31000000000000002022222222222222222222222222"
+    "2222222222222222222222222222222222222200000000000000080000000000000007000000000000000100000000000000"
+    "000800000000000000000000000000000008000000000000007b000000000000000800000000000000820000000000000010"
+    "0000000000000008424553545f4249440000000000000020bb3ca4fe9ce7f0f1031b178e8b298e52162dc490a61a786600be"
+    "b6fd65840b280000000000000020e850ca419ee475673cef8f2bc6ec0d365978e456d08620022e3f4e7152316a3100000000"
+    "00000020ff749ef794de421a13efa87be274fbaa9374838910b4aa0b4051fd3ccc7ef7890000000000000020fc95a555f820"
+    "3fe03a16045a018e183545acb5e7a44ef4f0786d7e1194be60f70000000000000020e3020031fc165c1188e48e795154d44b"
+    "edbf772df76b1aed0f7b3dc3d6496d16000000000000000100"
+)
+_TRADE_OCCURRENCE_PREIMAGE_HEX = (
+    "00000023657865637574696f6e2d636f72652f6d61726b65742d6f6363757272656e63652f76310000000000000013000000"
+    "000000000b7369702d7072696d617279000000000000007e00000020657865637574696f6e2d636f72652f706f736974696f"
+    "6e2d73636f70652f7631000000000000000e0000000000000006616c70616361000000000000000d00000000000000057061"
+    "7065720000000000000013000000000000000b6163636f756e742d303031000000000000000c00000000000000044141504c"
+    "0000000000000015000000000000000d73657373696f6e2d7274682d31000000000000002033333333333333333333333333"
+    "3333333333333333333333333333333333333300000000000000080000000000000009000000000000000101000000000000"
+    "0008000000000000000a000000000000000800000000000000c8000000000000000800000000000000cd000000000000000d"
+    "000000000000000554524144450000000000000020ff749ef794de421a13efa87be274fbaa9374838910b4aa0b4051fd3ccc"
+    "7ef7890000000000000020ff749ef794de421a13efa87be274fbaa9374838910b4aa0b4051fd3ccc7ef78900000000000000"
+    "2035b4409f58105137bcf0e4bd01a71c3ec81485fb2b2d1482f71a8be1116ee9a60000000000000020ff749ef794de421a13"
+    "efa87be274fbaa9374838910b4aa0b4051fd3ccc7ef7890000000000000020ff749ef794de421a13efa87be274fbaa937483"
+    "8910b4aa0b4051fd3ccc7ef789000000000000000100"
+)
+
 _ABSENT_CURSOR_PREIMAGE_HEX = (
     "0000002a657865637574696f6e2d636f72652f70726f74656374696f6e2d6d61726b65742d637572736f722f76310000"
     "000000000020111111111111111111111111111111111111111111111111111111111111111100000000000000010000"
@@ -14859,6 +14957,7 @@ def test_literal_occurrence_known_answer_oracle_is_failure_capable() -> None:
         market_epoch=0,
         source_sequence=0,
         source_time=0,
+        evaluation_time=17,
         kind="BEST_BID",
         best_bid=_price(100),
         best_ask=_price(101),
@@ -14875,6 +14974,7 @@ def test_literal_occurrence_known_answer_oracle_is_failure_capable() -> None:
         market_epoch=7,
         source_sequence=None,
         source_time=123,
+        evaluation_time=130,
         kind="BEST_BID",
         best_bid=_price(110),
         best_ask=_price(111),
@@ -14891,6 +14991,7 @@ def test_literal_occurrence_known_answer_oracle_is_failure_capable() -> None:
         market_epoch=9,
         source_sequence=10,
         source_time=200,
+        evaluation_time=205,
         kind="TRADE",
         best_bid=None,
         best_ask=None,
@@ -14903,13 +15004,22 @@ def test_literal_occurrence_known_answer_oracle_is_failure_capable() -> None:
     assert source_time == bytes.fromhex(_SOURCE_TIME_OCCURRENCE_PREIMAGE_HEX)
     assert trade == bytes.fromhex(_TRADE_OCCURRENCE_PREIMAGE_HEX)
     assert sha256(sequenced).hexdigest() == (
-        "75d3ede2c6cd8f01bc0096eb7bf66efc088815ff5a25b2f65c9403fd85a4992c"
+        "eff5f7e1e4ff4bdcf77411128d0081e069f8a6f6bd2abc5866b2058a214001bc"
     )
     assert sha256(source_time).hexdigest() == (
-        "5fd6cf1fc78dda1d26965a9579ab48668b2d6276d88f947d24ae623a631d310c"
+        "74169406fd4e376d3d1ac8b53d6be9b5ec10a9719ec000790dafbea017a98f60"
     )
     assert sha256(trade).hexdigest() == (
-        "4f45b5f91f633c4b2a72b5bd8b48da27159eb03907692e0b32ce0e132c6e5050"
+        "8545621a1cf26696a6f71ef0bdf95376432f75d26f1cd01096b4c2f6c7a72aff"
+    )
+    assert sequenced != bytes.fromhex(
+        _MISSING_EVALUATION_TIME_SEQUENCED_OCCURRENCE_PREIMAGE_HEX
+    )
+    assert source_time != bytes.fromhex(
+        _MISSING_EVALUATION_TIME_SOURCE_TIME_OCCURRENCE_PREIMAGE_HEX
+    )
+    assert trade != bytes.fromhex(
+        _MISSING_EVALUATION_TIME_TRADE_OCCURRENCE_PREIMAGE_HEX
     )
 
     sequenced_mutants = (
@@ -15013,7 +15123,7 @@ def test_literal_occurrence_known_answer_oracle_is_failure_capable() -> None:
             atr_distance=None,
             structure_trail=None,
             halted=False,
-            include_evaluation_time=5,
+            evaluation_time=18,
         ),
     )
     source_time_mutants = (
@@ -15083,6 +15193,7 @@ def test_literal_occurrence_identity_covers_every_immutable_field_only() -> None
         "market_epoch": 7,
         "source_sequence": 8,
         "source_time": 9,
+        "evaluation_time": 10,
         "kind": "BEST_BID",
         "best_bid": _price(100),
         "best_ask": _price(101),
@@ -15105,6 +15216,7 @@ def test_literal_occurrence_identity_covers_every_immutable_field_only() -> None
         {"market_epoch": 8},
         {"source_sequence": 9},
         {"source_time": 10},
+        {"evaluation_time": 11},
         {"kind": "TRADE"},
         {"best_bid": _price(99)},
         {"best_ask": _price(102)},
@@ -15118,9 +15230,6 @@ def test_literal_occurrence_identity_covers_every_immutable_field_only() -> None
         candidate.update(mutation)
         assert _literal_occurrence_preimage(**candidate) != canonical
 
-    with_evaluation_context = dict(base)
-    with_evaluation_context["include_evaluation_time"] = 10
-    assert _literal_occurrence_preimage(**with_evaluation_context) != canonical
     assert _literal_occurrence_preimage(**base) == canonical
 
 
@@ -15135,6 +15244,7 @@ def test_production_occurrence_preimage_matches_independent_known_answers() -> N
         market_epoch=0,
         source_sequence=0,
         source_time=0,
+        evaluation_time=17,
         kind="BEST_BID",
         best_bid=_price(100),
         best_ask=_price(101),
@@ -15151,6 +15261,7 @@ def test_production_occurrence_preimage_matches_independent_known_answers() -> N
         market_epoch=7,
         source_sequence=None,
         source_time=123,
+        evaluation_time=130,
         kind="BEST_BID",
         best_bid=_price(110),
         best_ask=_price(111),
@@ -15167,6 +15278,7 @@ def test_production_occurrence_preimage_matches_independent_known_answers() -> N
         market_epoch=9,
         source_sequence=10,
         source_time=200,
+        evaluation_time=205,
         kind="TRADE",
         best_bid=None,
         best_ask=None,
@@ -15200,7 +15312,7 @@ def test_production_occurrence_preimage_matches_independent_known_answers() -> N
                 source_id=source_type("sip-primary"),
                 session_id=session_type("session-rth-1"),
             ),
-            "75d3ede2c6cd8f01bc0096eb7bf66efc088815ff5a25b2f65c9403fd85a4992c",
+            "eff5f7e1e4ff4bdcf77411128d0081e069f8a6f6bd2abc5866b2058a214001bc",
         ),
         (
             _occurrence(
@@ -15218,7 +15330,7 @@ def test_production_occurrence_preimage_matches_independent_known_answers() -> N
                 source_id=source_type("sip-primary"),
                 session_id=session_type("session-rth-1"),
             ),
-            "5fd6cf1fc78dda1d26965a9579ab48668b2d6276d88f947d24ae623a631d310c",
+            "74169406fd4e376d3d1ac8b53d6be9b5ec10a9719ec000790dafbea017a98f60",
         ),
         (
             _occurrence(
@@ -15234,7 +15346,7 @@ def test_production_occurrence_preimage_matches_independent_known_answers() -> N
                 source_id=source_type("sip-primary"),
                 session_id=session_type("session-rth-1"),
             ),
-            "4f45b5f91f633c4b2a72b5bd8b48da27159eb03907692e0b32ce0e132c6e5050",
+            "8545621a1cf26696a6f71ef0bdf95376432f75d26f1cd01096b4c2f6c7a72aff",
         ),
     )
     for occurrence, expected_digest in constructor_cases:
@@ -15252,7 +15364,7 @@ def test_production_occurrence_preimage_matches_independent_known_answers() -> N
     assert len(helper_calls) == 1
 
 
-def test_production_occurrence_identity_is_immutable_field_sensitive_only() -> None:
+def test_production_occurrence_identity_is_immutable_field_sensitive() -> None:
     module = _protection_module()
     source_type, generation_type, session_type, symbol_type = _required(
         execution_core,
@@ -15271,9 +15383,9 @@ def test_production_occurrence_identity_is_immutable_field_sensitive_only() -> N
         evaluation_time=9,
         market_epoch=6,
     )
-    same_identity = _occurrence(
+    different_evaluation_time = _occurrence(
         module,
-        "identity-evaluation-context-only",
+        "identity-evaluation-time",
         bid=100,
         ask=101,
         sequence=7,
@@ -15281,7 +15393,7 @@ def test_production_occurrence_identity_is_immutable_field_sensitive_only() -> N
         evaluation_time=10,
         market_epoch=6,
     )
-    assert same_identity.occurrence_id == base.occurrence_id
+    assert different_evaluation_time.occurrence_id != base.occurrence_id
 
     variants = (
         _occurrence(
@@ -17751,9 +17863,7 @@ def test_fixed_mode_replay_conflict_and_advance_matrix(
     first_result = _reduce_market(module, state, projection, first)
     state = first_result.state
     candidate = first
-    if case == "immediate-replay":
-        candidate = replace(first, evaluation_time=2)
-    elif case == "non-last-replay":
+    if case == "non-last-replay":
         second = _routed_occurrence(
             module,
             mandate,
@@ -18003,10 +18113,11 @@ def test_context_denial_happens_after_irreversible_cursor_reservation(
             evaluation_time=(2 if case == "expired" else 11),
         )
         replay = _reduce_market(module, first.state, projection, corrected)
-        assert corrected.occurrence_id == occurrence.occurrence_id
-        assert replay.disposition is disposition.EXACT_REPLAY
-        assert replay.state == first.state
-        assert replay.critical_alert is None
+        assert corrected.occurrence_id != occurrence.occurrence_id
+        assert replay.disposition is disposition.APPLIED
+        assert replay.critical_alert is alert.MARKET_BASELINE_REQUIRED
+        assert replay.state._market_baseline_required is True
+        assert replay.state._market_occurrence_identity == occurrence.occurrence_id
     else:
         corrected = _routed_occurrence(
             module,
