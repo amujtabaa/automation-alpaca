@@ -9823,25 +9823,10 @@ def _m2_checkpoint_from_state(module: ModuleType, state: object) -> object:
     )
 
 
-def test_m2_protection_checkpoint_component_round_trips_canonically() -> None:
-    module = _protection_module()
-    venue_transition = _owned_fill_transition(label="m2-checkpoint-component")
-    _, _, state = _start(module, venue_transition)
-    checkpoint = _m2_checkpoint_from_state(module, state)
+def _expected_m2_protection_checkpoint_component(checkpoint: object) -> list[object]:
+    """Return every fixed wire member from one checkpoint in frozen order."""
 
-    encoded = checkpoint_codec._encode_m2_protection_checkpoint_component(checkpoint)
-    decoded = checkpoint_codec._decode_m2_protection_checkpoint_component(encoded)
-
-    assert decoded == checkpoint
-    assert module._m2_protection_checkpoint_is_authentic(decoded)
-    assert (
-        checkpoint_codec._encode_m2_protection_checkpoint_component(decoded) == encoded
-    )
-
-    # Keep the fixed owner-member order observable independently of the
-    # decoder's whole-checkpoint authenticity re-derivation.  Each source
-    # member appears exactly once at its frozen wire position.
-    assert encoded == [
+    return [
         "m2.protection.checkpoint/v1",
         checkpoint_codec._encode_m2_protection_policy(checkpoint.policy),
         checkpoint_codec._operations._encode_m2_protection_mandate(checkpoint.mandate),
@@ -9879,6 +9864,150 @@ def test_m2_protection_checkpoint_component_round_trips_canonically() -> None:
         checkpoint.trail_bid_source_time,
         checkpoint.exit_provenance.hex(),
     ]
+
+
+def _m2_checkpoint_states_with_all_optional_members(
+    module: ModuleType,
+) -> tuple[object, ...]:
+    """Reach every optional checkpoint member through ordinary reducers."""
+
+    fill = _owned_fill_transition(label="m2-checkpoint-populated")
+    mandate, _, baseline = _start(module, fill)
+    (initialize,) = _required(module, "initialize_position_protection")
+    pre_baseline = initialize(mandate, _projection(module, fill, mandate))
+    terminal, closed = _close_base_parent(fill)
+    closed_state, projection, _ = _sync_transitions(
+        module,
+        baseline,
+        mandate,
+        (terminal, closed),
+    )
+    trade = _reduce(
+        module,
+        closed_state,
+        projection,
+        _occurrence(
+            module,
+            "m2-checkpoint-trade",
+            kind="TRADE",
+            trade=90,
+            sequence=1,
+        ),
+    )
+    hard_bid = _reduce(
+        module,
+        closed_state,
+        projection,
+        _occurrence(
+            module,
+            "m2-checkpoint-hard-bid",
+            bid=90,
+            ask=91,
+            sequence=1,
+        ),
+    )
+    activated = _reduce(
+        module,
+        closed_state,
+        projection,
+        _occurrence(
+            module,
+            "m2-checkpoint-activate",
+            bid=120,
+            ask=121,
+            sequence=1,
+        ),
+    )
+    trail_bid = _reduce(
+        module,
+        activated.state,
+        projection,
+        _occurrence(
+            module,
+            "m2-checkpoint-trail-bid",
+            bid=110,
+            ask=111,
+            sequence=2,
+            source_time=106,
+            evaluation_time=110,
+        ),
+    )
+    return (
+        pre_baseline,
+        baseline,
+        trade.state,
+        hard_bid.state,
+        activated.state,
+        trail_bid.state,
+    )
+
+
+def test_m2_protection_checkpoint_component_round_trips_canonically() -> None:
+    module = _protection_module()
+    venue_transition = _owned_fill_transition(label="m2-checkpoint-component")
+    _, _, state = _start(module, venue_transition)
+    checkpoint = _m2_checkpoint_from_state(module, state)
+
+    encoded = checkpoint_codec._encode_m2_protection_checkpoint_component(checkpoint)
+    decoded = checkpoint_codec._decode_m2_protection_checkpoint_component(encoded)
+
+    assert decoded == checkpoint
+    assert module._m2_protection_checkpoint_is_authentic(decoded)
+    assert (
+        checkpoint_codec._encode_m2_protection_checkpoint_component(decoded) == encoded
+    )
+
+    # Keep the fixed owner-member order observable independently of the
+    # decoder's whole-checkpoint authenticity re-derivation.  The real reducer
+    # states populate every optional field at least once, so an encoder cannot
+    # silently replace a valid active-trail or corroboration member with None.
+    populated_states = _m2_checkpoint_states_with_all_optional_members(module)
+    populated_encodings = [
+        checkpoint_codec._encode_m2_protection_checkpoint_component(
+            _m2_checkpoint_from_state(module, populated_state)
+        )
+        for populated_state in populated_states
+    ]
+    optional_member_indexes = (
+        6,
+        7,
+        8,
+        9,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20,
+        24,
+        25,
+        26,
+        27,
+        28,
+        29,
+        30,
+    )
+    assert all(
+        any(populated[index] is not None for populated in populated_encodings)
+        for index in optional_member_indexes
+    )
+    for populated_state, populated_encoded in zip(
+        populated_states,
+        populated_encodings,
+        strict=True,
+    ):
+        populated_checkpoint = _m2_checkpoint_from_state(module, populated_state)
+        assert populated_encoded == _expected_m2_protection_checkpoint_component(
+            populated_checkpoint
+        )
+        assert (
+            checkpoint_codec._decode_m2_protection_checkpoint_component(
+                populated_encoded
+            )
+            == populated_checkpoint
+        )
+    assert encoded == _expected_m2_protection_checkpoint_component(checkpoint)
 
     tampered_commitment = [*encoded]
     tampered_commitment[11] = "00" * 32
