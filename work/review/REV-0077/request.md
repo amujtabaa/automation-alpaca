@@ -8,8 +8,8 @@ Verdict requested: **findings only — BLOCK | ACCEPT-WITH-CHANGES | ACCEPT**
 - Candidate tree: `c62085163e03b4206b180ce6da1cb5d346eead71`
 - R5 contract SHA-256: `ffa9fe8c794dbee0fc84d5bcf426eb071d03843cee30bffda3b584b05e739d39`
 - R5 SQL manifest SHA-256: `4e69ea8bfb077cf0cbbf844b94d58a817ee096e8f802822d0a266c72a5e84525`
-- R4 disposition base: `7ebc50d648eb5e2f73d445f9f98e81ff48b713ff`
-- Review diff: `7ebc50d648eb5e2f73d445f9f98e81ff48b713ff..2a096f100644191764b9d12403f3eb5fee823e39`
+- R4 disposition base: `7ebc50dd34ba77d7de3adfd01806846e5ed1739d`
+- Review diff: `7ebc50dd34ba77d7de3adfd01806846e5ed1739d..2a096f100644191764b9d12403f3eb5fee823e39`
 
 Verify every identity and every full commit:path import independently.
 
