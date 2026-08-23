@@ -409,6 +409,8 @@ def _canonical_mutator_loop(
     for node in body_nodes:
         if not isinstance(node, ast.Name) or node.id != "operation":
             continue
+        if _lexical_scope(node, parents) is not scope:
+            return None
         if isinstance(node.ctx, ast.Store):
             if node is loop.target.elts[0]:
                 continue
@@ -480,7 +482,7 @@ def _has_dynamic_namespace_recovery(
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             if any(
-                alias.name in {"app", "app.execution_core", "importlib"}
+                alias.name in {"app", "app.execution_core", "builtins", "importlib"}
                 for alias in node.names
             ):
                 return True
@@ -560,10 +562,19 @@ def _fixture_mutator_capability_violations(source: str) -> tuple[str, ...]:
     if _has_dynamic_namespace_recovery(tree, parents):
         violations.append("dynamic-namespace-recovery")
     apply_helper = _exact_function(tree, "_apply_mutator")
-    apply_route_exists = apply_helper is not None or _name_is_rebound(
-        tree,
-        "_apply_mutator",
-        permitted_function=apply_helper,
+    apply_route_exists = (
+        apply_helper is not None
+        or _name_is_rebound(
+            tree,
+            "_apply_mutator",
+            permitted_function=apply_helper,
+        )
+        or any(
+            isinstance(node, ast.Name)
+            and isinstance(node.ctx, ast.Load)
+            and node.id == "_apply_mutator"
+            for node in ast.walk(tree)
+        )
     )
     if apply_route_exists and (
         apply_helper is None or not _fixture_apply_helper_is_exact(tree)
@@ -619,10 +630,19 @@ def _fixture_helper_shape_is_exact(source: str, *, require_apply_helper: bool) -
     tree = ast.parse(source)
     parents = _parent_map(tree)
     apply_helper = _exact_function(tree, "_apply_mutator")
-    apply_route_exists = apply_helper is not None or _name_is_rebound(
-        tree,
-        "_apply_mutator",
-        permitted_function=apply_helper,
+    apply_route_exists = (
+        apply_helper is not None
+        or _name_is_rebound(
+            tree,
+            "_apply_mutator",
+            permitted_function=apply_helper,
+        )
+        or any(
+            isinstance(node, ast.Name)
+            and isinstance(node.ctx, ast.Load)
+            and node.id == "_apply_mutator"
+            for node in ast.walk(tree)
+        )
     )
     return (
         not _has_dynamic_namespace_recovery(tree, parents)
@@ -850,6 +870,32 @@ def _apply_mutator(connection, operation, *arguments):
     return operation(connection, *arguments)
 for operation, value in ((repository.store_scope, record),):
     _apply_mutator(connection, operation, value)
+""",
+        "unbound-apply-helper": """
+from app.execution_core.persistence import repository
+for operation, value in ((repository.store_scope, record),):
+    _apply_mutator(connection, operation, value)
+""",
+        "nested-operation-capture": """
+from app.execution_core.persistence import repository
+for operation, value in ((repository.store_scope, record),):
+    def deferred():
+        return operation(
+            connection, value, capability=_setup_write_capability(connection)
+        )
+deferred()
+""",
+        "aliased-builtins-globals": """
+import builtins as namespace
+from app.execution_core.persistence import repository
+other = namespace.globals()["repository"]
+other.store_scope(connection, record)
+""",
+        "aliased-builtins-vars": """
+import builtins as namespace
+from app.execution_core.persistence import repository
+other = namespace.vars()["repository"]
+other.store_scope(connection, record)
 """,
         "private-issuer": """
 from app.execution_core.persistence import repository
