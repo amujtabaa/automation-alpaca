@@ -170,6 +170,7 @@ allowed_paths:
   - app/execution_core/acquisition.py
   - app/execution_core/persistence/operations.py
   - app/execution_core/persistence/checkpoint_codec.py
+  - app/execution_core/persistence/unit_of_work.py
   - app/execution_core/persistence/records.py
   - app/execution_core/persistence/repository.py
   - app/execution_core/persistence/schema.py
@@ -232,6 +233,19 @@ REV-0074 R4 accepted the exact amendment candidate
 source still requires its normal RED/GREEN proof and fresh `REV-0075` implementation review. A
 separate narrowly scoped reviewer was interrupted before completing its row-by-row pass; it found
 no evidence-backed P0/P1/P2 finding and is not treated as an acceptance verdict.
+
+## R5 unit-of-work source-scope amendment checkpoint
+
+The frozen contract's sections 3 and 7 require the named package-private transaction owner
+`app/execution_core/persistence/unit_of_work.py`: it is the only permitted issuance site for the
+future runtime write capability and the finite row-write ordering table. The exact section-8
+source-path list inadvertently omitted that file. The R5 amendment adds that one pre-existing
+contractual path to the frozen contract and this active order; it adds no new operation, state,
+schema, runtime, or external authority.
+
+No `unit_of_work.py` source file may be created or changed until a fresh REV-0074 R5 documentation
+review accepts this exact scope amendment with P0=0/P1=0. The normal REV-0075 implementation
+review and the separate changed-DDL human gate remain required.
 
 ## Out of scope
 

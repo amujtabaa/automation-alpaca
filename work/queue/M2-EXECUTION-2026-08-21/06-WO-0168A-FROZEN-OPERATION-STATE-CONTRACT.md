@@ -558,6 +558,7 @@ source_paths:
   - app/execution_core/acquisition.py
   - app/execution_core/persistence/operations.py
   - app/execution_core/persistence/checkpoint_codec.py
+  - app/execution_core/persistence/unit_of_work.py
   - app/execution_core/persistence/records.py
   - app/execution_core/persistence/repository.py
   - app/execution_core/persistence/schema.py
