@@ -188,6 +188,7 @@ allowed_paths:
   - tests/execution_core/test_authority.py
   - tests/execution_core/test_protection.py
   - tests/execution_core/test_acquisition.py
+  - tests/execution_core/test_import_boundary.py
   - work/queue/M2-EXECUTION-2026-08-21/05-POST-I3-PREFLIGHT-AND-M2-COMPLETION-MAP.md
   - work/queue/M2-EXECUTION-2026-08-21/06-WO-0168A-FROZEN-OPERATION-STATE-CONTRACT.md
   - work/active/WO-0168a-m2-i3-5-runtime-state-checkpoint.md
@@ -253,6 +254,20 @@ REV-0074 R5 accepted the exact source-scope amendment candidate
 `result-r5.md`. The exact contractually required `unit_of_work.py` path is now usable only for its
 finite capability issuance and row-write responsibilities. This acceptance does not relax the
 normal REV-0075 implementation review or the changed-DDL human gate.
+
+## R6 import-boundary test-scope amendment checkpoint
+
+The accepted M2 requirement that public protection reducers delegate to their shared private
+kernels reveals a mismatch in the existing M1 legacy AST oracle: it removes the new kernel bodies
+and then misclassifies the required public-to-kernel calls as unresolved. The frozen companion
+contract's R6 amendment adds only the existing
+`tests/execution_core/test_import_boundary.py` path so that the oracle can restore the exact
+extracted public body in its legacy view and pin that direction. It adds no source path, operation,
+schema, persistence authority, DDL execution, runtime composition, or safety relaxation.
+
+No change to that test file may be made until a fresh REV-0074 R6 documentation review accepts
+this exact amendment with `P0=0/P1=0`. The normal REV-0075 implementation review and changed-DDL
+human gate remain independent.
 
 ## Out of scope
 

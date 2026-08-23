@@ -582,7 +582,25 @@ test_paths:
   - tests/execution_core/test_authority.py
   - tests/execution_core/test_protection.py
   - tests/execution_core/test_acquisition.py
+  - tests/execution_core/test_import_boundary.py
 ```
+
+### R6 import-boundary test-scope amendment
+
+The existing M1 import-boundary oracle reconstructs a retained legacy view of
+`protection.py`.  The contractually required M2 direction is now public reducer
+to shared package-private kernel, which is a semantics-preserving extraction of
+the retained public body.  The oracle must therefore model that extraction when
+it reconstructs its legacy view, rather than treating the required kernel as an
+unresolved external call.  This amendment adds only the existing
+`tests/execution_core/test_import_boundary.py` path so that exact legacy-model
+correction and its failure-capable pin can be made.  It adds no source path,
+operation, state member, schema family, persistence authority, DDL execution,
+runtime composition, or safety relaxation.
+
+No change to that test path is permitted until a fresh REV-0074 R6
+documentation review accepts this exact amendment with P0=0/P1=0.  The normal
+REV-0075 implementation review and changed-DDL human gate remain independent.
 
 Governance paths are the queue/active/completed WO-0168a file, this frozen contract, the additive
 post-I3 map, `work/ledger.jsonl`, and `work/review/REV-0074/**` plus the separately assigned
