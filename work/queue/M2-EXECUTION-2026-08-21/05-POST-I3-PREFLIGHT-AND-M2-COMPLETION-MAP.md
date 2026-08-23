@@ -39,6 +39,10 @@ R1 preserved one adjacent P1: primary input identity could not substitute for qu
 alternate semantic-key history. The R2 candidate adds one exact immutable semantic-key family and
 owner-proof mapping; source remains held pending fresh acceptance.
 
+R2 preserved one narrower P1: key bytes and collision coordinates were not yet canonical. The R3
+candidate freezes their byte grammar, coordinate domains, known answers, and exact schema indexes;
+source remains held pending fresh acceptance.
+
 ## Remaining serial chain
 
 | Order | State after this preflight candidate | Purpose | Exit required before successor |

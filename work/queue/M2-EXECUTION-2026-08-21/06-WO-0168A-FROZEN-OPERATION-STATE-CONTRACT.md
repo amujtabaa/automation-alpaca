@@ -57,7 +57,9 @@ __all__ = (
     "VenueOperationCoordinates",
     "VenueRecoveryOperation",
     "decode_m2_operation",
+    "decode_m2_semantic_key",
     "encode_m2_operation",
+    "encode_m2_semantic_key",
 )
 ```
 
@@ -155,6 +157,52 @@ would acquire it; a refused input cannot consume a semantic identity.
 Broker-fact primary identity, dispatch claim effect/occurrence identity, request/client-order
 identity, acquisition generation/routes, and market occurrence identity already have exact unique
 authority in `durable_input` or accepted M2-I2 rows and are not duplicated as semantic keys.
+
+### 2.5 Semantic-key byte and collision-domain contract
+
+Semantic keys use this exact grammar, separate from the document kinds in section 5:
+
+```text
+key = ASCII("execution-core/m2-semantic-key/v1\n")
+      || kind-octet || uint64-be(json-byte-length) || canonical-json-utf8
+```
+
+Canonical JSON uses section 5's settings and is exactly
+`[1, KIND_NAME, COORDINATES, SOURCE]`. Kind octets are `0x01` through `0x08` in the enum order in
+section 2.2. Venue-kind coordinates are exactly `[execution_profile_id]`; they intentionally span
+application generations and sessions for the same immutable account/profile authority. Authority-
+kind coordinates are exactly `[application_generation_id.value, execution_profile_id, scope_id]`;
+session, acquisition generation, market profile, and stream are payload/current-proof checks but
+do not create a fresh one-use collision domain.
+
+Exact source arrays are:
+
+- command: `["venue-semantic-digest", lowercase_hex(_semantic_input_key(item))]`;
+- execution/broker fact: `["execution-fact-key", broker, environment, account, source_event_id]`;
+- coverage root: `["root-fill-key", broker, environment, account, root_fill_id]`;
+- coverage interval: `["coverage-interval", broker, environment, account, order_id, prior, resulting]`;
+- query/manual/grant: respectively `["query-claim-id", value]`,
+  `["manual-flatten-id", value]`, and `["emergency-grant-id", value]`.
+
+All identity strings are the exact owning M1 `.value`; integers are exact JSON integers. Decode
+checks kind-specific array length/types, re-encodes, and byte-compares. Repository code accepts no
+other bytes. For fixture identities `ep`, `app`, scope `7`, single-letter M1 components, and an all-
+zero venue semantic digest, the exact canonical JSON payload and complete-key SHA-256 known answers
+are:
+
+| Kind | Canonical JSON UTF-8 | Bytes | Complete-key SHA-256 |
+| --- | --- | ---: | --- |
+| `VENUE_COMMAND_V2` | `[1,"VENUE_COMMAND_V2",["ep"],["venue-semantic-digest","0000000000000000000000000000000000000000000000000000000000000000"]]` | 122 | `1843bf3067f4b195fedfc5f91f3e16eb2709d030dee8df7501057e1ab96faa52` |
+| `VENUE_EXECUTION_FACT_V1` | `[1,"VENUE_EXECUTION_FACT_V1",["ep"],["execution-fact-key","b","e","a","s"]]` | 75 | `156419b82505dabe31bc5c20c5cd6db14eec7656039af3069e868a938ef52a03` |
+| `VENUE_COVERAGE_ROOT_V1` | `[1,"VENUE_COVERAGE_ROOT_V1",["ep"],["root-fill-key","b","e","a","r"]]` | 69 | `450a3e32afee6722f0eb8b37fd11be884ee2fc491a5324e032b4f5f0bbe7afc6` |
+| `VENUE_COVERAGE_INTERVAL_V1` | `[1,"VENUE_COVERAGE_INTERVAL_V1",["ep"],["coverage-interval","b","e","a","o",0,1]]` | 81 | `1691d21d732c6b202ee02a1fc0d271091c99ffa325dcd373bb830cf98d93b7bc` |
+| `VENUE_BROKER_FACT_V1` | `[1,"VENUE_BROKER_FACT_V1",["ep"],["execution-fact-key","b","e","a","s"]]` | 72 | `666308088204232ad04268ca34e07b8f256ab0b8990875756542fde18a59b4d5` |
+| `AUTHORITY_QUERY_CLAIM_V1` | `[1,"AUTHORITY_QUERY_CLAIM_V1",["app","ep",7],["query-claim-id","q"]]` | 68 | `2f9b20479eb5e93934f56c5ec3e026c732d747d12f1692a185102bf740aa05f3` |
+| `AUTHORITY_MANUAL_FLATTEN_V1` | `[1,"AUTHORITY_MANUAL_FLATTEN_V1",["app","ep",7],["manual-flatten-id","m"]]` | 74 | `9e83b189cecd3c6dda3bfc422ee8ac66a71acca705829bbba220fd1bdbb527ff` |
+| `AUTHORITY_EMERGENCY_GRANT_CONSUMPTION_V1` | `[1,"AUTHORITY_EMERGENCY_GRANT_CONSUMPTION_V1",["app","ep",7],["emergency-grant-id","g"]]` | 88 | `b1b571b9462e44a139c62a1e8ae93d3c6c104b78f83db3416b9e916727aabce4` |
+
+The byte count column is the JSON payload length; the complete key also contains the fixed prefix,
+kind octet, and eight-byte length.
 
 ## 3. Finite operation-to-reducer-to-write matrix
 
@@ -337,6 +385,22 @@ trigger semantics except the schema version/catalog identity and adds exactly th
 | `decision_receipt` | append-only receipt bytes+digest and exact input correlation; explanatory only |
 | `durable_input_outcome` | one terminal owner-domain/disposition/result digest/checkpoint reference plus mandatory receipt FK |
 | `broker_outbox` | immutable post-commit effect/dispatch-claim payload and committed sequence; no external-success state |
+
+`durable_input_semantic_key` has exactly these ordered columns: `key_kind`,
+`key_application_generation_id` (nullable only for venue kinds), `execution_profile_id`,
+`key_scope_id` (nullable only for venue kinds), `canonical_key_bytes`, `key_sha256`,
+`input_application_generation_id`, `input_domain`, `input_identity_sha256`, and
+`created_ordinal`. Venue rows require both nullable key coordinates to be null; authority rows
+require both non-null. Two partial unique indexes freeze the collision domains exactly:
+
+1. venue: `(execution_profile_id, key_kind, canonical_key_bytes)` for venue kinds; and
+2. authority: `(key_application_generation_id, execution_profile_id, key_scope_id, key_kind,
+   canonical_key_bytes)` for authority kinds.
+
+`key_sha256` is lookup acceleration/integrity evidence, never uniqueness authority. The row has an
+exact composite FK to its owning `durable_input`, immutable insert ordinal, and no update/delete
+route. `DurableInputSemanticKeyRecord` exposes those ten columns in that order and re-derives the
+kind, coordinates, bytes, and digest before repository use.
 
 Required uniqueness, immutable-byte triggers, coordinate/profile FKs, monotonic checkpoint/outbox
 ordinals, and no-update/no-delete rules are part of the DDL. An outcome cannot exist without its
