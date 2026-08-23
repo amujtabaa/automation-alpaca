@@ -35,7 +35,7 @@ Verdict: **BLOCK**
 
 Field census independently passed: all **57/20/13** source fields were classified exactly once with no missing names. Candidate/tree identity matched, the review diff contains no `app/` or `tests/` changes, and no SQLite or database-bearing command was run.
 
-P0: 1  
-P1: 3  
-P2: 0  
+P0: 1
+P1: 3
+P2: 0
 Unverified: none within the normative documentation-only R5 scope.
