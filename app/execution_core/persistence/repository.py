@@ -99,10 +99,7 @@ def _insert(
             caught,
             conflict_trigger_messages=conflict_trigger_messages,
         )
-        if (
-            classified.kind is _records.RepositoryOutcomeKind.INTEGRITY_FAILURE
-            and conflict_probe is not None
-        ):
+        if conflict_probe is not None:
             probe_sql, probe_parameters, retained_matches = conflict_probe
             try:
                 retained = connection.execute(
@@ -111,8 +108,12 @@ def _insert(
                 ).fetchone()
             except Exception as probe_failure:
                 return _classify_sqlite_failure(probe_failure)
-            if retained is not None and retained_matches(tuple(retained), parameters):
-                return _outcome(_records.RepositoryOutcomeKind.CONFLICT)
+            if retained is not None:
+                if retained_matches(tuple(retained), parameters):
+                    return _outcome(_records.RepositoryOutcomeKind.CONFLICT)
+                return _integrity()
+            if classified.kind is _records.RepositoryOutcomeKind.CONFLICT:
+                return _integrity()
         return classified
     return _outcome(_records.RepositoryOutcomeKind.APPLIED)
 
@@ -183,6 +184,34 @@ def _load(
     return _select_one_unchecked(connection, sql, parameters, build)
 
 
+def _load_int_key(
+    connection: _SQLiteConnectionProtocol,
+    sql: str,
+    key: object,
+    build: _Callable[[tuple[_Any, ...]], _RecordT],
+) -> _records.RepositoryOutcome[_RecordT]:
+    _verify_schema_connection(connection)
+    try:
+        exact_key = _exact_int(key)
+    except TypeError:
+        return _integrity()
+    return _select_one_unchecked(connection, sql, (exact_key,), build)
+
+
+def _load_text_key(
+    connection: _SQLiteConnectionProtocol,
+    sql: str,
+    key: object,
+    build: _Callable[[tuple[_Any, ...]], _RecordT],
+) -> _records.RepositoryOutcome[_RecordT]:
+    _verify_schema_connection(connection)
+    try:
+        exact_key = _exact_text(key)
+    except TypeError:
+        return _integrity()
+    return _select_one_unchecked(connection, sql, (exact_key,), build)
+
+
 def _exact_int(value: object) -> int:
     if type(value) is not int:
         raise TypeError("SQLite integer coordinate is not an exact integer")
@@ -216,7 +245,7 @@ def _exact_bytes(value: object) -> bytes:
 def _query_parameters(parameters: tuple[_Any, ...]) -> tuple[_Any, ...]:
     normalized: list[_Any] = []
     for value in parameters:
-        if value is None or type(value) in (int, str, bytes, float):
+        if value is None or type(value) in (int, str, bytes):
             normalized.append(value)
             continue
         raise TypeError("SQLite query coordinate has a non-exact scalar type")
@@ -494,11 +523,11 @@ def load_execution_profile(
     connection: _SQLiteConnectionProtocol,
     connection_profile_id: str,
 ) -> _records.RepositoryOutcome[_profiles.ExecutionConnectionProfile]:
-    return _load(
+    return _load_text_key(
         connection,
         f"SELECT {_EXECUTION_PROFILE_COLUMNS} FROM execution_connection_profile"
         " WHERE connection_profile_id = ?",
-        (connection_profile_id,),
+        connection_profile_id,
         _build_execution_profile,
     )
 
@@ -549,11 +578,11 @@ def load_market_source_profile(
     connection: _SQLiteConnectionProtocol,
     market_source_profile_id: str,
 ) -> _records.RepositoryOutcome[_profiles.MarketDataSourceProfile]:
-    return _load(
+    return _load_text_key(
         connection,
         f"SELECT {_MARKET_PROFILE_COLUMNS} FROM market_data_source_profile"
         " WHERE market_source_profile_id = ?",
-        (market_source_profile_id,),
+        market_source_profile_id,
         _build_market_profile,
     )
 
@@ -646,10 +675,10 @@ def load_scope(
     connection: _SQLiteConnectionProtocol,
     scope_id: int,
 ) -> _records.RepositoryOutcome[_records.ScopeRecord]:
-    return _load(
+    return _load_int_key(
         connection,
         f"SELECT {_SCOPE_COLUMNS} FROM acquisition_scope WHERE scope_id = ?",
-        (scope_id,),
+        scope_id,
         _build_scope,
     )
 
@@ -935,10 +964,10 @@ def load_symbol_controller(
     connection: _SQLiteConnectionProtocol,
     scope_id: int,
 ) -> _records.RepositoryOutcome[_records.SymbolControllerRecord]:
-    return _load(
+    return _load_int_key(
         connection,
         f"SELECT {_CONTROLLER_COLUMNS} FROM symbol_controller WHERE scope_id = ?",
-        (scope_id,),
+        scope_id,
         _build_controller,
     )
 
@@ -1035,10 +1064,10 @@ def load_root_fill(
     connection: _SQLiteConnectionProtocol,
     root_fill_key_id: int,
 ) -> _records.RepositoryOutcome[_records.RootFillRecord]:
-    return _load(
+    return _load_int_key(
         connection,
         f"SELECT {_ROOT_FILL_COLUMNS} FROM root_fill WHERE root_fill_key_id = ?",
-        (root_fill_key_id,),
+        root_fill_key_id,
         _build_root_fill,
     )
 
@@ -1164,10 +1193,10 @@ def load_execution_fact(
     connection: _SQLiteConnectionProtocol,
     fact_id: int,
 ) -> _records.RepositoryOutcome[_records.ExecutionFactRecord]:
-    return _load(
+    return _load_int_key(
         connection,
         f"SELECT {_EXECUTION_FACT_COLUMNS} FROM execution_fact WHERE fact_id = ?",
-        (fact_id,),
+        fact_id,
         _build_execution_fact,
     )
 
@@ -1187,11 +1216,11 @@ def load_execution_fact_head(
     connection: _SQLiteConnectionProtocol,
     root_fill_key_id: int,
 ) -> _records.RepositoryOutcome[_records.ExecutionFactHeadRecord]:
-    return _load(
+    return _load_int_key(
         connection,
         f"SELECT {_FACT_HEAD_COLUMNS} FROM execution_fact_head"
         " WHERE root_fill_key_id = ?",
-        (root_fill_key_id,),
+        root_fill_key_id,
         _build_fact_head,
     )
 
@@ -1388,10 +1417,10 @@ def load_venue_effect(
     connection: _SQLiteConnectionProtocol,
     effect_id: int,
 ) -> _records.RepositoryOutcome[_records.VenueEffectRecord]:
-    return _load(
+    return _load_int_key(
         connection,
         f"SELECT {_EFFECT_COLUMNS} FROM venue_effect WHERE effect_id = ?",
-        (effect_id,),
+        effect_id,
         _build_effect,
     )
 
@@ -1452,16 +1481,17 @@ def load_venue_identity_owner(
     execution_profile_id: str,
     owner_id: _identity.OrderId,
 ) -> _records.RepositoryOutcome[_records.VenueIdentityOwnerRecord]:
+    _verify_schema_connection(connection)
     try:
+        profile_key = _exact_text(execution_profile_id)
         owner_text = _identity_text(owner_id, _identity.OrderId, "order_id")
     except (TypeError, ValueError):
-        _verify_schema_connection(connection)
         return _integrity()
-    return _load(
+    return _select_one_unchecked(
         connection,
         f"SELECT {_OWNER_COLUMNS} FROM venue_identity_owner"
         " WHERE execution_profile_id = ? AND owner_external = ?",
-        (execution_profile_id, owner_text),
+        (profile_key, owner_text),
         _build_owner,
     )
 
@@ -1515,11 +1545,11 @@ def load_acquisition_root_route(
     connection: _SQLiteConnectionProtocol,
     root_fill_key_id: int,
 ) -> _records.RepositoryOutcome[_records.AcquisitionRootRouteRecord]:
-    return _load(
+    return _load_int_key(
         connection,
         f"SELECT {_ROUTE_COLUMNS} FROM acquisition_root_route"
         " WHERE root_fill_key_id = ?",
-        (root_fill_key_id,),
+        root_fill_key_id,
         _build_route,
     )
 
@@ -1575,10 +1605,10 @@ def load_dispatch_claim(
     connection: _SQLiteConnectionProtocol,
     claim_id: int,
 ) -> _records.RepositoryOutcome[_records.DispatchClaimRecord]:
-    return _load(
+    return _load_int_key(
         connection,
         f"SELECT {_CLAIM_COLUMNS} FROM dispatch_claim WHERE claim_id = ?",
-        (claim_id,),
+        claim_id,
         _build_claim,
     )
 
@@ -1609,11 +1639,11 @@ def load_acceptance_set(
     connection: _SQLiteConnectionProtocol,
     acceptance_set_id: int,
 ) -> _records.RepositoryOutcome[_records.AcceptanceSetRecord]:
-    return _load(
+    return _load_int_key(
         connection,
         f"SELECT {_ACCEPTANCE_SET_COLUMNS} FROM acceptance_set"
         " WHERE acceptance_set_id = ?",
-        (acceptance_set_id,),
+        acceptance_set_id,
         _build_acceptance_set,
     )
 
@@ -1678,10 +1708,10 @@ def load_acceptance_evidence(
     connection: _SQLiteConnectionProtocol,
     evidence_id: int,
 ) -> _records.RepositoryOutcome[_records.AcceptanceEvidenceRecord]:
-    return _load(
+    return _load_int_key(
         connection,
         f"SELECT {_EVIDENCE_COLUMNS} FROM acceptance_evidence WHERE evidence_id = ?",
-        (evidence_id,),
+        evidence_id,
         _build_evidence,
     )
 
@@ -1729,17 +1759,18 @@ def load_closure_head(
     scope_id: int,
     owner_id: _identity.OrderId,
 ) -> _records.RepositoryOutcome[_records.ClosureChainRecord]:
+    _verify_schema_connection(connection)
     try:
+        scope_key = _exact_int(scope_id)
         owner_text = _identity_text(owner_id, _identity.OrderId, "order_id")
     except (TypeError, ValueError):
-        _verify_schema_connection(connection)
         return _integrity()
-    return _load(
+    return _select_one_unchecked(
         connection,
         f"SELECT {_CLOSURE_COLUMNS} FROM closure_chain"
         " WHERE scope_id = ? AND owner_external = ?"
         " ORDER BY ordinal DESC LIMIT 1",
-        (scope_id, owner_text),
+        (scope_key, owner_text),
         _build_closure,
     )
 
@@ -2051,10 +2082,10 @@ def load_protection_authority(
     connection: _SQLiteConnectionProtocol,
     scope_id: int,
 ) -> _records.RepositoryOutcome[_records.ProtectionAuthorityRecord]:
-    return _load(
+    return _load_int_key(
         connection,
         f"SELECT {_PROTECTION_COLUMNS} FROM protection_authority WHERE scope_id = ?",
-        (scope_id,),
+        scope_id,
         _build_protection,
     )
 
@@ -2082,11 +2113,15 @@ def load_live_acquisition_generation(
     scope_id: int,
 ) -> _records.RepositoryOutcome[_records.AcquisitionGenerationRecord]:
     _verify_schema_connection(connection)
+    try:
+        scope_key = _exact_int(scope_id)
+    except TypeError:
+        return _integrity()
     return _select_one_unchecked(
         connection,
         f"SELECT {_ACQUISITION_COLUMNS} FROM acquisition_generation"
         " WHERE scope_id = ? AND status = 'LIVE'",
-        (scope_id,),
+        (scope_key,),
         _build_acquisition,
     )
 
@@ -2096,16 +2131,17 @@ def load_root_fill_by_external(
     execution_profile_id: str,
     root_fill_id: _identity.RootFillId,
 ) -> _records.RepositoryOutcome[_records.RootFillRecord]:
+    _verify_schema_connection(connection)
     try:
+        profile_key = _exact_text(execution_profile_id)
         external = _identity_text(root_fill_id, _identity.RootFillId, "root_fill_id")
     except (TypeError, ValueError):
-        _verify_schema_connection(connection)
         return _integrity()
-    return _load(
+    return _select_one_unchecked(
         connection,
         f"SELECT {_ROOT_FILL_COLUMNS} FROM root_fill"
         " WHERE execution_profile_id = ? AND root_fill_external = ?",
-        (execution_profile_id, external),
+        (profile_key, external),
         _build_root_fill,
     )
 
@@ -2115,20 +2151,21 @@ def load_execution_fact_by_source(
     execution_profile_id: str,
     source_event_id: _identity.SourceEventId,
 ) -> _records.RepositoryOutcome[_records.ExecutionFactRecord]:
+    _verify_schema_connection(connection)
     try:
+        profile_key = _exact_text(execution_profile_id)
         external = _identity_text(
             source_event_id,
             _identity.SourceEventId,
             "source_event_id",
         )
     except (TypeError, ValueError):
-        _verify_schema_connection(connection)
         return _integrity()
-    return _load(
+    return _select_one_unchecked(
         connection,
         f"SELECT {_EXECUTION_FACT_COLUMNS} FROM execution_fact"
         " WHERE execution_profile_id = ? AND source_event_id = ?",
-        (execution_profile_id, external),
+        (profile_key, external),
         _build_execution_fact,
     )
 
@@ -2138,11 +2175,15 @@ def load_open_venue_effects(
     scope_id: int,
 ) -> _records.RepositoryOutcome[tuple[_records.VenueEffectRecord, ...]]:
     _verify_schema_connection(connection)
+    try:
+        scope_key = _exact_int(scope_id)
+    except TypeError:
+        return _integrity()
     return _select_many_unchecked(
         connection,
         f"SELECT {_EFFECT_COLUMNS} FROM venue_effect"
         " WHERE scope_id = ? AND disposition = 'OPEN' ORDER BY effect_id",
-        (scope_id,),
+        (scope_key,),
         _build_effect,
     )
 
@@ -2152,11 +2193,15 @@ def load_venue_identity_owners_for_effect(
     effect_id: int,
 ) -> _records.RepositoryOutcome[tuple[_records.VenueIdentityOwnerRecord, ...]]:
     _verify_schema_connection(connection)
+    try:
+        effect_key = _exact_int(effect_id)
+    except TypeError:
+        return _integrity()
     return _select_many_unchecked(
         connection,
         f"SELECT {_OWNER_COLUMNS} FROM venue_identity_owner"
         " WHERE effect_id = ? ORDER BY owner_external",
-        (effect_id,),
+        (effect_key,),
         _build_owner,
     )
 
@@ -2165,10 +2210,10 @@ def load_dispatch_claim_for_effect(
     connection: _SQLiteConnectionProtocol,
     effect_id: int,
 ) -> _records.RepositoryOutcome[_records.DispatchClaimRecord]:
-    return _load(
+    return _load_int_key(
         connection,
         f"SELECT {_CLAIM_COLUMNS} FROM dispatch_claim WHERE effect_id = ?",
-        (effect_id,),
+        effect_id,
         _build_claim,
     )
 
@@ -2177,10 +2222,10 @@ def load_acceptance_set_for_effect(
     connection: _SQLiteConnectionProtocol,
     effect_id: int,
 ) -> _records.RepositoryOutcome[_records.AcceptanceSetRecord]:
-    return _load(
+    return _load_int_key(
         connection,
         f"SELECT {_ACCEPTANCE_SET_COLUMNS} FROM acceptance_set WHERE effect_id = ?",
-        (effect_id,),
+        effect_id,
         _build_acceptance_set,
     )
 
@@ -2189,11 +2234,11 @@ def load_latest_acceptance_evidence(
     connection: _SQLiteConnectionProtocol,
     acceptance_set_id: int,
 ) -> _records.RepositoryOutcome[_records.AcceptanceEvidenceRecord]:
-    return _load(
+    return _load_int_key(
         connection,
         f"SELECT {_EVIDENCE_COLUMNS} FROM acceptance_evidence"
         " WHERE acceptance_set_id = ? ORDER BY evidence_ordinal DESC LIMIT 1",
-        (acceptance_set_id,),
+        acceptance_set_id,
         _build_evidence,
     )
 
@@ -2486,7 +2531,7 @@ def load_current_proof(
             )
             if effect.lifecycle_state not in ("REQUESTED", "CANCELED_BEFORE_DISPATCH"):
                 claim = _required(claim_outcome)
-            elif claim_outcome.kind is _records.RepositoryOutcomeKind.FOUND:
+            elif claim_outcome.kind is not _records.RepositoryOutcomeKind.ABSENT:
                 raise _ProofFailure
             if claim is not None and (
                 claim.effect_id != effect.effect_id

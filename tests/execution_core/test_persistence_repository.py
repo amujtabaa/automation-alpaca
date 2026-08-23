@@ -769,7 +769,7 @@ def test_repository_source_cannot_begin_commit_or_rollback_transactions() -> Non
         for node in ast.walk(tree)
         if isinstance(node, ast.Call)
         and isinstance(node.func, ast.Attribute)
-        and node.func.attr in {"commit", "rollback"}
+        and node.func.attr in {"commit", "rollback", "executescript"}
     ]
     forbidden_sql = [
         node.value
@@ -777,7 +777,7 @@ def test_repository_source_cannot_begin_commit_or_rollback_transactions() -> Non
         if isinstance(node, ast.Constant)
         and isinstance(node.value, str)
         and node.value.strip().upper().split(" ", 1)[0]
-        in {"BEGIN", "COMMIT", "ROLLBACK"}
+        in {"BEGIN", "COMMIT", "END", "ROLLBACK", "SAVEPOINT", "RELEASE"}
     ]
     assert forbidden_calls == []
     assert forbidden_sql == []
@@ -1030,31 +1030,61 @@ def test_profile_decoder_rejects_a_valid_shape_with_wrong_commitment(
     assert outcome.record is None
 
 
-def test_every_numeric_loader_rejects_boolean_coordinate_aliases(connection) -> None:
+@pytest.mark.parametrize("alias", (True, 1.0, "1", "01", "+1", "1.0"))
+def test_every_numeric_loader_rejects_cross_type_coordinate_aliases(
+    connection,
+    alias: object,
+) -> None:
     _foundation(connection)
     owner_id = identity.OrderId("owner-1")
     operations = (
-        repository.load_scope(connection, True),
-        repository.load_symbol_controller(connection, True),
-        repository.load_root_fill(connection, True),
-        repository.load_execution_fact(connection, True),
-        repository.load_execution_fact_head(connection, True),
-        repository.load_venue_effect(connection, True),
-        repository.load_acquisition_root_route(connection, True),
-        repository.load_dispatch_claim(connection, True),
-        repository.load_acceptance_set(connection, True),
-        repository.load_acceptance_evidence(connection, True),
-        repository.load_protection_authority(connection, True),
-        repository.load_live_acquisition_generation(connection, True),
-        repository.load_open_venue_effects(connection, True),
-        repository.load_venue_identity_owners_for_effect(connection, True),
-        repository.load_dispatch_claim_for_effect(connection, True),
-        repository.load_acceptance_set_for_effect(connection, True),
-        repository.load_latest_acceptance_evidence(connection, True),
-        repository.load_closure_head(connection, True, owner_id),
+        repository.load_scope(connection, alias),  # type: ignore[arg-type]
+        repository.load_symbol_controller(connection, alias),  # type: ignore[arg-type]
+        repository.load_root_fill(connection, alias),  # type: ignore[arg-type]
+        repository.load_execution_fact(connection, alias),  # type: ignore[arg-type]
+        repository.load_execution_fact_head(connection, alias),  # type: ignore[arg-type]
+        repository.load_venue_effect(connection, alias),  # type: ignore[arg-type]
+        repository.load_acquisition_root_route(connection, alias),  # type: ignore[arg-type]
+        repository.load_dispatch_claim(connection, alias),  # type: ignore[arg-type]
+        repository.load_acceptance_set(connection, alias),  # type: ignore[arg-type]
+        repository.load_acceptance_evidence(connection, alias),  # type: ignore[arg-type]
+        repository.load_protection_authority(connection, alias),  # type: ignore[arg-type]
+        repository.load_live_acquisition_generation(connection, alias),  # type: ignore[arg-type]
+        repository.load_open_venue_effects(connection, alias),  # type: ignore[arg-type]
+        repository.load_venue_identity_owners_for_effect(connection, alias),  # type: ignore[arg-type]
+        repository.load_dispatch_claim_for_effect(connection, alias),  # type: ignore[arg-type]
+        repository.load_acceptance_set_for_effect(connection, alias),  # type: ignore[arg-type]
+        repository.load_latest_acceptance_evidence(connection, alias),  # type: ignore[arg-type]
+        repository.load_closure_head(connection, alias, owner_id),  # type: ignore[arg-type]
         repository.load_current_proof(
             connection,
-            records.CurrentProofRequest(APP_ID, True),
+            records.CurrentProofRequest(APP_ID, alias),  # type: ignore[arg-type]
+        ),
+    )
+    assert {outcome.kind for outcome in operations} == {
+        records.RepositoryOutcomeKind.INTEGRITY_FAILURE
+    }
+
+
+def test_every_text_loader_rejects_non_text_coordinate_aliases(connection) -> None:
+    _foundation(connection)
+    operations = (
+        repository.load_execution_profile(connection, 1),  # type: ignore[arg-type]
+        repository.load_market_source_profile(connection, 1),  # type: ignore[arg-type]
+        repository.load_root_fill_by_external(
+            connection,
+            1,  # type: ignore[arg-type]
+            identity.RootFillId("root-1"),
+        ),
+        repository.load_execution_fact_by_source(
+            connection,
+            1,  # type: ignore[arg-type]
+            identity.SourceEventId("event-1"),
+        ),
+        repository.load_venue_identity_owner(
+            connection,
+            1,  # type: ignore[arg-type]
+            identity.OrderId("owner-1"),
         ),
     )
     assert {outcome.kind for outcome in operations} == {
@@ -1111,6 +1141,63 @@ def test_duplicate_probe_cannot_hide_broken_claim_authority(connection) -> None:
     outcome = repository.store_dispatch_claim(connection, broken)
     assert outcome.kind is records.RepositoryOutcomeKind.INTEGRITY_FAILURE
     _assert_found(repository.load_dispatch_claim(connection, claim.claim_id), claim)
+
+
+def test_duplicate_probe_cannot_hide_broken_execution_fact_authority(
+    connection,
+) -> None:
+    _foundation(connection)
+    root = _root()
+    alternate_root = dataclasses.replace(
+        root,
+        root_fill_key_id=2,
+        root_fill_id=identity.RootFillId("root-2"),
+    )
+    fact = _fact()
+    _expect_applied(repository.store_root_fill(connection, root))
+    _expect_applied(repository.store_root_fill(connection, alternate_root))
+    _expect_applied(repository.store_execution_fact(connection, fact))
+
+    assert (
+        repository.store_execution_fact(connection, fact).kind
+        is records.RepositoryOutcomeKind.CONFLICT
+    )
+    broken = dataclasses.replace(
+        fact,
+        fact_id=2,
+        root_fill_key_id=2,
+        fact_ordinal=2,
+    )
+    outcome = repository.store_execution_fact(connection, broken)
+    assert outcome.kind is records.RepositoryOutcomeKind.INTEGRITY_FAILURE
+    _assert_found(repository.load_execution_fact(connection, fact.fact_id), fact)
+
+
+def test_requested_effect_proof_propagates_claim_read_failure(connection) -> None:
+    _foundation(connection)
+    effect = _effect(1, controller_head=0, protection_version=1)
+    _expect_applied(repository.store_venue_effect(connection, effect))
+
+    baseline = repository.load_current_proof(
+        connection,
+        records.CurrentProofRequest(APP_ID, 1, effect_id=effect.effect_id),
+    )
+    assert baseline.kind is records.RepositoryOutcomeKind.FOUND
+    assert baseline.record is not None
+    assert baseline.record.dispatch_claim is None
+
+    class ClaimReadFailureConnection:
+        def execute(self, sql: str, parameters: tuple[Any, ...] = ()) -> Any:
+            if "FROM dispatch_claim WHERE effect_id =" in sql:
+                raise sqlite3.DatabaseError("injected claim read failure")
+            return connection.execute(sql, parameters)
+
+    outcome = repository.load_current_proof(
+        ClaimReadFailureConnection(),  # type: ignore[arg-type]
+        records.CurrentProofRequest(APP_ID, 1, effect_id=effect.effect_id),
+    )
+    assert outcome.kind is records.RepositoryOutcomeKind.INTEGRITY_FAILURE
+    assert outcome.record is None
 
 
 def test_repository_never_commits(connection) -> None:

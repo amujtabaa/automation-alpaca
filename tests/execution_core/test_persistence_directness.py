@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 from pathlib import Path
+import re
 import sqlite3
 from typing import Any, Callable
 
@@ -550,6 +551,7 @@ _PROOF_DOMAIN_TABLES = (
 def _capture_proof_queries(
     connection: sqlite3.Connection,
     proof_request: records.CurrentProofRequest,
+    expected_shapes: tuple[str, ...],
 ) -> tuple[str, ...]:
     statements: list[str] = []
     connection.set_trace_callback(statements.append)
@@ -564,9 +566,13 @@ def _capture_proof_queries(
         and any(f"FROM {table}" in statement for table in _PROOF_DOMAIN_TABLES)
     )
     assert domain
-    for statement in domain:
+    assert len(domain) == len(expected_shapes)
+    for statement, expected_shape in zip(domain, expected_shapes, strict=True):
         normalized = " ".join(statement.lower().split())
-        assert " where " in normalized
+        query_tail = "from " + normalized.split(" from ", 1)[1]
+        query_tail = re.sub(r"'(?:''|[^'])*'", "?", query_tail)
+        query_tail = re.sub(r"(?<![\w.])-?\d+(?:\.\d+)?(?![\w.])", "?", query_tail)
+        assert query_tail == expected_shape
         assert "select *" not in normalized
         plan = connection.execute(f"EXPLAIN QUERY PLAN {statement}").fetchall()
         plan_text = " ".join(str(row[-1]) for row in plan).upper()
@@ -574,6 +580,39 @@ def _capture_proof_queries(
         assert "SCAN" not in plan_text
         assert "USE TEMP B-TREE" not in plan_text
     return tuple(" ".join(statement.lower().split()) for statement in domain)
+
+
+_BASE_PROOF_QUERY_SHAPES = (
+    "from application_generation where application_generation_id = ?",
+    "from acquisition_scope where scope_id = ?",
+    "from execution_connection_profile where connection_profile_id = ?",
+    "from market_data_source_profile where market_source_profile_id = ?",
+    "from kernel_checkpoint where application_generation_id = ?",
+    "from symbol_controller where scope_id = ?",
+    "from acquisition_generation where scope_id = ? and status = ?",
+    "from acquisition_generation_current where acquisition_generation_id = ?",
+    "from protection_authority where scope_id = ?",
+    "from market_stream_authority where stream_generation_id = ?",
+    "from market_cursor where stream_generation_id = ?",
+)
+
+_ROOT_PROOF_QUERY_SHAPES = _BASE_PROOF_QUERY_SHAPES + (
+    "from root_fill where root_fill_key_id = ?",
+    "from acquisition_root_route where root_fill_key_id = ?",
+    "from execution_fact_head where root_fill_key_id = ?",
+    "from execution_fact where fact_id = ?",
+)
+
+_EFFECT_PROOF_QUERY_SHAPES = _BASE_PROOF_QUERY_SHAPES + (
+    "from venue_effect where effect_id = ?",
+    "from dispatch_claim where effect_id = ?",
+    "from venue_identity_owner where execution_profile_id = ? and owner_external = ?",
+    "from acceptance_set where effect_id = ?",
+    "from acceptance_evidence where acceptance_set_id = ?"
+    " order by evidence_ordinal desc limit ?",
+    "from closure_chain where scope_id = ? and owner_external = ?"
+    " order by ordinal desc limit ?",
+)
 
 
 def test_total_proof_uses_only_fixed_direct_key_queries_under_history_stress(
@@ -593,8 +632,16 @@ def test_total_proof_uses_only_fixed_direct_key_queries_under_history_stress(
         require_acceptance=True,
         require_closure=True,
     )
-    baseline_root = _capture_proof_queries(connection, root_request)
-    baseline_effect = _capture_proof_queries(connection, effect_request)
+    baseline_root = _capture_proof_queries(
+        connection,
+        root_request,
+        _ROOT_PROOF_QUERY_SHAPES,
+    )
+    baseline_effect = _capture_proof_queries(
+        connection,
+        effect_request,
+        _EFFECT_PROOF_QUERY_SHAPES,
+    )
 
     connection.executemany(
         "INSERT INTO root_fill (root_fill_key_id, scope_id, application_generation_id,"
@@ -611,8 +658,22 @@ def test_total_proof_uses_only_fixed_direct_key_queries_under_history_stress(
             for root_id in range(10, 510)
         ),
     )
-    assert _capture_proof_queries(connection, root_request) == baseline_root
-    assert _capture_proof_queries(connection, effect_request) == baseline_effect
+    assert (
+        _capture_proof_queries(
+            connection,
+            root_request,
+            _ROOT_PROOF_QUERY_SHAPES,
+        )
+        == baseline_root
+    )
+    assert (
+        _capture_proof_queries(
+            connection,
+            effect_request,
+            _EFFECT_PROOF_QUERY_SHAPES,
+        )
+        == baseline_effect
+    )
 
 
 class _AbsentCursor:
