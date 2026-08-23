@@ -314,6 +314,28 @@ No source or test change implementing R8 may be made until a fresh REV-0074 R8 d
 accepts the exact amendment with `P0=0/P1=0`. Normal REV-0075 implementation review and the
 changed-DDL human gate remain independently required.
 
+REV-0074 R8 returned `ACCEPT-WITH-CHANGES` with `P0=0/P1=2/P2=0`; its exact findings are retained
+in `work/review/REV-0074/result-r8.md`. The R8 candidate is not accepted. Its two root gaps are the
+aggregate-only radix path proof and the caller-constructible, freshness-unbound current-proof
+carrier.
+
+## R9 sound authenticated-proof amendment checkpoint
+
+R9 narrows those exact gaps without changing the reducer, schema, or runtime model. It requires a
+complete canonical labelled-child tuple at every witnessed radix node, so each node's XOR aggregate
+is independently recomputed rather than supplied as a forgeable sibling aggregate. It also makes
+`CurrentProofSlice` an opaque repository-issued result bound to the exact request and verified
+currentness/version envelope; the checkpoint codec accepts only that sealed slice, while the future
+unit of work must load and consume it within one caller-owned connection and use its bound versions
+as conditional-write preconditions. The implementation surface is limited to already named paths:
+`fills.py`, `position.py`, `protection.py`, persistence `records.py`, `repository.py`, and
+`checkpoint_codec.py`, plus their already named direct tests and the import-boundary test.
+
+No R9 source or test change may be made until a fresh REV-0074 R9 documentation review accepts the
+exact amendment with `P0=0/P1=0`. This amendment adds no operation, schema family, database
+execution, runtime composition, credential, network, broker, order, promotion, merge, or safety
+relaxation. Normal REV-0075 and the changed-DDL human gate remain independently required.
+
 ## Out of scope
 
 - OS-1: The atomic transaction coordinator, commit, publication, and effect eligibility are

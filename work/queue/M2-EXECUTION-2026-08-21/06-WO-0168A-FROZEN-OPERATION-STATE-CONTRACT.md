@@ -663,6 +663,44 @@ exception. No source or test change implementing R8 may be made until a fresh RE
 documentation review accepts this exact amendment with P0=0/P1=0. The normal REV-0075
 implementation review and changed-DDL human gate remain independent.
 
+### R9 sound authenticated-proof amendment
+
+R8 is not accepted: its aggregate-only path witness leaves an algebraic substitution route under the
+existing XOR child aggregate, and its ordinary `CurrentProofSlice` cannot establish repository
+provenance or a read-time currentness boundary. This amendment makes the two smallest root
+corrections without replacing the radix map or adding a runtime layer.
+
+For each traversed radix node, a witness carries the complete canonical tuple of labelled child
+commitments, sorted strictly by the unsigned byte label, together with that node's exact
+`has_value`/value commitment. The verifier recomputes the node's XOR child aggregate from that
+tuple and requires the queried next-byte edge to lead to the next authenticated node. At the terminal
+node it either requires the queried value commitment or proves absence by the exact complete child
+tuple not containing the requested next byte. Thus every node commitment is authenticated from
+complete bounded input rather than from an unconstrained sibling aggregate. A witness contains only
+the queried key, one at-most-256 child tuple per key byte plus its terminal node, and fixed-size
+commitments; it retains no map, history, arbitrary caller container, or replay input.
+
+`CurrentProofSlice` remains a public result type but becomes opaque (`init=False`) and can be sealed
+only by a repository-private issuer after `load_current_proof` has verified the exact
+`CurrentProofRequest` and its direct-current rows. Its seal binds the request, selected
+application/execution-profile/market-profile/scope coordinates, live acquisition generation,
+controller currentness head, protection-authority version, and the exact verified row relationships.
+The checkpoint codec accepts only a slice whose issuer and seal revalidate; it never accepts a raw
+row carrier, tuple, independently selected envelope, or caller-constructed slice. Freshness is a
+transactional property, not a claim a detached object can make: the eventual caller-owned unit of
+work must load and consume the sealed slice on its one connection before its guarded conditional
+write, using the bound currentness/version coordinates as write preconditions. A cached or replayed
+slice is not an admitted write input.
+
+R9 uses only already-named WO-0168a source paths: `fills.py`, `position.py`, `protection.py`,
+`persistence/records.py`, `persistence/repository.py`, and `persistence/checkpoint_codec.py`; and
+only already-named direct tests: `test_position.py`, `test_protection.py`,
+`test_persistence_repository.py`, `test_persistence_checkpoint_codec.py`, and
+`test_import_boundary.py`. It adds no operation, schema family, database execution, runtime
+composition, external activity, or safety exception. No R9 source or test change may be made until
+a fresh REV-0074 R9 documentation review accepts the exact amendment with P0=0/P1=0. The normal
+REV-0075 implementation review and changed-DDL human gate remain independent.
+
 Governance paths are the queue/active/completed WO-0168a file, this frozen contract, the additive
 post-I3 map, `work/ledger.jsonl`, and `work/review/REV-0074/**` plus the separately assigned
 implementation review directory. No other path is implied.
