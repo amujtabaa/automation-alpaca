@@ -1,5 +1,9 @@
 # WO-0168c frozen non-serving checkpoint contract — R1
 
+> **SUPERSEDED — NOT IMPLEMENTATION AUTHORITY.** REV-0077 R1 found eleven unresolved P1
+> specification defects. The authoritative successor is
+> `10-WO-0168C-FROZEN-NONSERVING-CHECKPOINT-R2.md`. This file remains review evidence only.
+
 Status: **PREFLIGHT CANDIDATE — DOCUMENTATION ONLY; NO SOURCE OR DATABASE AUTHORITY**
 
 Date: 2026-08-23

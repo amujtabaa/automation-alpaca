@@ -19,6 +19,7 @@ allowed_paths:
   - work/completed/keep/WO-0168c-m2-i3-5-anchored-checkpoint-closure.md
   - work/queue/M2-EXECUTION-2026-08-21/08-WO-0168C-FROZEN-ANCHORED-CHECKPOINT-CONTRACT.md
   - work/queue/M2-EXECUTION-2026-08-21/09-WO-0168C-FROZEN-NONSERVING-CHECKPOINT-R1.md
+  - work/queue/M2-EXECUTION-2026-08-21/10-WO-0168C-FROZEN-NONSERVING-CHECKPOINT-R2.md
   - work/review/REV-0077/**
   - work/review/REV-0078/**
   - work/ledger.jsonl
