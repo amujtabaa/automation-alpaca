@@ -10,7 +10,7 @@ from typing import get_args
 
 import pytest
 
-from app.execution_core import identity
+from app.execution_core import identity, values, venue
 import app.execution_core.persistence.operations as operations
 
 
@@ -523,6 +523,46 @@ def test_operation_wrappers_refuse_foreign_payloads_before_any_reducer_work() ->
     for operation_type, arguments in invalid_cases:
         with pytest.raises(TypeError):
             operation_type(*arguments)
+
+
+def test_missing_venue_session_is_limited_to_passive_status_observation() -> None:
+    application_generation_id = identity.ApplicationGenerationId("ab" * 32)
+    missing_session_coordinates = operations.VenueOperationCoordinates(
+        application_generation_id,
+        "11" * 32,
+        7,
+        None,
+    )
+    leg_key = identity.VenueLegKey(
+        identity.BrokerId("broker"),
+        identity.EnvironmentId("paper"),
+        identity.AccountId("account"),
+        identity.OrderId("order"),
+    )
+    passive_status = venue.ObserveVenueStatus(
+        identity.VenueInputId("status-input"),
+        leg_key,
+        venue.VenueAttemptState.WORKING,
+        identity.VenueObservationId("status-observation"),
+        values.Quantity(0),
+    )
+    active_recovery = venue.RecoverClaimedEffect(
+        identity.VenueInputId("recovery-input"),
+        identity.EffectId("effect"),
+    )
+
+    assert (
+        operations.VenueRecoveryOperation(
+            missing_session_coordinates,
+            passive_status,
+        ).item
+        is passive_status
+    )
+    with pytest.raises(ValueError, match="missing session"):
+        operations.VenueRecoveryOperation(
+            missing_session_coordinates,
+            active_recovery,
+        )
 
 
 def test_operation_foundation_public_exports_are_exact_and_inert() -> None:

@@ -582,6 +582,11 @@ class VenueRecoveryOperation:
             _recovery.RecordBrokerRevisionEvidence,
         ):
             raise TypeError("item must be one exact admitted venue recovery input")
+        if (
+            self.coordinates.session_id is None
+            and type(self.item) is not _venue.ObserveVenueStatus
+        ):
+            raise ValueError("missing session is permitted only for ObserveVenueStatus")
 
     def __init_subclass__(cls, **kwargs: object) -> None:
         del cls, kwargs
