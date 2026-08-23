@@ -86,8 +86,8 @@ as one indivisible contract containing:
    coverage, reconciliations, execution bindings, bootstrap targets, and protection cursors;
 5. exact authority rows for effects/claims, manual flatten state, acquisition slots, budget,
    emergency grant, and the sealed venue reference;
-6. exact acquisition controller/mandate, LIVE plus optional targeted-retired generation, active
-   stream route, and bounded lineage rows;
+6. exact acquisition controller/mandate, standing LIVE generation/stream route and bounded active
+   lineage rows, plus a sealed operation-only targeted-retired generation/stream/lineage proof;
 7. complete fixed-array encodings for `_M2ExecutionObservationProof` and
    `_M2ProtectionAuthorityProof`;
 8. owner constructor equivalence, derived-index rebuild order, full authenticity checks, and
@@ -154,3 +154,15 @@ R13-H completes only after the exact frozen contract is accepted, source/tests i
 contract, fresh pure evidence and mutations pass, `REV-0077` returns P0=0/P1=0, governance is
 clean, and the accepted branch is published. Any inability to define a complete bounded row is a
 contract finding, not permission to serialize the corresponding private map wholesale.
+
+## Preflight remediation record — 2026-08-23
+
+Fresh REV-0076 review exposed a future-checkpoint digest cycle, incomplete collection and
+predicate cardinalities, caller-forgeable authority dedupe evidence, a history-dependent
+acquisition transition commitment, and an ambiguous targeted-retired stream route. The contract
+was corrected at the root: the new kernel head is now outer-only and payload-first; every variable
+collection has one literal wrapper; one committed predicate-coordinate set covers positive and
+negative cardinality; authority facts are opaque and request/snapshot-bound; acquisition behavior
+uses one history-independent standing commitment; and retired generation/stream/lineage evidence
+is sealed operation proof rather than installed standing state. This clarification narrows item 6
+above and does not release the source hold or authorize SQLite/DDL work.
