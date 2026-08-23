@@ -1237,7 +1237,9 @@ def _encode_runtime_checkpoint_venue(
         book._protection_cursor_by_scope,
     )
     if any(retained.size for retained in payload_maps):
-        raise ValueError("nonempty venue checkpoint rows are not admitted by this projector")
+        raise ValueError(
+            "nonempty venue checkpoint rows are not admitted by this projector"
+        )
     if book._effect_order.length or book._owner_order.length:
         raise ValueError("venue source order is not represented by selected rows")
     registry_count = book.execution_registry_count
@@ -1262,9 +1264,7 @@ def _encode_runtime_checkpoint_venue(
         (
             None
             if book._registry_transition_head_commitment is None
-            else _operations._encode_m2_bytes(
-                book._registry_transition_head_commitment
-            )
+            else _operations._encode_m2_bytes(book._registry_transition_head_commitment)
         ),
         _checkpoint_collection("m2.venue.AuthorityEpochs/v1", []),
         _checkpoint_collection("m2.venue.Effects/v1", []),
@@ -1282,9 +1282,7 @@ def _encode_runtime_checkpoint_venue(
         _checkpoint_collection("m2.venue.BootstrapTargets/v1", []),
         _checkpoint_collection("m2.venue.ProtectionCursors/v1", []),
     ]
-    commitment = _checkpoint_row_commitment(
-        b"execution-core/m2-venue/state/v1", row
-    )
+    commitment = _checkpoint_row_commitment(b"execution-core/m2-venue/state/v1", row)
     row.append(_operations._encode_m2_bytes(commitment))
     return row, commitment
 
@@ -1365,16 +1363,12 @@ def _encode_runtime_checkpoint_generation(
         _operations._encode_m2_position_scope(binding.position_scope),
         binding.successor_ordinal,
         _operations._encode_m2_bytes(binding.dual_mandate_binding_commitment),
-        _operations._encode_m2_bytes(
-            binding.predecessor_or_genesis_head_commitment
-        ),
+        _operations._encode_m2_bytes(binding.predecessor_or_genesis_head_commitment),
         _operations._encode_m2_bytes(
             binding.emergency_recovery_compatibility_commitment
         ),
         _operations._encode_m2_bytes(record.economics_head_commitment),
-        _checkpoint_enum(
-            "m1.acquisition.GenerationServingClass", record.serving_class
-        ),
+        _checkpoint_enum("m1.acquisition.GenerationServingClass", record.serving_class),
         _operations._encode_m2_bytes(record.closure_summary_commitment),
         _operations._encode_m2_bytes(commitment),
     ]
@@ -1531,9 +1525,8 @@ def _project_runtime_checkpoint(
     )
     if len(owner_scope_ids) != len(scope_owners):
         raise TypeError("scope owner must be exact _RuntimeCheckpointScopeOwners")
-    if (
-        owner_scope_ids != tuple(sorted(owner_scope_ids))
-        or len(owner_scope_ids) != len(set(owner_scope_ids))
+    if owner_scope_ids != tuple(sorted(owner_scope_ids)) or len(owner_scope_ids) != len(
+        set(owner_scope_ids)
     ):
         raise ValueError("scope owners must be strictly scope-ID ordered")
     if selected_scope_ids != owner_scope_ids:
@@ -1557,7 +1550,9 @@ def _project_runtime_checkpoint(
         execution = owners.execution
         protection = owners.protection
         if type(acquisition) is not _acquisition.AcquisitionControllerState:
-            raise TypeError("acquisition owner must be exact AcquisitionControllerState")
+            raise TypeError(
+                "acquisition owner must be exact AcquisitionControllerState"
+            )
         if type(execution) is not _position.ExecutionSnapshot:
             raise TypeError("execution owner must be exact ExecutionSnapshot")
         if type(protection) is not _protection.PositionProtectionState:
@@ -1572,7 +1567,8 @@ def _project_runtime_checkpoint(
             selected.application_generation_id != request.application_generation_id
             or selected.execution_profile_id != request.execution_profile_id
             or selected.symbol != position_scope.symbol_id
-            or acquisition.application_generation_id != request.application_generation_id
+            or acquisition.application_generation_id
+            != request.application_generation_id
             or acquisition.position_scope != position_scope
             or protection.mandate.position_scope != position_scope
             or venue_scope.broker != position_scope.broker

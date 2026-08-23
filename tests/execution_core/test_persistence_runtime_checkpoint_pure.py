@@ -396,7 +396,10 @@ def test_owner_projector_refuses_missing_forged_and_unordered_scope_owners() -> 
         checkpoint_codec._project_runtime_checkpoint(proof, book, state, ())
     with pytest.raises(TypeError, match="exact _RuntimeCheckpointScopeOwners"):
         checkpoint_codec._project_runtime_checkpoint(
-            proof, book, state, (object(),)  # type: ignore[arg-type]
+            proof,
+            book,
+            state,
+            (object(),),  # type: ignore[arg-type]
         )
 
     forged = object.__new__(checkpoint_codec._RuntimeCheckpointScopeOwners)
@@ -414,9 +417,7 @@ def test_owner_projector_refuses_spliced_authority_and_nonempty_source_order() -
     other_book, other_state = _empty_owners("other-account")
 
     with pytest.raises(ValueError, match="selected venue owner"):
-        checkpoint_codec._project_runtime_checkpoint(
-            proof, book, other_state, ()
-        )
+        checkpoint_codec._project_runtime_checkpoint(proof, book, other_state, ())
 
     sequence_type = type(book._effect_order)
     object.__setattr__(
