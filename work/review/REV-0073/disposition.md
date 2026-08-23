@@ -2,7 +2,7 @@
 type: Review Disposition
 rev_id: REV-0073
 work_order_id: WO-0167
-status: REMEDIATED_AWAITING_R1
+status: REMEDIATED_AWAITING_R2
 date: 2026-08-22
 recorded_by: Codex implementation and orchestration seat
 ---
@@ -45,3 +45,32 @@ the reviewer-owned result unchanged. Implementation R1 is commit
 All SQLite evidence used explicit fresh file-backed pytest temporary databases. No configured or
 in-memory database, DDL/schema change, migration, runtime composition, credential, broker/network
 call, order, M2-I4+ implementation, promotion, PR, or merge occurred.
+
+## R1 BLOCK disposition and R2 root resolutions
+
+The independent `result-r1.md` returned `BLOCK` at R1 commit
+`fe23558cee249906af8286e73f77ad498d6c24f1` (P0=1, P1=2, P2=0). Two additional fresh specialist
+lenses reproduced three adjacent mechanisms. All six mechanisms are accepted and preserved as
+negative evidence. R2 implementation commit `2ca0e3c35b51becda6d494ef903cd4de68839e26`, tree
+`13b803c1d15d929a4bc21fef241fc4fcce259507`, resolves their owning boundaries:
+
+1. Composite proof tests pin the exact ordered query count and complete normalized `FROM`/predicate/
+   ordering/limit tail for root and effect proof modes, in addition to indexed-search/no-scan/no-temp
+   plan assertions and unrelated-history stress.
+2. Early-lifecycle effect proof accepts only an authenticated `ABSENT` claim outcome. A claim read or
+   decode failure now fails the whole proof with `INTEGRITY_FAILURE` and no record.
+3. Every integer load coordinate requires exact runtime `int`; booleans, integral floats, and numeric
+   strings (including leading-zero, signed, and decimal forms) fail closed. Text coordinates also
+   require exact runtime `str`.
+4. Duplicate probes run for direct conflict classifications as well as earlier-trigger integrity
+   classifications. Only an exact retained canonical candidate is `CONFLICT`; mismatched retained
+   authority is `INTEGRITY_FAILURE`.
+5. The caller-owned transaction source gate now rejects `executescript` and the complete SQLite
+   transaction vocabulary: `BEGIN`, `COMMIT`, `END`, `ROLLBACK`, `SAVEPOINT`, and `RELEASE`.
+6. Regression cases exercise an actual valid alternate root and next legal fact ordinal, so the
+   reused-source trigger reaches the precise conflict-probe bypass that R1 missed.
+
+Failure-capable R2 mutations were demonstrated: indexed checkpoint range, keyed fact-history fold,
+R1 optional-claim handling, coercing integer coordinates, R1 conflict-probe gating, and SQL `END`
+each failed its targeted test for the intended reason. R2 remains unaccepted until fresh independent
+`result-r2.md` review returns P0=0/P1=0.
