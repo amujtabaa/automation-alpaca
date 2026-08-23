@@ -1,6 +1,6 @@
 # WO-0168c frozen non-serving checkpoint contract — R7 final clarification
 
-Status: **FINAL PREFLIGHT CANDIDATE — DOCUMENTATION ONLY; NO SOURCE OR DATABASE AUTHORITY**
+Status: **SUPERSEDED BY R8 — EVIDENCE ONLY; NO SOURCE OR DATABASE AUTHORITY**
 
 Date: 2026-08-23
 
