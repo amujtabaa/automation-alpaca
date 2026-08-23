@@ -4003,6 +4003,38 @@ def test_no_column_retains_credential_or_account_material(
 # REV-0070-followup regression locks for the revised origin CHECK blocks.
 
 
+def test_runtime_checkpoint_ddl_delta_is_exact() -> None:
+    """WO-0168c changes only version scope and the five frozen indexes."""
+
+    _require_gate_open()
+    ddl = schema_module.SCHEMA_DDL
+    assert (
+        "checkpoint_version_ordinal INTEGER NOT NULL UNIQUE CHECK "
+        "(checkpoint_version_ordinal >= 1)"
+    ) not in ddl
+    assert (
+        "checkpoint_version_ordinal INTEGER NOT NULL CHECK "
+        "(checkpoint_version_ordinal >= 1)"
+    ) in ddl
+    fragments = (
+        "CREATE INDEX ix_acquisition_scope_checkpoint\n"
+        "ON acquisition_scope (application_generation_id, execution_profile_id, scope_id);",
+        "CREATE INDEX ix_acquisition_generation_current_checkpoint_effect\n"
+        "ON acquisition_generation_current (scope_id, acquisition_generation_id)\n"
+        "WHERE unresolved_effect_count > 0;",
+        "CREATE INDEX ix_acquisition_generation_current_checkpoint_protection\n"
+        "ON acquisition_generation_current (scope_id, acquisition_generation_id)\n"
+        "WHERE active_protection_count > 0;",
+        "CREATE INDEX ix_venue_owner_checkpoint_late\n"
+        "ON venue_identity_owner (owner_generation_id, effect_id, owner_external)\n"
+        "WHERE admitted_after_effect_closed = 1;",
+        "CREATE INDEX ix_market_stream_authority_checkpoint_generation\n"
+        "ON market_stream_authority (acquisition_generation_id, scope_id, stream_generation_id);",
+    )
+    for fragment in fragments:
+        assert ddl.count(fragment) == 1
+
+
 def test_origin_charset_predicates_target_the_host_part_only() -> None:
     """The scheme prefix must never be scanned by content predicates."""
 
