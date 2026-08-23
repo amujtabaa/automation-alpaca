@@ -2,7 +2,7 @@
 type: Review Disposition
 rev_id: REV-0073
 work_order_id: WO-0167
-status: REMEDIATED_AWAITING_R2
+status: REMEDIATED_AWAITING_R3
 date: 2026-08-22
 recorded_by: Codex implementation and orchestration seat
 ---
@@ -74,3 +74,33 @@ Failure-capable R2 mutations were demonstrated: indexed checkpoint range, keyed 
 R1 optional-claim handling, coercing integer coordinates, R1 conflict-probe gating, and SQL `END`
 each failed its targeted test for the intended reason. R2 remains unaccepted until fresh independent
 `result-r2.md` review returns P0=0/P1=0.
+
+## R2 BLOCK disposition and R3 root resolutions
+
+Fresh independent `result-r2.md` returned `BLOCK` against R2 implementation commit
+`2ca0e3c35b51becda6d494ef903cd4de68839e26` (P0=5, P1=2, P2=0). Its SHA-256 is
+`7d593c34b78f2f20d3c8a7b1eb8a146f32576263743cee2c50fbad7af2036ce7`; the file remains
+reviewer-owned and unchanged. R3 implementation commit
+`4ed0b4e0378a91940ca392dc40902959dc41ecff`, tree
+`0b5c8104c726ce009b6e82b961dc4c9d78a61355`, resolves all seven findings:
+
+1. Query-shape enforcement also verifies bound key values and recognizes quoted,
+   schema-qualified, bracketed, and backtick domain references.
+2. Authenticated SQLite/decode failure injection covers every proof member, including acceptance
+   evidence, and requires total `INTEGRITY_FAILURE` without a partial record.
+3. Exact numeric/text decoding rejects scalar subclasses and `IntEnum`, not only common coercions.
+4. Caller-owned transaction enforcement detects indirect method references, constant-folded SQL,
+   and exercises all 56 public operations through a runtime tripwire.
+5. All 19 insert-owned families use mandatory full-row probes over every primary/alternate trigger
+   identity. Exact single retained duplicates are `CONFLICT`; contradictory or ambiguous retained
+   rows are `INTEGRITY_FAILURE`.
+6. Total proof authenticates the nine missing cross-row constraints across protection active-stream
+   coordinates, source/mandate/session/sequence, execution facts, effects, owners, and acceptance.
+7. Failure-capable mutations for all five P0 gate mechanisms and the conflict boundary were killed
+   for the intended reasons.
+
+Fresh author evidence passed 177 focused repository/directness tests, 550 integration tests, the
+61-case R2 oracle, and all 1,867 execution-core tests. Ruff, format, mypy over 93 app files, six
+import contracts, install/version/ledger/PKL/disposition/scope, and whitespace gates passed. The
+schema blob and DDL digest remain unchanged. R3 remains unaccepted until a fresh independent
+`result-r3.md` returns P0=0/P1=0.

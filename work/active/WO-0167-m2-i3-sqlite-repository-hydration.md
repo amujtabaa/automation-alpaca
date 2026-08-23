@@ -21,7 +21,7 @@ execution_authority: Ameen Mujtabaa activated WO-0167 (Codex task, 2026-08-21) a
 
 **Date:** 2026-08-21
 
-**Status:** REVIEW — Codex remediation candidate awaits fresh REV-0073 acceptance
+**Status:** REVIEW — Codex R3 remediation candidate awaits fresh REV-0073 acceptance
 
 `[FABLE • FULL • spec-first/TDD • direct-key repository only]`
 
@@ -293,3 +293,46 @@ All SQLite-bearing tests used explicit fresh file-backed pytest temporary databa
 or in-memory database, DDL/schema change, migration, runtime composition, credential,
 broker/network call, order, M2-I4+ implementation, promotion, PR, or merge occurred. R2 awaits fresh
 independent `REV-0073/result-r2.md`; author evidence does not accept or close WO-0167.
+
+## REV-0073 R2 BLOCK disposition and remediation R3 (2026-08-22)
+
+Fresh `result-r2.md` returned `BLOCK` at implementation commit
+`2ca0e3c35b51becda6d494ef903cd4de68839e26` (P0=5, P1=2, P2=0). The immutable
+review result is preserved unchanged with SHA-256
+`7d593c34b78f2f20d3c8a7b1eb8a146f32576263743cee2c50fbad7af2036ce7`.
+Codex corrected every owning production boundary and replaced each weak gate in implementation
+commit `4ed0b4e0378a91940ca392dc40902959dc41ecff`, tree
+`0b5c8104c726ce009b6e82b961dc4c9d78a61355`.
+
+- Every insert family has a mandatory full-row retained-state probe covering its primary and
+  alternate schema identities. Only one byte-for-byte canonical retained row is `CONFLICT`;
+  contradictory or ambiguous retained authority is `INTEGRITY_FAILURE`.
+- Total proof rejects partial active-stream coordinates and all nine previously unchecked
+  cross-row authority contradictions across protection, stream/cursor, fact, effect, owner, and
+  acceptance records.
+- Exact-query tests bind values as well as SQL shape, normalize quoted and schema-qualified table
+  references, and reject hidden additional domain reads.
+- Read/decode failure injection spans every proof member. Scalar boundaries reject subclasses,
+  including custom `int`/`str` aliases and `IntEnum` values.
+- Static and runtime transaction tripwires cover all public repository operations, indirect method
+  aliases, and constant-folded transaction SQL.
+
+Failure-capable mutations proved each control: a wrong fact-head bind, quoted hidden scan,
+acceptance-evidence failure swallow, scalar-subclass acceptance, aliased `commit`, dynamically
+assembled `COMMIT`, and direct-conflict probe bypass all failed their intended tests.
+
+| R3 evidence | Exact result |
+| --- | --- |
+| Implementation commit / tree | `4ed0b4e0378a91940ca392dc40902959dc41ecff` / `0b5c8104c726ce009b6e82b961dc4c9d78a61355` |
+| Focused repository/directness | 177 passed |
+| Codec/profile/value/schema/import/repository integration | 550 passed |
+| R2 conformance oracle | 61 passed |
+| Full `tests/execution_core` at exact commit | 1,867 collected and passed; 0 failed/skipped |
+| Static/architecture | Ruff check/format; mypy `app/` 93 files; Import Linter 6 kept/0 broken |
+| Governance | install, version v0.9.2, ledger, PKL, disposition, exact scope, whitespace all passed |
+| Schema identity | `schema.py` blob `5ab6a87fe5212dd44b8cb0a3ad91b39c43ee65bd`, unchanged from base; DDL SHA-256 `2dc33ba1af41d7516b2cde43cac85ea6644dc9ab904501065aae1c77b14d3859` |
+
+All SQLite-bearing tests used explicit fresh file-backed pytest temporary databases. No configured
+or in-memory database, DDL/schema change, migration, runtime composition, credential,
+broker/network call, order, M2-I4+ implementation, promotion, PR, or merge occurred. R3 awaits fresh
+independent `REV-0073/result-r3.md`; author evidence does not accept or close WO-0167.
