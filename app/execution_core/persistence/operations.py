@@ -446,27 +446,42 @@ class InputSemanticKey:
     retained_input_identity_sha256: str
 
     def __post_init__(self) -> None:
-        if type(self) is not InputSemanticKey:
-            raise TypeError("InputSemanticKey rejects subclass instances")
-        if type(self.kind) is not InputSemanticKeyKind:
-            raise TypeError("kind must be InputSemanticKeyKind")
-        if type(self.canonical_key_bytes) is not bytes:
-            raise TypeError("canonical_key_bytes must be exact bytes")
-        decoded_kind, _, _ = decode_m2_semantic_key(self.canonical_key_bytes)
-        if decoded_kind is not self.kind:
-            raise ValueError("semantic key kind does not match canonical key bytes")
-        key_sha256 = _require_sha256("key_sha256", self.key_sha256)
-        if _hashlib.sha256(self.canonical_key_bytes).hexdigest() != key_sha256:
-            raise ValueError("semantic key digest does not match canonical key bytes")
-        _require_exact_text("retained_input_domain", self.retained_input_domain)
-        _require_sha256(
-            "retained_input_identity_sha256",
-            self.retained_input_identity_sha256,
-        )
+        _validate_input_semantic_key(self)
 
     def __init_subclass__(cls, **kwargs: object) -> None:
         del cls, kwargs
         raise TypeError("InputSemanticKey cannot be subclassed")
+
+
+def _validate_input_semantic_key(value: object) -> InputSemanticKey:
+    """Authenticate every retained key, including objects forged after init."""
+
+    if type(value) is not InputSemanticKey:
+        raise TypeError("semantic match must be an exact InputSemanticKey")
+    try:
+        kind = value.kind
+        canonical_key_bytes = value.canonical_key_bytes
+        key_sha256 = value.key_sha256
+        retained_input_domain = value.retained_input_domain
+        retained_input_identity_sha256 = value.retained_input_identity_sha256
+    except AttributeError as exc:
+        raise TypeError("semantic match is missing a required field") from exc
+    if type(kind) is not InputSemanticKeyKind:
+        raise TypeError("semantic match kind must be InputSemanticKeyKind")
+    if type(canonical_key_bytes) is not bytes:
+        raise TypeError("semantic match canonical_key_bytes must be exact bytes")
+    decoded_kind, _, _ = decode_m2_semantic_key(canonical_key_bytes)
+    if decoded_kind is not kind:
+        raise ValueError("semantic match kind does not match canonical key bytes")
+    canonical_digest = _require_sha256("semantic match key_sha256", key_sha256)
+    if _hashlib.sha256(canonical_key_bytes).hexdigest() != canonical_digest:
+        raise ValueError("semantic match digest does not match canonical key bytes")
+    _require_exact_text("semantic match retained_input_domain", retained_input_domain)
+    _require_sha256(
+        "semantic match retained_input_identity_sha256",
+        retained_input_identity_sha256,
+    )
+    return value
 
 
 @_dataclass(frozen=True, slots=True)
@@ -497,11 +512,10 @@ class InputDedupeFact:
         matches = _require_exact_tuple("semantic_matches", self.semantic_matches)
         key_bytes: list[bytes] = []
         for match in matches:
-            if type(match) is not InputSemanticKey:
-                raise TypeError("semantic_matches must contain InputSemanticKey values")
-            if match.canonical_key_bytes in key_bytes:
+            authenticated_match = _validate_input_semantic_key(match)
+            if authenticated_match.canonical_key_bytes in key_bytes:
                 raise ValueError("semantic_matches must not duplicate a canonical key")
-            key_bytes.append(match.canonical_key_bytes)
+            key_bytes.append(authenticated_match.canonical_key_bytes)
 
     def __init_subclass__(cls, **kwargs: object) -> None:
         del cls, kwargs

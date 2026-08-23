@@ -267,6 +267,44 @@ def test_input_dedupe_fact_keeps_alternate_match_distinct_from_primary_replay() 
         )
 
 
+def test_input_dedupe_fact_reauthenticates_forged_or_mutated_semantic_matches() -> None:
+    raw_key = operations.encode_m2_semantic_key(
+        operations.InputSemanticKeyKind.AUTHORITY_QUERY_CLAIM_V1,
+        ("app", "ep", 7),
+        ("query-claim-id", "q"),
+    )
+    mutated = operations.InputSemanticKey(
+        operations.InputSemanticKeyKind.AUTHORITY_QUERY_CLAIM_V1,
+        raw_key,
+        sha256(raw_key).hexdigest(),
+        "authority-command/v1",
+        "a1" * 32,
+    )
+    object.__setattr__(mutated, "canonical_key_bytes", b"forged-key-bytes")
+
+    forged = object.__new__(operations.InputSemanticKey)
+    object.__setattr__(
+        forged,
+        "kind",
+        operations.InputSemanticKeyKind.AUTHORITY_QUERY_CLAIM_V1,
+    )
+    object.__setattr__(forged, "canonical_key_bytes", b"forged-key-bytes")
+    object.__setattr__(forged, "key_sha256", "00" * 32)
+    object.__setattr__(forged, "retained_input_domain", "authority-command/v1")
+    object.__setattr__(forged, "retained_input_identity_sha256", "a1" * 32)
+
+    for invalid_match in (mutated, forged):
+        with pytest.raises(ValueError):
+            operations.InputDedupeFact(
+                operations.InputDedupeKind.UNSEEN,
+                "authority-command/v1",
+                "b2" * 32,
+                "c3" * 32,
+                None,
+                (invalid_match,),
+            )
+
+
 def test_closed_enum_values_are_exactly_the_frozen_domains() -> None:
     assert [member.value for member in operations.InputDedupeKind] == [
         "UNSEEN",
