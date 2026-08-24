@@ -1,3 +1,6 @@
+> **SUPERSEDED by `request.md` (REV-0078 P1-7).** This document and its amendment used a
+> mutable bound and are retained as history only; the frozen candidate is in `request.md`.
+
 # REV-0078 R1 request — WO-0168c implementation review
 
 Verdict requested: **findings only — BLOCK | ACCEPT-WITH-CHANGES | ACCEPT**
