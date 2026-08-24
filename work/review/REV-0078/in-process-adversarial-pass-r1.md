@@ -28,16 +28,22 @@ They agreed independently on the most severe finding.
 | P1 | `test_r20_emergency_grant_refuses_a_member_of_the_wrong_exact_type` used a bare `pytest.raises(ValueError)`; the `TypeError` branch its name promises was untested. | Both branches pinned with `match=`. |
 | P1 | The "closure over all families" docstring claimed a "fully populated" book; the fixture populates ten of fifteen venue collections and three of four authority collections. | Docstring corrected to say what it does and does not cover. |
 
-## Open — recorded for the independent reviewer and for Ameen
+## Closed since this pass was written (Ameen authorized 2026-08-24)
+
+| Sev | Finding | Disposition |
+| --- | --- | --- |
+| P1 | `_GATE_DIGEST` re-pin not in the approved bundle | Ratified retroactively in gate bundle Amendment 1; the underlying self-approving gate is tracked as `work/review/FINDING-schema-approval-gate-is-self-approving.md`, blocking before `execution_core` goes live. |
+| P0 | Reconciliation checked for set membership, not the referencing relation | Both derivations now carry the referencing row's identity (leg for fills, scope for registry outcomes) and require equality. An input named by two different legs or scopes is itself a refusal. Mutation-checked. |
+| P0 | `selection.closure_heads` never consulted | Closure heads now bind against their selected record on owner, ordinal, kind, and predecessor presence, in all three directions. Duplicate selected owners refused. Mutation-checked. |
+| P1 | Five pre-existing whole-map cardinality checks | Removed, on verified facts rather than argument: `_PersistentKeyMap` has no deletion operation, and the selection is `disposition IN ('OPEN','INVALIDATED')` plus late owners. **The independent reviewer is still asked to rule on this** — it removes refusals on a safety surface. |
+| P1 | Packet bound stopped at `2cfbce0` | Extended in `request-r1.md` Amendment 1. |
+| P2 | Plan-control alias regex required `AS` | Bare aliases now resolved, with keyword guarding. |
+| P2 | Import-direction control detected a bare substring | Now AST-based. Probed: a comment-only mention does not count; a real import does. |
+
+## Still open — recorded for the independent reviewer and for Ameen
 
 | Sev | Finding | Why not acted on |
 | --- | --- | --- |
-| **P1** | **`_GATE_DIGEST` re-pin.** The gate bundle Ameen approved states "`schema_ddl_digest()` is derived from the DDL text itself, so it needs no separate update," and records only the catalog digest. Commit `aab4130` nonetheless moved `_GATE_DIGEST` to the machine-computed digest of the author's own DDL, unlocking 77 previously-masked tests. That constant's purpose is to be a value a human transcribes after reading the DDL. | **Needs Ameen's explicit call.** The DDL change was authorized; setting a human-transcription token to a self-computed value was not separately named in the bundle. Flagged rather than reverted, because reverting re-masks 77 tests. |
-| P0 | Coverage index→ledger relation is asserted, never proved. `_broker_coverage_by_root` / `_human_coverage_by_root` dereference a ledger slot and emit it without checking the coverage belongs to the selected root, though both facts carry `root_fill_id`. Every peer family proves its key relation. | Real and in my families. Deferred only for turn scope; should be fixed before ACCEPT. |
-| P0 | Referenced reconciliations are checked for *set membership* (`leg_key in selected_legs`), not equality with the row that named the input. A stale same-scope reconciliation can be admitted through a different leg's closure. | Needs the referencing row's identity carried through `_referenced_*_inputs`, which currently return bare input tuples. |
-| P0 | `selection.closure_heads` is never consulted anywhere in the codec; the closure family is projected purely from in-memory state while every peer binds against its selected record. | Structural; touches the selection contract. |
-| P1 | Five *pre-existing* size checks of the same class as the three removed above — `_owner_by_leg`, `_economic_high_water_by_leg`, `_acquisition_correlation_by_root`, `_broker_coverage_by_root`, `_human_coverage_by_root`. Present at `344c32b`. | Removing refusals on a safety surface on one in-process agent's argument is exactly what independent review is for. **Recommend the reviewer rule on these.** |
-| P1 | Q9's `CROSS JOIN` was applied while the identical remedy for the other queries is deferred as unauthorized. Ameen authorized Q9 explicitly in conversation; that authorization is not visible in the repo, and the change lands outside the `344c32b..2cfbce0` bound the packet named. | Packet bound must be extended to the current head. |
 | P2 | Undeclared R15 §3 / R16 §2 conflict on `_manual_by_id`: R16 supersedes §§1, 4, 5 but not §3, and the code follows R16 with the choice recorded only in a docstring. | CLAUDE.md conflict rule says record the decision gap. Recorded here. |
 | P2 | Pre-existing tautologies in `test_persistence_runtime_checkpoint_pure.py` (`:1554`, `:1551`, `:2258`) compute the expectation with the same production helper under test. Not from this diff. | Out of scope; recorded. |
 | P2 | Plans are measured on a ~9-row database with no `ANALYZE`; planner choices there are weak evidence about production shapes. | Real limitation of the control. |
