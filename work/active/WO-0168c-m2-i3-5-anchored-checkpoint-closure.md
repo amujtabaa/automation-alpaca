@@ -48,6 +48,7 @@ allowed_paths:
   - work/review/REV-0078/**
   - work/review/REV-0079/**
   - work/review/REV-0080/**
+  - work/review/REV-0081/**
   - work/review/FINDING-preexisting-suite-floor-2026-08-24.md
   - work/review/FINDING-protection-stateful-replay-disposition.md
   - work/review/FINDING-schema-approval-gate-is-self-approving.md
@@ -185,3 +186,19 @@ evidence; the implementation seat may remediate those root causes inside the alr
 source/test paths. `work/review/REV-0080/**` is added solely for the fresh exact-head re-review
 of that remediation. No SQLite execution, changed-DDL installation, or authority expansion is
 created by this review-path addition.
+
+## Amendment — REV-0081 exact remediation review route (2026-08-24)
+
+REV-0080 reviewed `426935eee5808055796cba360d3be95a15ac55a3` and returned
+`P0=0`, `P1=2`, `P2=1`. Its two P1 findings are remediated at
+`9984232fcc6fce9b9261798858262e529c3729e2`, tree
+`1f36eaf9b260a7182c5c6541833c236d8090685b`: selected mutable effect claims,
+closures, and evidence are now bound to their proof-selected durable relations;
+the static DDL gate audit now accepts only a direct, pre-open approval route.
+The historical P2 whitespace in the reviewer-owned REV-0079 result remains
+preserved and future evidence is scoped to the candidate paths it actually checks.
+
+`work/review/REV-0081/**` is added solely for a fresh exact-head review of this
+remediation. The source and test paths were already released by this work order.
+This amendment creates no DDL change, SQLite execution authority, changed-DDL
+installation, or expansion of the human gate.

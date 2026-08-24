@@ -339,3 +339,26 @@ execution. The next possible packet is `work/review/REV-0080/request.md`, bound 
 remediation candidate. Until its independent exact-head result has `P0=0` and `P1=0`, followed
 by Ameen's explicit approval of that exact identity and command list, the SQLite gate remains
 **NOT_RUN**.
+
+---
+
+# Amendment 5 — REV-0080 disposition and next exact-review route
+
+Date: 2026-08-24 · Recorded by: Codex implementation seat
+
+REV-0080 reviewed `426935eee5808055796cba360d3be95a15ac55a3` and returned
+`P0=0`, `P1=2`, `P2=1`; it therefore does not qualify as an executable packet.
+The two P1 root remediations are frozen at
+`9984232fcc6fce9b9261798858262e529c3729e2`, tree
+`1f36eaf9b260a7182c5c6541833c236d8090685b`. They bind selected mutable
+claim/closure/evidence state to the selected durable records and make the static
+pre-open audit fail closed for indirect connection/installer routes. No DDL bytes,
+schema digest, byte count, catalog digest, or approval literal changed, and no
+SQLite connection or SQLite-bearing test was executed.
+
+The next possible executable packet is `work/review/REV-0081/request.md`, bound
+to that remediation candidate. It must receive an independent exact-head result
+with `P0=0` and `P1=0`, after which Ameen must separately approve the exact
+commit, tree, DDL digest, byte count, catalog digest, SQL-manifest identity, and
+fresh-file-only commands. Until all of those conditions hold, the SQLite gate
+remains **NOT_RUN**.
