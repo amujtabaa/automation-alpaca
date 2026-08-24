@@ -2121,6 +2121,44 @@ def test_r20_venue_effect_rows_carry_dense_proof_order_checkpoint_ordinals() -> 
     checkpoint_codec._validate_checkpoint_collection(rows, "m2.venue.Effects/v1")
 
 
+@pytest.mark.parametrize(
+    ("field_name", "foreign_value"),
+    (
+        ("generation", identity.ApplicationGenerationId("foreign-generation")),
+        ("symbol_id", identity.SymbolId("MSFT")),
+        (
+            "target_leg_key",
+            identity.VenueLegKey(
+                identity.BrokerId("paper"),
+                identity.EnvironmentId("paper"),
+                identity.AccountId("account"),
+                identity.OrderId("foreign-target"),
+            ),
+        ),
+    ),
+    ids=("generation", "position-scope", "target-leg"),
+)
+def test_rev0079_ownerless_effect_requires_the_full_selected_scope(
+    field_name: str,
+    foreign_value: object,
+) -> None:
+    """An effect has no owner while OPEN, so its own encoder must bind every field."""
+
+    state, _ = _authority_state_with_effects(claimed=False)
+    current = state.venue._effect_by_id.get(
+        venue._effect_index_key(identity.EffectId("effect-1"))
+    )
+    assert current is not None
+    assert state.venue._owner_by_leg.size == 0
+    object.__setattr__(current.effect.scope, field_name, foreign_value)
+
+    with pytest.raises(ValueError, match="selected effect scope"):
+        checkpoint_codec._encode_runtime_checkpoint_venue_effect_rows(
+            state.venue,
+            _venue_claim_selection(),
+        )
+
+
 def test_r20_venue_acceptance_proof_codec_binds_the_selected_current_effect() -> None:
     """The checkpoint adapter accepts venue's private proof only by its bound members."""
 
@@ -2209,7 +2247,7 @@ def test_r20_venue_effect_rows_refuse_a_record_disagreeing_with_its_owner() -> N
     object.__setattr__(other, "side", "BUY")
     object.__setattr__(forged, "effects", (other,))
 
-    with pytest.raises(ValueError, match="selected record"):
+    with pytest.raises(ValueError, match="selected effect"):
         checkpoint_codec._encode_runtime_checkpoint_venue_effect_rows(
             state.venue, forged
         )

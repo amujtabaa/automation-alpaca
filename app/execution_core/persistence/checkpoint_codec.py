@@ -3638,6 +3638,7 @@ def _encode_runtime_checkpoint_venue_effect_rows(
     """
 
     atom = _operations._encode_m2_m1_atom
+    relations = _selected_venue_relations(selection)
     seen: set[bytes] = set()
     rows: list[object] = []
     for ordinal, record in enumerate(selection.effects):
@@ -3646,18 +3647,7 @@ def _encode_runtime_checkpoint_venue_effect_rows(
         if current is None:
             raise ValueError("selected effect has no current owner row")
         scope = current.effect.scope
-        if scope.effect_id != effect_external:
-            raise ValueError("reached effect does not own its selected identity")
-        if (
-            scope.request_occurrence_id != record.request_occurrence_id
-            or scope.mandate_id != record.mandate_id
-            or scope.kind.value != record.effect_kind
-            or scope.client_order_id != record.client_order_id
-            or scope.side.value != record.side
-            or scope.quantity != record.quantity
-            or scope.economic_scope != record.economic_scope
-        ):
-            raise ValueError("reached effect disagrees with its selected record")
+        _require_selected_effect_scope(book, relations, scope, record, "effect")
         order_key = _atom_order_key(effect_external)
         if order_key in seen:
             raise ValueError("selected effects retain a duplicate effect")

@@ -326,3 +326,16 @@ as a locator: `REV-0078` remains immutable evidence, while the next possible pac
 `work/review/REV-0079/request.md`. Until that packet has an independent exact-head result with
 `P0=0` and `P1=0`, followed by Ameen's explicit exact-identity approval, the SQLite gate remains
 **NOT_RUN**.
+
+---
+
+# Amendment 4 — second fresh-review route
+
+Date: 2026-08-24 · Recorded by: Codex implementation seat
+
+`REV-0079` reviewed `2f16f52` and returned `P0=0`, `P1=2`; it therefore does not qualify as the
+executable packet named by Amendment 3. Those findings are being remediated without SQLite
+execution. The next possible packet is `work/review/REV-0080/request.md`, bound to the later
+remediation candidate. Until its independent exact-head result has `P0=0` and `P1=0`, followed
+by Ameen's explicit approval of that exact identity and command list, the SQLite gate remains
+**NOT_RUN**.

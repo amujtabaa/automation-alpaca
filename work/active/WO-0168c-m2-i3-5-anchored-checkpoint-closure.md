@@ -47,6 +47,7 @@ allowed_paths:
   - work/review/REV-0077/**
   - work/review/REV-0078/**
   - work/review/REV-0079/**
+  - work/review/REV-0080/**
   - work/review/FINDING-preexisting-suite-floor-2026-08-24.md
   - work/review/FINDING-protection-stateful-replay-disposition.md
   - work/review/FINDING-schema-approval-gate-is-self-approving.md
@@ -176,3 +177,11 @@ The former Claude implementation handoff at `3b26c1cd636615cf0d85c13951eaebf099b
 being remediated in the isolated Codex worktree on
 `codex/m2-wo0168c-remediation-r1`. This records the active implementation identity only; it does
 not widen the released paths, authorize any SQLite execution, or change the human DDL gate.
+
+## Amendment — second fresh review route (2026-08-24)
+
+REV-0079 reviewed `2f16f52` and returned two P1 findings. Its request and result are immutable
+evidence; the implementation seat may remediate those root causes inside the already released
+source/test paths. `work/review/REV-0080/**` is added solely for the fresh exact-head re-review
+of that remediation. No SQLite execution, changed-DDL installation, or authority expansion is
+created by this review-path addition.

@@ -174,6 +174,18 @@ def _parent_map(tree: ast.AST) -> dict[ast.AST, ast.AST]:
     }
 
 
+def _nearest_enclosing_function(
+    node: ast.AST,
+    parents: dict[ast.AST, ast.AST],
+) -> ast.FunctionDef | ast.AsyncFunctionDef | None:
+    current = parents.get(node)
+    while current is not None:
+        if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            return current
+        current = parents.get(current)
+    return None
+
+
 def _canonical_support_import(tree: ast.Module) -> bool:
     imports: list[tuple[bool, str | None, ast.alias]] = []
     for node in ast.walk(tree):
@@ -1025,6 +1037,9 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
 
     tree = ast.parse(source, filename=label)
     installer_names: set[str] = set()
+    schema_module_names: set[str] = set()
+    sqlite_module_names: set[str] = {"sqlite3"}
+    sqlite_connect_names: set[str] = set()
     canonical_gate_imported = False
     violations: list[str] = []
 
@@ -1038,6 +1053,14 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
                                 f"{label}:{node.lineno}: installer import alias"
                             )
                         installer_names.add(imported.asname or "install_schema")
+            if node.module == "app.execution_core.persistence":
+                for imported in node.names:
+                    if imported.name == "schema":
+                        schema_module_names.add(imported.asname or "schema")
+            if node.module == "sqlite3":
+                for imported in node.names:
+                    if imported.name == "connect":
+                        sqlite_connect_names.add(imported.asname or "connect")
             if node.module == "approved_schema_digest":
                 for imported in node.names:
                     if imported.name == "require_approved_ddl_execution":
@@ -1049,30 +1072,69 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
                             )
         elif isinstance(node, ast.Import):
             for imported in node.names:
-                if imported.name == "app.execution_core.persistence.schema" and (
-                    imported.asname is None
-                ):
-                    violations.append(
-                        f"{label}:{node.lineno}: installer module needs explicit alias"
-                    )
+                if imported.name == "app.execution_core.persistence.schema":
+                    if imported.asname is None:
+                        violations.append(
+                            f"{label}:{node.lineno}: installer module needs explicit alias"
+                        )
+                    else:
+                        schema_module_names.add(imported.asname)
+                if imported.name == "sqlite3":
+                    sqlite_module_names.add(imported.asname or "sqlite3")
 
     parents = _parent_map(tree)
 
-    def _dynamic_installer_getter(call: ast.Call) -> bool:
+    def _expression_path(value: ast.expr) -> str | None:
+        if isinstance(value, ast.Name):
+            return value.id
+        if isinstance(value, ast.Attribute):
+            parent = _expression_path(value.value)
+            return None if parent is None else f"{parent}.{value.attr}"
+        return None
+
+    def _call_tail(value: ast.expr) -> str | None:
+        if isinstance(value, ast.Name):
+            return value.id
+        if isinstance(value, ast.Attribute):
+            return value.attr
+        return None
+
+    def _is_schema_module_expression(value: ast.expr) -> bool:
         return bool(
-            isinstance(call.func, ast.Name)
-            and call.func.id == "getattr"
-            and len(call.args) >= 2
-            and isinstance(call.args[1], ast.Constant)
-            and call.args[1].value == "install_schema"
+            _expression_path(value) == "app.execution_core.persistence.schema"
+            or (isinstance(value, ast.Name) and value.id in schema_module_names)
         )
 
-    def _is_installer_call(call: ast.Call) -> bool:
+    def _is_sqlite_module_expression(value: ast.expr) -> bool:
+        return bool(
+            _expression_path(value) == "sqlite3"
+            or (isinstance(value, ast.Name) and value.id in sqlite_module_names)
+        )
+
+    def _is_getattr_call(call: ast.Call) -> bool:
+        return _call_tail(call.func) == "getattr"
+
+    def _dynamic_installer_getter(call: ast.Call) -> bool:
+        return bool(
+            _is_getattr_call(call)
+            and len(call.args) >= 2
+            and _is_schema_module_expression(call.args[0])
+        )
+
+    def _is_sqlite_connect_call(call: ast.Call) -> bool:
         if isinstance(call.func, ast.Name):
-            return call.func.id in installer_names or call.func.id == "install_schema"
-        return (
-            isinstance(call.func, ast.Attribute) and call.func.attr == "install_schema"
-        ) or (isinstance(call.func, ast.Call) and _dynamic_installer_getter(call.func))
+            return call.func.id in sqlite_connect_names
+        if isinstance(call.func, ast.Attribute):
+            return bool(
+                call.func.attr == "connect"
+                and _is_sqlite_module_expression(call.func.value)
+            )
+        return bool(
+            isinstance(call.func, ast.Call)
+            and _is_getattr_call(call.func)
+            and len(call.func.args) >= 2
+            and _is_sqlite_module_expression(call.func.args[0])
+        )
 
     def _is_exact_gate_call(value: ast.expr) -> bool:
         return (
@@ -1082,6 +1144,51 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
             and not value.args
             and not value.keywords
         )
+
+    def _gate_dominates_connection(
+        owner: ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> bool:
+        body = list(owner.body)
+        if (
+            body
+            and isinstance(body[0], ast.Expr)
+            and isinstance(body[0].value, ast.Constant)
+            and isinstance(body[0].value.value, str)
+        ):
+            body.pop(0)
+        return bool(
+            body
+            and isinstance(body[0], ast.Expr)
+            and _is_exact_gate_call(body[0].value)
+        )
+
+    def _has_dynamic_import(owner: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+        return any(
+            _nearest_enclosing_function(candidate, parents) is owner
+            and isinstance(candidate, ast.Call)
+            and _is_dynamic_import_call(candidate)
+            for candidate in ast.walk(owner)
+        )
+
+    def _is_dynamic_import_call(call: ast.Call) -> bool:
+        return _call_tail(call.func) in {"__import__", "import_module"}
+
+    def _is_installer_call(call: ast.Call) -> bool:
+        if isinstance(call.func, ast.Name):
+            return call.func.id in installer_names or call.func.id == "install_schema"
+        return (
+            isinstance(call.func, ast.Attribute) and call.func.attr == "install_schema"
+        ) or (isinstance(call.func, ast.Call) and _dynamic_installer_getter(call.func))
+
+    if any(
+        isinstance(node, ast.Call) and _is_sqlite_connect_call(node)
+        for node in ast.walk(tree)
+    ):
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and _is_dynamic_import_call(node):
+                violations.append(
+                    f"{label}:{node.lineno}: dynamic import in SQLite-bearing source"
+                )
 
     for node in ast.walk(tree):
         if isinstance(node, ast.Name) and node.id in installer_names:
@@ -1100,6 +1207,29 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
             violations.append(f"{label}:{node.lineno}: dynamic installer lookup")
         if not isinstance(node, ast.Call) or not _is_installer_call(node):
             continue
+        owner = _nearest_enclosing_function(node, parents)
+        if owner is None:
+            violations.append(f"{label}:{node.lineno}: installer is not function-bound")
+        else:
+            connection_calls = tuple(
+                candidate
+                for candidate in ast.walk(owner)
+                if isinstance(candidate, ast.Call)
+                and _nearest_enclosing_function(candidate, parents) is owner
+                and _is_sqlite_connect_call(candidate)
+            )
+            if connection_calls and not _gate_dominates_connection(owner):
+                violations.append(
+                    f"{label}:{node.lineno}: approval gate does not dominate SQLite connect"
+                )
+            if _has_dynamic_import(owner):
+                violations.append(
+                    f"{label}:{node.lineno}: dynamic installer import route"
+                )
+            if any(isinstance(call.func, ast.Call) for call in connection_calls):
+                violations.append(
+                    f"{label}:{node.lineno}: dynamic SQLite connection lookup"
+                )
         if not canonical_gate_imported:
             violations.append(
                 f"{label}:{node.lineno}: missing canonical approval import"
@@ -1172,7 +1302,8 @@ def test_changed_ddl_gate_audit_refuses_bypass_spellings() -> None:
     valid = """
 from app.execution_core.persistence.schema import install_schema
 from approved_schema_digest import require_approved_ddl_execution
-install_schema(connection, approved_ddl_sha256=require_approved_ddl_execution())
+def install(connection):
+    return install_schema(connection, approved_ddl_sha256=require_approved_ddl_execution())
 """
     assert _schema_installer_gate_violations(valid, "valid.py") == []
 
@@ -1227,6 +1358,56 @@ from app.execution_core.persistence import schema
 from approved_schema_digest import require_approved_ddl_execution
 getattr(schema, 'install_schema')(connection, approved_ddl_sha256=require_approved_ddl_execution())
 """,
+        # Composition must not evade the dynamic schema lookup rule.
+        """
+from app.execution_core.persistence import schema
+from approved_schema_digest import require_approved_ddl_execution
+def install(connection):
+    return getattr(schema, 'install_' + 'schema')(
+        connection, approved_ddl_sha256=schema.schema_ddl_digest()
+    )
+""",
+        # A dynamically imported schema module is also an unprovable installer route.
+        """
+import importlib
+import sqlite3
+from approved_schema_digest import require_approved_ddl_execution
+def install(path):
+    require_approved_ddl_execution()
+    connection = sqlite3.connect(path)
+    schema = importlib.import_module('app.execution_core.persistence.' + 'schema')
+    return getattr(schema, 'install_' + 'schema')(
+        connection, approved_ddl_sha256=schema.schema_ddl_digest()
+    )
+""",
     )
     for ordinal, mutant in enumerate(mutants, 1):
         assert _schema_installer_gate_violations(mutant, f"mutant-{ordinal}.py")
+
+
+def test_changed_ddl_gate_audit_requires_the_gate_before_connection_open() -> None:
+    """An installer route may not create a SQLite connection then seek approval."""
+
+    valid = """
+import sqlite3
+from app.execution_core.persistence.schema import install_schema
+from approved_schema_digest import require_approved_ddl_execution
+def install(path):
+    require_approved_ddl_execution()
+    connection = sqlite3.connect(path)
+    return install_schema(connection, approved_ddl_sha256=require_approved_ddl_execution())
+"""
+    assert _schema_installer_gate_violations(valid, "valid-order.py") == []
+
+    late_gate = """
+import sqlite3
+from app.execution_core.persistence.schema import install_schema
+from approved_schema_digest import require_approved_ddl_execution
+def install(path):
+    connection = sqlite3.connect(path)
+    return install_schema(connection, approved_ddl_sha256=require_approved_ddl_execution())
+"""
+    violations = _schema_installer_gate_violations(late_gate, "late-gate.py")
+    assert any(
+        "does not dominate SQLite connect" in violation for violation in violations
+    )
