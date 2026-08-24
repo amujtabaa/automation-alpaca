@@ -1709,7 +1709,7 @@ def _encode_dormant_protection(
 
 def _encode_runtime_checkpoint_venue(
     book: _venue.VenueRecoveryBook,
-) -> tuple[list[object], bytes]:
+) -> tuple[list[object], bytes, bytes]:
     """Encode the frozen venue top row without serializing audit history."""
 
     if type(book) is not _venue.VenueRecoveryBook:
@@ -1779,8 +1779,11 @@ def _encode_runtime_checkpoint_venue(
         _checkpoint_collection("m2.venue.ProtectionCursors/v1", []),
     ]
     commitment = _checkpoint_row_commitment(b"execution-core/m2-venue/state/v1", row)
+    source_owner_commitment = _checkpoint_row_commitment(
+        b"execution-core/m2-venue/source-owner/v1", row
+    )
     row.append(_operations._encode_m2_bytes(commitment))
-    return row, commitment
+    return row, commitment, source_owner_commitment
 
 
 def _encode_runtime_checkpoint_authority(
@@ -2209,7 +2212,9 @@ def _project_runtime_checkpoint(
     if venue_scope.generation != request.application_generation_id:
         raise ValueError("top owner coordinates do not match selection proof")
 
-    venue_wire, venue_commitment = _encode_runtime_checkpoint_venue(venue)
+    venue_wire, venue_commitment, venue_source_owner_commitment = (
+        _encode_runtime_checkpoint_venue(venue)
+    )
     authority_wire, authority_commitment = _encode_runtime_checkpoint_authority(
         authority, venue_commitment
     )
@@ -2392,7 +2397,7 @@ def _project_runtime_checkpoint(
         venue_wire=venue_wire,
         authority_wire=authority_wire,
         scope_wires=tuple(scope_wires),
-        venue_owner_commitment=venue._protection_commitment,
+        venue_owner_commitment=venue_source_owner_commitment,
         authority_owner_commitment=authority_commitment,
         scope_owner_commitments=tuple(owner_commitments),
     )

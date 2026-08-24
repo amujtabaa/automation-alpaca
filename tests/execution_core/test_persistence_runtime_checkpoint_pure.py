@@ -737,7 +737,13 @@ def test_owner_projector_binding_covers_proof_and_owner_commitments() -> None:
 
     assert first._owner_preimage is not None
     assert first._owner_preimage.selection_proof_binding == first_proof._binding
-    assert first._owner_preimage.venue_owner_commitment == (
+    # R20 section 1: owner provenance is the distinct source-owner commitment over the
+    # venue row without its final member, never the history-shaped venue commitment.
+    first_payload = json.loads(checkpoint_codec.encode_runtime_checkpoint(first))
+    assert first._owner_preimage.venue_owner_commitment == bytes.fromhex(
+        _contract_k("execution-core/m2-venue/source-owner/v1", first_payload[7][:-1])
+    )
+    assert first._owner_preimage.venue_owner_commitment != (
         first_book._protection_commitment
     )
     assert first._owner_preimage != second._owner_preimage
@@ -899,3 +905,89 @@ def test_r19_dormant_source_projection_is_scope_and_proof_specific() -> None:
             authority_owner_commitment=first_preimage.authority_owner_commitment,
             scope_owner_commitments=((2, owner_row[1], owner_row[2], owner_row[3]),),
         )
+
+
+def test_r20_venue_owner_provenance_is_distinct_source_owner_domain() -> None:
+    proof = _selection_proof()
+    book, state = _empty_owners()
+
+    envelope = checkpoint_codec._project_runtime_checkpoint(proof, book, state, ())
+    payload = json.loads(checkpoint_codec.encode_runtime_checkpoint(envelope))
+    venue_row = payload[7]
+    source_members = venue_row[:-1]
+    preimage = envelope._owner_preimage
+
+    expected_wire = _contract_k("execution-core/m2-venue/state/v1", source_members)
+    expected_source_owner = _contract_k(
+        "execution-core/m2-venue/source-owner/v1", source_members
+    )
+
+    assert expected_wire != expected_source_owner
+    assert venue_row[-1] == expected_wire
+    assert preimage is not None
+    assert preimage.venue_owner_commitment == bytes.fromhex(expected_source_owner)
+    assert preimage.venue_owner_commitment != bytes.fromhex(venue_row[-1])
+    assert preimage.venue_owner_commitment != book._protection_commitment
+
+
+def test_r20_authority_venue_ref_consumes_wire_commitment_only() -> None:
+    proof = _selection_proof()
+    book, state = _empty_owners()
+
+    envelope = checkpoint_codec._project_runtime_checkpoint(proof, book, state, ())
+    payload = json.loads(checkpoint_codec.encode_runtime_checkpoint(envelope))
+    venue_ref = payload[8][7]
+    preimage = envelope._owner_preimage
+
+    assert venue_ref[0] == "m2.authority.VenueRef/v1"
+    assert venue_ref[5] == payload[7][-1]
+    assert preimage is not None
+    assert venue_ref[5] != preimage.venue_owner_commitment.hex()
+
+
+def test_r20_swapping_venue_wire_and_source_owner_commitments_fails() -> None:
+    proof = _selection_proof()
+    book, state = _empty_owners()
+
+    envelope = checkpoint_codec._project_runtime_checkpoint(proof, book, state, ())
+    payload = json.loads(checkpoint_codec.encode_runtime_checkpoint(envelope))
+    preimage = envelope._owner_preimage
+    assert preimage is not None
+
+    for substitute in (
+        bytes.fromhex(payload[7][-1]),
+        preimage.authority_owner_commitment,
+        book._protection_commitment,
+        b"\x00" * 32,
+    ):
+        forged = deepcopy(preimage)
+        object.__setattr__(forged, "venue_owner_commitment", substitute)
+        object.__setattr__(envelope, "_owner_preimage", forged)
+        assert not checkpoint_codec.RuntimeCheckpointEnvelope._is_authentic(envelope)
+        object.__setattr__(envelope, "_owner_preimage", preimage)
+
+    assert checkpoint_codec.RuntimeCheckpointEnvelope._is_authentic(envelope)
+
+
+def test_r20_both_venue_commitments_track_every_selected_source_member() -> None:
+    first_proof = _selection_proof()
+    second_proof = _selection_proof()
+    first_book, first_state = _empty_owners("account-a")
+    second_book, second_state = _empty_owners("account-b")
+
+    first = checkpoint_codec._project_runtime_checkpoint(
+        first_proof, first_book, first_state, ()
+    )
+    second = checkpoint_codec._project_runtime_checkpoint(
+        second_proof, second_book, second_state, ()
+    )
+    first_payload = json.loads(checkpoint_codec.encode_runtime_checkpoint(first))
+    second_payload = json.loads(checkpoint_codec.encode_runtime_checkpoint(second))
+
+    assert first_payload[7][-1] != second_payload[7][-1]
+    assert first._owner_preimage is not None
+    assert second._owner_preimage is not None
+    assert (
+        first._owner_preimage.venue_owner_commitment
+        != second._owner_preimage.venue_owner_commitment
+    )
