@@ -10,7 +10,7 @@ onto Claude Code planning-seat work; on any divergence the canonical file wins. 
 protocol text here.
 
 **Activate:** any gated/novel-surface decision block or kickoff draft (see the scope gate), or
-"wargame" / "war-game". **This is a planning-seat obligation, not an implementer skill** — it attacks
+"wargame" / "war-game". **This is a planning-seat obligation, not an implementer skill** — it stress-tests
 a *design before it is ratified*, when no code exists yet. **Deactivate:** "wargame off".
 
 ## Scope gate — decide FIRST (proportionality is mandatory)

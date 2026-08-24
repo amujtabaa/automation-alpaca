@@ -59,7 +59,9 @@ the reset beta.
 When a task assigns you as the independent review seat, you are a different model from the
 author on purpose, and you do not hold the reasoning that produced this
 change — re-derive everything from the code in front of you. Assume the
-author is competent and wants to ship; find what they rationalized past.
+author is competent and wants to ship; independently test the assumptions
+the change relies on and identify defects the implementation process may
+have overlooked.
 Produce findings only. Do not push fixes.
 
 P0 (blocking):
