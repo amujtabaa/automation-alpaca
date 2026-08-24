@@ -3270,3 +3270,212 @@ def test_r20_venue_bootstrap_target_map_refuses_an_unselected_scope() -> None:
         checkpoint_codec._encode_runtime_checkpoint_venue_bootstrap_target_rows(
             book, _bootstrap_selection()
         )
+
+
+def _fixture_execution_binding() -> venue.VenueExecutionBinding:
+    return venue.VenueExecutionBinding(
+        position_scope=_FIXTURE_POSITION_SCOPE,
+        position_commitment=_digest(2),
+        root_heads_commitment=_digest(3),
+        integrity_bits=0,
+    )
+
+
+def _fixture_resolved_registry_outcome(input_value: str) -> object:
+    return venue._ResolvedRegistryProjectionOutcome(
+        input_id=identity.VenueInputId(input_value),
+        command_commitment=_digest(13),
+        target_checkpoint=_fixture_execution_checkpoint(),
+        source_binding=_fixture_execution_binding(),
+        resulting_registry_count=1,
+        resulting_registry_commitment=_digest(14),
+        reason="target registry projection retained exact source and binding proof",
+    )
+
+
+def _fixture_unresolved_registry_outcome(input_value: str) -> object:
+    return venue._UnresolvedRegistryAdvanceOutcome(
+        input_id=identity.VenueInputId(input_value),
+        command_commitment=_digest(15),
+        target_checkpoint=_fixture_execution_checkpoint(),
+        prior_account_registry_count=0,
+        prior_account_registry_commitment=_digest(16),
+        prior_source_binding=_fixture_execution_binding(),
+        resulting_source_binding=_fixture_execution_binding(),
+        resulting_registry_count=1,
+        resulting_registry_commitment=_digest(17),
+        reason="canonical source advanced before venue ownership attribution",
+    )
+
+
+def _book_with_execution_reconciliations(
+    book: venue.VenueRecoveryBook,
+    records_by_input: tuple[tuple[str, object], ...],
+) -> venue.VenueRecoveryBook:
+    forged = copy(book)
+    index = book._execution_reconciliation_by_input
+    for input_value, record in records_by_input:
+        index = index.insert_new(
+            venue._input_index_key(identity.VenueInputId(input_value)),
+            record,
+            b"\x06" * 32,
+        )
+    object.__setattr__(forged, "_execution_reconciliation_by_input", index)
+    return forged
+
+
+def _fixture_refreshed_bootstrap_record(
+    checkpoint_input_value: str,
+) -> venue._BootstrapBoundTargetRecord:
+    """An advanced record whose serving checkpoint input differs from its origin.
+
+    The initial record must name one input for both roles, so a second referenced
+    catch-up input only exists once the record has been refreshed: the constructor
+    admits an explicit checkpoint input exactly when a distinct anchor proof is
+    retained beside the serving one.
+    """
+
+    binding = venue.VenueExecutionBinding(
+        position_scope=_FIXTURE_POSITION_SCOPE,
+        position_commitment=_digest(2),
+        root_heads_commitment=_digest(3),
+        integrity_bits=0,
+    )
+    registry_input = venue._new_bootstrap_target_registry_input(
+        application_generation_id=_APPLICATION,
+        source_kind=venue._BootstrapSourceKind.EMPTY_ACCOUNT,
+        position_scope=_FIXTURE_POSITION_SCOPE,
+        source_execution_commitment=_digest(8),
+        target_genesis_execution_commitment=_digest(9),
+        target_execution_commitment=_digest(10),
+        prior_account_registry_count=0,
+        prior_account_registry_commitment=_digest(11),
+        reconciliation_transition_count=0,
+        reconciliation_transition_head=_digest(12),
+    )
+    return venue._new_bootstrap_bound_target_record(
+        application_generation_id=_APPLICATION,
+        position_scope=_FIXTURE_POSITION_SCOPE,
+        source_kind=venue._BootstrapSourceKind.EMPTY_ACCOUNT,
+        source_execution_commitment=_digest(8),
+        target_genesis_execution_commitment=_digest(9),
+        target_execution_commitment=_digest(18),
+        binding=binding,
+        account_registry_count=1,
+        account_registry_commitment=_digest(19),
+        reconciliation_transition_count=0,
+        reconciliation_transition_head=_digest(12),
+        bootstrap_input=registry_input,
+        neutral_checkpoint_proof=_fixture_transition_proof(),
+        bootstrap_neutral_checkpoint_proof=_fixture_transition_proof(),
+        checkpoint_input_id=identity.VenueInputId(checkpoint_input_value),
+        checkpoint_command_commitment=_digest(20),
+    )
+
+
+def _bootstrap_input_ids() -> tuple[str, str]:
+    record = _fixture_bootstrap_record()
+    return record.bootstrap_input_id.value, record.checkpoint_input_id.value
+
+
+def test_r20_venue_execution_reconciliation_rows_project_both_union_arms() -> None:
+    state, _ = _authority_state_with_effects()
+    bootstrap_input, _ = _bootstrap_input_ids()
+    record = _fixture_refreshed_bootstrap_record("catch-up-2")
+    assert record.bootstrap_input_id.value == bootstrap_input
+    assert record.checkpoint_input_id.value == "catch-up-2"
+    book = _book_with_execution_reconciliations(
+        _book_with_bootstrap_target(state.venue, record),
+        (
+            (bootstrap_input, _fixture_resolved_registry_outcome(bootstrap_input)),
+            ("catch-up-2", _fixture_unresolved_registry_outcome("catch-up-2")),
+        ),
+    )
+
+    rows = (
+        checkpoint_codec._encode_runtime_checkpoint_venue_execution_reconciliation_rows(
+            book, _bootstrap_selection()
+        )
+    )
+
+    assert rows[0] == "m2.venue.ExecutionReconciliations/v1"
+    assert rows[1] == 2
+    # The origin input is referenced before the serving checkpoint input.
+    resolved, unresolved = rows[2]
+    assert resolved[0] == "m2.venue.ResolvedRegistryProjection/v1"
+    assert len(resolved) == 9
+    assert resolved[3][0] == "m2.venue.ExecutionCheckpoint/v1"
+    assert resolved[4][0] == "m2.venue.ExecutionBinding/v1"
+    assert resolved[8] == ["m1.venue.ResolvedProjectionKind", "REGISTRY_ADVANCE"]
+    assert unresolved[0] == "m2.venue.UnresolvedRegistryAdvance/v1"
+    assert len(unresolved) == 11
+    assert unresolved[6][0] == "m2.venue.ExecutionBinding/v1"
+    assert unresolved[7][0] == "m2.venue.ExecutionBinding/v1"
+    checkpoint_codec._validate_checkpoint_collection(
+        rows, "m2.venue.ExecutionReconciliations/v1"
+    )
+
+
+def test_r20_venue_execution_reconciliation_refuses_an_unreferenced_input() -> None:
+    state, _ = _authority_state_with_effects()
+    bootstrap_input, _ = _bootstrap_input_ids()
+    book = _book_with_execution_reconciliations(
+        _book_with_bootstrap_target(state.venue, _fixture_bootstrap_record()),
+        (
+            (bootstrap_input, _fixture_resolved_registry_outcome(bootstrap_input)),
+            ("catch-up-9", _fixture_resolved_registry_outcome("catch-up-9")),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="unreferenced input"):
+        checkpoint_codec._encode_runtime_checkpoint_venue_execution_reconciliation_rows(
+            book, _bootstrap_selection()
+        )
+
+
+def test_r20_venue_execution_reconciliation_refuses_a_row_outside_the_scopes() -> None:
+    state, _ = _authority_state_with_effects()
+    bootstrap_input, _ = _bootstrap_input_ids()
+    outcome = venue._ResolvedRegistryProjectionOutcome(
+        input_id=identity.VenueInputId(bootstrap_input),
+        command_commitment=_digest(13),
+        target_checkpoint=venue.VenueExecutionCheckpoint(
+            position_scope=PositionScope(
+                identity.BrokerId("paper"),
+                identity.EnvironmentId("paper"),
+                identity.AccountId("account"),
+                identity.SymbolId("MSFT"),
+            ),
+            registry_count=0,
+            registry_commitment=_digest(1),
+            position_commitment=_digest(2),
+            root_heads_commitment=_digest(3),
+            integrity_bits=0,
+            account_reconciliation_required=False,
+            reconciliation_transition_count=0,
+            reconciliation_transition_head=_digest(4),
+        ),
+        source_binding=venue.VenueExecutionBinding(
+            position_scope=PositionScope(
+                identity.BrokerId("paper"),
+                identity.EnvironmentId("paper"),
+                identity.AccountId("account"),
+                identity.SymbolId("MSFT"),
+            ),
+            position_commitment=_digest(2),
+            root_heads_commitment=_digest(3),
+            integrity_bits=0,
+        ),
+        resulting_registry_count=1,
+        resulting_registry_commitment=_digest(14),
+        reason="target registry projection retained exact source and binding proof",
+    )
+    book = _book_with_execution_reconciliations(
+        _book_with_bootstrap_target(state.venue, _fixture_bootstrap_record()),
+        ((bootstrap_input, outcome),),
+    )
+
+    with pytest.raises(ValueError, match="selected scope set"):
+        checkpoint_codec._encode_runtime_checkpoint_venue_execution_reconciliation_rows(
+            book, _bootstrap_selection()
+        )

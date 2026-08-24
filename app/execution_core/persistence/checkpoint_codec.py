@@ -2728,6 +2728,131 @@ def _encode_runtime_checkpoint_venue_bootstrap_target_rows(
     return _checkpoint_collection("m2.venue.BootstrapTargets/v1", rows)
 
 
+def _referenced_execution_reconciliation_inputs(
+    book: _venue.VenueRecoveryBook,
+    selection: _records._RuntimeCheckpointSelectionSet,
+) -> tuple[_identity.VenueInputId, ...]:
+    """Collect the catch-up input IDs named by the selected bootstrap targets.
+
+    A registry outcome is minted from one ``CatchUpExecutionRegistry`` item, and a
+    bootstrap target is the only selected current row that retains such an input
+    identity: its origin ``bootstrap_input_id`` and its serving
+    ``checkpoint_input_id``.  The reference order is therefore the proof order of
+    the selected position scopes, with the first reference of a repeated input
+    keeping its place.
+    """
+
+    ordered: dict[str, _identity.VenueInputId] = {}
+
+    def _reference(input_id: _identity.VenueInputId) -> None:
+        if type(input_id) is not _identity.VenueInputId:
+            raise TypeError("referenced input must be the exact VenueInputId type")
+        ordered.setdefault(input_id.value, input_id)
+
+    for position_scope in _selected_position_scopes_from_selection(book, selection):
+        value = book._bootstrap_bound_target_by_scope.get(
+            _venue._position_scope_index_key(position_scope)
+        )
+        if value is None:
+            continue
+        if type(value) is _venue._BootstrapBoundTargetRecord:
+            anchor_record = value
+        elif type(value) is _venue._ConsumedBootstrapBoundTargetRecord:
+            anchor_record = value.active_record
+        else:
+            raise TypeError(
+                "bootstrap target is neither an active nor a consumed record"
+            )
+        _reference(anchor_record.bootstrap_input_id)
+        _reference(anchor_record.checkpoint_input_id)
+    return tuple(ordered.values())
+
+
+def _encode_runtime_checkpoint_venue_execution_reconciliation_row(
+    record: object,
+) -> list[object]:
+    """Encode one member of the closed resolved/unresolved registry outcome union."""
+
+    atom = _operations._encode_m2_m1_atom
+    digest = _operations._encode_m2_bytes
+    checkpoint = _encode_runtime_checkpoint_venue_execution_checkpoint
+    binding = _encode_runtime_checkpoint_venue_execution_binding
+    if type(record) is _venue._ResolvedRegistryProjectionOutcome:
+        return [
+            "m2.venue.ResolvedRegistryProjection/v1",
+            atom(record.input_id),
+            digest(record.command_commitment),
+            checkpoint(record.target_checkpoint),
+            binding(record.source_binding),
+            _require_nonnegative_int(
+                "resulting registry count", record.resulting_registry_count
+            ),
+            digest(record.resulting_registry_commitment),
+            record.reason,
+            _checkpoint_enum("m1.venue.ResolvedProjectionKind", record.projection_kind),
+        ]
+    if type(record) is _venue._UnresolvedRegistryAdvanceOutcome:
+        return [
+            "m2.venue.UnresolvedRegistryAdvance/v1",
+            atom(record.input_id),
+            digest(record.command_commitment),
+            checkpoint(record.target_checkpoint),
+            _require_nonnegative_int(
+                "prior account registry count", record.prior_account_registry_count
+            ),
+            digest(record.prior_account_registry_commitment),
+            binding(record.prior_source_binding),
+            binding(record.resulting_source_binding),
+            _require_nonnegative_int(
+                "resulting registry count", record.resulting_registry_count
+            ),
+            digest(record.resulting_registry_commitment),
+            record.reason,
+        ]
+    raise TypeError("execution reconciliation is not an admitted exact outcome")
+
+
+def _encode_runtime_checkpoint_venue_execution_reconciliation_rows(
+    book: _venue.VenueRecoveryBook,
+    selection: _records._RuntimeCheckpointSelectionSet,
+) -> list[object]:
+    """Project every registry outcome named by a selected bootstrap target.
+
+    Like the fill reconciliation index this is an exact current index rather than
+    a permitted superset, so a retained input that no selected current row names
+    is a splice and the reached count must equal the whole map size.
+    """
+
+    selected_scopes = frozenset(
+        _selected_position_scopes_from_selection(book, selection)
+    )
+    rows: list[object] = []
+    reached = 0
+    for input_id in _referenced_execution_reconciliation_inputs(book, selection):
+        record = book._execution_reconciliation_by_input.get(
+            _venue._input_index_key(input_id)
+        )
+        if record is None:
+            continue
+        if record.input_id != input_id:
+            raise ValueError(
+                "reached execution reconciliation does not own its referenced input"
+            )
+        if record.position_scope not in selected_scopes:
+            raise ValueError(
+                "reached execution reconciliation leaves the selected scope set"
+            )
+        reached += 1
+        rows.append(
+            _require_bounded_checkpoint_row(
+                _encode_runtime_checkpoint_venue_execution_reconciliation_row(record)
+            )
+        )
+    if book._execution_reconciliation_by_input.size != reached:
+        raise ValueError("execution reconciliation index retains an unreferenced input")
+    return _checkpoint_collection("m2.venue.ExecutionReconciliations/v1", rows)
+
+
 def _encode_runtime_checkpoint_venue_protection_cursor_rows(
     book: _venue.VenueRecoveryBook,
     selection: _records._RuntimeCheckpointSelectionSet,
@@ -2966,10 +3091,6 @@ def _encode_runtime_checkpoint_venue(
 
     if type(book) is not _venue.VenueRecoveryBook:
         raise TypeError("venue owner must be exact VenueRecoveryBook")
-    if book._execution_reconciliation_by_input.size:
-        raise ValueError(
-            "nonempty venue checkpoint rows are not admitted by this projector"
-        )
     effect_rows = _encode_runtime_checkpoint_venue_effect_rows(book, selection)
     authority_epoch_rows = _encode_runtime_checkpoint_venue_authority_epoch_rows(
         book, selection
@@ -3004,6 +3125,9 @@ def _encode_runtime_checkpoint_venue(
     )
     bootstrap_target_rows = _encode_runtime_checkpoint_venue_bootstrap_target_rows(
         book, selection
+    )
+    execution_reconciliation_rows = (
+        _encode_runtime_checkpoint_venue_execution_reconciliation_rows(book, selection)
     )
     claim_rows = _encode_runtime_checkpoint_venue_claim_rows(book, selection)
     registry_count = book.execution_registry_count
@@ -3041,7 +3165,7 @@ def _encode_runtime_checkpoint_venue(
         broker_coverage_rows,
         coverage_provenance_rows,
         reconciliation_rows,
-        _checkpoint_collection("m2.venue.ExecutionReconciliations/v1", []),
+        execution_reconciliation_rows,
         execution_scope_rows,
         bootstrap_target_rows,
         protection_cursor_rows,
