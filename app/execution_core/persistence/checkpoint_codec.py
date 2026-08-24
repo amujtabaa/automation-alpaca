@@ -2242,6 +2242,9 @@ def _require_selected_effect_current_relation(
     if proof is None:
         if any(value is not None for value in closure_values):
             raise ValueError(f"reached {subject} lacks its selected closure proof")
+        _require_selected_effect_invalidations(
+            book, relations, current, record, subject
+        )
         return position_scope
     if record.disposition == "OPEN" or any(
         value is None for value in closure_values[:3]
@@ -2273,6 +2276,10 @@ def _require_selected_effect_current_relation(
     if record.closure_proof_kind == "NEVER_DISPATCHED":
         if selected_claim is not None or current.claim_occurrence_id is not None:
             raise ValueError(f"reached {subject} never-dispatched closure has a claim")
+        if current.state is not _venue.BrokerEffectState.CANCELED_BEFORE_DISPATCH:
+            raise ValueError(
+                f"reached {subject} never-dispatched closure requires cancellation"
+            )
     elif (
         selected_claim is None
         or selected_claim.claim_id != record.closure_proof_claim_id
@@ -2280,6 +2287,7 @@ def _require_selected_effect_current_relation(
         != selected_claim.claim_occurrence_id
     ):
         raise ValueError(f"reached {subject} disagrees with its selected closure claim")
+    _require_selected_effect_invalidations(book, relations, current, record, subject)
     return position_scope
 
 
@@ -2315,6 +2323,89 @@ def _require_selected_owner_relation(
         book, relations, owner.effect_scope, effect, subject
     )
     return effect, position_scope
+
+
+def _require_selected_effect_invalidations(
+    book: _venue.VenueRecoveryBook,
+    relations: _SelectedVenueRelations,
+    current: _venue.BrokerEffect,
+    record: _records.VenueEffectRecord,
+    subject: str,
+) -> None:
+    """Bind mutable contradiction tuples to selected invalidation evidence.
+
+    An invalidation row names the exact selected owner and observation that
+    generated one current contradiction. The row order is the selected durable
+    evidence order; the runtime tuple cannot add, remove, or substitute one.
+    """
+
+    invalidations = tuple(
+        sorted(
+            (
+                evidence
+                for evidence in relations.evidence_by_id.values()
+                if (
+                    evidence.effect_id == record.effect_id
+                    and evidence.evidence_kind == "INVALIDATION"
+                )
+            ),
+            key=lambda evidence: (evidence.evidence_ordinal, evidence.evidence_id),
+        )
+    )
+    contradictions = current.contradiction_evidence
+    if record.disposition != "INVALIDATED":
+        if invalidations or contradictions:
+            raise ValueError(
+                f"reached {subject} has invalidation evidence outside INVALIDATED"
+            )
+        return
+    if not invalidations:
+        raise ValueError(f"selected {subject} INVALIDATED lacks invalidation evidence")
+
+    acceptance_set = relations.acceptance_sets_by_effect_id.get(record.effect_id)
+    expected: list[_venue.AcceptanceContradiction] = []
+    for evidence in invalidations:
+        owner_id = evidence.contradiction_owner_id
+        observation_id = evidence.contradiction_observation_id
+        if (
+            acceptance_set is None
+            or evidence.acceptance_set_id != acceptance_set.acceptance_set_id
+            or evidence.proof_kind is not None
+            or owner_id is None
+            or observation_id is None
+        ):
+            raise ValueError(
+                f"selected {subject} invalidation evidence is structurally incomplete"
+            )
+        owner_record = relations.owners_by_id.get(owner_id)
+        leg_key = _identity.VenueLegKey(
+            book.scope.broker,
+            book.scope.environment,
+            book.scope.account,
+            owner_id,
+        )
+        owner = book._owner_by_leg.get(_venue._leg_index_key(leg_key))
+        if owner_record is None or owner is None:
+            raise ValueError(
+                f"selected {subject} invalidation evidence lacks its selected owner"
+            )
+        owner_effect, _position_scope = _require_selected_owner_relation(
+            book, relations, owner, owner_record, "invalidation evidence"
+        )
+        if (
+            owner_effect.effect_id != record.effect_id
+            or owner_record.observation_id != observation_id
+        ):
+            raise ValueError(
+                f"selected {subject} invalidation evidence disagrees with its owner"
+            )
+        expected.append(_venue.AcceptanceContradiction(leg_key, observation_id))
+    if not all(
+        type(item) is _venue.AcceptanceContradiction for item in contradictions
+    ) or tuple(contradictions) != tuple(expected):
+        raise ValueError(
+            f"reached {subject} disagrees with selected invalidation evidence"
+        )
 
 
 def _require_selected_route_relation(

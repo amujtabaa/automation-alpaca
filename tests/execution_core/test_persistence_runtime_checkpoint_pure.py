@@ -2292,6 +2292,176 @@ def test_rev0080_selected_closure_proof_requires_exact_evidence_relation() -> No
         )
 
 
+def test_rev0081_invalidated_effect_requires_selected_contradiction_evidence() -> None:
+    """An INVALIDATED effect cannot omit selected durable invalidation evidence."""
+
+    state, _ = _authority_state_with_effects()
+    current = state.venue._effect_by_id.get(
+        venue._effect_index_key(identity.EffectId("effect-1"))
+    )
+    assert current is not None
+    leg_key = identity.VenueLegKey(
+        identity.BrokerId("paper"),
+        identity.EnvironmentId("paper"),
+        identity.AccountId("account"),
+        identity.OrderId("owner-order-1"),
+    )
+    book = _book_with_owner_leg(state.venue, leg_key, current.effect.scope)
+    selection = _owner_selection(_venue_claim_selection(), "owner-order-1")
+    effect = deepcopy(selection.effects[0])
+    object.__setattr__(effect, "disposition", "INVALIDATED")
+    object.__setattr__(effect, "closure_proof_kind", "CONTRACT_COMPLETE_RESPONSE")
+    object.__setattr__(effect, "closure_proof_digest", "07" * 32)
+    object.__setattr__(effect, "closure_proof_evidence_id", 7)
+    object.__setattr__(effect, "closure_proof_claim_id", 1)
+    object.__setattr__(selection, "effects", (effect,))
+    object.__setattr__(
+        selection,
+        "acceptance_sets",
+        (records.AcceptanceSetRecord(11, effect.effect_id),),
+    )
+    object.__setattr__(
+        selection,
+        "evidence",
+        (
+            records.AcceptanceEvidenceRecord(
+                7,
+                11,
+                effect.effect_id,
+                "CLOSURE_PROOF",
+                "CONTRACT_COMPLETE_RESPONSE",
+                "07" * 32,
+                1,
+                None,
+                None,
+            ),
+            records.AcceptanceEvidenceRecord(
+                8,
+                11,
+                effect.effect_id,
+                "INVALIDATION",
+                None,
+                "08" * 32,
+                2,
+                identity.OrderId("owner-order-1"),
+                identity.VenueObservationId("observation-1"),
+            ),
+        ),
+    )
+    claim_occurrence_id = current.effect.claim_occurrence_id
+    assert claim_occurrence_id is not None
+    object.__setattr__(
+        current.effect, "acceptance_set_state", venue.AcceptanceSetState.INVALIDATED
+    )
+    object.__setattr__(
+        current.effect,
+        "acceptance_proof",
+        venue.AcceptanceProof(
+            kind=venue.AcceptanceProofKind.CONTRACT_COMPLETE_RESPONSE,
+            effect_scope=current.effect.scope,
+            claim_occurrence_id=claim_occurrence_id,
+            evidence_reference=identity.EvidenceReference("selected-proof-evidence"),
+            evidence_digest=b"\x07" * 32,
+        ),
+    )
+    contradiction = venue.AcceptanceContradiction(
+        leg_key, identity.VenueObservationId("observation-1")
+    )
+    object.__setattr__(current.effect, "contradiction_evidence", (contradiction,))
+
+    rows = checkpoint_codec._encode_runtime_checkpoint_venue_effect_rows(
+        book, selection
+    )
+    assert rows[2][0][7][2][0] == [
+        "m2.venue.AcceptanceContradiction/v1",
+        0,
+        _operations._encode_m2_m1_atom(leg_key),
+        _operations._encode_m2_m1_atom(identity.VenueObservationId("observation-1")),
+    ]
+
+    object.__setattr__(
+        current.effect, "contradiction_evidence", (contradiction, contradiction)
+    )
+    with pytest.raises(ValueError, match="selected invalidation evidence"):
+        checkpoint_codec._encode_runtime_checkpoint_venue_effect_rows(book, selection)
+
+    object.__setattr__(
+        current.effect,
+        "contradiction_evidence",
+        (
+            venue.AcceptanceContradiction(
+                leg_key, identity.VenueObservationId("spliced-observation")
+            ),
+        ),
+    )
+    with pytest.raises(ValueError, match="selected invalidation evidence"):
+        checkpoint_codec._encode_runtime_checkpoint_venue_effect_rows(book, selection)
+
+    object.__setattr__(current.effect, "contradiction_evidence", ())
+    with pytest.raises(ValueError, match="selected invalidation evidence"):
+        checkpoint_codec._encode_runtime_checkpoint_venue_effect_rows(book, selection)
+
+
+def test_rev0081_never_dispatched_requires_selected_cancellation_lifecycle() -> None:
+    """NEVER_DISPATCHED must not close an effect still recorded as REQUESTED."""
+
+    state, _ = _authority_state_with_effects(claimed=False)
+    selection = _venue_claim_selection(claimed=False)
+    effect = deepcopy(selection.effects[0])
+    object.__setattr__(effect, "disposition", "CLOSED")
+    object.__setattr__(effect, "closure_proof_kind", "NEVER_DISPATCHED")
+    object.__setattr__(effect, "closure_proof_digest", "07" * 32)
+    object.__setattr__(effect, "closure_proof_evidence_id", 7)
+    object.__setattr__(selection, "effects", (effect,))
+    object.__setattr__(
+        selection,
+        "acceptance_sets",
+        (records.AcceptanceSetRecord(11, effect.effect_id),),
+    )
+    object.__setattr__(
+        selection,
+        "evidence",
+        (
+            records.AcceptanceEvidenceRecord(
+                7,
+                11,
+                effect.effect_id,
+                "CLOSURE_PROOF",
+                "NEVER_DISPATCHED",
+                "07" * 32,
+                1,
+                None,
+                None,
+            ),
+        ),
+    )
+    current = state.venue._effect_by_id.get(
+        venue._effect_index_key(identity.EffectId("effect-1"))
+    )
+    assert current is not None
+    object.__setattr__(
+        current.effect, "acceptance_set_state", venue.AcceptanceSetState.CLOSED
+    )
+    object.__setattr__(
+        current.effect,
+        "acceptance_proof",
+        venue.AcceptanceProof(
+            kind=venue.AcceptanceProofKind.NEVER_DISPATCHED,
+            effect_scope=current.effect.scope,
+            claim_occurrence_id=None,
+            evidence_reference=identity.EvidenceReference("never-dispatched"),
+            evidence_digest=b"\x07" * 32,
+        ),
+    )
+
+    with pytest.raises(
+        ValueError, match="never-dispatched closure requires cancellation"
+    ):
+        checkpoint_codec._encode_runtime_checkpoint_venue_effect_rows(
+            state.venue, selection
+        )
+
+
 def test_r20_venue_acceptance_proof_codec_binds_the_selected_current_effect() -> None:
     """The checkpoint adapter accepts venue's private proof only by its bound members."""
 
