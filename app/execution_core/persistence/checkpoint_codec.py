@@ -21,6 +21,7 @@ from weakref import ref as _weakref_ref
 from .. import acquisition as _acquisition
 from .. import authority as _authority
 from .. import durable_codec as _durable_codec
+from .. import fills as _fills
 from .. import identity as _identity
 from .. import position as _position
 from .. import protection as _protection
@@ -43,6 +44,7 @@ _M2_DORMANT_ACQUISITION_TAG = "m2.acquisition.Dormant/v2"
 _M2_DORMANT_PROTECTION_TAG = "m2.protection.Dormant/v1"
 _M2_POSITION_SCOPE_TAG = "m1.fills.PositionScope/v1"
 _MAX_RUNTIME_CHECKPOINT_SCOPES = 4_096
+_MAX_CHECKPOINT_COLLECTION_ROWS = 65_535
 _MAX_RUNTIME_CHECKPOINT_ROW_BYTES = 2_097_152
 _MAX_RUNTIME_CHECKPOINT_COMPONENT_BYTES = 67_108_864
 _MAX_RUNTIME_CHECKPOINT_PAYLOAD_BYTES = 268_435_456
@@ -721,6 +723,7 @@ _CHECKPOINT_FIXED_ROW_LENGTHS = {
     "m2.authority.ClaimAcquisitionEffect/v1": 5,
     "m2.authority.AcquisitionClaimPermit/v1": 22,
     "m2.authority.ManualFlatten/v1": 5,
+    "m1.authority.BeginManualFlatten/v1": 9,
     "m2.authority.EmergencyGrant/v1": 8,
     "m2.authority.AcquisitionDescriptor/v1": 3,
     "m2.authority.AcquisitionSlot/v1": 4,
@@ -793,7 +796,7 @@ def _validate_checkpoint_collection(value: object, expected_tag: str) -> None:
         or value[1] != len(value[2])
     ):
         raise ValueError(f"{expected_tag} has the wrong exact shape")
-    if len(value[2]) > 65_535:
+    if len(value[2]) > _MAX_CHECKPOINT_COLLECTION_ROWS:
         raise OverflowError(f"{expected_tag} exceeds its row limit")
     for row in value[2]:
         _validate_checkpoint_nested_value(row)
@@ -1786,18 +1789,97 @@ def _encode_runtime_checkpoint_venue(
     return row, commitment, source_owner_commitment
 
 
+def _encode_runtime_checkpoint_manual_row(
+    manual: _authority._ManualFlatten,
+) -> list[object]:
+    """Encode one payload-owned manual flatten row under the R20 section 3 rules."""
+
+    if type(manual) is not _authority._ManualFlatten:
+        raise TypeError("manual flatten must be exact _ManualFlatten")
+    cancel_effect_ids = manual.cancel_effect_ids
+    if type(cancel_effect_ids) is not tuple:
+        raise TypeError("manual cancel effect IDs must be an exact tuple")
+    if len(cancel_effect_ids) > _MAX_CHECKPOINT_COLLECTION_ROWS:
+        raise ValueError("manual cancel effects exceed the bounded row cap")
+    for effect_id in cancel_effect_ids:
+        if type(effect_id) is not _identity.EffectId:
+            raise TypeError("manual cancel effect must be exact EffectId")
+    ordered = sorted(cancel_effect_ids, key=lambda effect_id: effect_id.value)
+    if len({effect_id.value for effect_id in ordered}) != len(ordered):
+        raise ValueError("manual cancel effects retain a duplicate effect ID")
+    sell_effect_id = manual.sell_effect_id
+    if sell_effect_id is not None and type(sell_effect_id) is not _identity.EffectId:
+        raise TypeError("manual sell effect must be exact EffectId or None")
+    return [
+        "m2.authority.ManualFlatten/v1",
+        _operations._encode_m2_begin_manual_flatten(manual.command),
+        _checkpoint_enum("m1.authority.FlattenPhase", manual.phase),
+        _checkpoint_collection(
+            "m2.authority.CancelEffects/v1",
+            [_operations._encode_m2_m1_atom(effect_id) for effect_id in ordered],
+        ),
+        (
+            None
+            if sell_effect_id is None
+            else _operations._encode_m2_m1_atom(sell_effect_id)
+        ),
+    ]
+
+
+def _encode_runtime_checkpoint_manual_rows(
+    state: _authority.ExecutionAuthorityState,
+    application_generation_id: _identity.ApplicationGenerationId,
+    selected_position_scopes: tuple[_fills.PositionScope, ...],
+) -> list[object]:
+    """Project each manual reached from a selected scope, refusing any that is not.
+
+    Manual state is payload-owned rather than repository-selected, so it is not one
+    of the four permitted supersets: every retained manual must be reachable through
+    ``_manual_flatten_by_scope`` then ``_manual_by_id`` from a selected scope. An
+    unreachable manual fails closed instead of being dropped from the checkpoint.
+    """
+
+    reached: dict[str, _authority._ManualFlatten] = {}
+    for position_scope in selected_position_scopes:
+        slot_key = _authority._acquisition_scope_key(
+            application_generation_id, position_scope
+        )
+        flatten_id = state._manual_flatten_by_scope.get(slot_key)
+        if flatten_id is None:
+            continue
+        manual = state._manual_by_id.get(_authority._manual_key(flatten_id))
+        if manual is None:
+            raise ValueError("selected scope names an absent manual flatten")
+        if flatten_id.value in reached:
+            raise ValueError("selected scopes retain a duplicate manual flatten")
+        reached[flatten_id.value] = manual
+    if state._manual_by_id.size != len(reached):
+        raise ValueError("manual flatten state is not reachable from selected scopes")
+    return _checkpoint_collection(
+        "m2.authority.ManualFlattens/v1",
+        [
+            _encode_runtime_checkpoint_manual_row(reached[flatten_value])
+            for flatten_value in sorted(reached)
+        ],
+    )
+
+
 def _encode_runtime_checkpoint_authority(
     state: _authority.ExecutionAuthorityState,
     venue_commitment: bytes,
+    application_generation_id: _identity.ApplicationGenerationId,
+    selected_position_scopes: tuple[_fills.PositionScope, ...],
 ) -> tuple[list[object], bytes]:
     """Encode the corrected R2 authority top row and its exact empty collections."""
 
     if type(state) is not _authority.ExecutionAuthorityState:
         raise TypeError("authority owner must be exact ExecutionAuthorityState")
     _authority._validate_authority_state(state)
+    manual_rows = _encode_runtime_checkpoint_manual_rows(
+        state, application_generation_id, selected_position_scopes
+    )
     payload_maps = (
         state._effect_authority_by_id,
-        state._manual_by_id,
         state._acquisition_descriptor_by_effect,
         state._acquisition_currentness_by_scope,
         state._acquisition_descriptor_by_scope,
@@ -1834,7 +1916,7 @@ def _encode_runtime_checkpoint_authority(
         ],
         None,
         _checkpoint_collection("m2.authority.EffectAuthorizations/v1", []),
-        _checkpoint_collection("m2.authority.ManualFlattens/v1", []),
+        manual_rows,
         _checkpoint_collection("m2.authority.AcquisitionDescriptors/v1", []),
         _checkpoint_collection("m2.authority.AcquisitionSlots/v1", []),
     ]
@@ -2215,8 +2297,20 @@ def _project_runtime_checkpoint(
     venue_wire, venue_commitment, venue_source_owner_commitment = (
         _encode_runtime_checkpoint_venue(venue)
     )
+    selected_position_scopes = tuple(
+        _fills.PositionScope(
+            venue_scope.broker,
+            venue_scope.environment,
+            venue_scope.account,
+            selected.symbol,
+        )
+        for selected in selected_scopes
+    )
     authority_wire, authority_commitment = _encode_runtime_checkpoint_authority(
-        authority, venue_commitment
+        authority,
+        venue_commitment,
+        request.application_generation_id,
+        selected_position_scopes,
     )
     scope_wires: list[
         tuple[int, list[object], list[object], list[object], list[object]]

@@ -15,7 +15,12 @@ import pytest
 from app.execution_core import authority, identity, profiles, venue
 from app.execution_core.fills import PositionScope
 from app.execution_core.position import ExecutionSnapshot
-from app.execution_core.persistence import checkpoint_codec, records
+from app.execution_core.persistence import (
+    checkpoint_codec,
+    operations as _operations,
+    records,
+)
+import persistence_setup_support as setup_support
 
 
 _EXECUTION_PROFILE = "11" * 32
@@ -991,3 +996,105 @@ def test_r20_both_venue_commitments_track_every_selected_source_member() -> None
         first._owner_preimage.venue_owner_commitment
         != second._owner_preimage.venue_owner_commitment
     )
+
+
+def _manual_projection_inputs(
+    symbols: tuple[identity.SymbolId, ...] = (identity.SymbolId("AAPL"),),
+) -> tuple[
+    records.RuntimeCheckpointSelectionProof,
+    venue.VenueRecoveryBook,
+    authority.ExecutionAuthorityState,
+    tuple[checkpoint_codec._RuntimeCheckpointScopeOwners, ...],
+]:
+    """Reuse the dormant selection, but with reducer-built manual flatten state."""
+
+    proof, _book, state, owners = _dormant_projection_inputs()
+    manual_state = setup_support.authority_state_with_manual_flattens(
+        state.venue.scope, symbols
+    )
+    return proof, manual_state.venue, manual_state, owners
+
+
+def test_r20_manual_flatten_rows_project_exact_wire_from_selected_scope() -> None:
+    proof, book, state, owners = _manual_projection_inputs()
+
+    envelope = checkpoint_codec._project_runtime_checkpoint(proof, book, state, owners)
+    payload = json.loads(checkpoint_codec.encode_runtime_checkpoint(envelope))
+    manual_rows = payload[8][10]
+
+    flatten_id = authority.ManualFlattenId("manual-flatten-AAPL")
+    manual = state._manual_by_id.get(authority._manual_key(flatten_id))
+    assert manual is not None
+
+    assert manual_rows[0] == "m2.authority.ManualFlattens/v1"
+    assert manual_rows[1] == 1
+    assert len(manual_rows[2]) == 1
+    row = manual_rows[2][0]
+    assert row == [
+        "m2.authority.ManualFlatten/v1",
+        _operations._encode_m2_begin_manual_flatten(manual.command),
+        ["m1.authority.FlattenPhase", "WAITING"],
+        ["m2.authority.CancelEffects/v1", 0, []],
+        None,
+    ]
+    assert len(row) == 5
+    assert checkpoint_codec.RuntimeCheckpointEnvelope._is_authentic(envelope)
+
+
+def test_r20_manual_flatten_unreachable_from_selected_scopes_is_refused() -> None:
+    """A manual on an unselected scope must fail closed, never be dropped silently."""
+
+    proof, book, state, owners = _manual_projection_inputs(
+        (identity.SymbolId("AAPL"), identity.SymbolId("MSFT"))
+    )
+
+    assert state._manual_by_id.size == 2
+    with pytest.raises(ValueError, match="manual"):
+        checkpoint_codec._project_runtime_checkpoint(proof, book, state, owners)
+
+
+def test_r20_manual_cancel_effects_are_ordered_deduped_and_capped() -> None:
+    _, _, state, _ = _manual_projection_inputs()
+    manual = state._manual_by_id.get(
+        authority._manual_key(authority.ManualFlattenId("manual-flatten-AAPL"))
+    )
+    assert manual is not None
+
+    ordered = checkpoint_codec._encode_runtime_checkpoint_manual_row(
+        _replace_manual(
+            manual,
+            cancel_effect_ids=(identity.EffectId("e-2"), identity.EffectId("e-1")),
+        )
+    )
+    assert ordered[3] == [
+        "m2.authority.CancelEffects/v1",
+        2,
+        [
+            _operations._encode_m2_m1_atom(identity.EffectId("e-1")),
+            _operations._encode_m2_m1_atom(identity.EffectId("e-2")),
+        ],
+    ]
+
+    with pytest.raises(ValueError, match="duplicate"):
+        checkpoint_codec._encode_runtime_checkpoint_manual_row(
+            _replace_manual(
+                manual,
+                cancel_effect_ids=(identity.EffectId("e-1"), identity.EffectId("e-1")),
+            )
+        )
+    with pytest.raises(ValueError, match="bounded|cap"):
+        checkpoint_codec._encode_runtime_checkpoint_manual_row(
+            _replace_manual(
+                manual,
+                cancel_effect_ids=tuple(
+                    identity.EffectId(f"e-{index}") for index in range(65_536)
+                ),
+            )
+        )
+
+
+def _replace_manual(manual: Any, **changes: object) -> Any:
+    forged = deepcopy(manual)
+    for name, value in changes.items():
+        object.__setattr__(forged, name, value)
+    return forged
