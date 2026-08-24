@@ -87,12 +87,18 @@ def _require_write_capability(
 ) -> None:
     """Refuse absent, forged, stale, cross-connection, or subclassed authority."""
 
+    # Read the sealed slots defensively: a capability forged with
+    # ``object.__new__`` has the exact type but no slot values at all, and a bare
+    # attribute read leaks ``AttributeError`` instead of the refusal this function
+    # promises. ``None`` can never be a seal or a connection, so an unset slot
+    # takes the same refusal path as a wrong one.
     capability_type = type(capability)
     if capability_type is _RuntimeWriteCapability:
         runtime_capability = _cast(_RuntimeWriteCapability, capability)
         if (
-            runtime_capability._seal is not _RUNTIME_WRITE_CAPABILITY_SEAL
-            or runtime_capability._connection is not connection
+            getattr(runtime_capability, "_seal", None)
+            is not _RUNTIME_WRITE_CAPABILITY_SEAL
+            or getattr(runtime_capability, "_connection", None) is not connection
             or getattr(connection, "in_transaction", False) is not True
         ):
             raise ValueError("runtime write capability is not current for connection")
@@ -100,8 +106,8 @@ def _require_write_capability(
     if capability_type is _SetupWriteCapability:
         setup_capability = _cast(_SetupWriteCapability, capability)
         if (
-            setup_capability._seal is not _SETUP_WRITE_CAPABILITY_SEAL
-            or setup_capability._connection is not connection
+            getattr(setup_capability, "_seal", None) is not _SETUP_WRITE_CAPABILITY_SEAL
+            or getattr(setup_capability, "_connection", None) is not connection
         ):
             raise ValueError("setup write capability is not current for connection")
         return

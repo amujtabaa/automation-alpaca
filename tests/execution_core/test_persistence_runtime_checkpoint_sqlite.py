@@ -9,6 +9,11 @@ from typing import Any, Callable
 
 import pytest
 
+from app.execution_core import authority as _authority
+from app.execution_core import identity
+from app.execution_core import venue as _venue
+from app.execution_core.fills import PositionScope
+from app.execution_core.position import ExecutionSnapshot
 from app.execution_core.persistence import checkpoint_codec, records, repository
 from app.execution_core.persistence.schema import install_schema, schema_ddl_digest
 import persistence_setup_support as setup_support
@@ -22,10 +27,70 @@ def _open_fresh(path: Path) -> sqlite3.Connection:
     return connection
 
 
-def _install_foundation(connection: sqlite3.Connection) -> None:
+def _install_foundation(
+    connection: sqlite3.Connection, *, dormant: bool = True
+) -> None:
+    """Install the schema and, by default, a dormant-scope foundation.
+
+    ``dormant=False`` restores ``base._foundation`` exactly, for the selection
+    tests that pin row counts produced by a live controller and protection
+    authority.
+
+    ``base._foundation`` installs an *active* controller and protection authority
+    whose commitment digests are fixture constants. No honestly constructed owner
+    can carry those digests, so the projector's active path is unreachable from it.
+    The dormant variant below differs only in those two records and lets the real
+    projector run end to end, which is what this file needs: it proves the
+    persistence round trip, so the bytes it stores should be the bytes the
+    production projector actually emits.
+    """
+
     install_schema(connection, approved_ddl_sha256=schema_ddl_digest())
-    base._foundation(connection)
+    if not dormant:
+        base._foundation(connection)
+        connection.commit()
+        return
+    for operation, value in (
+        (repository.store_execution_profile, base._execution_profile()),
+        (repository.store_market_source_profile, base._market_profile()),
+        (repository.store_application_generation, base._application()),
+        (repository.store_scope, base._scope()),
+        (repository.store_acquisition_generation, base._acquisition()),
+        (repository.store_symbol_controller, _dormant_controller()),
+        (repository.store_market_stream_authority, base._market_stream()),
+        (repository.store_market_cursor, base._cursor()),
+        (repository.store_protection_authority, _dormant_protection()),
+    ):
+        outcome = operation(
+            connection,
+            value,
+            capability=setup_support.issue_setup_write_capability(connection),
+        )
+        assert outcome.kind is records.RepositoryOutcomeKind.APPLIED, (
+            operation.__name__,
+            outcome.kind,
+        )
     connection.commit()
+
+
+def _dormant_controller() -> records.SymbolControllerRecord:
+    return records.SymbolControllerRecord(
+        1,
+        base.APP_ID,
+        base.EXECUTION_PROFILE_ID,
+        None,
+        0,
+        "CONSISTENT",
+        0,
+        1,
+        "9b" * 32,
+    )
+
+
+def _dormant_protection() -> records.ProtectionAuthorityRecord:
+    return records.ProtectionAuthorityRecord(
+        1, "NORMAL", None, None, None, None, None, None, 0, "51" * 32, 1
+    )
 
 
 def _scope_wire() -> tuple[int, list[object], list[object], list[object], list[object]]:
@@ -50,24 +115,57 @@ def _scope_wire() -> tuple[int, list[object], list[object], list[object], list[o
     )
 
 
+def _genesis_owners() -> tuple[
+    _authority.ExecutionAuthorityState, _venue.VenueRecoveryBook
+]:
+    """Genesis authority and venue owners on the exact scope the fixture installs."""
+
+    state = _authority.initial_execution_authority_state(
+        _venue.VenueScope(
+            base.APP_ID,
+            identity.BrokerId("paper"),
+            identity.EnvironmentId("paper"),
+            identity.AccountId("account"),
+        )
+    )
+    return state, state.venue
+
+
 def _projected_envelope(
     proof: records.RuntimeCheckpointSelectionProof,
 ) -> checkpoint_codec.RuntimeCheckpointEnvelope:
-    venue = ["m2.venue.State/v1", *([None] * 22)]
-    authority = ["m2.authority.Checkpoint/v1", *([None] * 13)]
-    return checkpoint_codec._issue_projected_runtime_checkpoint(
-        selection_proof_binding=proof._binding,
-        application_generation_id=proof.request.application_generation_id,
-        execution_profile_id=proof.request.execution_profile_id,
-        market_source_profile_id=proof.request.market_source_profile_id,
-        currentness_head_ordinal=proof.target_currentness_head_ordinal,
-        checkpoint_version_ordinal=proof.target_checkpoint_version_ordinal,
-        venue_wire=venue,
-        authority_wire=authority,
-        scope_wires=(_scope_wire(),),
-        venue_owner_commitment=b"v" * 32,
-        authority_owner_commitment=b"a" * 32,
-        scope_owner_commitments=((1, b"q" * 32, b"e" * 32, b"p" * 32),),
+    """Project the envelope through the production projector, not a hand-built shape.
+
+    The earlier fixture assembled every wire by hand as an all-null skeleton and
+    handed it to ``_issue_projected_runtime_checkpoint``. That skeleton is what the
+    wire validator now refuses, and hand-assembly was never the thing under test
+    here: this file proves the persistence round trip, so it should carry whatever
+    bytes the real projector emits. Family coverage stays with the pure suite.
+
+    The fixture's selection admits a single scope with no effects, owners, or roots,
+    so the honest projection of genesis owners is a populated top row over empty
+    collections.
+    """
+
+    state, book = _genesis_owners()
+    scope_owners = tuple(
+        checkpoint_codec._RuntimeCheckpointScopeOwners(
+            record.scope_id,
+            None,
+            ExecutionSnapshot.flat(
+                PositionScope(
+                    book.scope.broker,
+                    book.scope.environment,
+                    book.scope.account,
+                    record.symbol,
+                )
+            ),
+            None,
+        )
+        for record in proof._selection.scopes
+    )
+    return checkpoint_codec._project_runtime_checkpoint(
+        proof, book, state, scope_owners
     )
 
 
@@ -464,9 +562,9 @@ def _finish_failed_write(
     _assert_exact_predecessor_retained(database)
 
 
-def _fresh_writer(database: Path) -> _ObservedConnection:
+def _fresh_writer(database: Path, *, dormant: bool = True) -> _ObservedConnection:
     raw = _open_fresh(database)
-    _install_foundation(raw)
+    _install_foundation(raw, dormant=dormant)
     return _ObservedConnection(raw)
 
 
@@ -582,9 +680,12 @@ def test_w00b_only_authentic_setup_capability_reaches_checkpoint_sql(
         _store(writer, proof, envelope)
 
     assert raised.value is fault
-    assert (
-        writer.statements[before][0] == repository._RUNTIME_CHECKPOINT_SELECTION_SQL[0]
-    )
+    # The capability check runs first, then _verify_schema_connection issues its
+    # connection PRAGMAs. Those are not checkpoint SQL, so the claim under test is
+    # that the FIRST checkpoint statement reached is the reselection query.
+    checkpoint_sql = set(repository._RUNTIME_CHECKPOINT_SELECTION_SQL)
+    reached = [sql for sql, _ in writer.statements[before:] if sql in checkpoint_sql]
+    assert reached[:1] == [repository._RUNTIME_CHECKPOINT_SELECTION_SQL[0]], reached[:1]
     _finish_failed_write(database, writer)
 
 
@@ -1180,7 +1281,8 @@ def test_selection_records_exact_counts_and_canonical_absence_evidence(
     tmp_path: Path,
 ) -> None:
     database = tmp_path / "wo0168c-absence.db"
-    writer = _fresh_writer(database)
+    # Pins the counts a live controller and protection authority produce.
+    writer = _fresh_writer(database, dormant=False)
     writer.execute("BEGIN")
 
     selected = repository.select_runtime_checkpoint(writer, _selection_request())
