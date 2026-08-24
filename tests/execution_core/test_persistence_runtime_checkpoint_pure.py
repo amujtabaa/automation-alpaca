@@ -2574,3 +2574,63 @@ def test_r20_venue_acquisition_correlation_rows_project_selected_roots() -> None
         checkpoint_codec._encode_runtime_checkpoint_venue_correlation_rows(
             book, _venue_claim_selection()
         )
+
+
+def test_r20_venue_coverage_provenance_rows_flatten_selected_roots() -> None:
+    state, _ = _authority_state_with_effects()
+    root_key = identity.RootFillKey(
+        identity.BrokerId("paper"),
+        identity.EnvironmentId("paper"),
+        identity.AccountId("account"),
+        identity.RootFillId("root-1"),
+    )
+    roots = (
+        type(state.venue._effect_by_id)
+        .empty()
+        .insert_new(
+            venue._coverage_root_index_key(root_key), b"\xaa" * 32, b"\xbb" * 32
+        )
+    )
+    provenance = venue._CoverageProvenance(roots, b"\xcc" * 32)
+    book = copy(state.venue)
+    object.__setattr__(
+        book,
+        "_coverage_provenance_by_scope",
+        state.venue._coverage_provenance_by_scope.insert_new(
+            venue._position_scope_index_key(_DORMANT_POSITION_SCOPE),
+            provenance,
+            provenance.commitment,
+        ),
+    )
+    selection = _root_selection(_venue_claim_selection(), "root-1")
+
+    rows = checkpoint_codec._encode_runtime_checkpoint_venue_coverage_provenance_rows(
+        book, selection
+    )
+
+    assert rows[0] == "m2.venue.CoverageProvenances/v1"
+    assert rows[1] == 1
+    row = rows[2][0]
+    assert row[0] == "m2.venue.CoverageProvenance/v1"
+    assert len(row) == 4
+    assert row[1] == _operations._encode_m2_position_scope(_DORMANT_POSITION_SCOPE)
+    assert row[2] == [
+        "m2.venue.CoveredRoots/v1",
+        1,
+        [
+            [
+                "m2.venue.CoveredRoot/v1",
+                _operations._encode_m2_m1_atom(root_key),
+                "aa" * 32,
+            ]
+        ],
+    ]
+    assert row[3] == "cc" * 32
+    checkpoint_codec._validate_checkpoint_collection(
+        rows, "m2.venue.CoverageProvenances/v1"
+    )
+
+    with pytest.raises(ValueError, match="covered root"):
+        checkpoint_codec._encode_runtime_checkpoint_venue_coverage_provenance_rows(
+            book, _venue_claim_selection()
+        )

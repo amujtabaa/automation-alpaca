@@ -2040,6 +2040,69 @@ def _encode_runtime_checkpoint_venue_correlation_rows(
     return _checkpoint_collection("m2.venue.AcquisitionCorrelations/v1", rows)
 
 
+def _encode_runtime_checkpoint_venue_coverage_provenance_rows(
+    book: _venue.VenueRecoveryBook,
+    selection: _records._RuntimeCheckpointSelectionSet,
+) -> list[object]:
+    """Project the covered-root provenance of each proof-selected scope.
+
+    ``_CoverageProvenance.roots`` is itself a persistent key map with no iteration, so
+    the nested covered-root collection is flattened by looking up each proof-selected
+    root key. The nested map is counted too: a covered root outside the selection
+    fails closed rather than being dropped from the proof.
+    """
+
+    root_keys = _selected_root_keys_from_selection(book, selection)
+    rows: list[object] = []
+    reached = 0
+    for position_scope in _selected_position_scopes_from_selection(book, selection):
+        provenance = book._coverage_provenance_by_scope.get(
+            _venue._position_scope_index_key(position_scope)
+        )
+        if provenance is None:
+            continue
+        reached += 1
+        covered: list[object] = []
+        for root_key in root_keys:
+            fact_commitment = provenance.roots.get(
+                _venue._coverage_root_index_key(root_key)
+            )
+            if fact_commitment is None:
+                continue
+            covered.append(
+                [
+                    "m2.venue.CoveredRoot/v1",
+                    _operations._encode_m2_m1_atom(root_key),
+                    _operations._encode_m2_bytes(fact_commitment),
+                ]
+            )
+        if provenance.roots.size != len(covered):
+            raise ValueError(
+                "coverage provenance retains a covered root outside the selection"
+            )
+        rows.append(
+            _require_bounded_checkpoint_row(
+                [
+                    "m2.venue.CoverageProvenance/v1",
+                    _operations._encode_m2_position_scope(position_scope),
+                    _checkpoint_collection("m2.venue.CoveredRoots/v1", covered),
+                    (
+                        None
+                        if provenance.root_heads_commitment is None
+                        else _operations._encode_m2_bytes(
+                            provenance.root_heads_commitment
+                        )
+                    ),
+                ]
+            )
+        )
+    if book._coverage_provenance_by_scope.size != reached:
+        raise ValueError(
+            "coverage provenance map retains a key outside the selected scope set"
+        )
+    return _checkpoint_collection("m2.venue.CoverageProvenances/v1", rows)
+
+
 def _encode_runtime_checkpoint_venue_protection_cursor_rows(
     book: _venue.VenueRecoveryBook,
     selection: _records._RuntimeCheckpointSelectionSet,
@@ -2282,7 +2345,6 @@ def _encode_runtime_checkpoint_venue(
         book._closure_head_by_leg,
         book._human_coverage_by_root,
         book._broker_coverage_by_root,
-        book._coverage_provenance_by_scope,
         book._reconciliation_by_input,
         book._execution_reconciliation_by_input,
         book._bootstrap_bound_target_by_scope,
@@ -2301,6 +2363,9 @@ def _encode_runtime_checkpoint_venue(
     )
     correlation_rows = _encode_runtime_checkpoint_venue_correlation_rows(
         book, selection
+    )
+    coverage_provenance_rows = (
+        _encode_runtime_checkpoint_venue_coverage_provenance_rows(book, selection)
     )
     execution_scope_rows = _encode_runtime_checkpoint_venue_execution_scope_rows(
         book, selection
@@ -2342,7 +2407,7 @@ def _encode_runtime_checkpoint_venue(
         high_water_rows,
         _checkpoint_collection("m2.venue.HumanCoverages/v1", []),
         _checkpoint_collection("m2.venue.BrokerCoverages/v1", []),
-        _checkpoint_collection("m2.venue.CoverageProvenances/v1", []),
+        coverage_provenance_rows,
         _checkpoint_collection("m2.venue.Reconciliations/v1", []),
         _checkpoint_collection("m2.venue.ExecutionReconciliations/v1", []),
         execution_scope_rows,
