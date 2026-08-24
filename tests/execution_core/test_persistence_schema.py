@@ -3550,6 +3550,42 @@ def test_monotonic_heads_refuse_regression(tmp_path: object) -> None:
     )
 
 
+def test_kernel_checkpoint_version_may_not_regress(tmp_path: object) -> None:
+    """Pin trg_kernel_checkpoint_versioned_replace where it is the only refusal.
+
+    On a same-version hash replacement the payload trigger speaks first, which
+    would leave this trigger with no coverage anywhere. Staging the payload for
+    BOTH versions satisfies the payload precondition in either direction, so a
+    version regression can only be refused by the version trigger.
+    """
+
+    connection = _installed_connection(tmp_path)
+    generation_id = _insert_profiles_and_generation(connection)
+    for version in (1, 2):
+        _retain_checkpoint_payload(
+            connection,
+            generation_id=generation_id,
+            head_ordinal=5,
+            version_ordinal=version,
+            checkpoint_sha256="77" * 32,
+        )
+    connection.execute(
+        """
+        INSERT INTO kernel_checkpoint (
+            application_generation_id, currentness_head_ordinal,
+            checkpoint_sha256, checkpoint_version_ordinal
+        )
+        VALUES (?, 5, ?, 2)
+        """,
+        (generation_id, "77" * 32),
+    )
+
+    with pytest.raises(sqlite3.IntegrityError, match="checkpoint version must advance"):
+        connection.execute(
+            "UPDATE kernel_checkpoint SET checkpoint_version_ordinal = 1"
+        )
+
+
 def test_current_proof_payloads_require_fresh_heads_or_versions(
     tmp_path: object,
 ) -> None:
@@ -3606,12 +3642,13 @@ def test_current_proof_payloads_require_fresh_heads_or_versions(
         " SET state_commitment_sha256 = state_commitment_sha256"
     )
 
-    # A payload is keyed by (generation, checkpoint_version_ordinal), so replacing
-    # the hash without advancing the version can have no retained payload: the
-    # payload trigger is the binding refusal here and
-    # trg_kernel_checkpoint_versioned_replace is unreachable through this path.
-    # The property under test -- a material replacement needs a fresh version --
-    # is what is still being refused.
+    # Replacing the hash without advancing the version can have no retained
+    # payload -- payloads are keyed by (generation, version) -- so the payload
+    # trigger is what speaks here. It wins on SQLite's BEFORE-trigger order, NOT
+    # because trg_kernel_checkpoint_versioned_replace is unreachable: an earlier
+    # revision of this comment claimed that and it was wrong. That trigger's WHEN
+    # clause is satisfied on this very statement, and it is pinned separately by
+    # test_kernel_checkpoint_version_may_not_regress.
     with pytest.raises(
         sqlite3.IntegrityError, match="requires an exact retained payload"
     ):

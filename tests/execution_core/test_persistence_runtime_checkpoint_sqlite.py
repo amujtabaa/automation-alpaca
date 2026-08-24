@@ -1371,7 +1371,21 @@ def test_all_thirteen_selection_queries_have_bounded_indexed_plans(
             " AND name NOT LIKE 'sqlite_%'"
         ).fetchall()
     )
-    partial_indexes = frozenset(
+    # "Partial" does not imply "bounded". What bounds a scan is a predicate that
+    # CLEARS as work completes, so the index holds live state rather than history.
+    # Both counters below fall back to zero, so those two qualify.
+    # ix_venue_owner_checkpoint_late is partial but NOT bounded:
+    # `admitted_after_effect_closed = 1` never clears and venue_identity_owner
+    # carries trg_venue_identity_owner_no_delete, so that index grows with total
+    # late-admission history. Inferring boundedness from the mere presence of a
+    # WHERE clause excused it wrongly; the classification has to be stated.
+    live_state_indexes = frozenset(
+        {
+            "IX_ACQUISITION_GENERATION_CURRENT_CHECKPOINT_EFFECT",
+            "IX_ACQUISITION_GENERATION_CURRENT_CHECKPOINT_PROTECTION",
+        }
+    )
+    declared_partial = frozenset(
         str(name).upper()
         for name, index_sql in connection.execute(
             "SELECT name, sql FROM sqlite_master WHERE type='index' AND sql IS NOT NULL"
@@ -1380,6 +1394,9 @@ def test_all_thirteen_selection_queries_have_bounded_indexed_plans(
         # line, so this must not assume a space before WHERE.
         if _re.search(r"\)\s*WHERE\s", str(index_sql), _re.S | _re.I)
     )
+    # Every index named live-state must really be partial; a full index here would
+    # be an unbounded pass excused by a stale name.
+    assert live_state_indexes <= declared_partial, live_state_indexes - declared_partial
 
     unbounded: set[tuple[int, str]] = set()
 
@@ -1413,7 +1430,7 @@ def test_all_thirteen_selection_queries_have_bounded_indexed_plans(
             if scanned not in table_names:
                 continue
             index = _INDEX_IN_PLAN.search(detail)
-            if index is not None and index.group(1) in partial_indexes:
+            if index is not None and index.group(1) in live_state_indexes:
                 continue
             unbounded.add((ordinal, detail))
         # An automatic index over a base table means SQLite is compensating for a
@@ -1438,11 +1455,20 @@ def test_all_thirteen_selection_queries_have_bounded_indexed_plans(
     # all five of these (measured 5 -> 0), but it is a repository SQL change
     # across five more queries and is not yet authorized.
     assert unbounded == {
+        # Full indexes -- one entry per table row, so a scan is a full pass.
         (7, "SCAN OWNER USING INDEX IX_VENUE_IDENTITY_OWNER_EFFECT"),
         (8, "SCAN CLAIM USING INDEX IX_DISPATCH_CLAIM_EFFECT"),
         (10, "SCAN EVIDENCE USING INDEX IX_ACCEPTANCE_EVIDENCE_SET"),
         (11, "SCAN OWNER USING COVERING INDEX IX_VENUE_IDENTITY_OWNER_EFFECT"),
         (12, "SCAN ROUTE USING INDEX IX_ACQUISITION_ROOT_ROUTE_OWNER"),
+        # Partial, but on `admitted_after_effect_closed = 1`, which never clears.
+        (6, "SCAN OWNER USING INDEX IX_VENUE_OWNER_CHECKPOINT_LATE"),
+        (7, "SCAN OWNER USING COVERING INDEX IX_VENUE_OWNER_CHECKPOINT_LATE"),
+        (8, "SCAN OWNER USING COVERING INDEX IX_VENUE_OWNER_CHECKPOINT_LATE"),
+        (9, "SCAN OWNER USING COVERING INDEX IX_VENUE_OWNER_CHECKPOINT_LATE"),
+        (10, "SCAN OWNER USING COVERING INDEX IX_VENUE_OWNER_CHECKPOINT_LATE"),
+        (11, "SCAN OWNER USING COVERING INDEX IX_VENUE_OWNER_CHECKPOINT_LATE"),
+        (12, "SCAN OWNER USING COVERING INDEX IX_VENUE_OWNER_CHECKPOINT_LATE"),
     }, unbounded
 
     connection.rollback()

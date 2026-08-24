@@ -2253,7 +2253,15 @@ def _encode_runtime_checkpoint_venue_closure_head_rows(
     book: _venue.VenueRecoveryBook,
     selection: _records._RuntimeCheckpointSelectionSet,
 ) -> list[object]:
-    """Project the terminal closure head of each proof-selected owner leg."""
+    """Project the terminal closure head of each proof-selected owner leg.
+
+    No whole-map cardinality check: a closure head persists for every leg that has
+    ever terminated, and the repository selects only OPEN/INVALIDATED effects plus
+    late-admitted owners, so an ordinary completed effect leaves a head behind that
+    is legitimately unselected. R15 section 2 calls those terminal rows audit
+    history and omits them. An earlier revision compared the map size against the
+    reached count and so refused every book after its first effect closed.
+    """
 
     atom = _operations._encode_m2_m1_atom
     rows: list[object] = []
@@ -2309,10 +2317,6 @@ def _encode_runtime_checkpoint_venue_closure_head_rows(
                     ),
                 ]
             )
-        )
-    if book._closure_head_by_leg.size != reached:
-        raise ValueError(
-            "closure head map retains a leg outside the selected owner set"
         )
     return _checkpoint_collection("m2.venue.ClosureHeads/v1", rows)
 
@@ -2410,9 +2414,17 @@ def _encode_runtime_checkpoint_venue_reconciliation_rows(
 ) -> list[object]:
     """Project every reconciliation named by a selected closure or coverage row.
 
-    The map is an exact current index rather than a permitted superset: an input
-    it retains that no selected current row names is a splice, so the reached
-    count must equal the whole map size.
+    R15 section 2 admits these rows by reference and says the rest are audit
+    history that is *omitted*, not refused. ``_reconciliation_by_input`` is
+    ``insert_new``-only and mirrors the append-only ledger, so under the R16
+    section 2 taxonomy it is a permitted authenticated superset and must not get a
+    whole-map cardinality check.
+
+    An earlier revision compared its size against the reached count. That refused
+    every book whose reducer had taken a reconciliation-required branch, because
+    ``recovery._reconciliation`` appends a record without touching any closure or
+    coverage row -- so the input is legitimately unreferenced and the quarantine
+    state a checkpoint exists to preserve could not be checkpointed at all.
     """
 
     selected_legs = frozenset(_selected_leg_keys_from_selection(book, selection))
@@ -2421,7 +2433,10 @@ def _encode_runtime_checkpoint_venue_reconciliation_rows(
     for input_id in _referenced_reconciliation_inputs(book, selection):
         record = book._reconciliation_by_input.get(_venue._input_index_key(input_id))
         if record is None:
-            continue
+            # R15 section 2: "Missing, extra, duplicate, stale, or cross-scope
+            # referenced rows fail." A selected current row named this input, so
+            # its absence is a truncated set, not history to omit.
+            raise ValueError("selected row names an absent reconciliation")
         if record.input_id != input_id:
             raise ValueError("reached reconciliation does not own its referenced input")
         if record.leg_key not in selected_legs:
@@ -2432,8 +2447,6 @@ def _encode_runtime_checkpoint_venue_reconciliation_rows(
                 _encode_runtime_checkpoint_venue_reconciliation_row(record)
             )
         )
-    if book._reconciliation_by_input.size != reached:
-        raise ValueError("reconciliation index retains an unreferenced input")
     return _checkpoint_collection("m2.venue.Reconciliations/v1", rows)
 
 
@@ -2629,6 +2642,13 @@ def _encode_runtime_checkpoint_venue_bootstrap_active(
 
     if type(record) is not _venue._BootstrapBoundTargetRecord:
         raise TypeError("bootstrap record must be exact _BootstrapBoundTargetRecord")
+    # Contract 07 section 3.3: "All retained seals and commitments are re-derived
+    # and compared, never trusted." Absence from the wire is not verification --
+    # the record's own authenticity check re-derives _map_seal, commitment, _seal,
+    # and both retained proof commitments against the proofs it carries, so a
+    # record whose members were altered after minting cannot reach the wire.
+    if not _venue._bootstrap_bound_target_record_is_authentic(record):
+        raise ValueError("bootstrap target record is not venue-authentic")
     atom = _operations._encode_m2_m1_atom
     digest = _operations._encode_m2_bytes
     count = _require_nonnegative_int
@@ -2689,6 +2709,8 @@ def _encode_runtime_checkpoint_venue_bootstrap_target(
     if type(value) is _venue._BootstrapBoundTargetRecord:
         return _encode_runtime_checkpoint_venue_bootstrap_active(value), value
     if type(value) is _venue._ConsumedBootstrapBoundTargetRecord:
+        if not _venue._consumed_bootstrap_bound_target_record_is_authentic(value):
+            raise ValueError("consumed bootstrap target is not venue-authentic")
         active = value.active_record
         if type(active) is not _venue._BootstrapBoundTargetRecord:
             raise TypeError("consumed bootstrap target retains no exact active record")
@@ -2825,9 +2847,13 @@ def _encode_runtime_checkpoint_venue_execution_reconciliation_rows(
 ) -> list[object]:
     """Project every registry outcome named by a selected bootstrap target.
 
-    Like the fill reconciliation index this is an exact current index rather than
-    a permitted superset, so a retained input that no selected current row names
-    is a splice and the reached count must equal the whole map size.
+    Like the fill reconciliation index this is ``insert_new``-only beside an
+    append-only ledger, so it is a permitted authenticated superset and gets no
+    whole-map cardinality check. A catch-up is appended for every
+    ``CatchUpExecutionRegistry`` while a bootstrap target is refreshed only where
+    one exists, the unresolved arm never advances ``checkpoint_input_id`` at all,
+    and that field is replaced on each refresh -- so an unreferenced retained
+    input is ordinary history, not a splice.
     """
 
     selected_scopes = frozenset(
@@ -2840,7 +2866,7 @@ def _encode_runtime_checkpoint_venue_execution_reconciliation_rows(
             _venue._input_index_key(input_id)
         )
         if record is None:
-            continue
+            raise ValueError("selected row names an absent execution reconciliation")
         if record.input_id != input_id:
             raise ValueError(
                 "reached execution reconciliation does not own its referenced input"
@@ -2855,8 +2881,6 @@ def _encode_runtime_checkpoint_venue_execution_reconciliation_rows(
                 _encode_runtime_checkpoint_venue_execution_reconciliation_row(record)
             )
         )
-    if book._execution_reconciliation_by_input.size != reached:
-        raise ValueError("execution reconciliation index retains an unreferenced input")
     return _checkpoint_collection("m2.venue.ExecutionReconciliations/v1", rows)
 
 

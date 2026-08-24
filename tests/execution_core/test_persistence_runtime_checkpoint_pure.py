@@ -2858,9 +2858,51 @@ def test_r20_venue_closure_head_rows_project_selected_legs() -> None:
     assert row[16] is None
     checkpoint_codec._validate_checkpoint_collection(rows, "m2.venue.ClosureHeads/v1")
 
-    with pytest.raises(ValueError, match="selected owner"):
+    # A head on an unselected leg is retained audit history, so an empty selection
+    # projects an empty family rather than refusing. The leg-ownership check below
+    # is the refusal this family actually carries.
+    empty = checkpoint_codec._encode_runtime_checkpoint_venue_closure_head_rows(
+        book, _venue_claim_selection()
+    )
+    assert empty == ["m2.venue.ClosureHeads/v1", 0, []]
+
+    spliced = copy(book)
+    other_leg = identity.VenueLegKey(
+        identity.BrokerId("paper"),
+        identity.EnvironmentId("paper"),
+        identity.AccountId("account"),
+        identity.OrderId("owner-order-1"),
+    )
+    foreign = venue.VenueTerminalClosure(
+        identity.VenueLegKey(
+            identity.BrokerId("paper"),
+            identity.EnvironmentId("paper"),
+            identity.AccountId("account"),
+            identity.OrderId("owner-order-other"),
+        ),
+        identity.ClosureId("closure-2"),
+        1,
+        None,
+        venue.VenueAttemptState.WORKING,
+        values.Quantity(2),
+        values.Quantity(2),
+        identity.EvidenceReference("evidence-2"),
+        venue.VenueClosureKind.BROKER_TERMINAL,
+        identity.VenueInputId("input-3"),
+    )
+    object.__setattr__(
+        spliced,
+        "_closure_head_by_leg",
+        state.venue._closure_head_by_leg.insert_new(
+            venue._leg_index_key(other_leg),
+            foreign,
+            venue._closure_commitment(foreign),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="does not own its selected leg"):
         checkpoint_codec._encode_runtime_checkpoint_venue_closure_head_rows(
-            book, _venue_claim_selection()
+            spliced, selection
         )
 
 
@@ -2987,7 +3029,17 @@ def test_r20_venue_reconciliation_rows_project_both_referenced_union_arms() -> N
     )
 
 
-def test_r20_venue_reconciliation_index_refuses_an_unreferenced_input() -> None:
+def test_r20_venue_reconciliation_index_omits_an_unreferenced_input() -> None:
+    """R15 section 2 omits unreferenced reconciliations; it does not refuse them.
+
+    ``recovery._reconciliation`` appends a record without touching any closure or
+    coverage row, so an unreferenced input is the ordinary shape of a
+    reconciliation-required book -- exactly the quarantine state a checkpoint has
+    to preserve. A whole-map cardinality check here refused every such book, and
+    ``_reconciliation_by_input`` is ``insert_new``-only beside the append-only
+    ledger, which makes it a permitted superset under the R16 section 2 taxonomy.
+    """
+
     state, _ = _authority_state_with_effects()
     book = _book_with_reconciliations(
         _book_with_broker_coverage(state.venue),
@@ -2997,10 +3049,18 @@ def test_r20_venue_reconciliation_index_refuses_an_unreferenced_input() -> None:
         ),
     )
 
-    with pytest.raises(ValueError, match="unreferenced input"):
-        checkpoint_codec._encode_runtime_checkpoint_venue_reconciliation_rows(
-            book, _reconciliation_selection()
-        )
+    rows = checkpoint_codec._encode_runtime_checkpoint_venue_reconciliation_rows(
+        book, _reconciliation_selection()
+    )
+
+    assert book._reconciliation_by_input.size == 2
+    assert rows[1] == 1
+    assert rows[2][0][1] == _operations._encode_m2_m1_atom(
+        identity.VenueInputId("input-1")
+    )
+    checkpoint_codec._validate_checkpoint_collection(
+        rows, "m2.venue.Reconciliations/v1"
+    )
 
 
 def test_r20_venue_reconciliation_refuses_a_row_outside_the_selected_legs() -> None:
@@ -3416,7 +3476,16 @@ def test_r20_venue_execution_reconciliation_rows_project_both_union_arms() -> No
     )
 
 
-def test_r20_venue_execution_reconciliation_refuses_an_unreferenced_input() -> None:
+def test_r20_venue_execution_reconciliation_omits_an_unreferenced_input() -> None:
+    """A catch-up outcome no bootstrap target names is history, not a splice.
+
+    The venue appends an execution reconciliation for every
+    ``CatchUpExecutionRegistry``, refreshes a bootstrap target only where one
+    exists, never advances ``checkpoint_input_id`` on the unresolved arm, and
+    replaces that field on each refresh -- so retained-but-unreferenced is the
+    normal steady state, and a whole-map check here refused ordinary books.
+    """
+
     state, _ = _authority_state_with_effects()
     bootstrap_input, _ = _bootstrap_input_ids()
     book = _book_with_execution_reconciliations(
@@ -3427,10 +3496,20 @@ def test_r20_venue_execution_reconciliation_refuses_an_unreferenced_input() -> N
         ),
     )
 
-    with pytest.raises(ValueError, match="unreferenced input"):
+    rows = (
         checkpoint_codec._encode_runtime_checkpoint_venue_execution_reconciliation_rows(
             book, _bootstrap_selection()
         )
+    )
+
+    assert book._execution_reconciliation_by_input.size == 2
+    assert rows[1] == 1
+    assert rows[2][0][1] == _operations._encode_m2_m1_atom(
+        identity.VenueInputId(bootstrap_input)
+    )
+    checkpoint_codec._validate_checkpoint_collection(
+        rows, "m2.venue.ExecutionReconciliations/v1"
+    )
 
 
 def test_r20_venue_execution_reconciliation_refuses_a_row_outside_the_scopes() -> None:
@@ -3796,18 +3875,22 @@ def test_r20_emergency_grant_refuses_a_member_of_the_wrong_exact_type() -> None:
     forged = copy(grant)
     object.__setattr__(forged, "reason", "")
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="reason"):
         checkpoint_codec._encode_runtime_checkpoint_emergency_grant(forged)
+
+    with pytest.raises(TypeError, match="must be exact _EmergencyGrant"):
+        checkpoint_codec._encode_runtime_checkpoint_emergency_grant(object())
 
 
 def test_r20_projected_venue_and_authority_wires_pass_their_own_validators() -> None:
     """The projector's own output must satisfy the wire validator it ships with.
 
-    Every family test above checks one collection in isolation. This is the closure
-    over all of them: a fully populated book and authority state project through the
-    real top-row encoders, and the resulting rows are handed straight to the
-    validators the load path uses. A family that encodes a shape its own validator
-    refuses cannot survive here.
+    Every family test above checks one collection in isolation; this checks that
+    the assembled top rows validate. It is NOT a closure over all families: the
+    fixture populates ten of fifteen venue collections and three of four authority
+    collections, and the rest project as the empty form, which validates zero rows
+    and so cannot fail. The populated set is asserted by tag below; treat the
+    others as covered by their own tests, not by this one.
     """
 
     state, _ = _authority_state_with_effects()
