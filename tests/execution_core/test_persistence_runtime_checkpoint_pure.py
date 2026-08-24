@@ -2814,3 +2814,50 @@ def test_r20_venue_human_coverage_rows_dereference_the_ledger() -> None:
         checkpoint_codec._encode_runtime_checkpoint_venue_human_coverage_rows(
             book, _venue_claim_selection()
         )
+
+
+def test_r20_venue_closure_head_rows_project_selected_legs() -> None:
+    state, _ = _authority_state_with_effects()
+    closure = venue.VenueTerminalClosure(
+        _FIXTURE_LEG_KEY,
+        identity.ClosureId("closure-1"),
+        3,
+        None,
+        venue.VenueAttemptState.WORKING,
+        values.Quantity(2),
+        values.Quantity(2),
+        identity.EvidenceReference("evidence-1"),
+        venue.VenueClosureKind.BROKER_TERMINAL,
+        identity.VenueInputId("input-1"),
+    )
+    book = copy(state.venue)
+    object.__setattr__(
+        book,
+        "_closure_head_by_leg",
+        state.venue._closure_head_by_leg.insert_new(
+            venue._leg_index_key(_FIXTURE_LEG_KEY),
+            closure,
+            venue._closure_commitment(closure),
+        ),
+    )
+    selection = _owner_selection(_venue_claim_selection(), "owner-order-1")
+
+    rows = checkpoint_codec._encode_runtime_checkpoint_venue_closure_head_rows(
+        book, selection
+    )
+
+    assert rows[0] == "m2.venue.ClosureHeads/v1"
+    assert rows[1] == 1
+    row = rows[2][0]
+    assert row[0] == "m2.venue.TerminalClosure/v1"
+    assert len(row) == 17
+    assert row[3] == 3
+    assert row[4] is None
+    assert row[5] == ["m1.venue.VenueAttemptState", "WORKING"]
+    assert row[16] is None
+    checkpoint_codec._validate_checkpoint_collection(rows, "m2.venue.ClosureHeads/v1")
+
+    with pytest.raises(ValueError, match="selected owner"):
+        checkpoint_codec._encode_runtime_checkpoint_venue_closure_head_rows(
+            book, _venue_claim_selection()
+        )

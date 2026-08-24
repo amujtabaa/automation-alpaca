@@ -2233,6 +2233,74 @@ def _encode_runtime_checkpoint_venue_human_coverage_rows(
     return _checkpoint_collection("m2.venue.HumanCoverages/v1", rows)
 
 
+def _encode_runtime_checkpoint_venue_closure_head_rows(
+    book: _venue.VenueRecoveryBook,
+    selection: _records._RuntimeCheckpointSelectionSet,
+) -> list[object]:
+    """Project the terminal closure head of each proof-selected owner leg."""
+
+    atom = _operations._encode_m2_m1_atom
+    rows: list[object] = []
+    reached = 0
+    for leg_key in _selected_leg_keys_from_selection(book, selection):
+        closure = book._closure_head_by_leg.get(_venue._leg_index_key(leg_key))
+        if closure is None:
+            continue
+        if closure.leg_key != leg_key:
+            raise ValueError("reached closure does not own its selected leg")
+        reached += 1
+        rows.append(
+            _require_bounded_checkpoint_row(
+                [
+                    "m2.venue.TerminalClosure/v1",
+                    atom(closure.leg_key),
+                    atom(closure.closure_id),
+                    _require_nonnegative_int("closure ordinal", closure.ordinal),
+                    (
+                        None
+                        if closure.predecessor_closure_id is None
+                        else atom(closure.predecessor_closure_id)
+                    ),
+                    _checkpoint_enum("m1.venue.VenueAttemptState", closure.status),
+                    atom(closure.cumulative_quantity),
+                    atom(closure.observed_cumulative_quantity),
+                    atom(closure.evidence_reference),
+                    _checkpoint_enum("m1.venue.VenueClosureKind", closure.kind),
+                    atom(closure.source_input_id),
+                    (
+                        None
+                        if closure.observation_id is None
+                        else atom(closure.observation_id)
+                    ),
+                    (
+                        None
+                        if closure.source_event_id is None
+                        else atom(closure.source_event_id)
+                    ),
+                    (
+                        None
+                        if closure.broker_terminal_state is None
+                        else _checkpoint_enum(
+                            "m1.venue.VenueAttemptState", closure.broker_terminal_state
+                        )
+                    ),
+                    None if closure.actor is None else atom(closure.actor),
+                    closure.reason,
+                    (
+                        None
+                        if closure.evidence_digest is None
+                        else _operations._encode_m2_bytes(closure.evidence_digest)
+                    ),
+                ]
+            )
+        )
+    if book._closure_head_by_leg.size != reached:
+        raise ValueError(
+            "closure head map retains a leg outside the selected owner set"
+        )
+    return _checkpoint_collection("m2.venue.ClosureHeads/v1", rows)
+
+
 def _encode_runtime_checkpoint_venue_protection_cursor_rows(
     book: _venue.VenueRecoveryBook,
     selection: _records._RuntimeCheckpointSelectionSet,
@@ -2472,7 +2540,6 @@ def _encode_runtime_checkpoint_venue(
     if type(book) is not _venue.VenueRecoveryBook:
         raise TypeError("venue owner must be exact VenueRecoveryBook")
     payload_maps = (
-        book._closure_head_by_leg,
         book._reconciliation_by_input,
         book._execution_reconciliation_by_input,
         book._bootstrap_bound_target_by_scope,
@@ -2499,6 +2566,9 @@ def _encode_runtime_checkpoint_venue(
         book, selection
     )
     human_coverage_rows = _encode_runtime_checkpoint_venue_human_coverage_rows(
+        book, selection
+    )
+    closure_head_rows = _encode_runtime_checkpoint_venue_closure_head_rows(
         book, selection
     )
     execution_scope_rows = _encode_runtime_checkpoint_venue_execution_scope_rows(
@@ -2537,7 +2607,7 @@ def _encode_runtime_checkpoint_venue(
         claim_rows,
         owner_attempt_rows,
         correlation_rows,
-        _checkpoint_collection("m2.venue.ClosureHeads/v1", []),
+        closure_head_rows,
         high_water_rows,
         human_coverage_rows,
         broker_coverage_rows,
