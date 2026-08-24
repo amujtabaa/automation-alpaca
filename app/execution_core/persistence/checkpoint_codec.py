@@ -1743,6 +1743,99 @@ def _encode_dormant_protection(
     return row, source_projection
 
 
+def _encode_runtime_checkpoint_venue_execution_checkpoint(
+    checkpoint: _venue.VenueExecutionCheckpoint,
+) -> list[object]:
+    """Encode the frozen 10-member venue execution checkpoint."""
+
+    if type(checkpoint) is not _venue.VenueExecutionCheckpoint:
+        raise TypeError("execution checkpoint must be exact VenueExecutionCheckpoint")
+    return [
+        "m2.venue.ExecutionCheckpoint/v1",
+        _operations._encode_m2_position_scope(checkpoint.position_scope),
+        _require_nonnegative_int("registry count", checkpoint.registry_count),
+        _operations._encode_m2_bytes(checkpoint.registry_commitment),
+        _operations._encode_m2_bytes(checkpoint.position_commitment),
+        _operations._encode_m2_bytes(checkpoint.root_heads_commitment),
+        _require_nonnegative_int("integrity bits", checkpoint.integrity_bits),
+        checkpoint.account_reconciliation_required,
+        _require_nonnegative_int(
+            "reconciliation transition count",
+            checkpoint.reconciliation_transition_count,
+        ),
+        _operations._encode_m2_bytes(checkpoint.reconciliation_transition_head),
+    ]
+
+
+def _selected_position_scopes_from_selection(
+    book: _venue.VenueRecoveryBook,
+    selection: _records._RuntimeCheckpointSelectionSet,
+) -> tuple[_fills.PositionScope, ...]:
+    """Derive the exact selected position scopes from the repository selection."""
+
+    return tuple(
+        _fills.PositionScope(
+            book.scope.broker, book.scope.environment, book.scope.account, record.symbol
+        )
+        for record in selection.scopes
+    )
+
+
+def _encode_runtime_checkpoint_venue_protection_cursor_rows(
+    book: _venue.VenueRecoveryBook,
+    selection: _records._RuntimeCheckpointSelectionSet,
+) -> list[object]:
+    """Project the protection cursor of each proof-selected scope.
+
+    ``_protection_cursor_by_scope`` is an exact current selected-scope map (R16
+    section 2): every present key must be one selected scope, so an entry outside the
+    selection fails closed rather than being dropped.
+    """
+
+    scopes = _selected_position_scopes_from_selection(book, selection)
+    rows: list[object] = []
+    reached = 0
+    for position_scope in scopes:
+        cursor = book._protection_cursor_by_scope.get(
+            _venue._position_scope_index_key(position_scope)
+        )
+        if cursor is None:
+            continue
+        reached += 1
+        rows.append(
+            _require_bounded_checkpoint_row(
+                [
+                    "m2.venue.ProtectionCursor/v1",
+                    _operations._encode_m2_position_scope(position_scope),
+                    _require_nonnegative_int("cursor ordinal", cursor.ordinal),
+                    _operations._encode_m2_bytes(cursor.head),
+                    (
+                        None
+                        if cursor.mandate_id is None
+                        else _operations._encode_m2_m1_atom(cursor.mandate_id)
+                    ),
+                    (
+                        None
+                        if cursor.execution_commitment is None
+                        else _operations._encode_m2_bytes(cursor.execution_commitment)
+                    ),
+                    (
+                        None
+                        if cursor.execution_checkpoint is None
+                        else _encode_runtime_checkpoint_venue_execution_checkpoint(
+                            cursor.execution_checkpoint
+                        )
+                    ),
+                ]
+            )
+        )
+    if book._protection_cursor_by_scope.size != reached:
+        raise ValueError(
+            "protection cursor map retains a key outside the selected scope set"
+        )
+    return _checkpoint_collection("m2.venue.ProtectionCursors/v1", rows)
+
+
 def _encode_runtime_checkpoint_venue_effect_scope(
     scope: _venue.VenueEffectScope,
 ) -> list[object]:
@@ -1939,13 +2032,15 @@ def _encode_runtime_checkpoint_venue(
         book._execution_reconciliation_by_input,
         book._execution_snapshot_by_scope,
         book._bootstrap_bound_target_by_scope,
-        book._protection_cursor_by_scope,
     )
     if any(retained.size for retained in payload_maps):
         raise ValueError(
             "nonempty venue checkpoint rows are not admitted by this projector"
         )
     effect_rows = _encode_runtime_checkpoint_venue_effect_rows(book, selection)
+    protection_cursor_rows = _encode_runtime_checkpoint_venue_protection_cursor_rows(
+        book, selection
+    )
     claim_rows = _encode_runtime_checkpoint_venue_claim_rows(book, selection)
     registry_count = book.execution_registry_count
     registry_commitment = book.execution_registry_commitment
@@ -1985,7 +2080,7 @@ def _encode_runtime_checkpoint_venue(
         _checkpoint_collection("m2.venue.ExecutionReconciliations/v1", []),
         _checkpoint_collection("m2.venue.ExecutionScopes/v1", []),
         _checkpoint_collection("m2.venue.BootstrapTargets/v1", []),
-        _checkpoint_collection("m2.venue.ProtectionCursors/v1", []),
+        protection_cursor_rows,
     ]
     commitment = _checkpoint_row_commitment(b"execution-core/m2-venue/state/v1", row)
     source_owner_commitment = _checkpoint_row_commitment(

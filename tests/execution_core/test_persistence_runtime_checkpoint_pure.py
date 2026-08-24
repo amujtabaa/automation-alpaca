@@ -2122,3 +2122,43 @@ def test_r20_venue_effect_rows_refuse_an_unreachable_selected_effect() -> None:
         checkpoint_codec._encode_runtime_checkpoint_venue_effect_rows(
             state.venue, forged
         )
+
+
+def test_r20_venue_protection_cursor_rows_project_selected_scopes() -> None:
+    state, _ = _authority_state_with_effects()
+    selection = _venue_claim_selection()
+
+    rows = checkpoint_codec._encode_runtime_checkpoint_venue_protection_cursor_rows(
+        state.venue, selection
+    )
+
+    assert rows[0] == "m2.venue.ProtectionCursors/v1"
+    assert rows[1] == 1
+    row = rows[2][0]
+    assert row[0] == "m2.venue.ProtectionCursor/v1"
+    assert len(row) == 7
+    assert row[1] == _operations._encode_m2_position_scope(_DORMANT_POSITION_SCOPE)
+    assert row[2] == 2
+    assert row[4] == _operations._encode_m2_m1_atom(
+        identity.MandateId("mandate-effect-1")
+    )
+    checkpoint = row[6]
+    assert checkpoint[0] == "m2.venue.ExecutionCheckpoint/v1"
+    assert len(checkpoint) == 10
+    checkpoint_codec._validate_checkpoint_collection(
+        rows, "m2.venue.ProtectionCursors/v1"
+    )
+
+
+def test_r20_venue_protection_cursor_refuses_an_unselected_scope_entry() -> None:
+    """Exact current selected-scope map: every present key must be a selected scope."""
+
+    state, _ = _authority_state_with_effects()
+    selection = _venue_claim_selection()
+    forged = deepcopy(selection)
+    object.__setattr__(forged, "scopes", ())
+
+    with pytest.raises(ValueError, match="selected scope"):
+        checkpoint_codec._encode_runtime_checkpoint_venue_protection_cursor_rows(
+            state.venue, forged
+        )
