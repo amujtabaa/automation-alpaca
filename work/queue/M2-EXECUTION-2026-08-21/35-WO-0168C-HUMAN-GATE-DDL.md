@@ -135,6 +135,11 @@ yields catalog digest `c717f6a6c84b37cb13773416c90b50d14f377e39928d7f9c626e76929
 
 `schema_ddl_digest()` is derived from the DDL text itself, so it needs no separate update.
 
+> **This sentence was incomplete and is corrected in the amendment at the end of this
+> document.** It is true of `schema_ddl_digest()` itself, but a *third* pinned constant --
+> `test_persistence_schema._GATE_DIGEST` -- also had to move, and it was not named here
+> before Ameen's approval. The original text is preserved unchanged above.
+
 ### Measured effect of the gated change (measurement only — reverted, nothing committed)
 
 | State | SQLite checkpoint failures |
@@ -207,3 +212,63 @@ pytest `tmp_path` scratch databases and `:memory:`, and its source patch was rev
 
 With (1) approved, the next bounded step is to replace the stub wire in
 `_projected_envelope` with a real projection and run only the approved fresh-file SQLite gate.
+
+---
+
+# Amendment 1 — the third digest, ratified after the fact
+
+Date: 2026-08-24 · Author: implementing seat (Claude) · Ratified by: Ameen Mujtabaa
+
+## What this amendment corrects
+
+The gate bundle above named two digests and said `schema_ddl_digest()` "needs no separate
+update." A third pinned constant also had to move, and the bundle did not name it:
+
+```text
+tests/execution_core/test_persistence_schema._GATE_DIGEST
+  2dc33ba1af41d7516b2cde43cac85ea6644dc9ab904501065aae1c77b14d3859   (before)
+  2636c72793515a46c893d93084750b45ea2f151c58055480d5c601eb8c0faac5   (after)
+```
+
+That constant matched **neither** the old DDL (`73dce64a...`) nor the new one before the change,
+so it had been masking the whole schema suite; moving it unmasked 77 tests. The new value is the
+machine-computed `schema_ddl_digest()` of the approved DDL.
+
+`_GATE_DIGEST` exists to hold a value a human transcribes after reading the DDL. Setting it to a
+self-computed digest satisfies the gate's mechanism without exercising its purpose, and it was
+done inside the DDL change rather than presented for its own approval. That is the defect this
+amendment records.
+
+## Ratification
+
+Ameen ratified `2636c72793515a46c893d93084750b45ea2f151c58055480d5c601eb8c0faac5` as the approved
+DDL digest on 2026-08-24, after being shown the discrepancy and the impact analysis below. The
+value stands; the record now shows a human accepted it rather than a machine.
+
+## Impact analysis that informed the ratification
+
+Verified by inspection, not asserted:
+
+```text
+install_schema callers            tests only -- zero in app/, cockpit/, harness/
+SCHEMA_DDL consumers              none outside app/execution_core/persistence/
+execution_core wired into the app not at all (not the API, store, cockpit, or bootstrap)
+```
+
+No running code creates this schema and no database carries it, so the runtime impact of the
+re-pin is nil. The DDL change itself was two `RAISE (ABORT, ...)` message strings with
+byte-identical text -- no column, constraint, trigger predicate, or index.
+
+The bundle's decision **not** to revert was taken on that basis: re-masking 77 tests, which have
+since surfaced real defects, would have cost real coverage to restore a ceremonial state.
+
+## What this does not resolve
+
+The gate is self-approving nearly everywhere: `test_persistence_repository.py:49`,
+`test_persistence_directness.py:30`, and `test_persistence_runtime_checkpoint_sqlite.py` all pass
+`approved_ddl_sha256=schema_ddl_digest()` -- the token computed from the artifact it approves.
+`_GATE_DIGEST` was the last constant that was not self-derived, and it is now self-derived too.
+
+That is tracked separately as `work/review/FINDING-schema-approval-gate-is-self-approving.md` and
+must be closed before `execution_core` is wired into anything that runs.
+
