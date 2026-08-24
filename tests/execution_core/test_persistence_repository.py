@@ -18,7 +18,7 @@ from app.execution_core import identity, profiles, values
 from app.execution_core.persistence import records
 import app.execution_core.persistence.repository as repository
 from app.execution_core.persistence.schema import install_schema
-from approved_schema_digest import APPROVED_DDL_SHA256
+from approved_schema_digest import require_approved_ddl_execution
 import persistence_setup_support as setup_support
 
 
@@ -44,10 +44,11 @@ class _CoordinateEnum(IntEnum):
 
 @pytest.fixture()
 def connection(tmp_path: Path):
+    require_approved_ddl_execution()
     connection = sqlite3.connect(tmp_path / "wo167-repository.db")
     connection.execute("PRAGMA foreign_keys = ON")
     connection.execute("PRAGMA recursive_triggers = ON")
-    install_schema(connection, approved_ddl_sha256=APPROVED_DDL_SHA256)
+    install_schema(connection, approved_ddl_sha256=require_approved_ddl_execution())
     try:
         yield connection
     finally:

@@ -1,15 +1,38 @@
-"""The one human-approved DDL digest every installing test fixture must use.
+"""The sole human-controlled execution unlock for changed schema DDL.
 
-REV-0078 P0-1: fixtures previously passed ``approved_ddl_sha256=schema_ddl_digest()``
--- the token computed from the artifact it approves -- so the installer's
-comparison was ``sha256(x) == sha256(x)`` and could never refuse. This constant
-is the digest Ameen ratified on 2026-08-24 (gate bundle Amendment 1 and
-``36-R16-MANUAL-RULE-RATIFICATION.md`` record the approvals), transcribed here
-as a literal. Changing the DDL now breaks every installing fixture until a
-human deliberately moves this one value.
+This module intentionally does **not** know the candidate DDL digest. Candidate
+identity is evidence recorded in the review packet; execution authority is a
+separate, deny-by-default human decision. Until that decision is recorded in a
+bounded unlock commit, every installer fixture fails before it opens a SQLite
+connection or creates a temporary database file.
 
-``test_persistence_write_capability.py`` holds the AST control that refuses any
-new self-derived call site.
+When Ameen approves an exact candidate commit/tree, DDL SHA-256, byte count, and
+fresh-file command list, change only ``APPROVED_EXECUTION_DDL_SHA256`` from
+``None`` to the approved literal in that unlock commit. Do not derive it from
+``schema_ddl_digest()``, a helper, an alias, or a local computation.
 """
 
-APPROVED_DDL_SHA256 = "2636c72793515a46c893d93084750b45ea2f151c58055480d5c601eb8c0faac5"
+from __future__ import annotations
+
+from typing import Final
+
+
+APPROVED_EXECUTION_DDL_SHA256: Final[str | None] = None
+
+
+def require_approved_ddl_execution() -> str:
+    """Return the human token or refuse before any SQLite activity begins."""
+
+    approved = APPROVED_EXECUTION_DDL_SHA256
+    if approved is None:
+        raise RuntimeError(
+            "HUMAN-GATE pending: changed DDL remains static-only until Ameen "
+            "approves the exact candidate identity and fresh-file test plan"
+        )
+    if (
+        type(approved) is not str
+        or len(approved) != 64
+        or any(character not in "0123456789abcdef" for character in approved)
+    ):
+        raise RuntimeError("HUMAN-GATE invalid: approval token must be SHA-256 text")
+    return approved

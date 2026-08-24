@@ -2121,6 +2121,85 @@ def test_r20_venue_effect_rows_carry_dense_proof_order_checkpoint_ordinals() -> 
     checkpoint_codec._validate_checkpoint_collection(rows, "m2.venue.Effects/v1")
 
 
+def test_r20_venue_acceptance_proof_codec_binds_the_selected_current_effect() -> None:
+    """The checkpoint adapter accepts venue's private proof only by its bound members."""
+
+    state, _ = _authority_state_with_effects()
+    current = state.venue._effect_by_id.get(
+        venue._effect_index_key(identity.EffectId("effect-1"))
+    )
+    assert current is not None
+    effect = current.effect
+    claim_occurrence_id = effect.claim_occurrence_id
+    assert claim_occurrence_id is not None
+    proof = venue.AcceptanceProof(
+        kind=venue.AcceptanceProofKind.CONTRACT_COMPLETE_RESPONSE,
+        effect_scope=effect.scope,
+        claim_occurrence_id=claim_occurrence_id,
+        evidence_reference=identity.EvidenceReference("acceptance-evidence-1"),
+        evidence_digest=b"\x07" * 32,
+    )
+
+    row = checkpoint_codec._encode_runtime_checkpoint_venue_acceptance_proof(
+        proof,
+        expected_scope=effect.scope,
+        expected_claim_occurrence_id=claim_occurrence_id,
+    )
+
+    assert row == [
+        "m2.venue.AcceptanceProof/v1",
+        ["m1.venue.AcceptanceProofKind", "CONTRACT_COMPLETE_RESPONSE"],
+        _operations._encode_m2_m1_atom(effect.scope.effect_id),
+        _operations._encode_m2_m1_atom(claim_occurrence_id),
+        _operations._encode_m2_m1_atom(
+            identity.EvidenceReference("acceptance-evidence-1")
+        ),
+        "07" * 32,
+    ]
+
+
+def test_r20_venue_acceptance_proof_codec_refuses_spliced_scope_or_claim() -> None:
+    state, _ = _authority_state_with_effects()
+    current = state.venue._effect_by_id.get(
+        venue._effect_index_key(identity.EffectId("effect-1"))
+    )
+    assert current is not None
+    effect = current.effect
+    claim_occurrence_id = effect.claim_occurrence_id
+    assert claim_occurrence_id is not None
+    proof = venue.AcceptanceProof(
+        kind=venue.AcceptanceProofKind.CONTRACT_COMPLETE_RESPONSE,
+        effect_scope=effect.scope,
+        claim_occurrence_id=claim_occurrence_id,
+        evidence_reference=identity.EvidenceReference("acceptance-evidence-2"),
+        evidence_digest=b"\x08" * 32,
+    )
+    spliced_scope = deepcopy(effect.scope)
+    object.__setattr__(spliced_scope, "effect_id", identity.EffectId("effect-foreign"))
+    spliced_scope_proof = copy(proof)
+    object.__setattr__(spliced_scope_proof, "effect_scope", spliced_scope)
+
+    with pytest.raises(ValueError, match="scope does not bind"):
+        checkpoint_codec._encode_runtime_checkpoint_venue_acceptance_proof(
+            spliced_scope_proof,
+            expected_scope=effect.scope,
+            expected_claim_occurrence_id=claim_occurrence_id,
+        )
+
+    spliced_claim_proof = copy(proof)
+    object.__setattr__(
+        spliced_claim_proof,
+        "claim_occurrence_id",
+        identity.ClaimOccurrenceId("occurrence-foreign"),
+    )
+    with pytest.raises(ValueError, match="claim does not bind"):
+        checkpoint_codec._encode_runtime_checkpoint_venue_acceptance_proof(
+            spliced_claim_proof,
+            expected_scope=effect.scope,
+            expected_claim_occurrence_id=claim_occurrence_id,
+        )
+
+
 def test_r20_venue_effect_rows_refuse_a_record_disagreeing_with_its_owner() -> None:
     state, _ = _authority_state_with_effects()
     selection = _venue_claim_selection()
@@ -2556,9 +2635,31 @@ def _route_selection(
     *,
     owner_order: str = "owner-order-1",
 ) -> records._RuntimeCheckpointSelectionSet:
-    """Add the AcquisitionRootRouteRecord a reached correlation binds against."""
+    """Add the complete selected owner/route relation for a reached root.
+
+    The repository's Q8 vector never selects a root route by itself: it is joined
+    to the owner that admitted the root.  Tests that exercise a reached root must
+    model that complete proof relationship rather than treating the route as a
+    freestanding convenience row.
+    """
 
     forged = deepcopy(selection)
+    object.__setattr__(
+        forged,
+        "owners",
+        (
+            records.VenueIdentityOwnerRecord(
+                1,
+                _EXECUTION_PROFILE,
+                identity.OrderId(owner_order),
+                identity.VenueObservationId("observation-1"),
+                1,
+                1,
+                identity.AcquisitionGenerationId("ab" * 32),
+                False,
+            ),
+        ),
+    )
     object.__setattr__(
         forged,
         "root_routes",
@@ -2859,10 +2960,65 @@ def _book_with_broker_coverage(
     return forged
 
 
+def _book_with_replaced_broker_coverage(
+    book: venue.VenueRecoveryBook,
+    coverage: object,
+) -> venue.VenueRecoveryBook:
+    """Replace the one fixture ledger member without changing its root index."""
+
+    forged = copy(book)
+    ledger_type = type(book._broker_coverage_ledger)
+    object.__setattr__(
+        forged,
+        "_broker_coverage_ledger",
+        ledger_type.from_values((coverage,), lambda _value: b"\x01" * 32),
+    )
+    return forged
+
+
+def _book_with_inexact_revision_coverage(
+    book: venue.VenueRecoveryBook,
+) -> venue.VenueRecoveryBook:
+    """One selected broker coverage whose revision head requires reconciliation."""
+
+    from app.execution_core import recovery as _recovery
+
+    root = _fixture_broker_fill_fact("revision-root")
+    revision = BrokerTradeCorrectFact(
+        key=ExecutionFactKey(
+            broker=root.key.broker,
+            environment=root.key.environment,
+            account=root.key.account,
+            source_event_id=identity.SourceEventId("revision-required"),
+        ),
+        scope=root.scope,
+        root_fill_id=root.root_fill_id,
+        predecessor_source_event_id=root.key.source_event_id,
+        revised_quantity=values.Quantity(3),
+        revised_price=_FIXTURE_PRICE,
+    )
+    coverage = _recovery._BrokerCoverage(
+        identity.EffectId("effect-1"),
+        _FIXTURE_LEG_KEY,
+        values.Quantity(0),
+        values.Quantity(2),
+        root,
+        b"\xdd" * 32,
+        identity.VenueInputId("input-1"),
+        revision,
+        b"\xee" * 32,
+        identity.VenueInputId("revision-required"),
+        False,
+    )
+    return _book_with_replaced_broker_coverage(
+        _book_with_broker_coverage(book), coverage
+    )
+
+
 def test_r20_venue_broker_coverage_rows_dereference_the_ledger() -> None:
     state, _ = _authority_state_with_effects()
     book = _book_with_broker_coverage(state.venue)
-    selection = _root_selection(_venue_claim_selection(), "root-1")
+    selection = _route_selection(_root_selection(_venue_claim_selection(), "root-1"))
 
     rows = checkpoint_codec._encode_runtime_checkpoint_venue_broker_coverage_rows(
         book, selection
@@ -2929,6 +3085,8 @@ def test_r20_venue_broker_coverage_rows_dereference_the_ledger() -> None:
 def _book_with_human_coverage(
     book: venue.VenueRecoveryBook,
     root_fill_id: str = "root-1",
+    *,
+    broker_corroborated: bool = False,
 ) -> venue.VenueRecoveryBook:
     from app.execution_core import recovery as _recovery
     from app.execution_core.fills import HumanAttestedFillFact
@@ -2960,11 +3118,24 @@ def _book_with_human_coverage(
         reason="fixture human coverage",
         evidence_reference=identity.EvidenceReference("evidence-1"),
     )
+    broker_fact = (
+        None
+        if not broker_corroborated
+        else _fixture_broker_fill_fact("human-corroboration", root_fill_id)
+    )
     coverage = _recovery.HumanCoverage(
         identity.EffectId("effect-1"),
         _FIXTURE_LEG_KEY,
         fact,
         identity.VenueInputId("input-1"),
+        broker_corroborated=broker_corroborated,
+        broker_fact=broker_fact,
+        broker_evidence_digest=None if broker_fact is None else b"\xaa" * 32,
+        broker_source_input_id=(
+            None
+            if broker_fact is None
+            else identity.VenueInputId("human-corroboration-input")
+        ),
     )
     ledger_type = type(book._human_coverage_ledger)
     forged = copy(book)
@@ -2983,10 +3154,26 @@ def _book_with_human_coverage(
     return forged
 
 
+def _book_with_replaced_human_coverage(
+    book: venue.VenueRecoveryBook,
+    coverage: object,
+) -> venue.VenueRecoveryBook:
+    """Replace the one fixture human ledger member without changing its root index."""
+
+    forged = copy(book)
+    ledger_type = type(book._human_coverage_ledger)
+    object.__setattr__(
+        forged,
+        "_human_coverage_ledger",
+        ledger_type.from_values((coverage,), lambda _value: b"\x03" * 32),
+    )
+    return forged
+
+
 def test_r20_venue_human_coverage_rows_dereference_the_ledger() -> None:
     state, _ = _authority_state_with_effects()
     book = _book_with_human_coverage(state.venue)
-    selection = _root_selection(_venue_claim_selection(), "root-1")
+    selection = _route_selection(_root_selection(_venue_claim_selection(), "root-1"))
 
     rows = checkpoint_codec._encode_runtime_checkpoint_venue_human_coverage_rows(
         book, selection
@@ -3216,8 +3403,10 @@ def _book_with_reconciliations(
 
 
 def _reconciliation_selection() -> records._RuntimeCheckpointSelectionSet:
-    return _root_selection(
-        _owner_selection(_venue_claim_selection(), "owner-order-1"), "root-1"
+    return _route_selection(
+        _root_selection(
+            _owner_selection(_venue_claim_selection(), "owner-order-1"), "root-1"
+        )
     )
 
 
@@ -3824,6 +4013,8 @@ def _effect_permit(
     effect_value: str = "acq-effect-1",
     *,
     generation_id: identity.AcquisitionGenerationId = _ACQ_GENERATION,
+    controller_head: bytes = bytes.fromhex("33" * 32),
+    successor_ordinal: int = 3,
 ) -> authority.AcquisitionEffectPermit:
     """Mint one real effect permit through the authority constructor, not by hand."""
 
@@ -3838,8 +4029,8 @@ def _effect_permit(
         binding_commitment=bytes.fromhex("11" * 32),
         emergency_recovery_compatibility_commitment=bytes.fromhex("22" * 32),
         predecessor_controller_head=bytes.fromhex("32" * 32),
-        controller_head=bytes.fromhex("33" * 32),
-        successor_ordinal=3,
+        controller_head=controller_head,
+        successor_ordinal=successor_ordinal,
         execution_snapshot_commitment=bytes.fromhex("44" * 32),
         scope_execution_commitment=bytes.fromhex("55" * 32),
         venue_commitment=bytes.fromhex("66" * 32),
@@ -3857,10 +4048,15 @@ def _effect_permit(
     )
 
 
-def _currentness_entry() -> object:
+def _currentness_entry(
+    *,
+    application_generation_id: identity.ApplicationGenerationId = _APPLICATION,
+    controller_head: bytes = bytes.fromhex("33" * 32),
+    successor_ordinal: int = 3,
+) -> object:
     return authority._new_acquisition_currentness_entry(
         source_kind=authority._AcquisitionCurrentnessSourceKind.CANONICAL_FACT,
-        application_generation_id=_APPLICATION,
+        application_generation_id=application_generation_id,
         position_scope=_DORMANT_POSITION_SCOPE,
         session_id=authority.SessionId("permit-session"),
         generation_id=_ACQ_GENERATION,
@@ -3868,8 +4064,8 @@ def _currentness_entry() -> object:
         protection_mandate_id=identity.MandateId("prot-mandate"),
         binding_commitment=bytes.fromhex("11" * 32),
         emergency_recovery_compatibility_commitment=bytes.fromhex("22" * 32),
-        controller_head=bytes.fromhex("33" * 32),
-        successor_ordinal=3,
+        controller_head=controller_head,
+        successor_ordinal=successor_ordinal,
         scope_execution_commitment=bytes.fromhex("55" * 32),
         venue_commitment=bytes.fromhex("66" * 32),
         protection_commitment=bytes.fromhex("bb" * 32),
@@ -3971,7 +4167,11 @@ def test_r20_acquisition_slot_rows_project_an_active_scope() -> None:
     assert len(row[2]) == 16
     assert row[3][0] == "m2.authority.AcquisitionSlotActive/v1"
     assert len(row[3]) == 3
-    assert referenced == ((identity.EffectId("acq-effect-1"), _DORMANT_POSITION_SCOPE),)
+    assert len(referenced) == 1
+    reference = referenced[0]
+    assert reference.effect_id == identity.EffectId("acq-effect-1")
+    assert reference.position_scope == _DORMANT_POSITION_SCOPE
+    assert reference.currentness.application_generation_id == _APPLICATION
     checkpoint_codec._validate_checkpoint_collection(
         rows, "m2.authority.AcquisitionSlots/v1"
     )
@@ -3990,7 +4190,11 @@ def test_r20_acquisition_slot_rows_project_an_inactive_scope() -> None:
     row = rows[2][0]
     assert row[3][0] == "m2.authority.AcquisitionSlotInactive/v1"
     assert len(row[3]) == 4
-    assert referenced == ((identity.EffectId("acq-effect-1"), _DORMANT_POSITION_SCOPE),)
+    assert len(referenced) == 1
+    reference = referenced[0]
+    assert reference.effect_id == identity.EffectId("acq-effect-1")
+    assert reference.position_scope == _DORMANT_POSITION_SCOPE
+    assert reference.currentness.application_generation_id == _APPLICATION
     checkpoint_codec._validate_checkpoint_collection(
         rows, "m2.authority.AcquisitionSlots/v1"
     )
@@ -4070,10 +4274,15 @@ def test_r20_acquisition_descriptor_rows_project_slot_and_selected_effects() -> 
     state = _state_with_acquisition_slot(state)
     effect_id = identity.EffectId("acq-effect-1")
 
+    _, slot_references = (
+        checkpoint_codec._encode_runtime_checkpoint_acquisition_slot_rows(
+            state, _APPLICATION, (_DORMANT_POSITION_SCOPE,)
+        )
+    )
     rows = checkpoint_codec._encode_runtime_checkpoint_acquisition_descriptor_rows(
         state,
         _APPLICATION,
-        ((effect_id, _DORMANT_POSITION_SCOPE),),
+        slot_references,
         (effect_id, identity.EffectId("effect-1")),
     )
 
@@ -4100,11 +4309,16 @@ def test_r20_acquisition_descriptor_rows_refuse_an_absent_slot_descriptor() -> N
         type(state._acquisition_descriptor_by_effect).empty(),
     )
 
+    _, slot_references = (
+        checkpoint_codec._encode_runtime_checkpoint_acquisition_slot_rows(
+            state, _APPLICATION, (_DORMANT_POSITION_SCOPE,)
+        )
+    )
     with pytest.raises(ValueError, match="names an absent descriptor"):
         checkpoint_codec._encode_runtime_checkpoint_acquisition_descriptor_rows(
             forged,
             _APPLICATION,
-            ((identity.EffectId("acq-effect-1"), _DORMANT_POSITION_SCOPE),),
+            slot_references,
             (),
         )
 
@@ -4192,8 +4406,11 @@ def test_r20_projected_venue_and_authority_wires_pass_their_own_validators() -> 
         book, ((bootstrap_input, _fixture_resolved_registry_outcome(bootstrap_input)),)
     )
     selection = _closure_selection(
-        _root_selection(
-            _owner_selection(_venue_claim_selection(), "owner-order-1"), "root-1"
+        _route_selection(
+            _root_selection(
+                _owner_selection(_venue_claim_selection(), "owner-order-1"),
+                "root-1",
+            )
         ),
         closure,
     )
@@ -4358,7 +4575,8 @@ def test_rev78_coverage_from_a_foreign_account_is_refused() -> None:
 
     with pytest.raises(ValueError, match="does not own its selected root"):
         checkpoint_codec._encode_runtime_checkpoint_venue_broker_coverage_rows(
-            book, _root_selection(_venue_claim_selection(), "root-1")
+            book,
+            _route_selection(_root_selection(_venue_claim_selection(), "root-1")),
         )
 
 
@@ -4410,9 +4628,18 @@ def test_rev78_input_named_by_two_different_legs_is_refused() -> None:
             venue._closure_commitment(closure),
         ),
     )
-    selection = _root_selection(
-        _owner_selection(_venue_claim_selection(), "owner-order-other"), "root-1"
+    selection = _route_selection(_root_selection(_venue_claim_selection(), "root-1"))
+    selected_owner = records.VenueIdentityOwnerRecord(
+        1,
+        _EXECUTION_PROFILE,
+        identity.OrderId("owner-order-other"),
+        identity.VenueObservationId("observation-1"),
+        1,
+        None,
+        identity.AcquisitionGenerationId("ab" * 32),
+        False,
     )
+    object.__setattr__(selection, "owners", (*selection.owners, selected_owner))
 
     with pytest.raises(ValueError, match="named by two different legs"):
         checkpoint_codec._referenced_reconciliation_inputs(book, selection)
@@ -4507,15 +4734,588 @@ def test_rev78_descriptor_for_a_foreign_scope_or_generation_is_refused() -> None
         identity.SymbolId("MSFT"),
     )
 
+    _, slot_references = (
+        checkpoint_codec._encode_runtime_checkpoint_acquisition_slot_rows(
+            state, _APPLICATION, (_DORMANT_POSITION_SCOPE,)
+        )
+    )
+    reference = slot_references[0]
+    foreign_reference = checkpoint_codec._AcquisitionSlotReference(
+        effect_id,
+        foreign_scope,
+        reference.descriptor_commitment,
+        reference.currentness,
+    )
+
     with pytest.raises(ValueError, match="does not own its referencing slot scope"):
         checkpoint_codec._encode_runtime_checkpoint_acquisition_descriptor_rows(
-            state, _APPLICATION, ((effect_id, foreign_scope),), ()
+            state, _APPLICATION, (foreign_reference,), ()
         )
 
     with pytest.raises(ValueError, match="leaves the selected application generation"):
         checkpoint_codec._encode_runtime_checkpoint_acquisition_descriptor_rows(
             state,
             identity.ApplicationGenerationId("other-generation"),
-            ((effect_id, _DORMANT_POSITION_SCOPE),),
+            slot_references,
             (),
         )
+
+
+# ---------------------------------------------------------------------------
+# REV-0079 root controls.  Each name below is paired with one refusal branch in
+# the repaired projector so the mutation map can be reviewed without trusting a
+# narrative-only "mutation sweep" claim.
+
+
+def _book_with_correlation_entry(
+    book: venue.VenueRecoveryBook,
+    entry: venue._AcquisitionCorrelationEntry,
+) -> venue.VenueRecoveryBook:
+    forged = copy(book)
+    object.__setattr__(
+        forged,
+        "_acquisition_correlation_by_root",
+        book._acquisition_correlation_by_root.insert_new(
+            venue._coverage_root_index_key(entry.root_key), entry, entry.commitment
+        ),
+    )
+    return forged
+
+
+def test_rev0079_owner_requires_the_full_selected_effect_scope() -> None:
+    """A matching effect ID cannot bridge a foreign request occurrence."""
+
+    state, _ = _authority_state_with_effects()
+    effect_scope = state.venue._effect_by_id.get(
+        venue._effect_index_key(identity.EffectId("effect-1"))
+    ).effect.scope
+    foreign_scope = deepcopy(effect_scope)
+    object.__setattr__(
+        foreign_scope,
+        "request_occurrence_id",
+        identity.RequestOccurrenceId("req-foreign"),
+    )
+    book = _book_with_owner_leg(state.venue, _FIXTURE_LEG_KEY, foreign_scope)
+
+    with pytest.raises(ValueError, match="selected effect scope"):
+        checkpoint_codec._encode_runtime_checkpoint_venue_owner_attempt_rows(
+            book, _owner_selection(_venue_claim_selection(), "owner-order-1")
+        )
+
+
+@pytest.mark.parametrize(
+    "entry",
+    (
+        venue._AcquisitionCorrelationEntry(
+            _APPLICATION,
+            PositionScope(
+                identity.BrokerId("paper"),
+                identity.EnvironmentId("paper"),
+                identity.AccountId("account"),
+                identity.SymbolId("MSFT"),
+            ),
+            identity.RequestOccurrenceId("req-effect-1"),
+            identity.EffectId("effect-1"),
+            _FIXTURE_LEG_KEY,
+            _FIXTURE_ROOT_KEY,
+        ),
+        venue._AcquisitionCorrelationEntry(
+            _APPLICATION,
+            _DORMANT_POSITION_SCOPE,
+            identity.RequestOccurrenceId("req-foreign"),
+            identity.EffectId("effect-1"),
+            _FIXTURE_LEG_KEY,
+            _FIXTURE_ROOT_KEY,
+        ),
+        venue._AcquisitionCorrelationEntry(
+            _APPLICATION,
+            _DORMANT_POSITION_SCOPE,
+            identity.RequestOccurrenceId("req-effect-1"),
+            identity.EffectId("effect-1"),
+            identity.VenueLegKey(
+                identity.BrokerId("paper"),
+                identity.EnvironmentId("paper"),
+                identity.AccountId("other-account"),
+                identity.OrderId("owner-order-1"),
+            ),
+            _FIXTURE_ROOT_KEY,
+        ),
+        venue._AcquisitionCorrelationEntry(
+            identity.ApplicationGenerationId("foreign-application"),
+            _DORMANT_POSITION_SCOPE,
+            identity.RequestOccurrenceId("req-effect-1"),
+            identity.EffectId("effect-1"),
+            _FIXTURE_LEG_KEY,
+            _FIXTURE_ROOT_KEY,
+        ),
+    ),
+    ids=("symbol", "request", "leg-account", "application"),
+)
+def test_rev0079_correlation_requires_every_selected_route_coordinate(
+    entry: venue._AcquisitionCorrelationEntry,
+) -> None:
+    """Root correlation must equal the complete selected route, not a subset."""
+
+    state, _ = _authority_state_with_effects()
+    book = _book_with_correlation_entry(state.venue, entry)
+    selection = _route_selection(_root_selection(_venue_claim_selection(), "root-1"))
+
+    with pytest.raises(ValueError, match="disagrees with its selected route"):
+        checkpoint_codec._encode_runtime_checkpoint_venue_correlation_rows(
+            book, selection
+        )
+
+
+def test_rev0079_owner_effect_guard_has_a_direct_negative_control() -> None:
+    """A reached owner cannot name an effect omitted from the selected proof."""
+
+    state, _ = _authority_state_with_effects()
+    effect_scope = state.venue._effect_by_id.get(
+        venue._effect_index_key(identity.EffectId("effect-1"))
+    ).effect.scope
+    book = _book_with_owner_leg(state.venue, _FIXTURE_LEG_KEY, effect_scope)
+    selection = _owner_selection(_venue_claim_selection(), "owner-order-1")
+    object.__setattr__(selection, "effects", ())
+
+    with pytest.raises(ValueError, match="references an unselected effect"):
+        checkpoint_codec._encode_runtime_checkpoint_venue_owner_attempt_rows(
+            book, selection
+        )
+
+
+def test_rev0079_root_route_guard_has_a_direct_negative_control() -> None:
+    """A reached root correlation must have its selected root route."""
+
+    state, _ = _authority_state_with_effects()
+    entry = venue._AcquisitionCorrelationEntry(
+        _APPLICATION,
+        _DORMANT_POSITION_SCOPE,
+        identity.RequestOccurrenceId("req-effect-1"),
+        identity.EffectId("effect-1"),
+        _FIXTURE_LEG_KEY,
+        _FIXTURE_ROOT_KEY,
+    )
+    book = _book_with_correlation_entry(state.venue, entry)
+    selection = _root_selection(_venue_claim_selection(), "root-1")
+
+    with pytest.raises(ValueError, match="has no selected root route"):
+        checkpoint_codec._encode_runtime_checkpoint_venue_correlation_rows(
+            book, selection
+        )
+
+
+def test_rev0079_route_effect_guard_has_a_direct_negative_control() -> None:
+    """A selected route cannot be projected when its effect is absent."""
+
+    state, _ = _authority_state_with_effects()
+    selection = _route_selection(_root_selection(_venue_claim_selection(), "root-1"))
+    object.__setattr__(selection, "effects", ())
+
+    with pytest.raises(ValueError, match="has an absent selected relation"):
+        checkpoint_codec._encode_runtime_checkpoint_venue_broker_coverage_rows(
+            _book_with_broker_coverage(state.venue), selection
+        )
+
+
+def test_rev0079_reconciliation_merge_rejects_same_leg_foreign_effect() -> None:
+    """One input cannot retain two effects even when its leg matches exactly."""
+
+    ordered: dict[str, checkpoint_codec._ReconciliationReference] = {}
+    first = checkpoint_codec._ReconciliationReference(
+        identity.VenueInputId("same-input"),
+        _FIXTURE_LEG_KEY,
+        _venue_effect_record(identity.EffectId("effect-1"), 1),
+        _DORMANT_POSITION_SCOPE,
+        _FIXTURE_ROOT_KEY,
+        False,
+    )
+    foreign_effect = checkpoint_codec._ReconciliationReference(
+        identity.VenueInputId("same-input"),
+        _FIXTURE_LEG_KEY,
+        _venue_effect_record(identity.EffectId("effect-foreign"), 2),
+        _DORMANT_POSITION_SCOPE,
+        _FIXTURE_ROOT_KEY,
+        False,
+    )
+    checkpoint_codec._merge_reconciliation_reference(ordered, first)
+
+    with pytest.raises(ValueError, match="two different effects"):
+        checkpoint_codec._merge_reconciliation_reference(ordered, foreign_effect)
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    (
+        ("effect_id", identity.EffectId("effect-foreign")),
+        (
+            "leg_key",
+            identity.VenueLegKey(
+                identity.BrokerId("paper"),
+                identity.EnvironmentId("paper"),
+                identity.AccountId("account"),
+                identity.OrderId("owner-order-foreign"),
+            ),
+        ),
+    ),
+    ids=("effect", "leg"),
+)
+def test_rev0079_broker_coverage_requires_selected_effect_and_leg(
+    field: str, replacement: object
+) -> None:
+    """Coverage-owned coordinates bind broker evidence to the selected route."""
+
+    state, _ = _authority_state_with_effects()
+    book = _book_with_broker_coverage(state.venue)
+    coverage = copy(book._broker_coverage_ledger.get(0))
+    object.__setattr__(coverage, field, replacement)
+
+    with pytest.raises(
+        ValueError, match="broker coverage disagrees with its selected route"
+    ):
+        checkpoint_codec._encode_runtime_checkpoint_venue_broker_coverage_rows(
+            _book_with_replaced_broker_coverage(book, coverage),
+            _route_selection(_root_selection(_venue_claim_selection(), "root-1")),
+        )
+
+
+def _fact_with_foreign_root_coordinate(
+    fact: object,
+    field: str,
+    replacement: object,
+) -> object:
+    """Forge exactly one RootFillKey coordinate without weakening another one."""
+
+    forged = copy(fact)
+    if field == "root_fill_id":
+        object.__setattr__(forged, field, replacement)
+        return forged
+    key = copy(fact.key)
+    object.__setattr__(key, field, replacement)
+    object.__setattr__(forged, "key", key)
+    return forged
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    (
+        ("broker", identity.BrokerId("other-broker")),
+        ("environment", identity.EnvironmentId("other-environment")),
+        ("account", identity.AccountId("other-account")),
+        ("root_fill_id", identity.RootFillId("root-foreign")),
+    ),
+    ids=("broker", "environment", "account", "root-fill-id"),
+)
+@pytest.mark.parametrize("member", ("fact", "head_fact"), ids=("fact", "head"))
+def test_rev0079_broker_coverage_rejects_each_root_coordinate(
+    field: str,
+    replacement: object,
+    member: str,
+) -> None:
+    """Both broker fact and head must own every RootFillKey coordinate."""
+
+    state, _ = _authority_state_with_effects()
+    book = _book_with_broker_coverage(state.venue)
+    coverage = copy(book._broker_coverage_ledger.get(0))
+    object.__setattr__(
+        coverage,
+        member,
+        _fact_with_foreign_root_coordinate(
+            getattr(coverage, member), field, replacement
+        ),
+    )
+
+    with pytest.raises(ValueError, match="does not own its selected root"):
+        checkpoint_codec._encode_runtime_checkpoint_venue_broker_coverage_rows(
+            _book_with_replaced_broker_coverage(book, coverage),
+            _route_selection(_root_selection(_venue_claim_selection(), "root-1")),
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    (
+        ("effect_id", identity.EffectId("effect-foreign")),
+        (
+            "leg_key",
+            identity.VenueLegKey(
+                identity.BrokerId("paper"),
+                identity.EnvironmentId("paper"),
+                identity.AccountId("account"),
+                identity.OrderId("owner-order-foreign"),
+            ),
+        ),
+    ),
+    ids=("effect", "leg"),
+)
+def test_rev0079_human_coverage_requires_selected_effect_and_leg(
+    field: str, replacement: object
+) -> None:
+    """Human coverage cannot substitute its own effect or leg coordinates."""
+
+    state, _ = _authority_state_with_effects()
+    book = _book_with_human_coverage(state.venue)
+    coverage = copy(book._human_coverage_ledger.get(0))
+    object.__setattr__(coverage, field, replacement)
+
+    with pytest.raises(
+        ValueError, match="human coverage disagrees with its selected route"
+    ):
+        checkpoint_codec._encode_runtime_checkpoint_venue_human_coverage_rows(
+            _book_with_replaced_human_coverage(book, coverage),
+            _route_selection(_root_selection(_venue_claim_selection(), "root-1")),
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    (
+        (
+            "leg_key",
+            identity.VenueLegKey(
+                identity.BrokerId("paper"),
+                identity.EnvironmentId("paper"),
+                identity.AccountId("account"),
+                identity.OrderId("owner-order-foreign"),
+            ),
+        ),
+        ("request_occurrence_id", identity.RequestOccurrenceId("req-foreign")),
+    ),
+    ids=("fact-leg", "fact-request"),
+)
+def test_rev0079_human_fact_requires_selected_leg_and_request(
+    field: str, replacement: object
+) -> None:
+    """The human fact's own leg/request coordinates are independently bound."""
+
+    state, _ = _authority_state_with_effects()
+    book = _book_with_human_coverage(state.venue)
+    coverage = copy(book._human_coverage_ledger.get(0))
+    fact = copy(coverage.fact)
+    object.__setattr__(fact, field, replacement)
+    object.__setattr__(coverage, "fact", fact)
+
+    with pytest.raises(ValueError, match="selected human provenance"):
+        checkpoint_codec._encode_runtime_checkpoint_venue_human_coverage_rows(
+            _book_with_replaced_human_coverage(book, coverage),
+            _route_selection(_root_selection(_venue_claim_selection(), "root-1")),
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    (
+        ("broker", identity.BrokerId("other-broker")),
+        ("environment", identity.EnvironmentId("other-environment")),
+        ("account", identity.AccountId("other-account")),
+        ("root_fill_id", identity.RootFillId("root-foreign")),
+    ),
+    ids=("broker", "environment", "account", "root-fill-id"),
+)
+def test_rev0079_human_fact_rejects_each_root_coordinate(
+    field: str, replacement: object
+) -> None:
+    """Human evidence must own the full selected RootFillKey too."""
+
+    state, _ = _authority_state_with_effects()
+    book = _book_with_human_coverage(state.venue)
+    coverage = copy(book._human_coverage_ledger.get(0))
+    object.__setattr__(
+        coverage,
+        "fact",
+        _fact_with_foreign_root_coordinate(coverage.fact, field, replacement),
+    )
+
+    with pytest.raises(ValueError, match="does not own its selected root"):
+        checkpoint_codec._encode_runtime_checkpoint_venue_human_coverage_rows(
+            _book_with_replaced_human_coverage(book, coverage),
+            _route_selection(_root_selection(_venue_claim_selection(), "root-1")),
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    (
+        ("broker", identity.BrokerId("other-broker")),
+        ("environment", identity.EnvironmentId("other-environment")),
+        ("account", identity.AccountId("other-account")),
+        ("root_fill_id", identity.RootFillId("root-foreign")),
+    ),
+    ids=("broker", "environment", "account", "root-fill-id"),
+)
+def test_rev0079_human_corroboration_rejects_each_root_coordinate(
+    field: str, replacement: object
+) -> None:
+    """The optional broker corroboration remains bound to the same root."""
+
+    state, _ = _authority_state_with_effects()
+    book = _book_with_human_coverage(state.venue, broker_corroborated=True)
+    coverage = copy(book._human_coverage_ledger.get(0))
+    assert coverage.broker_fact is not None
+    object.__setattr__(
+        coverage,
+        "broker_fact",
+        _fact_with_foreign_root_coordinate(coverage.broker_fact, field, replacement),
+    )
+
+    with pytest.raises(ValueError, match="does not own its selected root"):
+        checkpoint_codec._encode_runtime_checkpoint_venue_human_coverage_rows(
+            _book_with_replaced_human_coverage(book, coverage),
+            _route_selection(_root_selection(_venue_claim_selection(), "root-1")),
+        )
+
+
+def test_rev0079_inexact_revision_head_requires_its_reconciliation() -> None:
+    """Deleting a selected inexact revision record must fail, never omit it."""
+
+    state, _ = _authority_state_with_effects()
+    book = _book_with_inexact_revision_coverage(state.venue)
+    selection = _reconciliation_selection()
+
+    with pytest.raises(ValueError, match="required reconciliation is absent"):
+        checkpoint_codec._encode_runtime_checkpoint_venue_reconciliation_rows(
+            book, selection
+        )
+
+    repaired = _book_with_reconciliations(
+        book,
+        (("revision-required", _fixture_revision_reconciliation("revision-required")),),
+    )
+    rows = checkpoint_codec._encode_runtime_checkpoint_venue_reconciliation_rows(
+        repaired, selection
+    )
+    assert rows[1] == 1
+
+
+def test_rev0079_refreshed_bootstrap_requires_its_catch_up_outcome() -> None:
+    """A distinct checkpoint input is a required selected registry transition."""
+
+    state, _ = _authority_state_with_effects()
+    record = _fixture_refreshed_bootstrap_record("catch-up-required")
+    book = _book_with_bootstrap_target(state.venue, record)
+
+    with pytest.raises(ValueError, match="required execution reconciliation is absent"):
+        checkpoint_codec._encode_runtime_checkpoint_venue_execution_reconciliation_rows(
+            book, _bootstrap_selection()
+        )
+
+    repaired = _book_with_execution_reconciliations(
+        book,
+        (
+            (
+                "catch-up-required",
+                _fixture_unresolved_registry_outcome("catch-up-required"),
+            ),
+        ),
+    )
+    rows = (
+        checkpoint_codec._encode_runtime_checkpoint_venue_execution_reconciliation_rows(
+            repaired, _bootstrap_selection()
+        )
+    )
+    assert rows[1] == 1
+
+
+def test_rev0079_slot_rejects_foreign_currentness_application_generation() -> None:
+    """Currentness is an exact selected application/scope map, not a scope-only map."""
+
+    state, _ = _authority_state_with_effects()
+    state = _state_with_acquisition_slot(state)
+    slot_key = authority._acquisition_scope_key(_APPLICATION, _DORMANT_POSITION_SCOPE)
+    forged = copy(state)
+    object.__setattr__(
+        forged,
+        "_acquisition_currentness_by_scope",
+        state._acquisition_currentness_by_scope.replace_existing(
+            slot_key,
+            _currentness_entry(
+                application_generation_id=identity.ApplicationGenerationId(
+                    "foreign-application"
+                )
+            ),
+            b"\x15" * 32,
+        ),
+    )
+
+    with pytest.raises(ValueError, match="leaves the selected application generation"):
+        checkpoint_codec._encode_runtime_checkpoint_acquisition_slot_rows(
+            forged, _APPLICATION, (_DORMANT_POSITION_SCOPE,)
+        )
+
+
+def test_rev0079_slot_descriptor_commitment_must_match_by_effect_descriptor() -> None:
+    """Authentic by-scope and by-effect descriptors cannot silently diverge."""
+
+    state, _ = _authority_state_with_effects()
+    state = _state_with_acquisition_slot(state)
+    slot_key = authority._acquisition_scope_key(_APPLICATION, _DORMANT_POSITION_SCOPE)
+    alternate_descriptor = authority._new_acquisition_effect_descriptor(
+        _effect_permit(controller_head=b"\x99" * 32)
+    )
+    alternate_active = authority._new_acquisition_active_effect(alternate_descriptor)
+    forged = copy(state)
+    object.__setattr__(
+        forged,
+        "_acquisition_descriptor_by_scope",
+        state._acquisition_descriptor_by_scope.replace_existing(
+            slot_key, alternate_descriptor, b"\x16" * 32
+        ),
+    )
+    object.__setattr__(
+        forged,
+        "_acquisition_active_by_scope",
+        state._acquisition_active_by_scope.replace_existing(
+            slot_key, alternate_active, b"\x17" * 32
+        ),
+    )
+    _, references = checkpoint_codec._encode_runtime_checkpoint_acquisition_slot_rows(
+        forged, _APPLICATION, (_DORMANT_POSITION_SCOPE,)
+    )
+
+    with pytest.raises(ValueError, match="disagrees with its slot commitment"):
+        checkpoint_codec._encode_runtime_checkpoint_acquisition_descriptor_rows(
+            forged, _APPLICATION, references, ()
+        )
+
+
+def test_rev0079_slot_currentness_must_match_descriptor_authority() -> None:
+    """An authentic currentness row still must name the descriptor's authority."""
+
+    state, _ = _authority_state_with_effects()
+    state = _state_with_acquisition_slot(state)
+    slot_key = authority._acquisition_scope_key(_APPLICATION, _DORMANT_POSITION_SCOPE)
+    forged = copy(state)
+    object.__setattr__(
+        forged,
+        "_acquisition_currentness_by_scope",
+        state._acquisition_currentness_by_scope.replace_existing(
+            slot_key,
+            _currentness_entry(controller_head=b"\x99" * 32),
+            b"\x18" * 32,
+        ),
+    )
+    _, references = checkpoint_codec._encode_runtime_checkpoint_acquisition_slot_rows(
+        forged, _APPLICATION, (_DORMANT_POSITION_SCOPE,)
+    )
+
+    with pytest.raises(ValueError, match="do not name the same authority"):
+        checkpoint_codec._encode_runtime_checkpoint_acquisition_descriptor_rows(
+            forged, _APPLICATION, references, ()
+        )
+
+
+_REV0079_GUARD_TO_TEST = {
+    "selected owner effect": "test_rev0079_owner_effect_guard_has_a_direct_negative_control",
+    "selected root route": "test_rev0079_root_route_guard_has_a_direct_negative_control",
+    "selected route effect": "test_rev0079_route_effect_guard_has_a_direct_negative_control",
+    "same-leg foreign effect": "test_rev0079_reconciliation_merge_rejects_same_leg_foreign_effect",
+    "broker coverage coordinates": "test_rev0079_broker_coverage_requires_selected_effect_and_leg",
+    "human coverage coordinates": "test_rev0079_human_coverage_requires_selected_effect_and_leg",
+    "human corroboration root": "test_rev0079_human_corroboration_rejects_each_root_coordinate",
+}
+
+
+def test_rev0079_guard_to_test_map_points_to_live_direct_controls() -> None:
+    """Keep the published mutation map tied to executable direct controls."""
+
+    for test_name in _REV0079_GUARD_TO_TEST.values():
+        assert callable(globals()[test_name])

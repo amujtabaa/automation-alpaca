@@ -10,7 +10,7 @@ disposition: []
 owner: Codex orchestrator and implementation seat; fresh-context reviewers required
 created: 2026-08-23
 predecessor: WO-0168h superseded after REV-0076 R5 BLOCK
-branch: codex/m2-i3-5-checkpoint-closure-r1
+branch: codex/m2-wo0168c-remediation-r1
 preflight_review_id: REV-0077
 implementation_review_id: REV-0078
 execution_authority: Ameen Mujtabaa's serial-M2 authorization permits ordinary reversible work through M2 closeout and M3 preparation. REV-0077 accepted the exact R13 preflight at aa2f0225a0d0d85a41e5cfc5f6c8e530ed7c1a83 with P0=0/P1=0/P2=0. Exact named source/test paths below are released. Changed DDL remains static-only and no changed-DDL install or SQLite-bearing test may run until Ameen approves the exact candidate commit/tree, DDL SHA-256 and byte count, and named fresh-file test plan. No configured/in-memory database, migration, runtime composition, credentials, network, broker calls, orders, promotion, or merge to master is authorized.
@@ -46,6 +46,10 @@ allowed_paths:
   - work/queue/M2-EXECUTION-2026-08-21/34-M2-COMPLETION-DRIVE.md
   - work/review/REV-0077/**
   - work/review/REV-0078/**
+  - work/review/REV-0079/**
+  - work/review/FINDING-preexisting-suite-floor-2026-08-24.md
+  - work/review/FINDING-protection-stateful-replay-disposition.md
+  - work/review/FINDING-schema-approval-gate-is-self-approving.md
   - work/ledger.jsonl
   - app/execution_core/persistence/checkpoint_codec.py
   - app/execution_core/persistence/records.py
@@ -58,7 +62,13 @@ allowed_paths:
   - tests/execution_core/test_persistence_runtime_checkpoint_sqlite.py
   - tests/execution_core/test_persistence_runtime_checkpoint_directness.py
   - tests/execution_core/test_persistence_schema.py
+  - tests/execution_core/approved_schema_digest.py
+  - tests/execution_core/test_persistence_directness.py
+  - tests/execution_core/test_persistence_repository.py
+  - tests/execution_core/test_persistence_write_capability.py
   - tests/execution_core/test_venue_checkpoint_hardening.py
+  - work/queue/M2-EXECUTION-2026-08-21/35-WO-0168C-HUMAN-GATE-DDL.md
+  - work/queue/M2-EXECUTION-2026-08-21/36-R16-MANUAL-RULE-RATIFICATION.md
 forbidden_paths: []
 ---
 
@@ -159,3 +169,10 @@ remediations, and the two finding-file authorizations ("You may open one", "Take
 
 The `app/**` and `tests/**` checkpoint paths already released by the accepted implementation
 surface are unchanged. No path beyond this table has been touched since `344c32b`.
+
+## Amendment — Codex remediation branch (2026-08-24)
+
+The former Claude implementation handoff at `3b26c1cd636615cf0d85c13951eaebf099b88bdc` is
+being remediated in the isolated Codex worktree on
+`codex/m2-wo0168c-remediation-r1`. This records the active implementation identity only; it does
+not widen the released paths, authorize any SQLite execution, or change the human DDL gate.

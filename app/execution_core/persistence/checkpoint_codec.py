@@ -1979,13 +1979,7 @@ def _encode_runtime_checkpoint_venue_owner_attempt_rows(
     """
 
     atom = _operations._encode_m2_m1_atom
-    # REV-0078 P1-1: the leg key alone admitted a same-leg owner carrying a
-    # foreign effect/observation relationship. The selected owner record names
-    # both, so the reached owner must equal the full selected relation, with the
-    # record's surrogate effect id resolved through the selected effect rows.
-    effect_external_by_id = {
-        record.effect_id: record.effect_external for record in selection.effects
-    }
+    relations = _selected_venue_relations(selection)
     rows: list[object] = []
     reached = 0
     for ordinal, (leg_key, owner_record) in enumerate(
@@ -1995,15 +1989,9 @@ def _encode_runtime_checkpoint_venue_owner_attempt_rows(
         owner = book._owner_by_leg.get(leg_index)
         if owner is None:
             raise ValueError("selected owner leg has no current owner row")
-        if owner.leg_key != leg_key:
-            raise ValueError("reached owner does not own its selected leg")
-        if owner.observation_id != owner_record.observation_id:
-            raise ValueError("reached owner disagrees with its selected observation")
-        selected_effect = effect_external_by_id.get(owner_record.effect_id)
-        if selected_effect is None:
-            raise ValueError("selected owner references an unselected effect")
-        if owner.effect_scope.effect_id != selected_effect:
-            raise ValueError("reached owner disagrees with its selected effect")
+        effect, _position_scope = _require_selected_owner_relation(
+            book, relations, owner, owner_record, "owner"
+        )
         reached += 1
         current = book._leg_current_by_leg.get(leg_index)
         attempt = None if current is None else current.attempt
@@ -2031,7 +2019,7 @@ def _encode_runtime_checkpoint_venue_owner_attempt_rows(
                     "m2.venue.OwnerAttempt/v1",
                     ordinal,
                     atom(leg_key),
-                    atom(owner.effect_scope.effect_id),
+                    atom(effect.effect_external),
                     atom(owner.observation_id),
                     attempt_row,
                 ]
@@ -2064,6 +2052,231 @@ def _selected_root_keys_from_selection(
     )
 
 
+@_dataclass(frozen=True, slots=True)
+class _SelectedVenueRelations:
+    """Direct maps for the complete repository-selected venue relationship.
+
+    The checkpoint may omit unrelated history, but it must never weaken a reached
+    row into a few matching scalar IDs.  These maps make the selected proof the
+    one authority for every effect, owner, route, root, and scope coordinate.
+    """
+
+    scopes_by_id: dict[int, _records.ScopeRecord]
+    effects_by_id: dict[int, _records.VenueEffectRecord]
+    owners_by_id: dict[_identity.OrderId, _records.VenueIdentityOwnerRecord]
+    routes_by_root_key_id: dict[int, _records.AcquisitionRootRouteRecord]
+    roots_by_key_id: dict[int, _records.RootFillRecord]
+
+
+def _selected_venue_relations(
+    selection: _records._RuntimeCheckpointSelectionSet,
+) -> _SelectedVenueRelations:
+    """Index selected rows and reject ambiguous keys before any projection."""
+
+    scopes = {record.scope_id: record for record in selection.scopes}
+    effects = {record.effect_id: record for record in selection.effects}
+    owners = {record.owner_id: record for record in selection.owners}
+    routes = {record.root_fill_key_id: record for record in selection.root_routes}
+    roots = {record.root_fill_key_id: record for record in selection.roots}
+    for name, indexed, source in (
+        ("scope", scopes, selection.scopes),
+        ("effect", effects, selection.effects),
+        ("owner", owners, selection.owners),
+        ("root route", routes, selection.root_routes),
+        ("root", roots, selection.roots),
+    ):
+        if len(indexed) != len(source):
+            raise ValueError(f"selected {name} records repeat a key")
+    return _SelectedVenueRelations(scopes, effects, owners, routes, roots)
+
+
+def _selected_position_scope(
+    book: _venue.VenueRecoveryBook,
+    scope: _records.ScopeRecord,
+) -> _fills.PositionScope:
+    return _fills.PositionScope(
+        book.scope.broker,
+        book.scope.environment,
+        book.scope.account,
+        scope.symbol,
+    )
+
+
+def _selected_effect_position_scope(
+    book: _venue.VenueRecoveryBook,
+    relations: _SelectedVenueRelations,
+    effect: _records.VenueEffectRecord,
+    subject: str,
+) -> _fills.PositionScope:
+    """Return an effect's selected scope after checking durable coordinates."""
+
+    scope = relations.scopes_by_id.get(effect.scope_id)
+    if scope is None:
+        raise ValueError(f"selected {subject} references an unselected scope")
+    if (
+        scope.application_generation_id != effect.application_generation_id
+        or scope.execution_profile_id != effect.execution_profile_id
+    ):
+        raise ValueError(f"selected {subject} effect disagrees with its scope")
+    return _selected_position_scope(book, scope)
+
+
+def _require_selected_effect_scope(
+    book: _venue.VenueRecoveryBook,
+    relations: _SelectedVenueRelations,
+    effect_scope: _venue.VenueEffectScope,
+    effect: _records.VenueEffectRecord,
+    subject: str,
+) -> _fills.PositionScope:
+    """Require a runtime effect scope to equal all selected durable coordinates."""
+
+    position_scope = _selected_effect_position_scope(book, relations, effect, subject)
+    target_leg_key = (
+        None
+        if effect.target_order_id is None
+        else _identity.VenueLegKey(
+            book.scope.broker,
+            book.scope.environment,
+            book.scope.account,
+            effect.target_order_id,
+        )
+    )
+    if (
+        effect_scope.generation != effect.application_generation_id
+        or effect_scope.position_scope != position_scope
+        or effect_scope.effect_id != effect.effect_external
+        or effect_scope.request_occurrence_id != effect.request_occurrence_id
+        or effect_scope.mandate_id != effect.mandate_id
+        or effect_scope.kind.value != effect.effect_kind
+        or effect_scope.client_order_id != effect.client_order_id
+        or effect_scope.target_leg_key != target_leg_key
+        or effect_scope.side.value != effect.side
+        or effect_scope.quantity != effect.quantity
+        or effect_scope.economic_scope != effect.economic_scope
+    ):
+        raise ValueError(f"reached {subject} disagrees with its selected effect scope")
+    return position_scope
+
+
+def _require_selected_owner_relation(
+    book: _venue.VenueRecoveryBook,
+    relations: _SelectedVenueRelations,
+    owner: _venue.VenueIdentityOwner,
+    owner_record: _records.VenueIdentityOwnerRecord,
+    subject: str,
+) -> tuple[_records.VenueEffectRecord, _fills.PositionScope]:
+    """Bind one reached owner to its full selected owner/effect/scope relation."""
+
+    effect = relations.effects_by_id.get(owner_record.effect_id)
+    if effect is None:
+        raise ValueError(f"selected {subject} owner references an unselected effect")
+    expected_leg = _identity.VenueLegKey(
+        book.scope.broker,
+        book.scope.environment,
+        book.scope.account,
+        owner_record.owner_id,
+    )
+    if owner.leg_key != expected_leg:
+        raise ValueError(f"reached {subject} does not own its selected leg")
+    if owner.observation_id != owner_record.observation_id:
+        raise ValueError(f"reached {subject} disagrees with its selected observation")
+    if (
+        owner_record.scope_id != effect.scope_id
+        or owner_record.execution_profile_id != effect.execution_profile_id
+        or owner_record.owner_generation_id != effect.acquisition_generation_id
+    ):
+        raise ValueError(f"selected {subject} owner disagrees with its selected effect")
+    position_scope = _require_selected_effect_scope(
+        book, relations, owner.effect_scope, effect, subject
+    )
+    return effect, position_scope
+
+
+def _require_selected_route_relation(
+    book: _venue.VenueRecoveryBook,
+    relations: _SelectedVenueRelations,
+    route: _records.AcquisitionRootRouteRecord,
+    root: _records.RootFillRecord,
+    subject: str,
+) -> tuple[
+    _records.VenueEffectRecord, _records.VenueIdentityOwnerRecord, _fills.PositionScope
+]:
+    """Bind a selected route to every selected root, owner, effect, and scope key."""
+
+    effect = relations.effects_by_id.get(route.effect_id)
+    owner = relations.owners_by_id.get(route.owner_id)
+    scope = relations.scopes_by_id.get(route.scope_id)
+    if effect is None or owner is None or scope is None:
+        raise ValueError(f"selected {subject} route has an absent selected relation")
+    if (
+        route.scope_id != root.scope_id
+        or route.application_generation_id != root.application_generation_id
+        or route.execution_profile_id != root.execution_profile_id
+        or route.acquisition_generation_id != root.owner_generation_id
+        or route.scope_id != effect.scope_id
+        or route.application_generation_id != effect.application_generation_id
+        or route.execution_profile_id != effect.execution_profile_id
+        or route.acquisition_generation_id != effect.acquisition_generation_id
+        or owner.scope_id != route.scope_id
+        or owner.execution_profile_id != route.execution_profile_id
+        or owner.owner_generation_id != route.acquisition_generation_id
+        or owner.effect_id != route.effect_id
+        or owner.observation_id != route.observation_id
+        or owner.root_fill_key_id != route.root_fill_key_id
+        or scope.application_generation_id != route.application_generation_id
+        or scope.execution_profile_id != route.execution_profile_id
+    ):
+        raise ValueError(
+            f"selected {subject} route disagrees with its selected relation"
+        )
+    return effect, owner, _selected_position_scope(book, scope)
+
+
+def _require_selected_coverage_fact(
+    fact: _Any,
+    *,
+    root_key: _identity.RootFillKey,
+    effect: _records.VenueEffectRecord,
+    leg_key: _identity.VenueLegKey,
+    position_scope: _fills.PositionScope,
+    subject: str,
+) -> None:
+    """Bind an economic fact through the coordinates that its type owns.
+
+    Broker facts intentionally carry no venue-leg or request-occurrence field: those
+    belong to their enclosing coverage/reconciliation record and are checked at that
+    boundary.  Every admitted fact *does* carry an exact root key and execution
+    scope, while human-attested evidence additionally owns the leg and request
+    occurrence itself.  Keeping the two layers separate prevents both a fabricated
+    attribute check and a weaker bare-root comparison.
+    """
+
+    fact_type = type(fact)
+    if fact_type not in {
+        _fills.BrokerFillFact,
+        _fills.BrokerTradeCorrectFact,
+        _fills.BrokerTradeBustFact,
+        _fills.HumanAttestedFillFact,
+    }:
+        raise TypeError(f"reached {subject} is not an admitted execution fact")
+    if fact.root_key != root_key:
+        raise ValueError(f"reached {subject} does not own its selected root")
+    if (
+        fact.scope.position_scope != position_scope
+        or fact.scope.order_id != leg_key.order_id
+    ):
+        raise ValueError(
+            f"reached {subject} disagrees with its selected execution provenance"
+        )
+    if fact_type is _fills.HumanAttestedFillFact and (
+        fact.leg_key != leg_key
+        or fact.request_occurrence_id != effect.request_occurrence_id
+    ):
+        raise ValueError(
+            f"reached {subject} disagrees with its selected human provenance"
+        )
+
+
 def _encode_runtime_checkpoint_venue_correlation_rows(
     book: _venue.VenueRecoveryBook,
     selection: _records._RuntimeCheckpointSelectionSet,
@@ -2071,22 +2284,14 @@ def _encode_runtime_checkpoint_venue_correlation_rows(
     """Project the acquisition correlation of each proof-selected root."""
 
     atom = _operations._encode_m2_m1_atom
-    # REV-0078 P1-1: the root key alone admitted a correlation carrying a foreign
-    # effect/owner relation. The selected root route names the route this root was
-    # admitted through, so the reached entry must agree with it on effect, owner,
-    # and application generation.
-    effect_external_by_id = {
-        record.effect_id: record.effect_external for record in selection.effects
-    }
-    route_by_root_key_id = {
-        route.root_fill_key_id: route for route in selection.root_routes
-    }
-    root_key_id_by_root_fill_id = {
-        record.root_fill_id: record.root_fill_key_id for record in selection.roots
-    }
+    relations = _selected_venue_relations(selection)
     rows: list[object] = []
     reached = 0
-    for root_key in _selected_root_keys_from_selection(book, selection):
+    for root_key, root_record in zip(
+        _selected_root_keys_from_selection(book, selection),
+        selection.roots,
+        strict=True,
+    ):
         entry = book._acquisition_correlation_by_root.get(
             _venue._coverage_root_index_key(root_key)
         )
@@ -2094,18 +2299,24 @@ def _encode_runtime_checkpoint_venue_correlation_rows(
             continue
         if entry.root_key != root_key:
             raise ValueError("reached correlation does not own its selected root")
-        route = route_by_root_key_id.get(
-            root_key_id_by_root_fill_id.get(root_key.root_fill_id, -1)
-        )
+        route = relations.routes_by_root_key_id.get(root_record.root_fill_key_id)
         if route is None:
             raise ValueError("reached correlation has no selected root route")
-        route_effect = effect_external_by_id.get(route.effect_id)
-        if route_effect is None:
-            raise ValueError("selected root route references an unselected effect")
+        effect, owner, position_scope = _require_selected_route_relation(
+            book, relations, route, root_record, "correlation"
+        )
+        expected_leg = _identity.VenueLegKey(
+            book.scope.broker,
+            book.scope.environment,
+            book.scope.account,
+            owner.owner_id,
+        )
         if (
-            entry.effect_id != route_effect
-            or entry.leg_key.order_id != route.owner_id
-            or entry.application_generation_id != route.application_generation_id
+            entry.application_generation_id != effect.application_generation_id
+            or entry.position_scope != position_scope
+            or entry.request_occurrence_id != effect.request_occurrence_id
+            or entry.effect_id != effect.effect_external
+            or entry.leg_key != expected_leg
         ):
             raise ValueError("reached correlation disagrees with its selected route")
         reached += 1
@@ -2207,9 +2418,14 @@ def _encode_runtime_checkpoint_venue_broker_coverage_rows(
     """
 
     atom = _operations._encode_m2_m1_atom
+    relations = _selected_venue_relations(selection)
     rows: list[object] = []
     reached = 0
-    for root_key in _selected_root_keys_from_selection(book, selection):
+    for root_key, root_record in zip(
+        _selected_root_keys_from_selection(book, selection),
+        selection.roots,
+        strict=True,
+    ):
         index = book._broker_coverage_by_root.get(
             _venue._coverage_root_index_key(root_key)
         )
@@ -2218,21 +2434,38 @@ def _encode_runtime_checkpoint_venue_broker_coverage_rows(
         coverage = book._broker_coverage_ledger.get(index)
         if coverage is None:
             raise ValueError("broker coverage index does not resolve in its ledger")
-        # Prove the dereferenced ledger row belongs to the root that indexed it.
-        # The index stores a slot number, so a spliced index would otherwise emit
-        # another root's economics -- effect, leg, and cumulative quantities --
-        # under this root, sealed by the venue commitment as authentic.
-        # REV-0078 P1-1: the bare root_fill_id admitted a foreign account's
-        # coverage under the same symbol string. The full RootFillKey binds
-        # broker, environment, and account as well.
-        if any(
-            fact.root_fill_id != root_key.root_fill_id
-            or fact.key.broker != root_key.broker
-            or fact.key.environment != root_key.environment
-            or fact.key.account != root_key.account
-            for fact in (coverage.fact, coverage.head_fact)
-        ):
-            raise ValueError("reached broker coverage does not own its selected root")
+        route = relations.routes_by_root_key_id.get(root_record.root_fill_key_id)
+        if route is None:
+            raise ValueError("broker coverage has no selected root route")
+        effect, owner, position_scope = _require_selected_route_relation(
+            book, relations, route, root_record, "broker coverage"
+        )
+        leg_key = _identity.VenueLegKey(
+            book.scope.broker,
+            book.scope.environment,
+            book.scope.account,
+            owner.owner_id,
+        )
+        if coverage.effect_id != effect.effect_external or coverage.leg_key != leg_key:
+            raise ValueError(
+                "reached broker coverage disagrees with its selected route"
+            )
+        _require_selected_coverage_fact(
+            coverage.fact,
+            root_key=root_key,
+            effect=effect,
+            leg_key=leg_key,
+            position_scope=position_scope,
+            subject="broker coverage fact",
+        )
+        _require_selected_coverage_fact(
+            coverage.head_fact,
+            root_key=root_key,
+            effect=effect,
+            leg_key=leg_key,
+            position_scope=position_scope,
+            subject="broker coverage head",
+        )
         reached += 1
         rows.append(
             _require_bounded_checkpoint_row(
@@ -2269,9 +2502,14 @@ def _encode_runtime_checkpoint_venue_human_coverage_rows(
     """Project the human coverage of each proof-selected root through its ledger."""
 
     atom = _operations._encode_m2_m1_atom
+    relations = _selected_venue_relations(selection)
     rows: list[object] = []
     reached = 0
-    for root_key in _selected_root_keys_from_selection(book, selection):
+    for root_key, root_record in zip(
+        _selected_root_keys_from_selection(book, selection),
+        selection.roots,
+        strict=True,
+    ):
         index = book._human_coverage_by_root.get(
             _venue._coverage_root_index_key(root_key)
         )
@@ -2280,23 +2518,36 @@ def _encode_runtime_checkpoint_venue_human_coverage_rows(
         coverage = book._human_coverage_ledger.get(index)
         if coverage is None:
             raise ValueError("human coverage index does not resolve in its ledger")
-        # Same relation as the broker family: the index holds a ledger slot, so
-        # the dereferenced row must be proved to own the root that indexed it.
-        if (
-            coverage.fact.root_fill_id != root_key.root_fill_id
-            or coverage.fact.key.broker != root_key.broker
-            or coverage.fact.key.environment != root_key.environment
-            or coverage.fact.key.account != root_key.account
-        ):
-            raise ValueError("reached human coverage does not own its selected root")
-        if coverage.broker_fact is not None and (
-            coverage.broker_fact.root_fill_id != root_key.root_fill_id
-            or coverage.broker_fact.key.broker != root_key.broker
-            or coverage.broker_fact.key.environment != root_key.environment
-            or coverage.broker_fact.key.account != root_key.account
-        ):
-            raise ValueError(
-                "reached human coverage corroboration leaves its selected root"
+        route = relations.routes_by_root_key_id.get(root_record.root_fill_key_id)
+        if route is None:
+            raise ValueError("human coverage has no selected root route")
+        effect, owner, position_scope = _require_selected_route_relation(
+            book, relations, route, root_record, "human coverage"
+        )
+        leg_key = _identity.VenueLegKey(
+            book.scope.broker,
+            book.scope.environment,
+            book.scope.account,
+            owner.owner_id,
+        )
+        if coverage.effect_id != effect.effect_external or coverage.leg_key != leg_key:
+            raise ValueError("reached human coverage disagrees with its selected route")
+        _require_selected_coverage_fact(
+            coverage.fact,
+            root_key=root_key,
+            effect=effect,
+            leg_key=leg_key,
+            position_scope=position_scope,
+            subject="human coverage fact",
+        )
+        if coverage.broker_fact is not None:
+            _require_selected_coverage_fact(
+                coverage.broker_fact,
+                root_key=root_key,
+                effect=effect,
+                leg_key=leg_key,
+                position_scope=position_scope,
+                subject="human coverage corroboration",
             )
         reached += 1
         rows.append(
@@ -2365,6 +2616,7 @@ def _encode_runtime_checkpoint_venue_closure_head_rows(
     selected_closures = {record.owner_id: record for record in selection.closure_heads}
     if len(selected_closures) != len(selection.closure_heads):
         raise ValueError("selected closure heads repeat an owner")
+    relations = _selected_venue_relations(selection)
     rows: list[object] = []
     reached = 0
     for leg_key in _selected_leg_keys_from_selection(book, selection):
@@ -2378,6 +2630,18 @@ def _encode_runtime_checkpoint_venue_closure_head_rows(
         record = selected_closures.get(leg_key.order_id)
         if record is None:
             raise ValueError("reached closure head is not a selected closure")
+        owner = relations.owners_by_id.get(record.owner_id)
+        effect = relations.effects_by_id.get(record.effect_id)
+        if owner is None or effect is None:
+            raise ValueError("selected closure head has an absent selected relation")
+        if (
+            record.scope_id != owner.scope_id
+            or record.effect_id != owner.effect_id
+            or owner.scope_id != effect.scope_id
+            or owner.execution_profile_id != effect.execution_profile_id
+            or owner.owner_generation_id != effect.acquisition_generation_id
+        ):
+            raise ValueError("selected closure head disagrees with its owner relation")
         if (
             closure.ordinal != record.ordinal
             or closure.kind.value != record.closure_kind
@@ -2434,73 +2698,223 @@ def _encode_runtime_checkpoint_venue_closure_head_rows(
     return _checkpoint_collection("m2.venue.ClosureHeads/v1", rows)
 
 
+@_dataclass(frozen=True, slots=True)
+class _ReconciliationReference:
+    """One selected current row's precise reconciliation obligation."""
+
+    input_id: _identity.VenueInputId
+    leg_key: _identity.VenueLegKey
+    effect: _records.VenueEffectRecord
+    position_scope: _fills.PositionScope
+    root_key: _identity.RootFillKey | None
+    required: bool
+
+
+def _merge_reconciliation_reference(
+    ordered: dict[str, _ReconciliationReference],
+    reference: _ReconciliationReference,
+) -> None:
+    """Merge one selected reconciliation obligation without losing coordinates.
+
+    Multiple current rows may name one input.  The first reference is not allowed
+    to erase coordinates learned from a later reference: agreement is required for
+    every known leg/effect/scope/root coordinate, a known root strengthens an
+    earlier unknown root, and ``required`` is monotonic.  Keeping this merge at a
+    named boundary makes the collision contract directly testable.
+    """
+
+    if type(reference.input_id) is not _identity.VenueInputId:
+        raise TypeError("referenced input must be the exact VenueInputId type")
+    existing = ordered.get(reference.input_id.value)
+    if existing is None:
+        ordered[reference.input_id.value] = reference
+        return
+    if existing.leg_key != reference.leg_key:
+        raise ValueError("referenced input is named by two different legs")
+    if existing.effect != reference.effect:
+        raise ValueError("referenced input is named by two different effects")
+    if existing.position_scope != reference.position_scope:
+        raise ValueError("referenced input is named by two different scopes")
+    if (
+        existing.root_key is not None
+        and reference.root_key is not None
+        and existing.root_key != reference.root_key
+    ):
+        raise ValueError("referenced input is named by two different roots")
+    ordered[reference.input_id.value] = _ReconciliationReference(
+        reference.input_id,
+        reference.leg_key,
+        reference.effect,
+        reference.position_scope,
+        reference.root_key if reference.root_key is not None else existing.root_key,
+        existing.required or reference.required,
+    )
+
+
 def _referenced_reconciliation_inputs(
     book: _venue.VenueRecoveryBook,
     selection: _records._RuntimeCheckpointSelectionSet,
-) -> tuple[
-    tuple[_identity.VenueInputId, _identity.VenueLegKey, _identity.EffectId | None],
-    ...,
-]:
-    """Collect each referenced input beside the identity of the row that named it.
+) -> tuple[_ReconciliationReference, ...]:
+    """Collect the selected reconciliation obligations without blanket omission.
 
-    R15 section 2 admits a reconciliation row only when its input ID is directly
-    referenced by a selected current closure or coverage row. The referencing
-    row's leg -- and its effect, where the referencer carries one -- travel with
-    the input so the consumer can require *equality* with the row that admitted
-    it rather than membership in the selected set (REV-0078 P1-1). A closure
-    carries no effect, so closure references bind the leg alone.
-
-    Reference order is proof order -- closure heads over the selected owner legs,
-    then human and broker coverage over the selected roots -- and an input named
-    more than once keeps its first reference, so no whole-map or input order is
-    ever consulted. One input named with two different identities is a refusal.
+    A normal applied fill and an ordinary terminal closure may name an evidence
+    input with no reconciliation record.  In contrast, the reducer creates a
+    revision reconciliation atomically whenever an inexact revision head is
+    retained.  References are therefore classified at their producer boundary;
+    a missing mandatory revision record is an integrity failure, not history that
+    can be silently omitted.  Duplicate references merge only when every known
+    coordinate agrees, and a later known coordinate strengthens an earlier one.
     """
 
-    ordered: dict[
-        str,
-        tuple[_identity.VenueInputId, _identity.VenueLegKey, _identity.EffectId | None],
-    ] = {}
+    relations = _selected_venue_relations(selection)
+    ordered: dict[str, _ReconciliationReference] = {}
 
     def _reference(
         input_id: _identity.VenueInputId,
         leg_key: _identity.VenueLegKey,
-        effect_id: _identity.EffectId | None,
+        effect: _records.VenueEffectRecord,
+        position_scope: _fills.PositionScope,
+        root_key: _identity.RootFillKey | None,
+        *,
+        required: bool,
     ) -> None:
-        if type(input_id) is not _identity.VenueInputId:
-            raise TypeError("referenced input must be the exact VenueInputId type")
-        existing = ordered.get(input_id.value)
-        if existing is None:
-            ordered[input_id.value] = (input_id, leg_key, effect_id)
-        elif existing[1] != leg_key:
-            raise ValueError("referenced input is named by two different legs")
-        elif (
-            existing[2] is not None
-            and effect_id is not None
-            and existing[2] != effect_id
-        ):
-            raise ValueError("referenced input is named by two different effects")
+        _merge_reconciliation_reference(
+            ordered,
+            _ReconciliationReference(
+                input_id, leg_key, effect, position_scope, root_key, required
+            ),
+        )
 
     for leg_key in _selected_leg_keys_from_selection(book, selection):
         closure = book._closure_head_by_leg.get(_venue._leg_index_key(leg_key))
-        if closure is not None:
-            _reference(closure.source_input_id, closure.leg_key, None)
-    for root_key in _selected_root_keys_from_selection(book, selection):
+        if closure is None:
+            continue
+        owner = relations.owners_by_id.get(leg_key.order_id)
+        if owner is None:
+            raise ValueError("closure has no selected owner relation")
+        effect = relations.effects_by_id.get(owner.effect_id)
+        if effect is None:
+            raise ValueError("closure owner has no selected effect relation")
+        scope = _selected_effect_position_scope(book, relations, effect, "closure")
+        root_key = None
+        if owner.root_fill_key_id is not None:
+            root = relations.roots_by_key_id.get(owner.root_fill_key_id)
+            if root is None:
+                raise ValueError("closure owner references an unselected root")
+            root_key = _identity.RootFillKey(
+                book.scope.broker,
+                book.scope.environment,
+                book.scope.account,
+                root.root_fill_id,
+            )
+        _reference(
+            closure.source_input_id,
+            closure.leg_key,
+            effect,
+            scope,
+            root_key,
+            required=False,
+        )
+
+    for root_key, root_record in zip(
+        _selected_root_keys_from_selection(book, selection),
+        selection.roots,
+        strict=True,
+    ):
+        route = relations.routes_by_root_key_id.get(root_record.root_fill_key_id)
+        if route is None:
+            raise ValueError("coverage has no selected root route")
+        effect, owner, position_scope = _require_selected_route_relation(
+            book, relations, route, root_record, "coverage"
+        )
+        expected_leg = _identity.VenueLegKey(
+            book.scope.broker,
+            book.scope.environment,
+            book.scope.account,
+            owner.owner_id,
+        )
         root_index_key = _venue._coverage_root_index_key(root_key)
         human_index = book._human_coverage_by_root.get(root_index_key)
         if human_index is not None:
             human = book._human_coverage_ledger.get(human_index)
             if human is None:
                 raise ValueError("human coverage index does not resolve in its ledger")
-            _reference(human.source_input_id, human.leg_key, human.effect_id)
+            if (
+                human.effect_id != effect.effect_external
+                or human.leg_key != expected_leg
+            ):
+                raise ValueError("human coverage disagrees with its selected route")
+            _require_selected_coverage_fact(
+                human.fact,
+                root_key=root_key,
+                effect=effect,
+                leg_key=expected_leg,
+                position_scope=position_scope,
+                subject="human reconciliation coverage",
+            )
+            _reference(
+                human.source_input_id,
+                human.leg_key,
+                effect,
+                position_scope,
+                root_key,
+                required=False,
+            )
             if human.broker_source_input_id is not None:
-                _reference(human.broker_source_input_id, human.leg_key, human.effect_id)
+                _reference(
+                    human.broker_source_input_id,
+                    human.leg_key,
+                    effect,
+                    position_scope,
+                    root_key,
+                    required=False,
+                )
         broker_index = book._broker_coverage_by_root.get(root_index_key)
         if broker_index is not None:
             broker = book._broker_coverage_ledger.get(broker_index)
             if broker is None:
                 raise ValueError("broker coverage index does not resolve in its ledger")
-            _reference(broker.root_source_input_id, broker.leg_key, broker.effect_id)
-            _reference(broker.head_source_input_id, broker.leg_key, broker.effect_id)
+            if (
+                broker.effect_id != effect.effect_external
+                or broker.leg_key != expected_leg
+            ):
+                raise ValueError("broker coverage disagrees with its selected route")
+            _require_selected_coverage_fact(
+                broker.fact,
+                root_key=root_key,
+                effect=effect,
+                leg_key=expected_leg,
+                position_scope=position_scope,
+                subject="broker reconciliation coverage",
+            )
+            _require_selected_coverage_fact(
+                broker.head_fact,
+                root_key=root_key,
+                effect=effect,
+                leg_key=expected_leg,
+                position_scope=position_scope,
+                subject="broker reconciliation head",
+            )
+            _reference(
+                broker.root_source_input_id,
+                broker.leg_key,
+                effect,
+                position_scope,
+                root_key,
+                required=False,
+            )
+            _reference(
+                broker.head_source_input_id,
+                broker.leg_key,
+                effect,
+                position_scope,
+                root_key,
+                required=(
+                    not broker.mapping_exact
+                    and type(broker.head_fact)
+                    in {_fills.BrokerTradeCorrectFact, _fills.BrokerTradeBustFact}
+                ),
+            )
     return tuple(ordered.values())
 
 
@@ -2569,31 +2983,33 @@ def _encode_runtime_checkpoint_venue_reconciliation_rows(
     """
 
     rows: list[object] = []
-    for (
-        input_id,
-        referencing_leg,
-        referencing_effect,
-    ) in _referenced_reconciliation_inputs(book, selection):
-        record = book._reconciliation_by_input.get(_venue._input_index_key(input_id))
+    for reference in _referenced_reconciliation_inputs(book, selection):
+        record = book._reconciliation_by_input.get(
+            _venue._input_index_key(reference.input_id)
+        )
         if record is None:
-            # Absence is the ordinary applied path, not a truncated set: an
-            # applied fill's coverage names its own evidence input
-            # (recovery.py root_source_input_id=item.input_id) and creates no
-            # reconciliation record, and an ordinary terminal closure's source
-            # input is the observation input. An earlier revision raised here
-            # and thereby refused every applied-fill book (REV-0078 P1-4
-            # disposition disputes that arm with this evidence).
+            if reference.required:
+                raise ValueError("required reconciliation is absent")
             continue
-        if record.input_id != input_id:
+        if record.input_id != reference.input_id:
             raise ValueError("reached reconciliation does not own its referenced input")
         # Equality with the row that admitted it, not membership in the selected
         # set: a stale reconciliation on another selected leg of the same scope
         # would satisfy membership while being reached through the wrong row.
-        if record.leg_key != referencing_leg:
+        if record.leg_key != reference.leg_key:
             raise ValueError("reached reconciliation does not own its referencing leg")
-        if referencing_effect is not None and record.effect_id != referencing_effect:
+        if record.effect_id != reference.effect.effect_external:
             raise ValueError(
                 "reached reconciliation does not own its referencing effect"
+            )
+        if reference.root_key is not None:
+            _require_selected_coverage_fact(
+                record.fact,
+                root_key=reference.root_key,
+                effect=reference.effect,
+                leg_key=reference.leg_key,
+                position_scope=reference.position_scope,
+                subject="reconciliation fact",
             )
         rows.append(
             _require_bounded_checkpoint_row(
@@ -2910,33 +3326,48 @@ def _encode_runtime_checkpoint_venue_bootstrap_target_rows(
     return _checkpoint_collection("m2.venue.BootstrapTargets/v1", rows)
 
 
+@_dataclass(frozen=True, slots=True)
+class _ExecutionReconciliationReference:
+    """A selected bootstrap input and whether its outcome is mandatory."""
+
+    input_id: _identity.VenueInputId
+    position_scope: _fills.PositionScope
+    required: bool
+
+
 def _referenced_execution_reconciliation_inputs(
     book: _venue.VenueRecoveryBook,
     selection: _records._RuntimeCheckpointSelectionSet,
-) -> tuple[tuple[_identity.VenueInputId, _fills.PositionScope], ...]:
-    """Collect each referenced catch-up input beside its referencing scope.
+) -> tuple[_ExecutionReconciliationReference, ...]:
+    """Classify initial bootstrap versus refreshed catch-up outcome obligations.
 
-    A registry outcome is minted from one ``CatchUpExecutionRegistry`` item, and a
-    bootstrap target is the only selected current row that retains such an input
-    identity: its origin ``bootstrap_input_id`` and its serving
-    ``checkpoint_input_id``. The scope of the target that named the input travels
-    with it so the caller can require equality rather than membership in the whole
-    selected scope set, which would admit a registry outcome carrying scope B
-    through scope A's bootstrap target.
+    An initial bootstrap retains the same source identity in both fields and has
+    no catch-up outcome.  Once a target has a distinct ``checkpoint_input_id``,
+    the venue producer creates an execution-reconciliation outcome atomically;
+    omitting it would lose a selected registry transition.
     """
 
-    ordered: dict[str, tuple[_identity.VenueInputId, _fills.PositionScope]] = {}
+    ordered: dict[str, _ExecutionReconciliationReference] = {}
 
     def _reference(
-        input_id: _identity.VenueInputId, position_scope: _fills.PositionScope
+        input_id: _identity.VenueInputId,
+        position_scope: _fills.PositionScope,
+        *,
+        required: bool,
     ) -> None:
         if type(input_id) is not _identity.VenueInputId:
             raise TypeError("referenced input must be the exact VenueInputId type")
         existing = ordered.get(input_id.value)
         if existing is None:
-            ordered[input_id.value] = (input_id, position_scope)
-        elif existing[1] != position_scope:
+            ordered[input_id.value] = _ExecutionReconciliationReference(
+                input_id, position_scope, required
+            )
+        elif existing.position_scope != position_scope:
             raise ValueError("referenced input is named by two different scopes")
+        elif required and not existing.required:
+            ordered[input_id.value] = _ExecutionReconciliationReference(
+                input_id, position_scope, True
+            )
 
     for position_scope in _selected_position_scopes_from_selection(book, selection):
         value = book._bootstrap_bound_target_by_scope.get(
@@ -2952,8 +3383,14 @@ def _referenced_execution_reconciliation_inputs(
             raise TypeError(
                 "bootstrap target is neither an active nor a consumed record"
             )
-        _reference(anchor_record.bootstrap_input_id, position_scope)
-        _reference(anchor_record.checkpoint_input_id, position_scope)
+        _reference(anchor_record.bootstrap_input_id, position_scope, required=False)
+        _reference(
+            anchor_record.checkpoint_input_id,
+            position_scope,
+            required=(
+                anchor_record.checkpoint_input_id != anchor_record.bootstrap_input_id
+            ),
+        )
     return tuple(ordered.values())
 
 
@@ -3018,25 +3455,21 @@ def _encode_runtime_checkpoint_venue_execution_reconciliation_rows(
     """
 
     rows: list[object] = []
-    for input_id, referencing_scope in _referenced_execution_reconciliation_inputs(
-        book, selection
-    ):
+    for reference in _referenced_execution_reconciliation_inputs(book, selection):
         record = book._execution_reconciliation_by_input.get(
-            _venue._input_index_key(input_id)
+            _venue._input_index_key(reference.input_id)
         )
         if record is None:
-            # An initial bootstrap target's checkpoint_input_id equals its
-            # bootstrap_input_id -- the registry input, which is never a
-            # catch-up and has no registry outcome. Raising here refused every
-            # freshly bootstrapped book (REV-0078 P1-4 disposition).
+            if reference.required:
+                raise ValueError("required execution reconciliation is absent")
             continue
-        if record.input_id != input_id:
+        if record.input_id != reference.input_id:
             raise ValueError(
                 "reached execution reconciliation does not own its referenced input"
             )
         # Equality with the target that named it, not membership: a cross-scope
         # outcome would otherwise be admitted through another scope's target.
-        if record.position_scope != referencing_scope:
+        if record.position_scope != reference.position_scope:
             raise ValueError(
                 "reached execution reconciliation does not own its referencing scope"
             )
@@ -3129,22 +3562,65 @@ def _encode_runtime_checkpoint_venue_effect_scope(
 
 
 def _encode_runtime_checkpoint_venue_acceptance_proof(
-    proof: _venue.AcceptanceProof,
+    proof: object,
+    *,
+    expected_scope: _venue.VenueEffectScope,
+    expected_claim_occurrence_id: _identity.ClaimOccurrenceId | None,
 ) -> list[object]:
-    """Encode the frozen 6-member acceptance proof."""
+    """Encode one closure-evidence row after binding it to the current effect.
 
+    Venue owns the private replay representation.  The checkpoint boundary admits
+    only the exact immutable members it needs and proves that they still name the
+    selected current effect; it must not depend on the venue's private replay type.
+    """
+
+    if type(expected_scope) is not _venue.VenueEffectScope:
+        raise TypeError("expected acceptance scope must be exact VenueEffectScope")
     atom = _operations._encode_m2_m1_atom
+    proof_scope = getattr(proof, "effect_scope", None)
+    if type(proof_scope) is not _venue.VenueEffectScope:
+        raise TypeError("acceptance proof scope must be exact VenueEffectScope")
+    if proof_scope != expected_scope:
+        raise ValueError("acceptance proof scope does not bind the selected effect")
+
+    kind = getattr(proof, "kind", None)
+    kind_value = getattr(kind, "value", None)
+    if type(kind_value) is not str or kind_value not in {
+        "NEVER_DISPATCHED",
+        "CONTRACT_COMPLETE_RESPONSE",
+        "COVERED_RECONCILIATION",
+    }:
+        raise ValueError("acceptance proof kind is not a frozen closure kind")
+
+    claim_occurrence_id = getattr(proof, "claim_occurrence_id", None)
+    if (
+        claim_occurrence_id is not None
+        and type(claim_occurrence_id) is not _identity.ClaimOccurrenceId
+    ):
+        raise TypeError("acceptance proof claim must be exact ClaimOccurrenceId")
+    if claim_occurrence_id != expected_claim_occurrence_id:
+        raise ValueError("acceptance proof claim does not bind the selected effect")
+    if kind_value == "NEVER_DISPATCHED":
+        if claim_occurrence_id is not None:
+            raise ValueError("never-dispatched acceptance proof cannot name a claim")
+    elif claim_occurrence_id is None:
+        raise ValueError("external acceptance proof must name the selected claim")
+
+    evidence_reference = getattr(proof, "evidence_reference", None)
+    if type(evidence_reference) is not _identity.EvidenceReference:
+        raise TypeError("acceptance proof evidence reference must be exact")
+    evidence_digest = getattr(proof, "evidence_digest", None)
+    if type(evidence_digest) is not bytes or len(evidence_digest) != 32:
+        raise ValueError(
+            "acceptance proof evidence digest must contain exactly 32 bytes"
+        )
     return [
         "m2.venue.AcceptanceProof/v1",
-        _checkpoint_enum("m1.venue.AcceptanceProofKind", proof.kind),
-        atom(proof.effect_scope.effect_id),
-        (
-            None
-            if proof.claim_occurrence_id is None
-            else atom(proof.claim_occurrence_id)
-        ),
-        atom(proof.evidence_reference),
-        _operations._encode_m2_bytes(proof.evidence_digest),
+        _checkpoint_enum("m1.venue.AcceptanceProofKind", kind),
+        atom(expected_scope.effect_id),
+        (None if claim_occurrence_id is None else atom(claim_occurrence_id)),
+        atom(evidence_reference),
+        _operations._encode_m2_bytes(evidence_digest),
     ]
 
 
@@ -3217,7 +3693,9 @@ def _encode_runtime_checkpoint_venue_effect_rows(
                         None
                         if effect.acceptance_proof is None
                         else _encode_runtime_checkpoint_venue_acceptance_proof(
-                            effect.acceptance_proof
+                            effect.acceptance_proof,
+                            expected_scope=scope,
+                            expected_claim_occurrence_id=effect.claim_occurrence_id,
                         )
                     ),
                     _checkpoint_collection(
@@ -3754,7 +4232,7 @@ def _acquisition_slot_value_reference(
 
 def _encode_runtime_checkpoint_acquisition_slot_value(
     descriptor: object, active: object
-) -> tuple[list[object], _identity.EffectId | None]:
+) -> tuple[list[object], tuple[_identity.EffectId, bytes] | None]:
     """Encode the single SlotValue the descriptor and active indexes must agree on.
 
     Contract 07 kept a separate member per index; R2 collapses them because the two
@@ -3785,7 +4263,10 @@ def _encode_runtime_checkpoint_acquisition_slot_value(
             atom(descriptor.predecessor_effect_id),
             _operations._encode_m2_bytes(descriptor.predecessor_descriptor_commitment),
             atom(descriptor.successor_generation_id),
-        ], descriptor.predecessor_effect_id
+        ], (
+            descriptor.predecessor_effect_id,
+            descriptor.predecessor_descriptor_commitment,
+        )
     if type(active) is _authority._AcquisitionInactiveSlot:
         raise ValueError("acquisition slot mixes an active and inactive variant")
     if descriptor_reference is None:
@@ -3795,14 +4276,24 @@ def _encode_runtime_checkpoint_acquisition_slot_value(
         "m2.authority.AcquisitionSlotActive/v1",
         atom(effect_id),
         _operations._encode_m2_bytes(descriptor_commitment),
-    ], effect_id
+    ], (effect_id, descriptor_commitment)
+
+
+@_dataclass(frozen=True, slots=True)
+class _AcquisitionSlotReference:
+    """The exact descriptor/currentness object a retained slot commits to."""
+
+    effect_id: _identity.EffectId
+    position_scope: _fills.PositionScope
+    descriptor_commitment: bytes
+    currentness: _authority._AcquisitionCurrentnessEntry
 
 
 def _encode_runtime_checkpoint_acquisition_slot_rows(
     state: _authority.ExecutionAuthorityState,
     application_generation_id: _identity.ApplicationGenerationId,
     selected_position_scopes: tuple[_fills.PositionScope, ...],
-) -> tuple[list[object], tuple[tuple[_identity.EffectId, _fills.PositionScope], ...]]:
+) -> tuple[list[object], tuple[_AcquisitionSlotReference, ...]]:
     """Project one slot row per selected scope and report the effects it names.
 
     All three scope maps are exact current selected-scope maps under the R16 section 2
@@ -3813,7 +4304,7 @@ def _encode_runtime_checkpoint_acquisition_slot_rows(
     """
 
     reached: dict[bytes, list[object]] = {}
-    referenced: list[tuple[_identity.EffectId, _fills.PositionScope]] = []
+    referenced: list[_AcquisitionSlotReference] = []
     reached_descriptors = 0
     reached_actives = 0
     for position_scope in selected_position_scopes:
@@ -3827,15 +4318,24 @@ def _encode_runtime_checkpoint_acquisition_slot_rows(
             if descriptor is not None or active is not None:
                 raise ValueError("acquisition slot omits its required currentness")
             continue
+        if currentness.application_generation_id != application_generation_id:
+            raise ValueError(
+                "reached currentness leaves the selected application generation"
+            )
         if currentness.position_scope != position_scope:
             raise ValueError("reached currentness does not own its selected scope")
         reached_descriptors += descriptor is not None
         reached_actives += active is not None
-        slot_value, effect_id = _encode_runtime_checkpoint_acquisition_slot_value(
-            descriptor, active
+        slot_value, descriptor_reference = (
+            _encode_runtime_checkpoint_acquisition_slot_value(descriptor, active)
         )
-        if effect_id is not None:
-            referenced.append((effect_id, position_scope))
+        if descriptor_reference is not None:
+            effect_id, descriptor_commitment = descriptor_reference
+            referenced.append(
+                _AcquisitionSlotReference(
+                    effect_id, position_scope, descriptor_commitment, currentness
+                )
+            )
         order_key = _array_order_key(
             _operations._encode_m2_position_scope(position_scope)
         )
@@ -3865,10 +4365,41 @@ def _encode_runtime_checkpoint_acquisition_slot_rows(
     return rows, tuple(referenced)
 
 
+def _require_acquisition_currentness_matches_descriptor(
+    currentness: _authority._AcquisitionCurrentnessEntry,
+    permit: _authority.AcquisitionEffectPermit,
+) -> None:
+    """Require one slot's currentness and descriptor to name the same authority."""
+
+    if not _authority._acquisition_currentness_entry_is_authentic(currentness):
+        raise ValueError("slot currentness is not authority-authentic")
+    if not _authority._acquisition_effect_permit_is_authentic(permit):
+        raise ValueError("slot descriptor permit is not authority-authentic")
+    if (
+        currentness.application_generation_id != permit.application_generation_id
+        or currentness.position_scope != permit.position_scope
+        or currentness.session_id != permit.session_id
+        or currentness.generation_id != permit.generation_id
+        or currentness.acquisition_mandate_id != permit.acquisition_mandate_id
+        or currentness.protection_mandate_id != permit.protection_mandate_id
+        or currentness.binding_commitment != permit.binding_commitment
+        or currentness.emergency_recovery_compatibility_commitment
+        != permit.emergency_recovery_compatibility_commitment
+        or currentness.controller_head != permit.controller_head
+        or currentness.successor_ordinal != permit.successor_ordinal
+        or currentness.scope_execution_commitment != permit.scope_execution_commitment
+        or currentness.venue_commitment != permit.venue_commitment
+        or currentness.protection_commitment != permit.protection_commitment
+    ):
+        raise ValueError(
+            "slot currentness and descriptor do not name the same authority"
+        )
+
+
 def _encode_runtime_checkpoint_acquisition_descriptor_rows(
     state: _authority.ExecutionAuthorityState,
     application_generation_id: _identity.ApplicationGenerationId,
-    slot_references: tuple[tuple[_identity.EffectId, _fills.PositionScope], ...],
+    slot_references: tuple[_AcquisitionSlotReference, ...],
     selected_effect_ids: tuple[_identity.EffectId, ...],
 ) -> list[object]:
     """Project every descriptor named by a retained slot or a selected effect.
@@ -3886,8 +4417,8 @@ def _encode_runtime_checkpoint_acquisition_descriptor_rows(
     """
 
     reached: dict[bytes, list[object]] = {}
-    for effect_id, referencing_scope, required in (
-        *((effect_id, scope, True) for effect_id, scope in slot_references),
+    for effect_id, slot_reference, required in (
+        *((reference.effect_id, reference, True) for reference in slot_references),
         *((effect_id, None, False) for effect_id in selected_effect_ids),
     ):
         descriptor = state._acquisition_descriptor_by_effect.get(
@@ -3908,11 +4439,19 @@ def _encode_runtime_checkpoint_acquisition_descriptor_rows(
                 "reached descriptor leaves the selected application generation"
             )
         if (
-            referencing_scope is not None
-            and descriptor.permit.position_scope != referencing_scope
+            slot_reference is not None
+            and descriptor.permit.position_scope != slot_reference.position_scope
         ):
             raise ValueError(
                 "reached descriptor does not own its referencing slot scope"
+            )
+        if slot_reference is not None:
+            if descriptor.commitment != slot_reference.descriptor_commitment:
+                raise ValueError(
+                    "reached descriptor disagrees with its slot commitment"
+                )
+            _require_acquisition_currentness_matches_descriptor(
+                slot_reference.currentness, descriptor.permit
             )
         order_key = _atom_order_key(effect_id)
         if order_key in reached:

@@ -1012,37 +1012,221 @@ def _apply_mutator(connection, operation, *arguments):
         assert not _fixture_helper_shape_is_exact(mutant, require_apply_helper=True)
 
 
-def test_no_installer_approves_itself_with_a_self_derived_digest() -> None:
-    """REV-0078 P0-1: refuse `approved_ddl_sha256=schema_ddl_digest()` anywhere.
+def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
+    """Return every way a source can bypass the sole DDL execution accessor.
 
-    That spelling makes the installer's comparison sha256(x) == sha256(x), which
-    can never refuse -- the caller approves with a token computed from the very
-    artifact under approval. The one admitted source is the human-transcribed
-    literal in `approved_schema_digest.py`; every test that installs the schema
-    must read it from there, so changing the DDL breaks every installing fixture
-    until a human deliberately moves one value.
+    This is deliberately provenance-oriented rather than a denylist for
+    ``schema_ddl_digest``.  Every call to the installer must use the exact
+    ``require_approved_ddl_execution()`` expression imported from the one gate
+    module.  Helpers, aliases, local variables, literals, ``**kwargs``, and
+    alternate modules all fail closed because the audit cannot prove that they
+    represent the human's exact approval.
     """
 
-    test_root = Path(__file__).resolve().parent
+    tree = ast.parse(source, filename=label)
+    installer_names: set[str] = set()
+    canonical_gate_imported = False
     violations: list[str] = []
-    for path in sorted(test_root.glob("*.py")):
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Call):
-                continue
-            for keyword in node.keywords:
-                if keyword.arg != "approved_ddl_sha256":
-                    continue
-                value = keyword.value
-                if isinstance(value, ast.Call) and (
-                    (
-                        isinstance(value.func, ast.Name)
-                        and value.func.id == "schema_ddl_digest"
-                    )
-                    or (
-                        isinstance(value.func, ast.Attribute)
-                        and value.func.attr == "schema_ddl_digest"
-                    )
+
+    for node in tree.body:
+        if isinstance(node, ast.ImportFrom):
+            if node.module == "app.execution_core.persistence.schema":
+                for imported in node.names:
+                    if imported.name == "install_schema":
+                        if imported.asname is not None:
+                            violations.append(
+                                f"{label}:{node.lineno}: installer import alias"
+                            )
+                        installer_names.add(imported.asname or "install_schema")
+            if node.module == "approved_schema_digest":
+                for imported in node.names:
+                    if imported.name == "require_approved_ddl_execution":
+                        if imported.asname is None:
+                            canonical_gate_imported = True
+                        else:
+                            violations.append(
+                                f"{label}:{node.lineno}: approval accessor import alias"
+                            )
+        elif isinstance(node, ast.Import):
+            for imported in node.names:
+                if imported.name == "app.execution_core.persistence.schema" and (
+                    imported.asname is None
                 ):
-                    violations.append(f"{path.name}:{value.lineno}")
+                    violations.append(
+                        f"{label}:{node.lineno}: installer module needs explicit alias"
+                    )
+
+    parents = _parent_map(tree)
+
+    def _dynamic_installer_getter(call: ast.Call) -> bool:
+        return bool(
+            isinstance(call.func, ast.Name)
+            and call.func.id == "getattr"
+            and len(call.args) >= 2
+            and isinstance(call.args[1], ast.Constant)
+            and call.args[1].value == "install_schema"
+        )
+
+    def _is_installer_call(call: ast.Call) -> bool:
+        if isinstance(call.func, ast.Name):
+            return call.func.id in installer_names or call.func.id == "install_schema"
+        return (
+            isinstance(call.func, ast.Attribute) and call.func.attr == "install_schema"
+        ) or (isinstance(call.func, ast.Call) and _dynamic_installer_getter(call.func))
+
+    def _is_exact_gate_call(value: ast.expr) -> bool:
+        return (
+            isinstance(value, ast.Call)
+            and isinstance(value.func, ast.Name)
+            and value.func.id == "require_approved_ddl_execution"
+            and not value.args
+            and not value.keywords
+        )
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and node.id in installer_names:
+            parent = parents.get(node)
+            if not (isinstance(parent, ast.Call) and parent.func is node):
+                violations.append(
+                    f"{label}:{node.lineno}: installer reference escapes direct call"
+                )
+        elif isinstance(node, ast.Attribute) and node.attr == "install_schema":
+            parent = parents.get(node)
+            if not (isinstance(parent, ast.Call) and parent.func is node):
+                violations.append(
+                    f"{label}:{node.lineno}: installer attribute escapes direct call"
+                )
+        elif isinstance(node, ast.Call) and _dynamic_installer_getter(node):
+            violations.append(f"{label}:{node.lineno}: dynamic installer lookup")
+        if not isinstance(node, ast.Call) or not _is_installer_call(node):
+            continue
+        if not canonical_gate_imported:
+            violations.append(
+                f"{label}:{node.lineno}: missing canonical approval import"
+            )
+        if any(keyword.arg is None for keyword in node.keywords):
+            violations.append(f"{label}:{node.lineno}: installer accepts **kwargs")
+            continue
+        matching = [
+            keyword for keyword in node.keywords if keyword.arg == "approved_ddl_sha256"
+        ]
+        if len(matching) != 1 or not _is_exact_gate_call(matching[0].value):
+            violations.append(
+                f"{label}:{node.lineno}: installer lacks exact approval accessor"
+            )
+    return violations
+
+
+def test_changed_ddl_installers_have_one_fail_closed_human_gate() -> None:
+    """REV-0078 P0-1: every installer has exactly one approval provenance.
+
+    Candidate DDL identity is evidence; it is not authorization.  Before a human
+    records an exact approval, the centrally held token is ``None`` and every
+    SQLite-bearing fixture refuses before opening a connection.  This source audit
+    remains valid after the separate one-line unlock commit, so the behavior of the
+    locked state is proved independently below rather than hard-coding ``None`` here.
+    """
+
+    repository_root = Path(__file__).resolve().parents[2]
+    paths = sorted(
+        (
+            *repository_root.joinpath("tests", "execution_core").glob("*.py"),
+            *repository_root.joinpath("app", "execution_core").rglob("*.py"),
+        ),
+        key=lambda candidate: candidate.as_posix(),
+    )
+    violations = [
+        violation
+        for path in paths
+        for violation in _schema_installer_gate_violations(
+            path.read_text(encoding="utf-8"),
+            path.relative_to(repository_root).as_posix(),
+        )
+    ]
     assert violations == [], violations
+
+
+def test_changed_ddl_execution_gate_refuses_without_a_valid_human_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The approval accessor stays fail-closed before any fixture can connect."""
+
+    import approved_schema_digest as gate
+
+    monkeypatch.setattr(gate, "APPROVED_EXECUTION_DDL_SHA256", None)
+    with pytest.raises(RuntimeError, match="HUMAN-GATE pending"):
+        gate.require_approved_ddl_execution()
+    for malformed in ("", "AB" * 32, 1):
+        monkeypatch.setattr(gate, "APPROVED_EXECUTION_DDL_SHA256", malformed)
+        with pytest.raises(RuntimeError, match="HUMAN-GATE invalid"):
+            gate.require_approved_ddl_execution()
+
+    approved = "ab" * 32
+    monkeypatch.setattr(gate, "APPROVED_EXECUTION_DDL_SHA256", approved)
+    assert gate.require_approved_ddl_execution() == approved
+
+
+def test_changed_ddl_gate_audit_refuses_bypass_spellings() -> None:
+    """The approval audit is failure-capable for each known bypass family."""
+
+    valid = """
+from app.execution_core.persistence.schema import install_schema
+from approved_schema_digest import require_approved_ddl_execution
+install_schema(connection, approved_ddl_sha256=require_approved_ddl_execution())
+"""
+    assert _schema_installer_gate_violations(valid, "valid.py") == []
+
+    mutants = (
+        # Helper source.
+        """
+from app.execution_core.persistence.schema import install_schema
+from approved_schema_digest import require_approved_ddl_execution
+def gate_helper(): return require_approved_ddl_execution()
+install_schema(connection, approved_ddl_sha256=gate_helper())
+""",
+        # Aliased gate source.
+        """
+from app.execution_core.persistence.schema import install_schema
+from approved_schema_digest import require_approved_ddl_execution as approved
+install_schema(connection, approved_ddl_sha256=approved())
+""",
+        # Locally retained or computed value.
+        """
+from app.execution_core.persistence.schema import install_schema
+from approved_schema_digest import require_approved_ddl_execution
+digest = require_approved_ddl_execution()
+install_schema(connection, approved_ddl_sha256=digest)
+""",
+        # Duplicate literal.
+        """
+from app.execution_core.persistence.schema import install_schema
+from approved_schema_digest import require_approved_ddl_execution
+install_schema(connection, approved_ddl_sha256='00' * 32)
+""",
+        # Self-derived or alternate approval module.
+        """
+from app.execution_core.persistence.schema import install_schema, schema_ddl_digest
+from other_gate import approval
+install_schema(connection, approved_ddl_sha256=schema_ddl_digest())
+""",
+        # Installer alias prevents complete call-site accounting.
+        """
+from app.execution_core.persistence.schema import install_schema as installer
+from approved_schema_digest import require_approved_ddl_execution
+installer(connection, approved_ddl_sha256=require_approved_ddl_execution())
+""",
+        # Local installer aliases and dynamic lookup both evade simple call-name scans.
+        """
+from app.execution_core.persistence.schema import install_schema
+from approved_schema_digest import require_approved_ddl_execution
+installer = install_schema
+installer(connection, approved_ddl_sha256=require_approved_ddl_execution())
+""",
+        """
+from app.execution_core.persistence import schema
+from approved_schema_digest import require_approved_ddl_execution
+getattr(schema, 'install_schema')(connection, approved_ddl_sha256=require_approved_ddl_execution())
+""",
+    )
+    for ordinal, mutant in enumerate(mutants, 1):
+        assert _schema_installer_gate_violations(mutant, f"mutant-{ordinal}.py")

@@ -1,13 +1,8 @@
-"""M2-I2 schema/direct-proof tests for the Codex remediation candidate.
+"""M2-I2 schema/direct-proof tests held behind the exact DDL human gate.
 
-Every test remains pinned to the exact lowercase SHA-256 in ``_GATE_DIGEST``;
-the installer refuses any byte drift. Ameen's 2026-08-22 authority amendment
-grants Codex standing approval to revise this bounded DDL and execute these
-tests against fresh temporary file databases without another hash pause.
-
-Tests construct fresh temporary file databases under pytest's ``tmp_path``
-only. No configured database path exists anywhere in this module; no
-in-memory database is ever used.
+The single gate accessor refuses before this module opens a temporary database.
+There is no standing DDL execution authority: a fresh candidate needs Ameen's
+exact approval and one bounded unlock commit before these fresh-file tests run.
 """
 
 from __future__ import annotations
@@ -17,6 +12,7 @@ import sqlite3
 import pytest
 
 import app.execution_core.persistence.schema as schema_module
+from approved_schema_digest import require_approved_ddl_execution
 from app.execution_core.persistence.schema import (
     SCHEMA_VERSION,
     SchemaDigestMismatchError,
@@ -26,11 +22,6 @@ from app.execution_core.persistence.schema import (
     install_schema,
     schema_ddl_digest,
     verify_schema_connection,
-)
-
-
-_GATE_DIGEST: str | None = (
-    "2636c72793515a46c893d93084750b45ea2f151c58055480d5c601eb8c0faac5"
 )
 
 _OPEN_CONNECTIONS: list[sqlite3.Connection] = []
@@ -64,23 +55,10 @@ _DEFAULT_EXECUTION_PROFILE_ID = "cd" * 32
 _DEFAULT_MARKET_SOURCE_PROFILE_ID = "ef" * 32
 
 
-def _require_gate_open() -> str:
-    """Fail loudly before any database work while the human gate is pending."""
-
-    digest = _GATE_DIGEST
-    if digest is None:
-        pytest.fail(
-            "HUMAN-GATE pending: WO-0166 schema tests stay locked until "
-            "Ameen approves the exact DDL candidate"
-        )
-    assert digest is not None
-    return digest
-
-
 def _connection(tmp_path: object) -> sqlite3.Connection:
     """Gate first: while locked, no connection object or file is ever made."""
 
-    _require_gate_open()
+    require_approved_ddl_execution()
     connection = sqlite3.connect(tmp_path / "m2-i2-gate.db")  # type: ignore[arg-type]
     connection.execute("PRAGMA foreign_keys = ON")
     connection.execute("PRAGMA recursive_triggers = ON")
@@ -90,7 +68,7 @@ def _connection(tmp_path: object) -> sqlite3.Connection:
 
 def _installed_connection(tmp_path: object) -> sqlite3.Connection:
     connection = _connection(tmp_path)
-    install_schema(connection, approved_ddl_sha256=_require_gate_open())
+    install_schema(connection, approved_ddl_sha256=require_approved_ddl_execution())
     return connection
 
 
@@ -1116,10 +1094,13 @@ def test_installer_installs_exact_version_into_fresh_temporary_database(
 
 def test_digest_mismatch_refuses_before_any_ddl(tmp_path: object) -> None:
     connection = _connection(tmp_path)
-    _require_gate_open()
 
-    with pytest.raises(SchemaDigestMismatchError):
-        install_schema(connection, approved_ddl_sha256="00" * 32)
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(schema_module, "schema_ddl_digest", lambda: "00" * 32)
+        with pytest.raises(SchemaDigestMismatchError):
+            install_schema(
+                connection, approved_ddl_sha256=require_approved_ddl_execution()
+            )
 
     remaining = connection.execute("SELECT count(*) FROM sqlite_master").fetchone()
     assert remaining is not None and remaining[0] == 0
@@ -1127,29 +1108,28 @@ def test_digest_mismatch_refuses_before_any_ddl(tmp_path: object) -> None:
 
 def test_non_empty_target_is_refused(tmp_path: object) -> None:
     connection = _installed_connection(tmp_path)
-    approved = _require_gate_open()
 
     with pytest.raises(SchemaTargetNotEmptyError):
-        install_schema(connection, approved_ddl_sha256=approved)
+        install_schema(connection, approved_ddl_sha256=require_approved_ddl_execution())
 
 
 def test_disabled_foreign_keys_are_refused(tmp_path: object) -> None:
     connection = _connection(tmp_path)
     connection.execute("PRAGMA foreign_keys = OFF")
-    approved = _require_gate_open()
 
     with pytest.raises(SchemaForeignKeysDisabledError):
-        install_schema(connection, approved_ddl_sha256=approved)
+        install_schema(connection, approved_ddl_sha256=require_approved_ddl_execution())
 
 
 def test_disabled_recursive_triggers_are_refused_before_ddl(tmp_path: object) -> None:
+    require_approved_ddl_execution()
     connection = sqlite3.connect(tmp_path / "recursive-disabled.db")
     connection.execute("PRAGMA foreign_keys = ON")
     connection.execute("PRAGMA recursive_triggers = OFF")
     _OPEN_CONNECTIONS.append(connection)
 
     with pytest.raises(SchemaInstallError, match="recursive triggers"):
-        install_schema(connection, approved_ddl_sha256=_require_gate_open())
+        install_schema(connection, approved_ddl_sha256=require_approved_ddl_execution())
 
     assert connection.execute("SELECT count(*) FROM sqlite_master").fetchone() == (0,)
 
@@ -1202,12 +1182,12 @@ def test_install_failure_rolls_back_all_ddl_and_remains_retryable(
     with pytest.raises(RuntimeError, match="injected DDL interruption"):
         install_schema(
             _FailingConnection(),
-            approved_ddl_sha256=_require_gate_open(),
+            approved_ddl_sha256=require_approved_ddl_execution(),
         )
 
     assert connection.execute("SELECT count(*) FROM sqlite_master").fetchone() == (0,)
     assert (
-        install_schema(connection, approved_ddl_sha256=_require_gate_open())
+        install_schema(connection, approved_ddl_sha256=require_approved_ddl_execution())
         == SCHEMA_VERSION
     )
 
@@ -1520,11 +1500,12 @@ def test_closure_chain_rejects_gap_branch_and_cross_owner(
     """Gap, branch, and cross-owner mutants fail on isolated fresh chains."""
 
     def _fresh(name: str) -> tuple[sqlite3.Connection, int]:
+        require_approved_ddl_execution()
         connection = sqlite3.connect(tmp_path / name)
         connection.execute("PRAGMA foreign_keys = ON")
         connection.execute("PRAGMA recursive_triggers = ON")
         _OPEN_CONNECTIONS.append(connection)
-        install_schema(connection, approved_ddl_sha256=_require_gate_open())
+        install_schema(connection, approved_ddl_sha256=require_approved_ddl_execution())
         scope_id = _seed_scope_with_live_generation(connection)
         _insert_root(connection, scope_id=scope_id)
         for effect_id in (1, 2, 3):
@@ -4140,7 +4121,6 @@ def test_no_column_retains_credential_or_account_material(
 def test_runtime_checkpoint_ddl_delta_is_exact() -> None:
     """WO-0168c changes only version scope and the five frozen indexes."""
 
-    _require_gate_open()
     ddl = schema_module.SCHEMA_DDL
     assert (
         "checkpoint_version_ordinal INTEGER NOT NULL UNIQUE CHECK "
@@ -4172,7 +4152,6 @@ def test_runtime_checkpoint_ddl_delta_is_exact() -> None:
 def test_origin_charset_predicates_target_the_host_part_only() -> None:
     """The scheme prefix must never be scanned by content predicates."""
 
-    _require_gate_open()
     ddl = schema_module.SCHEMA_DDL
 
     for column in _ORIGIN_COLUMNS:
@@ -4221,7 +4200,7 @@ def test_sqlite_origin_checks_accept_canonical_and_refuse_every_mutant(
     """Origin CHECK clauses are exercised by the real SQLite engine itself."""
 
     connection = _connection(tmp_path)
-    install_schema(connection, approved_ddl_sha256=_require_gate_open())
+    install_schema(connection, approved_ddl_sha256=require_approved_ddl_execution())
 
     canonical_mutants: dict[str, str] = {
         "scheme": "http://stream.example.com",

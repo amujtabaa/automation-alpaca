@@ -4291,6 +4291,135 @@ SELECT * FROM admitted ORDER BY 6,7,1""",
 SELECT * FROM admitted ORDER BY 4,1""",
 )
 
+# Authoritative plan access contract for the frozen thirteen-query selection
+# manifest.  Each member is ``(base_table, EXPLAIN name, forced_index)``.  The
+# name is the SQL alias when the statement declares one and the base table name
+# otherwise; ``None`` says the statement intentionally relies on a primary or
+# unique-key search rather than a named ``INDEXED BY`` assertion.  This is kept
+# beside the SQL instead of reverse-engineering sources from a partial parser:
+# planner proof is safety-critical, so a new source must be named deliberately.
+_RuntimeCheckpointPlanAccess = tuple[str, str, str | None]
+
+_RUNTIME_CHECKPOINT_SELECTED_GENERATION_PLAN_ACCESS: tuple[
+    _RuntimeCheckpointPlanAccess, ...
+] = (
+    ("acquisition_scope", "scope", "ix_acquisition_scope_checkpoint"),
+    ("symbol_controller", "controller", None),
+    ("acquisition_generation", "generation", None),
+    ("acquisition_generation_current", "current", None),
+    (
+        "acquisition_generation_current",
+        "current",
+        "ix_acquisition_generation_current_checkpoint_effect",
+    ),
+    ("acquisition_generation", "generation", None),
+    (
+        "acquisition_generation_current",
+        "current",
+        "ix_acquisition_generation_current_checkpoint_protection",
+    ),
+    ("acquisition_generation", "generation", None),
+)
+
+_RUNTIME_CHECKPOINT_QUALIFYING_EFFECT_PLAN_ACCESS: tuple[
+    _RuntimeCheckpointPlanAccess, ...
+] = (
+    ("venue_effect", "effect", "ix_venue_effect_generation_disposition"),
+    ("venue_identity_owner", "owner", "ix_venue_owner_checkpoint_late"),
+    ("venue_effect", "effect", None),
+)
+
+_RUNTIME_CHECKPOINT_SELECTION_PLAN_ACCESS: tuple[
+    tuple[_RuntimeCheckpointPlanAccess, ...], ...
+] = (
+    (
+        ("application_generation", "application", None),
+        ("execution_connection_profile", "execution_profile", None),
+        ("market_data_source_profile", "market_profile", None),
+        ("kernel_checkpoint", "checkpoint", None),
+    ),
+    (
+        ("acquisition_scope", "scope", "ix_acquisition_scope_checkpoint"),
+        ("symbol_controller", "controller", None),
+        ("protection_authority", "protection", None),
+    ),
+    (
+        ("acquisition_scope", "scope", "ix_acquisition_scope_checkpoint"),
+        ("symbol_controller", "controller", None),
+        ("acquisition_generation", "generation", None),
+        ("acquisition_generation_current", "current", None),
+    ),
+    (
+        ("acquisition_scope", "scope", "ix_acquisition_scope_checkpoint"),
+        (
+            "acquisition_generation_current",
+            "current",
+            "ix_acquisition_generation_current_checkpoint_effect",
+        ),
+        ("acquisition_generation", "generation", None),
+        (
+            "acquisition_generation_current",
+            "current",
+            "ix_acquisition_generation_current_checkpoint_protection",
+        ),
+        ("acquisition_generation", "generation", None),
+    ),
+    _RUNTIME_CHECKPOINT_SELECTED_GENERATION_PLAN_ACCESS
+    + (("venue_effect", "effect", "ix_venue_effect_generation_disposition"),),
+    _RUNTIME_CHECKPOINT_SELECTED_GENERATION_PLAN_ACCESS
+    + (
+        ("venue_identity_owner", "owner", "ix_venue_owner_checkpoint_late"),
+        ("venue_effect", "effect", None),
+    ),
+    _RUNTIME_CHECKPOINT_SELECTED_GENERATION_PLAN_ACCESS
+    + _RUNTIME_CHECKPOINT_QUALIFYING_EFFECT_PLAN_ACCESS
+    + (("venue_identity_owner", "owner", "ix_venue_identity_owner_effect"),),
+    _RUNTIME_CHECKPOINT_SELECTED_GENERATION_PLAN_ACCESS
+    + _RUNTIME_CHECKPOINT_QUALIFYING_EFFECT_PLAN_ACCESS
+    + (("dispatch_claim", "claim", "ix_dispatch_claim_effect"),),
+    _RUNTIME_CHECKPOINT_SELECTED_GENERATION_PLAN_ACCESS
+    + _RUNTIME_CHECKPOINT_QUALIFYING_EFFECT_PLAN_ACCESS
+    + (("acceptance_set", "acceptance", None),),
+    _RUNTIME_CHECKPOINT_SELECTED_GENERATION_PLAN_ACCESS
+    + _RUNTIME_CHECKPOINT_QUALIFYING_EFFECT_PLAN_ACCESS
+    + (
+        ("acceptance_set", "acceptance", None),
+        ("acceptance_evidence", "evidence", "ix_acceptance_evidence_set"),
+    ),
+    _RUNTIME_CHECKPOINT_SELECTED_GENERATION_PLAN_ACCESS
+    + _RUNTIME_CHECKPOINT_QUALIFYING_EFFECT_PLAN_ACCESS
+    + (
+        ("venue_identity_owner", "owner", "ix_venue_identity_owner_effect"),
+        ("closure_chain", "closure", None),
+        ("closure_chain", "candidate", "ix_closure_chain_head"),
+    ),
+    _RUNTIME_CHECKPOINT_SELECTED_GENERATION_PLAN_ACCESS
+    + _RUNTIME_CHECKPOINT_QUALIFYING_EFFECT_PLAN_ACCESS
+    + (
+        ("venue_identity_owner", "owner", "ix_venue_identity_owner_effect"),
+        ("acquisition_root_route", "route", "ix_acquisition_root_route_owner"),
+        ("root_fill", "root", None),
+        ("execution_fact_head", "head", None),
+        ("execution_fact", "fact", None),
+    ),
+    _RUNTIME_CHECKPOINT_SELECTED_GENERATION_PLAN_ACCESS
+    + (
+        (
+            "market_stream_authority",
+            "stream",
+            "ix_market_stream_authority_checkpoint_generation",
+        ),
+        ("market_cursor", "cursor", None),
+    ),
+)
+
+_RUNTIME_CHECKPOINT_LOAD_PLAN_ACCESS: tuple[
+    tuple[_RuntimeCheckpointPlanAccess, ...], ...
+] = (
+    (("kernel_checkpoint", "kernel_checkpoint", None),),
+    (("runtime_checkpoint_payload", "runtime_checkpoint_payload", None),),
+)
+
 _RUNTIME_CHECKPOINT_HEAD_SELECT_SQL = (
     f"SELECT {_CHECKPOINT_COLUMNS} FROM kernel_checkpoint "
     "WHERE application_generation_id=? LIMIT 2"

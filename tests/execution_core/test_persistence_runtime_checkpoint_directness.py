@@ -91,6 +91,75 @@ def test_runtime_checkpoint_repository_has_one_static_thirteen_query_manifest() 
     )
 
 
+def test_runtime_checkpoint_plan_access_manifest_is_complete_and_explicit() -> None:
+    """Plan proof names every source beside the frozen SQL, with no SQL parser.
+
+    A source parser had to guess whether tokens such as RIGHT, NATURAL, USING, or
+    a comma were aliases.  This contract instead makes a query addition a reviewable
+    metadata addition: each access says which base table it is, what EXPLAIN calls
+    it, and whether a named hard index is mandatory.
+    """
+
+    queries = repository._RUNTIME_CHECKPOINT_SELECTION_SQL
+    accesses = repository._RUNTIME_CHECKPOINT_SELECTION_PLAN_ACCESS
+
+    assert len(accesses) == len(queries) == 13
+    assert all(access for access in accesses)
+    assert all(
+        type(table) is str
+        and table
+        and type(plan_name) is str
+        and plan_name
+        and (required_index is None or (type(required_index) is str and required_index))
+        for query_accesses in accesses
+        for table, plan_name, required_index in query_accesses
+    )
+
+    named_accesses = tuple(
+        access for query_accesses in accesses for access in query_accesses
+    )
+    expected_tables = {
+        "acceptance_evidence",
+        "acceptance_set",
+        "acquisition_generation",
+        "acquisition_generation_current",
+        "acquisition_root_route",
+        "acquisition_scope",
+        "application_generation",
+        "closure_chain",
+        "dispatch_claim",
+        "execution_connection_profile",
+        "execution_fact",
+        "execution_fact_head",
+        "kernel_checkpoint",
+        "market_cursor",
+        "market_data_source_profile",
+        "market_stream_authority",
+        "protection_authority",
+        "root_fill",
+        "symbol_controller",
+        "venue_effect",
+        "venue_identity_owner",
+    }
+    assert {table for table, _, _ in named_accesses} == expected_tables
+
+    all_sql = "\n".join(queries)
+    for index in {
+        required_index
+        for _, _, required_index in named_accesses
+        if required_index is not None
+    }:
+        expected_count = sum(
+            required_index == index for _, _, required_index in named_accesses
+        )
+        assert all_sql.count(f"INDEXED BY {index}") == expected_count, index
+
+    assert repository._RUNTIME_CHECKPOINT_LOAD_PLAN_ACCESS == (
+        (("kernel_checkpoint", "kernel_checkpoint", None),),
+        (("runtime_checkpoint_payload", "runtime_checkpoint_payload", None),),
+    )
+
+
 def test_runtime_checkpoint_write_sql_is_exact_and_transaction_free() -> None:
     assert repository._RUNTIME_CHECKPOINT_PAYLOAD_INSERT_SQL == (
         "INSERT INTO runtime_checkpoint_payload("

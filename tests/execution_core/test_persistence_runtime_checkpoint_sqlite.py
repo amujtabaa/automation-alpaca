@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import re as _re
 from pathlib import Path
 import sqlite3
 from typing import Any, Callable
@@ -17,67 +16,121 @@ from app.execution_core.fills import PositionScope
 from app.execution_core.position import ExecutionSnapshot
 from app.execution_core.persistence import checkpoint_codec, records, repository
 from app.execution_core.persistence.schema import install_schema
-from approved_schema_digest import APPROVED_DDL_SHA256
+from approved_schema_digest import require_approved_ddl_execution
 import persistence_setup_support as setup_support
 import test_persistence_repository as base
 
 
-_INDEX_IN_PLAN = _re.compile(r"USING (?:COVERING )?INDEX (\w+)")
-
-# `AS` is optional in SQL. Requiring it would let `FROM venue_effect effect`
-# resolve to {VENUE_EFFECT} while the planner reports EFFECT, silently excusing
-# an unbounded pass. The alias group carries a negative lookahead over the
-# keywords that can legally follow a source -- ON/WHERE/JOIN/..., and SQLite's
-# INDEXED BY / NOT INDEXED suffixes (REV-0078 P1-3) -- because a keyword
-# consumed AS an alias does double damage: the source resolves to the keyword,
-# and a bare `JOIN next_table` swallowed that way removes the next source from
-# the set entirely.
-_SQL_SOURCE_KEYWORDS = (
-    "ON|WHERE|JOIN|LEFT|INNER|CROSS|GROUP|ORDER|LIMIT|UNION|INDEXED|NOT"
-)
-_SQL_SOURCE_ALIAS = _re.compile(
-    r"\b(?:FROM|JOIN)\s+([A-Za-z_][A-Za-z_0-9]*)"
-    rf"(?:\s+(?:AS\s+)?(?!(?:{_SQL_SOURCE_KEYWORDS})\b)([A-Za-z_][A-Za-z_0-9]*))?",
-    _re.IGNORECASE,
-)
-_SQL_KEYWORDS_AFTER_SOURCE = frozenset(
-    {
-        "ON",
-        "WHERE",
-        "JOIN",
-        "LEFT",
-        "INNER",
-        "CROSS",
-        "GROUP",
-        "ORDER",
-        "LIMIT",
-        "UNION",
-        "INDEXED",
-        "NOT",
-    }
-)
+_RuntimeCheckpointPlanAccess = tuple[str, str, str | None]
 
 
-def _base_table_plan_names(sql: str, base_tables: frozenset[str]) -> frozenset[str]:
-    """Names EXPLAIN QUERY PLAN would use for this query's base-table sources.
+def _plan_access_violations(
+    details: tuple[str, ...],
+    accesses: tuple[_RuntimeCheckpointPlanAccess, ...],
+) -> tuple[str, ...]:
+    """Checks EXPLAIN output against the explicit repository plan contract.
 
-    The planner reports the alias when one is given and the table name otherwise,
-    so both spellings are collected; a source that is not a base table is a CTE or
-    subquery and is deliberately absent.
+    The repository records every expected base-table access beside its frozen SQL.
+    This deliberately consumes that reviewable contract rather than parsing SQL
+    sources in a test: SQLite permits aliases, optional ``AS``, ``INDEXED BY``,
+    CTEs, and other grammar that a partial source parser can misread.  A missing
+    metadata entry is a source-review defect; a missing or scanning EXPLAIN entry
+    is an executable plan defect.
     """
 
-    names: set[str] = set()
-    for source, alias in _SQL_SOURCE_ALIAS.findall(sql):
-        if source.lower() not in base_tables:
+    normalized = tuple(detail.upper() for detail in details)
+    available = set(range(len(normalized)))
+    violations: list[str] = []
+
+    def matching_searches(plan_name: str) -> tuple[int, ...]:
+        prefix = f"SEARCH {plan_name.upper()} "
+        return tuple(
+            index for index in sorted(available) if normalized[index].startswith(prefix)
+        )
+
+    def matching_base_details(plan_name: str) -> tuple[str, ...]:
+        name = plan_name.upper()
+        return tuple(
+            detail
+            for detail in normalized
+            if detail.startswith(f"SEARCH {name} ")
+            or detail.startswith(f"SCAN {name} ")
+        )
+
+    # Match forced-index entries first so an ordinary primary-key search cannot
+    # accidentally consume the only plan row that proves a named index.
+    ordered_accesses = tuple(
+        access for access in accesses if access[2] is not None
+    ) + tuple(access for access in accesses if access[2] is None)
+    for base_table, plan_name, required_index in ordered_accesses:
+        base_details = matching_base_details(plan_name)
+        scans = tuple(
+            detail
+            for detail in base_details
+            if detail.startswith(f"SCAN {plan_name.upper()} ")
+        )
+        if scans:
+            violations.append(f"{base_table}/{plan_name}: unbounded scan {scans!r}")
+        if any("AUTOMATIC" in detail for detail in base_details):
+            violations.append(
+                f"{base_table}/{plan_name}: automatic index {base_details!r}"
+            )
+
+        candidates = matching_searches(plan_name)
+        if required_index is not None:
+            expected_index = f"INDEX {required_index.upper()}"
+            candidates = tuple(
+                index for index in candidates if expected_index in normalized[index]
+            )
+            if not candidates:
+                violations.append(
+                    f"{base_table}/{plan_name}: missing SEARCH via {required_index}"
+                )
+                continue
+        if not candidates:
+            violations.append(f"{base_table}/{plan_name}: missing SEARCH")
             continue
-        # Without AS the next token may be a keyword rather than an alias.
-        if alias and alias.upper() in _SQL_KEYWORDS_AFTER_SOURCE:
-            alias = ""
-        names.add((alias or source).upper())
-    return frozenset(names)
+        available.remove(candidates[0])
+
+    for index in sorted(available):
+        detail = normalized[index]
+        if detail.startswith(("SEARCH ", "SCAN ")):
+            violations.append(f"unexpected plan access {detail!r}")
+
+    return tuple(violations)
+
+
+def test_plan_access_checker_refuses_an_unlisted_search_access() -> None:
+    """A new SQL source cannot evade the plan proof by omitting its metadata row."""
+
+    violations = _plan_access_violations(
+        (
+            "SEARCH expected USING INDEX ix_expected (key=?)",
+            "SEARCH omitted USING INDEX ix_omitted (key=?)",
+        ),
+        (("expected_table", "expected", None),),
+    )
+
+    assert any("unexpected plan access" in violation for violation in violations)
+
+
+def _explain_details(
+    connection: sqlite3.Connection,
+    sql: str,
+    parameters: tuple[object, ...] | None = None,
+) -> tuple[str, ...]:
+    if parameters is None:
+        parameters = tuple("plan-probe" for _ in range(sql.count("?")))
+    return tuple(
+        str(row[-1])
+        for row in connection.execute(
+            f"EXPLAIN QUERY PLAN {sql}", parameters
+        ).fetchall()
+    )
 
 
 def _open_fresh(path: Path) -> sqlite3.Connection:
+    require_approved_ddl_execution()
     connection = sqlite3.connect(path)
     connection.execute("PRAGMA foreign_keys = ON")
     connection.execute("PRAGMA recursive_triggers = ON")
@@ -102,7 +155,7 @@ def _install_foundation(
     production projector actually emits.
     """
 
-    install_schema(connection, approved_ddl_sha256=APPROVED_DDL_SHA256)
+    install_schema(connection, approved_ddl_sha256=require_approved_ddl_execution())
     if not dormant:
         base._foundation(connection)
         connection.commit()
@@ -1389,137 +1442,597 @@ def test_selection_records_exact_counts_and_canonical_absence_evidence(
     writer.close()
 
 
-def test_all_thirteen_selection_queries_have_bounded_indexed_plans(
-    tmp_path: Path,
-) -> None:
-    database = tmp_path / "wo0168c-query-plans.db"
-    connection = _open_fresh(database)
-    _install_foundation(connection)
-    connection.execute("BEGIN")
-    base_tables = frozenset(
-        str(row[0]).lower()
-        for row in connection.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'"
-            " AND name NOT LIKE 'sqlite_%'"
-        ).fetchall()
-    )
-    # "Partial" does not imply "bounded". What bounds a scan is a predicate that
-    # CLEARS as work completes, so the index holds live state rather than history.
-    # Both counters below fall back to zero, so those two qualify.
-    # ix_venue_owner_checkpoint_late is partial but NOT bounded:
-    # `admitted_after_effect_closed = 1` never clears and venue_identity_owner
-    # carries trg_venue_identity_owner_no_delete, so that index grows with total
-    # late-admission history. Inferring boundedness from the mere presence of a
-    # WHERE clause excused it wrongly; the classification has to be stated.
-    live_state_indexes = frozenset(
-        {
-            "IX_ACQUISITION_GENERATION_CURRENT_CHECKPOINT_EFFECT",
-            "IX_ACQUISITION_GENERATION_CURRENT_CHECKPOINT_PROTECTION",
-        }
-    )
-    declared_partial = frozenset(
-        str(name).upper()
-        for name, index_sql in connection.execute(
-            "SELECT name, sql FROM sqlite_master WHERE type='index' AND sql IS NOT NULL"
-        ).fetchall()
-        # The predicate follows the column list, and the DDL puts it on its own
-        # line, so this must not assume a space before WHERE.
-        if _re.search(r"\)\s*WHERE\s", str(index_sql), _re.S | _re.I)
-    )
-    # Every index named live-state must really be partial; a full index here would
-    # be an unbounded pass excused by a stale name.
-    assert live_state_indexes <= declared_partial, live_state_indexes - declared_partial
+_PLAN_HISTORY_ROW_COUNT = 10_000
+_PLAN_HISTORY_SCOPE_OFFSET = 1_000_000
+_PLAN_HISTORY_EFFECT_OFFSET = 2_000_000
+_PLAN_HISTORY_ROOT_OFFSET = 3_000_000
+_PLAN_HISTORY_FACT_OFFSET = 4_000_000
+_PLAN_HISTORY_CLAIM_OFFSET = 5_000_000
+_PLAN_HISTORY_ACCEPTANCE_OFFSET = 6_000_000
+_PLAN_HISTORY_EVIDENCE_OFFSET = 7_000_000
+_PLAN_HISTORY_CLOSURE_OFFSET = 8_000_000
 
-    unbounded: set[tuple[int, str]] = set()
-
-    for ordinal, sql in enumerate(repository._RUNTIME_CHECKPOINT_SELECTION_SQL, 1):
-        parameters = tuple("plan-probe" for _ in range(sql.count("?")))
-        plan = connection.execute(f"EXPLAIN QUERY PLAN {sql}", parameters).fetchall()
-        assert plan, f"Q{ordinal} produced no plan"
-        details = tuple(str(row[-1]).upper() for row in plan)
-        assert any("SEARCH " in detail for detail in details), (ordinal, details)
-        # The bounded-plan property is "no pass over a base table whose length
-        # tracks history". Three cases, and only the third is a violation:
-        #
-        #   * a scan of a materialized CTE or subquery is bounded by that CTE's
-        #     own selection;
-        #   * a scan of a PARTIAL index is bounded by that index's predicate --
-        #     the ix_*_checkpoint_* indexes exist precisely so a scan of them
-        #     costs live state rather than history, and scanning them is the
-        #     intended design;
-        #   * any other scan of a base table -- including one through a full
-        #     index -- visits every row ever written.
-        #
-        # An earlier revision of this control excused every "USING INDEX" scan on
-        # the reasoning that an index bounds it. That reasoning is wrong: a full
-        # index has exactly as many entries as its table, so scanning it is the
-        # same unbounded pass. Only the predicate of a partial index bounds one.
-        table_names = _base_table_plan_names(sql, base_tables)
-        for detail in details:
-            if not detail.startswith("SCAN "):
-                continue
-            scanned = detail.split()[1]
-            if scanned not in table_names:
-                continue
-            index = _INDEX_IN_PLAN.search(detail)
-            if index is not None and index.group(1) in live_state_indexes:
-                continue
-            unbounded.add((ordinal, detail))
-        # An automatic index over a base table means SQLite is compensating for a
-        # missing schema index and will index the whole table -- unbounded. Over a
-        # materialized CTE it is a transient index on that CTE's own bounded
-        # result, which is expected and costs nothing that grows with the
-        # database, so the same base-table distinction applies here.
-        for detail in details:
-            if "AUTOMATIC" not in detail:
-                continue
-            indexed = detail.split()[1]
-            if indexed in table_names:
-                unbounded.add((ordinal, detail))
-
-    # Exactly the known, dispositioned violations -- equality, not a subset, so a
-    # new one fails and a fixed one must be removed from this set deliberately.
-    #
-    # Each is the same shape: the planner leads with a base table instead of the
-    # bounded CTE beside it, so the pass costs total history rather than the
-    # selection. Q9 carried a sixth and is fixed: pinning the join order with
-    # CROSS JOIN turned its SCAN into a SEARCH. The same one-token remedy clears
-    # all five of these (measured 5 -> 0), but it is a repository SQL change
-    # across five more queries and is not yet authorized.
-    # Empty, and it must stay empty. Every base-table join inside these CTE
-    # bodies is now pinned with CROSS JOIN so the bounded CTE stays the outer
-    # loop; the twelve entries that stood here are gone. A new one means a query
-    # was added or a join order was un-pinned.
-    assert unbounded == set(), unbounded
-
-    connection.rollback()
-    connection.close()
+_PLAN_HISTORY_POPULATED_TABLES = (
+    "execution_connection_profile",
+    "market_data_source_profile",
+    "application_generation",
+    "acquisition_scope",
+    "acquisition_generation",
+    "acquisition_generation_current",
+    "kernel_checkpoint",
+    "symbol_controller",
+    "root_fill",
+    "execution_fact",
+    "execution_fact_head",
+    "venue_effect",
+    "venue_identity_owner",
+    "acquisition_root_route",
+    "dispatch_claim",
+    "acceptance_set",
+    "acceptance_evidence",
+    "closure_chain",
+    "market_stream_authority",
+    "market_cursor",
+    "protection_authority",
+    "runtime_checkpoint_payload",
+)
 
 
-def test_base_table_plan_names_resolves_indexed_by_and_bare_aliases() -> None:
-    """Pure parser control for the bounded-plan test's source resolution.
+def _history_hex(family: int, ordinal: int) -> str:
+    """Returns a deterministic, lowercase, 64-hex stress-lane identity."""
 
-    REV-0078 P1-3: `FROM t INDEXED BY ix` resolved to {"INDEXED"} and the
-    planner's SCAN of the real table was silently excused. Worse, a bare keyword
-    consumed as an alias also swallowed the next `JOIN` source from the set
-    entirely. The negative lookahead in _SQL_SOURCE_ALIAS is what these pin.
-    No database is touched: this is string parsing only.
+    return f"{family * _PLAN_HISTORY_SCOPE_OFFSET + ordinal:064x}"
+
+
+def _history_application(ordinal: int) -> str:
+    return f"checkpoint-plan-history-{ordinal:05d}"
+
+
+def _history_scope(ordinal: int) -> int:
+    return _PLAN_HISTORY_SCOPE_OFFSET + ordinal
+
+
+def _history_effect(ordinal: int) -> int:
+    return _PLAN_HISTORY_EFFECT_OFFSET + ordinal
+
+
+def _history_root(ordinal: int) -> int:
+    return _PLAN_HISTORY_ROOT_OFFSET + ordinal
+
+
+def _history_fact(ordinal: int) -> int:
+    return _PLAN_HISTORY_FACT_OFFSET + ordinal
+
+
+def _seed_unrelated_plan_history(connection: sqlite3.Connection) -> None:
+    """Creates one valid 10k-row unrelated lane through every planned family.
+
+    Each row is attached to a different application generation than the selected
+    foundation.  It is therefore genuine unrelated durable state, not fabricated
+    planner statistics or a disabled-constraint shortcut.  The lane reaches every
+    base family named by the thirteen-query and load-plan contracts.
     """
 
-    base = frozenset({"venue_effect", "dispatch_claim"})
-    cases = (
-        ("SELECT 1 FROM venue_effect INDEXED BY ix_name", {"VENUE_EFFECT"}),
-        ("SELECT 1 FROM venue_effect NOT INDEXED WHERE x=1", {"VENUE_EFFECT"}),
-        ("SELECT 1 FROM venue_effect AS effect INDEXED BY ix", {"EFFECT"}),
-        ("SELECT 1 FROM venue_effect effect", {"EFFECT"}),
+    ordinals = range(1, _PLAN_HISTORY_ROW_COUNT + 1)
+    connection.execute("BEGIN")
+    connection.executemany(
+        """
+        INSERT INTO execution_connection_profile (
+            connection_profile_id, application_generation, broker_provider,
+            environment_class, account_identity, trade_command_origin,
+            order_query_origin, order_event_origin,
+            credential_handle_fingerprint, adapter_contract_version,
+            capability_profile_sha256, deployment_identity,
+            profile_commitment_sha256
+        ) VALUES (?, ?, 'ALPACA', 'PAPER', ?, ?, ?, ?, ?, '1.0.0', ?, ?, ?)
+        """,
         (
-            "SELECT 1 FROM venue_effect JOIN dispatch_claim AS claim ON 1=1",
-            {"VENUE_EFFECT", "CLAIM"},
-        ),
-        (
-            "SELECT 1 FROM venue_effect JOIN dispatch_claim ON 1=1",
-            {"VENUE_EFFECT", "DISPATCH_CLAIM"},
+            (
+                _history_hex(1, ordinal),
+                _history_application(ordinal),
+                _history_hex(5, ordinal),
+                f"https://trade-{ordinal}.example.test",
+                f"https://query-{ordinal}.example.test",
+                f"https://event-{ordinal}.example.test",
+                _history_hex(6, ordinal),
+                _history_hex(7, ordinal),
+                _history_hex(8, ordinal),
+                _history_hex(9, ordinal),
+            )
+            for ordinal in ordinals
         ),
     )
-    for sql, expected in cases:
-        assert set(_base_table_plan_names(sql, base)) == expected, sql
+    connection.executemany(
+        """
+        INSERT INTO market_data_source_profile (
+            market_source_profile_id, provider, environment_or_feed,
+            source_origin, entitlement_class, normalization_contract_version,
+            data_capability_profile_sha256, source_profile_commitment_sha256
+        ) VALUES (?, 'ALPACA', ?, ?, 'IEX', '1.0.0', ?, ?)
+        """,
+        (
+            (
+                _history_hex(2, ordinal),
+                f"feed-{ordinal}",
+                f"https://feed-{ordinal}.example.test",
+                _history_hex(10, ordinal),
+                _history_hex(11, ordinal),
+            )
+            for ordinal in ordinals
+        ),
+    )
+    connection.executemany(
+        """
+        INSERT INTO application_generation (
+            application_generation_id, selected_execution_profile_id,
+            selected_market_source_profile_id, activation_ordinal
+        ) VALUES (?, ?, ?, ?)
+        """,
+        (
+            (
+                _history_application(ordinal),
+                _history_hex(1, ordinal),
+                _history_hex(2, ordinal),
+                _PLAN_HISTORY_SCOPE_OFFSET + ordinal,
+            )
+            for ordinal in ordinals
+        ),
+    )
+    connection.executemany(
+        """
+        INSERT INTO runtime_checkpoint_payload (
+            application_generation_id, execution_profile_id,
+            market_source_profile_id, currentness_head_ordinal,
+            checkpoint_version_ordinal, payload_bytes, payload_length,
+            payload_sha256
+        ) VALUES (?, ?, ?, 0, 1, x'01', 1, ?)
+        """,
+        (
+            (
+                _history_application(ordinal),
+                _history_hex(1, ordinal),
+                _history_hex(2, ordinal),
+                _history_hex(15, ordinal),
+            )
+            for ordinal in ordinals
+        ),
+    )
+    connection.executemany(
+        """
+        INSERT INTO kernel_checkpoint (
+            application_generation_id, currentness_head_ordinal,
+            checkpoint_sha256, checkpoint_version_ordinal
+        ) VALUES (?, 0, ?, 1)
+        """,
+        (
+            (_history_application(ordinal), _history_hex(15, ordinal))
+            for ordinal in ordinals
+        ),
+    )
+    connection.executemany(
+        """
+        INSERT INTO acquisition_scope (
+            scope_id, application_generation_id, execution_profile_id, symbol_text
+        ) VALUES (?, ?, ?, ?)
+        """,
+        (
+            (
+                _history_scope(ordinal),
+                _history_application(ordinal),
+                _history_hex(1, ordinal),
+                f"PLAN{ordinal}",
+            )
+            for ordinal in ordinals
+        ),
+    )
+    connection.executemany(
+        """
+        INSERT INTO acquisition_generation (
+            acquisition_generation_id, scope_id, status, successor_ordinal,
+            predecessor_generation_id, mandate_commitment_sha256,
+            emergency_compatibility_sha256
+        ) VALUES (?, ?, 'LIVE', 1, NULL, ?, ?)
+        """,
+        (
+            (
+                _history_hex(3, ordinal),
+                _history_scope(ordinal),
+                _history_hex(12, ordinal),
+                _history_hex(13, ordinal),
+            )
+            for ordinal in ordinals
+        ),
+    )
+    connection.executemany(
+        """
+        INSERT INTO symbol_controller (
+            scope_id, application_generation_id, execution_profile_id,
+            live_acquisition_generation_id, aggregate_quantity, integrity_state,
+            currentness_head_ordinal, controller_version_ordinal,
+            emergency_compatibility_sha256
+        ) VALUES (?, ?, ?, ?, 0, 'CONSISTENT', 0, 1, ?)
+        """,
+        (
+            (
+                _history_scope(ordinal),
+                _history_application(ordinal),
+                _history_hex(1, ordinal),
+                _history_hex(3, ordinal),
+                _history_hex(13, ordinal),
+            )
+            for ordinal in ordinals
+        ),
+    )
+    connection.executemany(
+        """
+        INSERT INTO market_stream_authority (
+            stream_generation_id, scope_id, application_generation_id,
+            acquisition_generation_id, generation_mandate_commitment_sha256,
+            source_profile_id, session_external, sequence_mode
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'SEQUENCED')
+        """,
+        (
+            (
+                _history_hex(4, ordinal),
+                _history_scope(ordinal),
+                _history_application(ordinal),
+                _history_hex(3, ordinal),
+                _history_hex(12, ordinal),
+                _history_hex(2, ordinal),
+                f"plan-session-{ordinal}",
+            )
+            for ordinal in ordinals
+        ),
+    )
+    connection.executemany(
+        """
+        INSERT INTO market_cursor (
+            stream_generation_id, scope_id, application_generation_id,
+            acquisition_generation_id, generation_mandate_commitment_sha256,
+            source_profile_id, session_external, sequence_mode,
+            fixed_cursor_ordinal, published_head_ordinal
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'SEQUENCED', 0, 0)
+        """,
+        (
+            (
+                _history_hex(4, ordinal),
+                _history_scope(ordinal),
+                _history_application(ordinal),
+                _history_hex(3, ordinal),
+                _history_hex(12, ordinal),
+                _history_hex(2, ordinal),
+                f"plan-session-{ordinal}",
+            )
+            for ordinal in ordinals
+        ),
+    )
+    connection.executemany(
+        """
+        INSERT INTO protection_authority (
+            scope_id, authority_class, active_stream_generation_id,
+            active_acquisition_generation_id,
+            active_generation_mandate_commitment_sha256,
+            active_source_profile_id, active_session_external,
+            active_sequence_mode, expected_controller_head_ordinal,
+            state_commitment_sha256, version_ordinal
+        ) VALUES (?, 'NORMAL', ?, ?, ?, ?, ?, 'SEQUENCED', 0, ?, 1)
+        """,
+        (
+            (
+                _history_scope(ordinal),
+                _history_hex(4, ordinal),
+                _history_hex(3, ordinal),
+                _history_hex(12, ordinal),
+                _history_hex(2, ordinal),
+                f"plan-session-{ordinal}",
+                _history_hex(14, ordinal),
+            )
+            for ordinal in ordinals
+        ),
+    )
+    connection.executemany(
+        """
+        INSERT INTO root_fill (
+            root_fill_key_id, scope_id, application_generation_id,
+            execution_profile_id, owner_generation_id, root_fill_external,
+            economics_head_ordinal
+        ) VALUES (?, ?, ?, ?, ?, ?, 0)
+        """,
+        (
+            (
+                _history_root(ordinal),
+                _history_scope(ordinal),
+                _history_application(ordinal),
+                _history_hex(1, ordinal),
+                _history_hex(3, ordinal),
+                f"plan-root-{ordinal}",
+            )
+            for ordinal in ordinals
+        ),
+    )
+    connection.executemany(
+        """
+        INSERT INTO venue_effect (
+            effect_id, effect_external, scope_id, application_generation_id,
+            execution_profile_id, acquisition_generation_id,
+            generation_mandate_commitment_sha256,
+            expected_controller_head_ordinal, expected_protection_version_ordinal,
+            authority_class, request_occurrence_external, mandate_external,
+            effect_kind, client_order_external, target_order_external, side,
+            quantity, economic_scope, lifecycle_state, disposition, created_ordinal
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 1, 'NORMAL', ?, ?, 'SUBMIT', ?, NULL,
+                  'BUY', 1, x'01', 'REQUESTED', 'OPEN', ?)
+        """,
+        (
+            (
+                _history_effect(ordinal),
+                f"plan-effect-{ordinal}",
+                _history_scope(ordinal),
+                _history_application(ordinal),
+                _history_hex(1, ordinal),
+                _history_hex(3, ordinal),
+                _history_hex(12, ordinal),
+                f"plan-request-{ordinal}",
+                f"plan-mandate-{ordinal}",
+                f"plan-client-{ordinal}",
+                _PLAN_HISTORY_EFFECT_OFFSET + ordinal,
+            )
+            for ordinal in ordinals
+        ),
+    )
+    connection.executemany(
+        """
+        INSERT INTO venue_identity_owner (
+            scope_id, execution_profile_id, owner_external, observation_external,
+            effect_id, root_fill_key_id, owner_generation_id,
+            admitted_after_effect_closed
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 0)
+        """,
+        (
+            (
+                _history_scope(ordinal),
+                _history_hex(1, ordinal),
+                f"plan-owner-{ordinal}",
+                f"plan-observation-{ordinal}",
+                _history_effect(ordinal),
+                _history_root(ordinal),
+                _history_hex(3, ordinal),
+            )
+            for ordinal in ordinals
+        ),
+    )
+    connection.executemany(
+        """
+        INSERT INTO acquisition_root_route (
+            root_fill_key_id, scope_id, application_generation_id,
+            execution_profile_id, acquisition_generation_id, effect_id,
+            owner_external, observation_external
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            (
+                _history_root(ordinal),
+                _history_scope(ordinal),
+                _history_application(ordinal),
+                _history_hex(1, ordinal),
+                _history_hex(3, ordinal),
+                _history_effect(ordinal),
+                f"plan-owner-{ordinal}",
+                f"plan-observation-{ordinal}",
+            )
+            for ordinal in ordinals
+        ),
+    )
+    connection.executemany(
+        """
+        INSERT INTO dispatch_claim (
+            claim_id, effect_id, execution_profile_id, claim_occurrence_external,
+            claim_ordinal
+        ) VALUES (?, ?, ?, ?, ?)
+        """,
+        (
+            (
+                _PLAN_HISTORY_CLAIM_OFFSET + ordinal,
+                _history_effect(ordinal),
+                _history_hex(1, ordinal),
+                f"plan-claim-{ordinal}",
+                _PLAN_HISTORY_CLAIM_OFFSET + ordinal,
+            )
+            for ordinal in ordinals
+        ),
+    )
+    connection.executemany(
+        "INSERT INTO acceptance_set (acceptance_set_id, effect_id) VALUES (?, ?)",
+        (
+            (_PLAN_HISTORY_ACCEPTANCE_OFFSET + ordinal, _history_effect(ordinal))
+            for ordinal in ordinals
+        ),
+    )
+    connection.executemany(
+        """
+        INSERT INTO acceptance_evidence (
+            evidence_id, acceptance_set_id, effect_id, evidence_kind, proof_kind,
+            evidence_digest, evidence_ordinal, contradiction_owner_external,
+            contradiction_observation_external
+        ) VALUES (?, ?, ?, 'OBSERVATION', NULL, ?, ?, NULL, NULL)
+        """,
+        (
+            (
+                _PLAN_HISTORY_EVIDENCE_OFFSET + ordinal,
+                _PLAN_HISTORY_ACCEPTANCE_OFFSET + ordinal,
+                _history_effect(ordinal),
+                _history_hex(16, ordinal),
+                _PLAN_HISTORY_EVIDENCE_OFFSET + ordinal,
+            )
+            for ordinal in ordinals
+        ),
+    )
+    connection.executemany(
+        """
+        INSERT INTO closure_chain (
+            closure_id, scope_id, owner_external, ordinal, effect_id,
+            closure_kind, predecessor_closure_id
+        ) VALUES (?, ?, ?, 1, ?, 'TERMINAL_LEG', NULL)
+        """,
+        (
+            (
+                _PLAN_HISTORY_CLOSURE_OFFSET + ordinal,
+                _history_scope(ordinal),
+                f"plan-owner-{ordinal}",
+                _history_effect(ordinal),
+            )
+            for ordinal in ordinals
+        ),
+    )
+    current_fact = connection.execute(
+        "SELECT COALESCE(MAX(fact_ordinal), 0) FROM execution_fact"
+    ).fetchone()
+    assert current_fact is not None
+    first_fact_ordinal = int(current_fact[0])
+    connection.executemany(
+        """
+        INSERT INTO execution_fact (
+            fact_id, scope_id, application_generation_id, execution_profile_id,
+            root_fill_key_id, source_event_id, order_external, side, kind,
+            authority, quantity, price_present, price_units, scale_sign,
+            scale_digits, scale_exponent, tick_units, tick_scale_sign,
+            tick_scale_digits, tick_scale_exponent, predecessor_fact_id,
+            fact_ordinal
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'BUY', 'FILL', 'BROKER_AUTHORITATIVE',
+                  1, 1, 100, 0, '1', -2, 1, 0, '1', -2, NULL, ?)
+        """,
+        (
+            (
+                _history_fact(ordinal),
+                _history_scope(ordinal),
+                _history_application(ordinal),
+                _history_hex(1, ordinal),
+                _history_root(ordinal),
+                f"plan-event-{ordinal}",
+                f"plan-order-{ordinal}",
+                first_fact_ordinal + ordinal,
+            )
+            for ordinal in ordinals
+        ),
+    )
+    connection.commit()
+
+
+def _assert_unrelated_plan_history_floor(connection: sqlite3.Connection) -> None:
+    for table_name in _PLAN_HISTORY_POPULATED_TABLES:
+        row = connection.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()
+        assert row is not None
+        assert int(row[0]) >= _PLAN_HISTORY_ROW_COUNT, (table_name, row)
+
+
+def _required_selection_indexes() -> tuple[str, ...]:
+    return tuple(
+        dict.fromkeys(
+            required_index
+            for accesses in repository._RUNTIME_CHECKPOINT_SELECTION_PLAN_ACCESS
+            for _, _, required_index in accesses
+            if required_index is not None
+        )
+    )
+
+
+def _first_selection_query_for_index(
+    index: str,
+) -> tuple[str, tuple[_RuntimeCheckpointPlanAccess, ...]]:
+    for sql, accesses in zip(
+        repository._RUNTIME_CHECKPOINT_SELECTION_SQL,
+        repository._RUNTIME_CHECKPOINT_SELECTION_PLAN_ACCESS,
+        strict=True,
+    ):
+        if any(required_index == index for _, _, required_index in accesses):
+            return sql, accesses
+    raise AssertionError(f"selection manifest does not name {index}")
+
+
+def _assert_required_indexes_are_hard_requirements(
+    connection: sqlite3.Connection,
+) -> None:
+    """Proves each named R3 index cannot be silently optimized away."""
+
+    for index in _required_selection_indexes():
+        sql, _ = _first_selection_query_for_index(index)
+        connection.execute("SAVEPOINT checkpoint_plan_required_index")
+        try:
+            connection.execute(f"DROP INDEX {index}")
+            with pytest.raises(sqlite3.OperationalError):
+                _explain_details(connection, sql)
+        finally:
+            connection.execute("ROLLBACK TO checkpoint_plan_required_index")
+            connection.execute("RELEASE checkpoint_plan_required_index")
+
+
+def _assert_unaliased_not_indexed_mutant_is_detected(
+    connection: sqlite3.Connection,
+) -> None:
+    """Exercises an unaliased source that the former SQL parser misclassified."""
+
+    index = "ix_venue_effect_generation_disposition"
+    accesses: tuple[_RuntimeCheckpointPlanAccess, ...] = (
+        ("venue_effect", "venue_effect", index),
+    )
+    sql = (
+        "SELECT effect_id FROM venue_effect "
+        f"INDEXED BY {index} "
+        "WHERE acquisition_generation_id=? AND disposition='OPEN'"
+    )
+    parameters = (_history_hex(3, 1),)
+    original_details = _explain_details(connection, sql, parameters)
+    assert _plan_access_violations(original_details, accesses) == (), original_details
+
+    mutant_sql = sql.replace(f"INDEXED BY {index}", "NOT INDEXED", 1)
+    mutant_details = _explain_details(connection, mutant_sql, parameters)
+    assert any(
+        detail.upper().startswith("SCAN VENUE_EFFECT ") for detail in mutant_details
+    ), mutant_details
+    assert _plan_access_violations(mutant_details, accesses), mutant_details
+
+
+def test_thirteen_selection_and_load_queries_have_direct_plans_under_history_stress(
+    tmp_path: Path,
+) -> None:
+    """Held R3 plan proof; execution is allowed only by the exact DDL gate."""
+
+    database = tmp_path / "wo0168c-query-plans.db"
+    connection = _open_fresh(database)
+    try:
+        _install_foundation(connection)
+        _seed_unrelated_plan_history(connection)
+        _assert_unrelated_plan_history_floor(connection)
+        connection.execute("ANALYZE")
+        connection.execute("BEGIN")
+
+        for ordinal, (sql, accesses) in enumerate(
+            zip(
+                repository._RUNTIME_CHECKPOINT_SELECTION_SQL,
+                repository._RUNTIME_CHECKPOINT_SELECTION_PLAN_ACCESS,
+                strict=True,
+            ),
+            1,
+        ):
+            details = _explain_details(connection, sql)
+            violations = _plan_access_violations(details, accesses)
+            assert not violations, (f"Q{ordinal}", details, violations)
+
+        for label, sql, accesses in zip(
+            ("head", "payload"),
+            (
+                repository._RUNTIME_CHECKPOINT_HEAD_SELECT_SQL,
+                repository._RUNTIME_CHECKPOINT_PAYLOAD_SELECT_SQL,
+            ),
+            repository._RUNTIME_CHECKPOINT_LOAD_PLAN_ACCESS,
+            strict=True,
+        ):
+            details = _explain_details(connection, sql)
+            violations = _plan_access_violations(details, accesses)
+            assert not violations, (label, details, violations)
+
+        _assert_required_indexes_are_hard_requirements(connection)
+        _assert_unaliased_not_indexed_mutant_is_detected(connection)
+    finally:
+        connection.rollback()
+        connection.close()

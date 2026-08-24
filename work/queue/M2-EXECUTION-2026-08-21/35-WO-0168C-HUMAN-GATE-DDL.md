@@ -1,8 +1,22 @@
 # WO-0168c checkpoint bundle — HUMAN-GATE (schema/DDL)
 
-Status: **HUMAN-GATE — no schema, database, broker, credential, or network action performed**
+Status: **SUPERSEDED HISTORICAL GATE RECORD — NOT AN EXECUTION AUTHORIZATION**
 
 Date: 2026-08-24
+
+## Current controlling state
+
+This file preserves the original proposal and its amendments as an honest historical
+record. It does **not** authorize a schema install or any SQLite-bearing test. Amendment 2
+records that the earlier `tmp_path` and `:memory:` runs were noncompliant and unusable as
+gate evidence. The human-transcribed approval literal is deliberately locked, so every
+future installer stops before opening a database until a fresh exact-head packet is
+independently reviewed and Ameen approves its commit, tree, DDL digest, byte count, catalog
+digest, SQL-manifest identity, and named fresh-file-only commands.
+
+The next possible executable packet will be `work/review/REV-0079/request.md`; until that
+packet exists, has a fresh `P0=0/P1=0` review result, and carries Ameen's explicit approval,
+the SQLite gate remains **NOT_RUN**.
 
 ```text
 Work order:      WO-0168c (frozen non-serving checkpoint, contract R20)
@@ -299,3 +313,16 @@ gate this work order defines. That finding is accepted. Specifically:
    fully bound gate packet: exact commit, tree, DDL SHA-256, UTF-8 byte count, catalog digest,
    SQL-manifest identity, and the exact fresh-file-only commands. That packet is
    `work/review/REV-0078/request.md` once the static remediation is frozen.
+
+---
+
+# Amendment 3 — packet-reference correction
+
+Date: 2026-08-24 · Recorded by: Codex implementation seat
+
+The final sentence of Amendment 2 names `work/review/REV-0078/request.md`. That was a stale
+reference to the already-blocked historical review, not an authorization. It is superseded only
+as a locator: `REV-0078` remains immutable evidence, while the next possible packet is
+`work/review/REV-0079/request.md`. Until that packet has an independent exact-head result with
+`P0=0` and `P1=0`, followed by Ameen's explicit exact-identity approval, the SQLite gate remains
+**NOT_RUN**.
