@@ -2063,6 +2063,9 @@ class _SelectedVenueRelations:
 
     scopes_by_id: dict[int, _records.ScopeRecord]
     effects_by_id: dict[int, _records.VenueEffectRecord]
+    claims_by_effect_id: dict[int, _records.DispatchClaimRecord]
+    acceptance_sets_by_effect_id: dict[int, _records.AcceptanceSetRecord]
+    evidence_by_id: dict[int, _records.AcceptanceEvidenceRecord]
     owners_by_id: dict[_identity.OrderId, _records.VenueIdentityOwnerRecord]
     routes_by_root_key_id: dict[int, _records.AcquisitionRootRouteRecord]
     roots_by_key_id: dict[int, _records.RootFillRecord]
@@ -2075,19 +2078,34 @@ def _selected_venue_relations(
 
     scopes = {record.scope_id: record for record in selection.scopes}
     effects = {record.effect_id: record for record in selection.effects}
+    claims = {record.effect_id: record for record in selection.claims}
+    acceptance_sets = {record.effect_id: record for record in selection.acceptance_sets}
+    evidence = {record.evidence_id: record for record in selection.evidence}
     owners = {record.owner_id: record for record in selection.owners}
     routes = {record.root_fill_key_id: record for record in selection.root_routes}
     roots = {record.root_fill_key_id: record for record in selection.roots}
     for name, indexed, source in (
         ("scope", scopes, selection.scopes),
         ("effect", effects, selection.effects),
+        ("dispatch claim", claims, selection.claims),
+        ("acceptance set", acceptance_sets, selection.acceptance_sets),
+        ("acceptance evidence", evidence, selection.evidence),
         ("owner", owners, selection.owners),
         ("root route", routes, selection.root_routes),
         ("root", roots, selection.roots),
     ):
         if len(indexed) != len(source):
             raise ValueError(f"selected {name} records repeat a key")
-    return _SelectedVenueRelations(scopes, effects, owners, routes, roots)
+    return _SelectedVenueRelations(
+        scopes,
+        effects,
+        claims,
+        acceptance_sets,
+        evidence,
+        owners,
+        routes,
+        roots,
+    )
 
 
 def _selected_position_scope(
@@ -2155,6 +2173,113 @@ def _require_selected_effect_scope(
         or effect_scope.economic_scope != effect.economic_scope
     ):
         raise ValueError(f"reached {subject} disagrees with its selected effect scope")
+    return position_scope
+
+
+def _require_selected_effect_current_relation(
+    book: _venue.VenueRecoveryBook,
+    relations: _SelectedVenueRelations,
+    current: _venue.BrokerEffect,
+    record: _records.VenueEffectRecord,
+    subject: str,
+) -> _fills.PositionScope:
+    """Bind mutable current effect state to its selected durable closure relation.
+
+    Scope equality alone cannot authenticate a current claim or closure proof:
+    their lifecycle, claim, and evidence coordinates are selected durable state.
+    The evidence *reference* remains payload-owned because no selected durable row
+    carries that runtime identifier; its kind and digest remain exact durable ties.
+    """
+
+    position_scope = _require_selected_effect_scope(
+        book, relations, current.scope, record, subject
+    )
+    if current.state.value != record.lifecycle_state:
+        raise ValueError(f"reached {subject} disagrees with its selected lifecycle")
+    if current.acceptance_set_state.value != record.disposition:
+        raise ValueError(f"reached {subject} disagrees with its selected disposition")
+
+    selected_claim = relations.claims_by_effect_id.get(record.effect_id)
+    if selected_claim is None:
+        if current.claim_occurrence_id is not None:
+            raise ValueError(f"reached {subject} has an unselected dispatch claim")
+    elif (
+        selected_claim.execution_profile_id != record.execution_profile_id
+        or current.claim_occurrence_id != selected_claim.claim_occurrence_id
+    ):
+        raise ValueError(
+            f"reached {subject} disagrees with its selected dispatch claim"
+        )
+
+    closure_values = (
+        record.closure_proof_kind,
+        record.closure_proof_digest,
+        record.closure_proof_evidence_id,
+        record.closure_proof_claim_id,
+    )
+    if record.disposition == "OPEN":
+        if any(value is not None for value in closure_values):
+            raise ValueError(f"selected {subject} OPEN closure is not empty")
+    elif record.disposition in {"CLOSED", "INVALIDATED"}:
+        if any(value is None for value in closure_values[:3]):
+            raise ValueError(f"selected {subject} closure is incomplete")
+        if (
+            record.closure_proof_kind == "NEVER_DISPATCHED"
+            and record.closure_proof_claim_id is not None
+        ):
+            raise ValueError(
+                f"selected {subject} never-dispatched closure names a claim"
+            )
+        if (
+            record.closure_proof_kind != "NEVER_DISPATCHED"
+            and record.closure_proof_claim_id is None
+        ):
+            raise ValueError(f"selected {subject} external closure lacks a claim")
+    else:
+        raise ValueError(f"selected {subject} has an invalid disposition")
+
+    proof = current.acceptance_proof
+    if proof is None:
+        if any(value is not None for value in closure_values):
+            raise ValueError(f"reached {subject} lacks its selected closure proof")
+        return position_scope
+    if record.disposition == "OPEN" or any(
+        value is None for value in closure_values[:3]
+    ):
+        raise ValueError(f"reached {subject} has an unselected effect closure proof")
+
+    proof_kind = getattr(getattr(proof, "kind", None), "value", None)
+    proof_digest = getattr(proof, "evidence_digest", None)
+    if (
+        proof_kind != record.closure_proof_kind
+        or type(proof_digest) is not bytes
+        or proof_digest.hex() != record.closure_proof_digest
+    ):
+        raise ValueError(f"reached {subject} disagrees with its selected closure proof")
+    evidence = relations.evidence_by_id.get(record.closure_proof_evidence_id)
+    acceptance_set = relations.acceptance_sets_by_effect_id.get(record.effect_id)
+    if (
+        evidence is None
+        or acceptance_set is None
+        or acceptance_set.acceptance_set_id != evidence.acceptance_set_id
+        or evidence.effect_id != record.effect_id
+        or evidence.evidence_kind != "CLOSURE_PROOF"
+        or evidence.proof_kind != record.closure_proof_kind
+        or evidence.evidence_digest != record.closure_proof_digest
+    ):
+        raise ValueError(
+            f"reached {subject} disagrees with its selected closure evidence"
+        )
+    if record.closure_proof_kind == "NEVER_DISPATCHED":
+        if selected_claim is not None or current.claim_occurrence_id is not None:
+            raise ValueError(f"reached {subject} never-dispatched closure has a claim")
+    elif (
+        selected_claim is None
+        or selected_claim.claim_id != record.closure_proof_claim_id
+        or getattr(proof, "claim_occurrence_id", None)
+        != selected_claim.claim_occurrence_id
+    ):
+        raise ValueError(f"reached {subject} disagrees with its selected closure claim")
     return position_scope
 
 
@@ -3647,7 +3772,9 @@ def _encode_runtime_checkpoint_venue_effect_rows(
         if current is None:
             raise ValueError("selected effect has no current owner row")
         scope = current.effect.scope
-        _require_selected_effect_scope(book, relations, scope, record, "effect")
+        _require_selected_effect_current_relation(
+            book, relations, current.effect, record, "effect"
+        )
         order_key = _atom_order_key(effect_external)
         if order_key in seen:
             raise ValueError("selected effects retain a duplicate effect")
@@ -3712,21 +3839,24 @@ def _encode_runtime_checkpoint_venue_claim_rows(
     effect family to the exact external identity before the direct-key lookup.
     """
 
-    external_by_surrogate = {
-        record.effect_id: record.effect_external for record in selection.effects
-    }
+    relations = _selected_venue_relations(selection)
     seen: set[bytes] = set()
     rows: list[object] = []
     for record in selection.claims:
-        effect_external = external_by_surrogate.get(record.effect_id)
-        if effect_external is None:
+        effect = relations.effects_by_id.get(record.effect_id)
+        if effect is None:
             raise ValueError("selected dispatch claim names an unselected effect")
+        effect_external = effect.effect_external
         claim = book._claim_by_effect.get(_venue._effect_index_key(effect_external))
         if claim is None:
             raise ValueError("selected dispatch claim has no current owner row")
-        if claim.effect_scope.effect_id != effect_external:
-            raise ValueError("reached dispatch claim does not own its selected effect")
-        if claim.claim_occurrence_id != record.claim_occurrence_id:
+        _require_selected_effect_scope(
+            book, relations, claim.effect_scope, effect, "dispatch claim"
+        )
+        if (
+            record.execution_profile_id != effect.execution_profile_id
+            or claim.claim_occurrence_id != record.claim_occurrence_id
+        ):
             raise ValueError(
                 "reached dispatch claim disagrees with its selected record"
             )

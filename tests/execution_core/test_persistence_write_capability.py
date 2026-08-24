@@ -1038,8 +1038,16 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
     tree = ast.parse(source, filename=label)
     installer_names: set[str] = set()
     schema_module_names: set[str] = set()
-    sqlite_module_names: set[str] = {"sqlite3"}
+    sqlite_module_names: set[str] = set()
     sqlite_connect_names: set[str] = set()
+    dynamic_import_module_names: set[str] = set()
+    dynamic_import_names: set[str] = {"__import__"}
+    operator_module_names: set[str] = set()
+    attrgetter_names: set[str] = set()
+    sqlite_connection_import_lines: list[int] = []
+    sqlite_module_alias_lines: list[int] = []
+    dynamic_import_lines: list[int] = []
+    dynamic_builtin_lines: list[int] = []
     canonical_gate_imported = False
     violations: list[str] = []
 
@@ -1060,7 +1068,21 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
             if node.module == "sqlite3":
                 for imported in node.names:
                     if imported.name == "connect":
+                        sqlite_connection_import_lines.append(node.lineno)
                         sqlite_connect_names.add(imported.asname or "connect")
+            if node.module == "importlib":
+                for imported in node.names:
+                    if imported.name == "import_module":
+                        dynamic_import_names.add(imported.asname or "import_module")
+                        dynamic_import_lines.append(node.lineno)
+            if node.module == "operator":
+                for imported in node.names:
+                    if imported.name == "attrgetter":
+                        attrgetter_names.add(imported.asname or "attrgetter")
+            if node.module == "builtins":
+                for imported in node.names:
+                    if imported.name in {"getattr", "vars", "eval", "exec"}:
+                        dynamic_builtin_lines.append(node.lineno)
             if node.module == "approved_schema_digest":
                 for imported in node.names:
                     if imported.name == "require_approved_ddl_execution":
@@ -1080,7 +1102,56 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
                     else:
                         schema_module_names.add(imported.asname)
                 if imported.name == "sqlite3":
+                    if imported.asname is not None:
+                        sqlite_module_alias_lines.append(node.lineno)
                     sqlite_module_names.add(imported.asname or "sqlite3")
+                if imported.name == "importlib":
+                    dynamic_import_module_names.add(imported.asname or "importlib")
+                    dynamic_import_lines.append(node.lineno)
+                if imported.name == "operator":
+                    operator_module_names.add(imported.asname or "operator")
+                if imported.name == "builtins":
+                    dynamic_builtin_lines.append(node.lineno)
+
+    has_sqlite_surface = bool(sqlite_module_names or sqlite_connect_names)
+    has_gate_surface = has_sqlite_surface or bool(installer_names)
+    if has_sqlite_surface:
+        violations.extend(
+            f"{label}:{line}: SQLite connection direct import"
+            for line in sqlite_connection_import_lines
+        )
+        violations.extend(
+            f"{label}:{line}: SQLite module import alias"
+            for line in sqlite_module_alias_lines
+        )
+    if has_gate_surface:
+        violations.extend(
+            f"{label}:{line}: dynamic import route" for line in dynamic_import_lines
+        )
+        violations.extend(
+            f"{label}:{line}: dynamic builtin import" for line in dynamic_builtin_lines
+        )
+
+    for node in ast.walk(tree):
+        if node in tree.body:
+            continue
+        if isinstance(node, ast.Import):
+            for imported in node.names:
+                if imported.name == "sqlite3":
+                    violations.append(
+                        f"{label}:{node.lineno}: SQLite import is not module-bound"
+                    )
+                if imported.name == "app.execution_core.persistence.schema":
+                    violations.append(
+                        f"{label}:{node.lineno}: installer import is not module-bound"
+                    )
+        elif isinstance(node, ast.ImportFrom) and node.module in {
+            "sqlite3",
+            "app.execution_core.persistence.schema",
+        }:
+            violations.append(
+                f"{label}:{node.lineno}: installer route import is not module-bound"
+            )
 
     parents = _parent_map(tree)
 
@@ -1106,13 +1177,29 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
         )
 
     def _is_sqlite_module_expression(value: ast.expr) -> bool:
-        return bool(
-            _expression_path(value) == "sqlite3"
-            or (isinstance(value, ast.Name) and value.id in sqlite_module_names)
-        )
+        return bool(isinstance(value, ast.Name) and value.id in sqlite_module_names)
+
+    def _is_sqlite_owned_expression(value: ast.expr) -> bool:
+        current = value
+        while isinstance(current, ast.Attribute):
+            current = current.value
+        return _is_sqlite_module_expression(current)
 
     def _is_getattr_call(call: ast.Call) -> bool:
         return _call_tail(call.func) == "getattr"
+
+    def _is_vars_call(call: ast.Call) -> bool:
+        return _call_tail(call.func) == "vars"
+
+    def _is_attrgetter_call(call: ast.Call) -> bool:
+        if isinstance(call.func, ast.Name):
+            return call.func.id in attrgetter_names
+        return bool(
+            isinstance(call.func, ast.Attribute)
+            and call.func.attr == "attrgetter"
+            and isinstance(call.func.value, ast.Name)
+            and call.func.value.id in operator_module_names
+        )
 
     def _dynamic_installer_getter(call: ast.Call) -> bool:
         return bool(
@@ -1127,13 +1214,20 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
         if isinstance(call.func, ast.Attribute):
             return bool(
                 call.func.attr == "connect"
-                and _is_sqlite_module_expression(call.func.value)
+                and _is_sqlite_owned_expression(call.func.value)
             )
         return bool(
             isinstance(call.func, ast.Call)
             and _is_getattr_call(call.func)
             and len(call.func.args) >= 2
             and _is_sqlite_module_expression(call.func.args[0])
+        )
+
+    def _is_direct_sqlite_connect_call(call: ast.Call) -> bool:
+        return bool(
+            isinstance(call.func, ast.Attribute)
+            and call.func.attr == "connect"
+            and _is_sqlite_module_expression(call.func.value)
         )
 
     def _is_exact_gate_call(value: ast.expr) -> bool:
@@ -1171,7 +1265,14 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
         )
 
     def _is_dynamic_import_call(call: ast.Call) -> bool:
-        return _call_tail(call.func) in {"__import__", "import_module"}
+        if isinstance(call.func, ast.Name):
+            return call.func.id in dynamic_import_names
+        return bool(
+            isinstance(call.func, ast.Attribute)
+            and call.func.attr == "import_module"
+            and isinstance(call.func.value, ast.Name)
+            and call.func.value.id in dynamic_import_module_names
+        )
 
     def _is_installer_call(call: ast.Call) -> bool:
         if isinstance(call.func, ast.Name):
@@ -1179,6 +1280,66 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
         return (
             isinstance(call.func, ast.Attribute) and call.func.attr == "install_schema"
         ) or (isinstance(call.func, ast.Call) and _dynamic_installer_getter(call.func))
+
+    for node in ast.walk(tree):
+        if not has_gate_surface:
+            continue
+        if isinstance(node, ast.Call) and _is_dynamic_import_call(node):
+            violations.append(f"{label}:{node.lineno}: dynamic import route")
+        if isinstance(node, ast.Call) and _call_tail(node.func) in {"eval", "exec"}:
+            violations.append(f"{label}:{node.lineno}: dynamic code route")
+        if isinstance(node, (ast.Assign, ast.AnnAssign)):
+            value = node.value
+            if isinstance(value, ast.Name) and value.id in {"getattr", "vars"}:
+                violations.append(f"{label}:{node.lineno}: dynamic namespace alias")
+            if isinstance(value, ast.Name) and value.id in {
+                *schema_module_names,
+                *sqlite_module_names,
+            }:
+                violations.append(f"{label}:{node.lineno}: module alias")
+        if isinstance(node, ast.Attribute):
+            if node.attr == "__dict__" and (
+                _is_schema_module_expression(node.value)
+                or _is_sqlite_owned_expression(node.value)
+            ):
+                violations.append(f"{label}:{node.lineno}: module namespace route")
+            if node.attr == "connect" and _is_sqlite_owned_expression(node.value):
+                parent = parents.get(node)
+                if not (isinstance(parent, ast.Call) and parent.func is node):
+                    violations.append(
+                        f"{label}:{node.lineno}: SQLite connection reference escapes direct call"
+                    )
+        if not isinstance(node, ast.Call):
+            continue
+        if (
+            (_is_getattr_call(node) or _is_vars_call(node))
+            and node.args
+            and (
+                _is_schema_module_expression(node.args[0])
+                or _is_sqlite_owned_expression(node.args[0])
+            )
+        ):
+            violations.append(f"{label}:{node.lineno}: dynamic module attribute route")
+        if (
+            isinstance(node.func, ast.Call)
+            and _is_attrgetter_call(node.func)
+            and node.args
+            and (
+                _is_schema_module_expression(node.args[0])
+                or _is_sqlite_owned_expression(node.args[0])
+            )
+        ):
+            violations.append(f"{label}:{node.lineno}: dynamic module attribute route")
+        if _is_direct_sqlite_connect_call(node):
+            owner = _nearest_enclosing_function(node, parents)
+            if owner is None:
+                violations.append(
+                    f"{label}:{node.lineno}: SQLite connection is not function-bound"
+                )
+            elif not _gate_dominates_connection(owner):
+                violations.append(
+                    f"{label}:{node.lineno}: approval gate does not dominate SQLite connect"
+                )
 
     if any(
         isinstance(node, ast.Call) and _is_sqlite_connect_call(node)
@@ -1411,3 +1572,87 @@ def install(path):
     assert any(
         "does not dominate SQLite connect" in violation for violation in violations
     )
+
+    connection_only = """
+import sqlite3
+from approved_schema_digest import require_approved_ddl_execution
+def open_connection(path):
+    connection = sqlite3.connect(path)
+    require_approved_ddl_execution()
+    return connection
+"""
+    violations = _schema_installer_gate_violations(
+        connection_only, "connection-only.py"
+    )
+    assert any(
+        "does not dominate SQLite connect" in violation for violation in violations
+    )
+
+
+def test_changed_ddl_gate_audit_refuses_indirect_connection_and_installer_routes() -> (
+    None
+):
+    """The gate accepts only direct, statically accountable route spellings."""
+
+    mutants = (
+        # Assignment can hide a pre-gate connection acquisition from a call-name scan.
+        """
+import sqlite3
+from app.execution_core.persistence.schema import install_schema
+from approved_schema_digest import require_approved_ddl_execution
+def install(path):
+    connector = sqlite3.connect
+    connection = connector(path)
+    return install_schema(connection, approved_ddl_sha256=require_approved_ddl_execution())
+""",
+        # Aliasing import_module hides both the imported schema module and installer.
+        """
+import sqlite3
+from importlib import import_module as module_loader
+from approved_schema_digest import require_approved_ddl_execution
+def install(path):
+    require_approved_ddl_execution()
+    connection = sqlite3.connect(path)
+    schema = module_loader('app.execution_core.persistence.schema')
+    return getattr(schema, 'install_schema')(
+        connection, approved_ddl_sha256=require_approved_ddl_execution()
+    )
+""",
+        # Namespace dictionaries are an equally dynamic installer recovery route.
+        """
+import sqlite3
+from app.execution_core.persistence import schema
+from approved_schema_digest import require_approved_ddl_execution
+def install(path):
+    require_approved_ddl_execution()
+    connection = sqlite3.connect(path)
+    return vars(schema)['install_schema'](
+        connection, approved_ddl_sha256=require_approved_ddl_execution()
+    )
+""",
+        # Attribute factories must not substitute for a direct installer call.
+        """
+import operator
+import sqlite3
+from app.execution_core.persistence import schema
+from approved_schema_digest import require_approved_ddl_execution
+def install(path):
+    require_approved_ddl_execution()
+    connection = sqlite3.connect(path)
+    return operator.attrgetter('install_schema')(schema)(
+        connection, approved_ddl_sha256=require_approved_ddl_execution()
+    )
+""",
+        # Function-local imports cannot hide a connection or installer route.
+        """
+from approved_schema_digest import require_approved_ddl_execution
+def install(path):
+    import sqlite3
+    from app.execution_core.persistence.schema import install_schema
+    require_approved_ddl_execution()
+    connection = sqlite3.connect(path)
+    return install_schema(connection, approved_ddl_sha256=require_approved_ddl_execution())
+""",
+    )
+    for ordinal, mutant in enumerate(mutants, 1):
+        assert _schema_installer_gate_violations(mutant, f"indirect-{ordinal}.py")

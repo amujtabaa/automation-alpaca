@@ -1987,7 +1987,11 @@ def test_r20_effect_authorization_refuses_authorization_naming_another_effect() 
 
 
 def _venue_effect_record(
-    effect_id: identity.EffectId, ordinal: int
+    effect_id: identity.EffectId,
+    ordinal: int,
+    *,
+    lifecycle_state: str = "DISPATCH_CLAIMED",
+    disposition: str = "OPEN",
 ) -> records.VenueEffectRecord:
     """One repository-shaped selected effect row."""
 
@@ -2010,8 +2014,8 @@ def _venue_effect_record(
         "SELL",
         values.Quantity(2),
         b"\x01" * 32,
-        "OPEN",
-        "OPEN",
+        lifecycle_state,
+        disposition,
         None,
         None,
         None,
@@ -2022,22 +2026,32 @@ def _venue_effect_record(
 
 def _venue_claim_selection(
     effect_values: tuple[str, ...] = ("effect-1",),
+    *,
+    claimed: bool = True,
 ) -> records._RuntimeCheckpointSelectionSet:
     """Selection carrying one effect and its dispatch claim, in proof order."""
 
     effects = tuple(
-        _venue_effect_record(identity.EffectId(value), index + 1)
-        for index, value in enumerate(effect_values)
-    )
-    claims = tuple(
-        records.DispatchClaimRecord(
+        _venue_effect_record(
+            identity.EffectId(value),
             index + 1,
-            index + 1,
-            _EXECUTION_PROFILE,
-            identity.ClaimOccurrenceId(f"occurrence-{value}"),
-            index + 1,
+            lifecycle_state="DISPATCH_CLAIMED" if claimed else "REQUESTED",
         )
         for index, value in enumerate(effect_values)
+    )
+    claims = (
+        ()
+        if not claimed
+        else tuple(
+            records.DispatchClaimRecord(
+                index + 1,
+                index + 1,
+                _EXECUTION_PROFILE,
+                identity.ClaimOccurrenceId(f"occurrence-{value}"),
+                index + 1,
+            )
+            for index, value in enumerate(effect_values)
+        )
     )
     base = _dormant_selection()
     forged = deepcopy(base)
@@ -2080,6 +2094,28 @@ def test_r20_venue_claim_refuses_record_disagreeing_with_its_owner() -> None:
     with pytest.raises(ValueError, match="selected record"):
         checkpoint_codec._encode_runtime_checkpoint_venue_claim_rows(
             state.venue, forged
+        )
+
+
+def test_rev0080_dispatch_claim_requires_the_full_selected_effect_scope() -> None:
+    """Matching an effect ID alone cannot bridge a claim across generations."""
+
+    state, _ = _authority_state_with_effects()
+    claim = state.venue._claim_by_effect.get(
+        venue._effect_index_key(identity.EffectId("effect-1"))
+    )
+    assert claim is not None
+    foreign_scope = deepcopy(claim.effect_scope)
+    object.__setattr__(
+        foreign_scope,
+        "generation",
+        identity.ApplicationGenerationId("foreign-claim-generation"),
+    )
+    object.__setattr__(claim, "effect_scope", foreign_scope)
+
+    with pytest.raises(ValueError, match="selected effect scope"):
+        checkpoint_codec._encode_runtime_checkpoint_venue_claim_rows(
+            state.venue, _venue_claim_selection()
         )
 
 
@@ -2155,7 +2191,104 @@ def test_rev0079_ownerless_effect_requires_the_full_selected_scope(
     with pytest.raises(ValueError, match="selected effect scope"):
         checkpoint_codec._encode_runtime_checkpoint_venue_effect_rows(
             state.venue,
-            _venue_claim_selection(),
+            _venue_claim_selection(claimed=False),
+        )
+
+
+def test_rev0080_open_selected_effect_refuses_an_unselected_runtime_proof() -> None:
+    """An OPEN durable effect cannot acquire closure bytes from mutable owner state."""
+
+    state, _ = _authority_state_with_effects(claimed=False)
+    current = state.venue._effect_by_id.get(
+        venue._effect_index_key(identity.EffectId("effect-1"))
+    )
+    assert current is not None
+    object.__setattr__(
+        current.effect,
+        "acceptance_proof",
+        venue.AcceptanceProof(
+            kind=venue.AcceptanceProofKind.NEVER_DISPATCHED,
+            effect_scope=current.effect.scope,
+            claim_occurrence_id=None,
+            evidence_reference=identity.EvidenceReference("unselected-open-proof"),
+            evidence_digest=b"\x09" * 32,
+        ),
+    )
+
+    with pytest.raises(ValueError, match="selected effect closure"):
+        checkpoint_codec._encode_runtime_checkpoint_venue_effect_rows(
+            state.venue, _venue_claim_selection(claimed=False)
+        )
+
+
+def test_rev0080_selected_closure_proof_requires_exact_evidence_relation() -> None:
+    """A selected closure proof must match its selected evidence kind and digest."""
+
+    state, _ = _authority_state_with_effects()
+    selection = deepcopy(_venue_claim_selection())
+    record = deepcopy(selection.effects[0])
+    object.__setattr__(record, "disposition", "CLOSED")
+    object.__setattr__(record, "closure_proof_kind", "CONTRACT_COMPLETE_RESPONSE")
+    object.__setattr__(record, "closure_proof_digest", "07" * 32)
+    object.__setattr__(record, "closure_proof_evidence_id", 7)
+    object.__setattr__(record, "closure_proof_claim_id", 1)
+    object.__setattr__(selection, "effects", (record,))
+    object.__setattr__(
+        selection,
+        "acceptance_sets",
+        (records.AcceptanceSetRecord(11, record.effect_id),),
+    )
+    object.__setattr__(
+        selection,
+        "evidence",
+        (
+            records.AcceptanceEvidenceRecord(
+                7,
+                11,
+                record.effect_id,
+                "CLOSURE_PROOF",
+                "CONTRACT_COMPLETE_RESPONSE",
+                "07" * 32,
+                1,
+                None,
+                None,
+            ),
+        ),
+    )
+    current = state.venue._effect_by_id.get(
+        venue._effect_index_key(identity.EffectId("effect-1"))
+    )
+    assert current is not None
+    claim_occurrence_id = current.effect.claim_occurrence_id
+    assert claim_occurrence_id is not None
+    object.__setattr__(
+        current.effect,
+        "acceptance_set_state",
+        venue.AcceptanceSetState.CLOSED,
+    )
+    object.__setattr__(
+        current.effect,
+        "acceptance_proof",
+        venue.AcceptanceProof(
+            kind=venue.AcceptanceProofKind.CONTRACT_COMPLETE_RESPONSE,
+            effect_scope=current.effect.scope,
+            claim_occurrence_id=claim_occurrence_id,
+            evidence_reference=identity.EvidenceReference("selected-proof-evidence"),
+            evidence_digest=b"\x07" * 32,
+        ),
+    )
+
+    rows = checkpoint_codec._encode_runtime_checkpoint_venue_effect_rows(
+        state.venue, selection
+    )
+    assert rows[2][0][6][5] == "07" * 32
+
+    mismatched_evidence = deepcopy(selection.evidence[0])
+    object.__setattr__(mismatched_evidence, "evidence_digest", "08" * 32)
+    object.__setattr__(selection, "evidence", (mismatched_evidence,))
+    with pytest.raises(ValueError, match="selected closure evidence"):
+        checkpoint_codec._encode_runtime_checkpoint_venue_effect_rows(
+            state.venue, selection
         )
 
 

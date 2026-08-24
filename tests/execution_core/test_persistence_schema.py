@@ -2986,6 +2986,7 @@ def test_protection_versions_are_scope_local(tmp_path: object) -> None:
 def test_reopened_default_connection_cannot_replace_direct_authority(
     tmp_path: object,
 ) -> None:
+    require_approved_ddl_execution()
     connection = _installed_connection(tmp_path)
     _seed_scope_with_live_generation(connection)
     _insert_controller(connection)
@@ -3030,6 +3031,7 @@ def test_reopened_default_connection_cannot_replace_direct_authority(
 def test_reopened_default_connection_cannot_replace_invalidation_evidence(
     tmp_path: object,
 ) -> None:
+    require_approved_ddl_execution()
     connection = _installed_connection(tmp_path)
     _seed_scope_with_live_generation(connection)
     _insert_controller(connection)
