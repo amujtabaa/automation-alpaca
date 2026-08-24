@@ -2,8 +2,7 @@
 
 Verdict requested: **findings only — BLOCK | ACCEPT-WITH-CHANGES | ACCEPT**
 
-- Candidate: `2cfbce01cac0907826965ec75ececc6075100a3a`
-- Tree: `6be8aa86d985b0c12ed62acfb341ab9bbed7b27e`
+- Candidate: **superseded — see the amendment at the end of this request.**
 - Branch: `codex/claude-opus-m2-wo0168c-r1`
 - Base for this review: `344c32b` (last independently unreviewed head; R20 §4 partial)
 - Governing contract: R20 (`work/queue/M2-EXECUTION-2026-08-21/31-...-R20.md`), accepted by
@@ -96,3 +95,50 @@ ruff check / ruff format (changed paths) / mypy app/ / lint-imports  clean
 Mutation evidence for the new controls is recorded in the commit messages; re-run any of it.
 
 **READ ONLY:** no edits, no `result.md` authored by me, no SQLite or database activity on my behalf.
+
+---
+
+# Amendment 1 — bound extended past the original candidate
+
+Date: 2026-08-24
+
+The request above named `2cfbce0`. Nine further commits have landed, several of them
+**correcting defects in the reviewed artifact itself**, so reviewing `2cfbce0` would review
+code that is known-wrong. The bound is extended:
+
+```text
+Candidate: 2082e4ed130259ae1bf1a1565e5b0d4e5c5d499c
+Tree:      d4d3ddd41a6c2aa0be4545c4297dd43d9a5d9890
+Bound:     344c32b..2082e4ed130259ae1bf1a1565e5b0d4e5c5d499c
+```
+
+## What changed since `2cfbce0`, and why
+
+An in-process adversarial pass (three fresh-context agents; **not** independent review — see
+`in-process-adversarial-pass-r1.md`) found P0-class defects in the original candidate. Reviewing
+the old head would waste the reviewer's effort on findings already dispositioned.
+
+1. **Eight whole-map cardinality checks removed** — three added in this work order, five
+   pre-existing. `_PersistentKeyMap` has no deletion of any kind, so those indexes are monotonic,
+   while the repository selects only `disposition IN ('OPEN','INVALIDATED')` plus late-admitted
+   owners. One ordinary closed effect left a permanently unselected entry and every later
+   checkpoint refused. **The reviewer should still rule on this**: it removes refusals on a
+   safety surface, and the argument, though verified against the code, was reached in-process.
+2. **Each removal replaced by the relation it was standing in for** — coverage index-to-ledger
+   root binding, reconciliation admission by equality with the referencing row rather than
+   membership in the selected set, and closure heads bound against `selection.closure_heads`,
+   which the codec had never consulted.
+3. **Bootstrap records now pass their authenticity check** before reaching the wire.
+4. **The bounded-plan control corrected twice** — first because it excused all indexed scans,
+   then because "partial index" does not imply bounded. Pinned violations went 1 → 5 → 12.
+5. **Q9 `CROSS JOIN`** — repository SQL, authorized by Ameen on 2026-08-24.
+6. **DDL and three digest re-pins** — authorized, with the third ratified retroactively in
+   Amendment 1 of the gate bundle. Tracked forward as
+   `work/review/FINDING-schema-approval-gate-is-self-approving.md`.
+
+## What the reviewer should weigh most
+
+The eight removed cardinality checks and the five replacement relations. Everything else is
+either mechanical or already dispositioned. The specific question: **is a monotonic index with no
+deletion operation correctly classed as an R16 §2 permitted superset, and are the replacement
+key relations sufficient to carry what the cardinality checks were wrongly asked to carry?**

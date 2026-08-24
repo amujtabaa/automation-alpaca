@@ -37,6 +37,19 @@ def _literal_text(expression: ast.expr) -> str | None:
     return None
 
 
+def _imports_setup_support(source: str) -> bool:
+    """True only where the module is genuinely imported, by AST rather than text."""
+
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Import):
+            if any(alias.name == "persistence_setup_support" for alias in node.names):
+                return True
+        elif isinstance(node, ast.ImportFrom):
+            if node.module == "persistence_setup_support":
+                return True
+    return False
+
+
 def _setup_issuer_reference_kinds(source: str) -> frozenset[str]:
     """Classify every ordinary source spelling of the private setup issuer."""
 
@@ -715,10 +728,13 @@ def test_runtime_capability_has_no_issuance_route_in_wo0168a() -> None:
 
 def test_setup_issuer_and_support_imports_have_the_frozen_direction() -> None:
     test_root = Path(__file__).resolve().parent
+    # Detect the IMPORT, not the string. A bare substring test counted a comment
+    # or a docstring mentioning the module, so a file could be entitled -- or
+    # look entitled -- without importing anything.
     importers = {
         path.name
         for path in test_root.glob("test_*.py")
-        if "persistence_setup_support" in path.read_text(encoding="utf-8")
+        if _imports_setup_support(path.read_text(encoding="utf-8"))
     }
     # Exact, not a subset. As an upper bound this admitted silent drift in the
     # loosening direction, and it had drifted: test_persistence_schema.py was

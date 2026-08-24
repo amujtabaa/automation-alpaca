@@ -23,9 +23,16 @@ import test_persistence_repository as base
 
 _INDEX_IN_PLAN = _re.compile(r"USING (?:COVERING )?INDEX (\w+)")
 
+# `AS` is optional in SQL. Requiring it would let `FROM venue_effect effect`
+# resolve to {VENUE_EFFECT} while the planner reports EFFECT, silently excusing
+# an unbounded pass. No current query uses the bare form; nothing stops the next.
 _SQL_SOURCE_ALIAS = _re.compile(
-    r"\b(?:FROM|JOIN)\s+([A-Za-z_][A-Za-z_0-9]*)(?:\s+AS\s+([A-Za-z_][A-Za-z_0-9]*))?",
+    r"\b(?:FROM|JOIN)\s+([A-Za-z_][A-Za-z_0-9]*)"
+    r"(?:\s+(?:AS\s+)?([A-Za-z_][A-Za-z_0-9]*))?",
     _re.IGNORECASE,
+)
+_SQL_KEYWORDS_AFTER_SOURCE = frozenset(
+    {"ON", "WHERE", "JOIN", "LEFT", "INNER", "CROSS", "GROUP", "ORDER", "LIMIT", "UNION"}
 )
 
 
@@ -41,6 +48,9 @@ def _base_table_plan_names(sql: str, base_tables: frozenset[str]) -> frozenset[s
     for source, alias in _SQL_SOURCE_ALIAS.findall(sql):
         if source.lower() not in base_tables:
             continue
+        # Without AS the next token may be a keyword rather than an alias.
+        if alias and alias.upper() in _SQL_KEYWORDS_AFTER_SOURCE:
+            alias = ""
         names.add((alias or source).upper())
     return frozenset(names)
 
