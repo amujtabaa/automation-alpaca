@@ -3766,3 +3766,35 @@ def test_r20_acquisition_descriptor_rows_refuse_an_absent_slot_descriptor() -> N
         checkpoint_codec._encode_runtime_checkpoint_acquisition_descriptor_rows(
             forged, (identity.EffectId("acq-effect-1"),), ()
         )
+
+
+def _emergency_grant() -> object:
+    return authority._EmergencyGrant(
+        authority.EmergencyGrantId("grant-1"),
+        identity.AccountId("account"),
+        identity.SymbolId("AAPL"),
+        authority.SessionId("effect-session"),
+        authority.ActorId("operator"),
+        "audited emergency override",
+        identity.EvidenceReference("grant-evidence"),
+    )
+
+
+def test_r20_emergency_grant_encodes_its_seven_semantic_members() -> None:
+    row = checkpoint_codec._encode_runtime_checkpoint_emergency_grant(
+        _emergency_grant()
+    )
+
+    assert row[0] == "m2.authority.EmergencyGrant/v1"
+    assert len(row) == 8
+    assert row[6] == "audited emergency override"
+    checkpoint_codec._validate_checkpoint_nested_value(row)
+
+
+def test_r20_emergency_grant_refuses_a_member_of_the_wrong_exact_type() -> None:
+    grant = _emergency_grant()
+    forged = copy(grant)
+    object.__setattr__(forged, "reason", "")
+
+    with pytest.raises(ValueError):
+        checkpoint_codec._encode_runtime_checkpoint_emergency_grant(forged)

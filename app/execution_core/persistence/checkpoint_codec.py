@@ -3721,6 +3721,32 @@ def _encode_runtime_checkpoint_acquisition_descriptor_rows(
     )
 
 
+def _encode_runtime_checkpoint_emergency_grant(
+    grant: _authority._EmergencyGrant,
+) -> list[object]:
+    """Encode the frozen 8-member emergency grant row.
+
+    The grant is a plain sealed-by-construction dataclass: it carries no derived
+    commitment, so re-running its own shape validation is the whole authenticity
+    check available here.
+    """
+
+    if type(grant) is not _authority._EmergencyGrant:
+        raise TypeError("emergency grant must be exact _EmergencyGrant")
+    grant.__post_init__()
+    atom = _operations._encode_m2_m1_atom
+    return [
+        "m2.authority.EmergencyGrant/v1",
+        atom(grant.grant_id),
+        atom(grant.account),
+        atom(grant.symbol_id),
+        atom(grant.session_id),
+        atom(grant.actor),
+        grant.reason,
+        atom(grant.evidence_reference),
+    ]
+
+
 def _encode_runtime_checkpoint_authority(
     state: _authority.ExecutionAuthorityState,
     venue_commitment: bytes,
@@ -3745,8 +3771,6 @@ def _encode_runtime_checkpoint_authority(
     descriptor_rows = _encode_runtime_checkpoint_acquisition_descriptor_rows(
         state, slot_effect_ids, selected_effect_ids
     )
-    if state._emergency_grant is not None:
-        raise ValueError("emergency authority checkpoint row is not admitted")
     scope = state.venue.scope
     row: list[object] = [
         _M2_AUTHORITY_CHECKPOINT_TAG,
@@ -3772,7 +3796,11 @@ def _encode_runtime_checkpoint_authority(
             _operations._encode_m2_m1_atom(scope.account),
             _operations._encode_m2_bytes(venue_commitment),
         ],
-        None,
+        (
+            None
+            if state._emergency_grant is None
+            else _encode_runtime_checkpoint_emergency_grant(state._emergency_grant)
+        ),
         effect_authorization_rows,
         manual_rows,
         descriptor_rows,
