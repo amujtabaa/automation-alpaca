@@ -2490,9 +2490,36 @@ def test_r20_venue_owner_attempt_null_attempt_and_unselected_leg() -> None:
     )
     assert rows[2][0][5] is None
 
-    with pytest.raises(ValueError, match="selected owner"):
+    # An owner for an unselected leg is retained history and is omitted -- the
+    # repository selects OPEN/INVALIDATED effects plus late owners, so an
+    # ordinary closed effect leaves its owner behind permanently. The refusal
+    # this family carries is that a reached owner must own its selected leg.
+    assert checkpoint_codec._encode_runtime_checkpoint_venue_owner_attempt_rows(
+        book, _venue_claim_selection()
+    ) == ["m2.venue.OwnerAttempts/v1", 0, []]
+
+    foreign_leg = identity.VenueLegKey(
+        identity.BrokerId("paper"),
+        identity.EnvironmentId("paper"),
+        identity.AccountId("account"),
+        identity.OrderId("owner-order-other"),
+    )
+    foreign_owner = venue.VenueIdentityOwner(
+        foreign_leg, effect_scope, identity.VenueObservationId("observation-1")
+    )
+    spliced = copy(book)
+    object.__setattr__(
+        spliced,
+        "_owner_by_leg",
+        book._owner_by_leg.replace_existing(
+            venue._leg_index_key(leg_key),
+            foreign_owner,
+            venue._owner_value_commitment(foreign_owner),
+        ),
+    )
+    with pytest.raises(ValueError, match="does not own its selected leg"):
         checkpoint_codec._encode_runtime_checkpoint_venue_owner_attempt_rows(
-            book, _venue_claim_selection()
+            spliced, selection
         )
 
 
@@ -2571,9 +2598,39 @@ def test_r20_venue_acquisition_correlation_rows_project_selected_roots() -> None
         rows, "m2.venue.AcquisitionCorrelations/v1"
     )
 
-    with pytest.raises(ValueError, match="selected root"):
+    # An entry for an unselected root is retained history and is omitted; the
+    # refusal this family carries is that a reached row must own the root that
+    # indexed it.
+    assert checkpoint_codec._encode_runtime_checkpoint_venue_correlation_rows(
+        book, _venue_claim_selection()
+    ) == ["m2.venue.AcquisitionCorrelations/v1", 0, []]
+
+    foreign_entry = venue._AcquisitionCorrelationEntry(
+        _APPLICATION,
+        _DORMANT_POSITION_SCOPE,
+        identity.RequestOccurrenceId("req-effect-1"),
+        identity.EffectId("effect-1"),
+        leg_key,
+        identity.RootFillKey(
+            identity.BrokerId("paper"),
+            identity.EnvironmentId("paper"),
+            identity.AccountId("account"),
+            identity.RootFillId("root-other"),
+        ),
+    )
+    spliced = copy(book)
+    object.__setattr__(
+        spliced,
+        "_acquisition_correlation_by_root",
+        book._acquisition_correlation_by_root.replace_existing(
+            venue._coverage_root_index_key(root_key),
+            foreign_entry,
+            foreign_entry.commitment,
+        ),
+    )
+    with pytest.raises(ValueError, match="does not own its selected root"):
         checkpoint_codec._encode_runtime_checkpoint_venue_correlation_rows(
-            book, _venue_claim_selection()
+            spliced, selection
         )
 
 
@@ -2651,7 +2708,9 @@ _FIXTURE_ROOT_KEY = identity.RootFillKey(
 )
 
 
-def _fixture_broker_fill_fact(label: str) -> BrokerFillFact:
+def _fixture_broker_fill_fact(
+    label: str, root_fill_id: str = "root-1"
+) -> BrokerFillFact:
     return BrokerFillFact(
         key=ExecutionFactKey(
             broker=identity.BrokerId("paper"),
@@ -2667,7 +2726,7 @@ def _fixture_broker_fill_fact(label: str) -> BrokerFillFact:
             symbol_id=identity.SymbolId("AAPL"),
             side=ExecutionSide.BUY,
         ),
-        root_fill_id=identity.RootFillId("root-1"),
+        root_fill_id=identity.RootFillId(root_fill_id),
         quantity=values.Quantity(2),
         price=_FIXTURE_PRICE,
     )
@@ -2730,14 +2789,54 @@ def test_r20_venue_broker_coverage_rows_dereference_the_ledger() -> None:
         rows, "m2.venue.BrokerCoverages/v1"
     )
 
-    with pytest.raises(ValueError, match="selected root"):
+    # An unselected root's coverage is retained history and is omitted. The
+    # refusal that matters is the index-to-ledger relation: the map stores a slot
+    # number, so a spliced index must not be able to emit another root's row.
+    assert checkpoint_codec._encode_runtime_checkpoint_venue_broker_coverage_rows(
+        book, _venue_claim_selection()
+    ) == ["m2.venue.BrokerCoverages/v1", 0, []]
+
+    spliced = copy(book)
+    object.__setattr__(
+        spliced,
+        "_broker_coverage_by_root",
+        book._broker_coverage_by_root.replace_existing(
+            venue._coverage_root_index_key(_FIXTURE_ROOT_KEY), 1, b"\x0a" * 32
+        ),
+    )
+    from app.execution_core import recovery as _recovery
+
+    ledger_type = type(book._broker_coverage_ledger)
+    foreign = _recovery._BrokerCoverage(
+        identity.EffectId("effect-1"),
+        _FIXTURE_LEG_KEY,
+        values.Quantity(0),
+        values.Quantity(2),
+        _fixture_broker_fill_fact("broker", "root-other"),
+        b"\xdd" * 32,
+        identity.VenueInputId("input-1"),
+        _fixture_broker_fill_fact("broker", "root-other"),
+        b"\xee" * 32,
+        identity.VenueInputId("input-1"),
+        True,
+    )
+    object.__setattr__(
+        spliced,
+        "_broker_coverage_ledger",
+        ledger_type.from_values(
+            (book._broker_coverage_ledger.get(0), foreign),
+            lambda _value: b"\x01" * 32,
+        ),
+    )
+    with pytest.raises(ValueError, match="does not own its selected root"):
         checkpoint_codec._encode_runtime_checkpoint_venue_broker_coverage_rows(
-            book, _venue_claim_selection()
+            spliced, selection
         )
 
 
 def _book_with_human_coverage(
     book: venue.VenueRecoveryBook,
+    root_fill_id: str = "root-1",
 ) -> venue.VenueRecoveryBook:
     from app.execution_core import recovery as _recovery
     from app.execution_core.fills import HumanAttestedFillFact
@@ -2757,7 +2856,7 @@ def _book_with_human_coverage(
             symbol_id=identity.SymbolId("AAPL"),
             side=ExecutionSide.BUY,
         ),
-        root_fill_id=identity.RootFillId("root-1"),
+        root_fill_id=identity.RootFillId(root_fill_id),
         leg_key=_FIXTURE_LEG_KEY,
         request_occurrence_id=identity.RequestOccurrenceId("req-effect-1"),
         claim_occurrence_id=identity.ClaimOccurrenceId("occurrence-effect-1"),
@@ -2811,9 +2910,21 @@ def test_r20_venue_human_coverage_rows_dereference_the_ledger() -> None:
     assert row[6] is None and row[7] is None and row[8] is None
     checkpoint_codec._validate_checkpoint_collection(rows, "m2.venue.HumanCoverages/v1")
 
-    with pytest.raises(ValueError, match="selected root"):
+    # Same shape as the broker family: unselected roots are omitted, and the
+    # index-to-ledger relation is the refusal worth pinning.
+    assert checkpoint_codec._encode_runtime_checkpoint_venue_human_coverage_rows(
+        book, _venue_claim_selection()
+    ) == ["m2.venue.HumanCoverages/v1", 0, []]
+
+    # Point the selected root's index at a ledger slot owned by another root.
+    foreign_book = _book_with_human_coverage(state.venue, root_fill_id="root-other")
+    spliced = copy(book)
+    object.__setattr__(
+        spliced, "_human_coverage_ledger", foreign_book._human_coverage_ledger
+    )
+    with pytest.raises(ValueError, match="does not own its selected root"):
         checkpoint_codec._encode_runtime_checkpoint_venue_human_coverage_rows(
-            book, _venue_claim_selection()
+            spliced, selection
         )
 
 
@@ -3063,19 +3174,33 @@ def test_r20_venue_reconciliation_index_omits_an_unreferenced_input() -> None:
     )
 
 
-def test_r20_venue_reconciliation_refuses_a_row_outside_the_selected_legs() -> None:
+def test_r20_venue_reconciliation_must_own_its_referencing_leg() -> None:
+    """Equality with the row that admitted it, not membership in the selection.
+
+    A stale reconciliation sitting on a different leg of the same scope satisfies
+    "leg is in the selected set" while being reached through the wrong current
+    row, so membership is not the relation R15 section 2 asks for.
+    """
+
     state, _ = _authority_state_with_effects()
-    book = _book_with_reconciliations(
-        _book_with_broker_coverage(state.venue),
-        (("input-1", _fixture_fill_reconciliation("input-1")),),
+    stale = _fixture_fill_reconciliation("input-1")
+    object.__setattr__(
+        stale,
+        "leg_key",
+        identity.VenueLegKey(
+            identity.BrokerId("paper"),
+            identity.EnvironmentId("paper"),
+            identity.AccountId("account"),
+            identity.OrderId("owner-order-other"),
+        ),
     )
-    selection = _root_selection(
-        _owner_selection(_venue_claim_selection(), "owner-order-9"), "root-1"
+    book = _book_with_reconciliations(
+        _book_with_broker_coverage(state.venue), (("input-1", stale),)
     )
 
-    with pytest.raises(ValueError, match="selected owner set"):
+    with pytest.raises(ValueError, match="does not own its referencing leg"):
         checkpoint_codec._encode_runtime_checkpoint_venue_reconciliation_rows(
-            book, selection
+            book, _reconciliation_selection()
         )
 
 
@@ -3512,7 +3637,7 @@ def test_r20_venue_execution_reconciliation_omits_an_unreferenced_input() -> Non
     )
 
 
-def test_r20_venue_execution_reconciliation_refuses_a_row_outside_the_scopes() -> None:
+def test_r20_venue_execution_reconciliation_must_own_its_referencing_scope() -> None:
     state, _ = _authority_state_with_effects()
     bootstrap_input, _ = _bootstrap_input_ids()
     outcome = venue._ResolvedRegistryProjectionOutcome(
@@ -3554,7 +3679,7 @@ def test_r20_venue_execution_reconciliation_refuses_a_row_outside_the_scopes() -
         ((bootstrap_input, outcome),),
     )
 
-    with pytest.raises(ValueError, match="selected scope set"):
+    with pytest.raises(ValueError, match="does not own its referencing scope"):
         checkpoint_codec._encode_runtime_checkpoint_venue_execution_reconciliation_rows(
             book, _bootstrap_selection()
         )

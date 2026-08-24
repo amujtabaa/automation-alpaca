@@ -1956,10 +1956,13 @@ def _encode_runtime_checkpoint_venue_high_water_rows(
                 ]
             )
         )
-    if book._economic_high_water_by_leg.size != reached:
-        raise ValueError(
-            "economic high water map retains a leg outside the selected owner set"
-        )
+    # No whole-map cardinality check. _PersistentKeyMap has get/insert_new/
+    # replace_existing and no deletion of any kind, so this index is monotonic,
+    # while the repository selects only effects with disposition IN
+    # ('OPEN','INVALIDATED') plus CLOSED effects carrying a late-admitted owner.
+    # One ordinary closed effect therefore leaves a permanently unselected entry
+    # behind, and comparing size against the reached count refused every book
+    # from that point on. R15 section 2 omits such rows as audit history.
     return _checkpoint_collection("m2.venue.EconomicHighWaters/v1", rows)
 
 
@@ -2020,8 +2023,13 @@ def _encode_runtime_checkpoint_venue_owner_attempt_rows(
                 ]
             )
         )
-    if book._owner_by_leg.size != reached:
-        raise ValueError("owner map retains a leg outside the selected owner set")
+    # No whole-map cardinality check. _PersistentKeyMap has get/insert_new/
+    # replace_existing and no deletion of any kind, so this index is monotonic,
+    # while the repository selects only effects with disposition IN
+    # ('OPEN','INVALIDATED') plus CLOSED effects carrying a late-admitted owner.
+    # One ordinary closed effect therefore leaves a permanently unselected entry
+    # behind, and comparing size against the reached count refused every book
+    # from that point on. R15 section 2 omits such rows as audit history.
     return _checkpoint_collection("m2.venue.OwnerAttempts/v1", rows)
 
 
@@ -2073,10 +2081,13 @@ def _encode_runtime_checkpoint_venue_correlation_rows(
                 ]
             )
         )
-    if book._acquisition_correlation_by_root.size != reached:
-        raise ValueError(
-            "acquisition correlation map retains a selected root outside the selection"
-        )
+    # No whole-map cardinality check. _PersistentKeyMap has get/insert_new/
+    # replace_existing and no deletion of any kind, so this index is monotonic,
+    # while the repository selects only effects with disposition IN
+    # ('OPEN','INVALIDATED') plus CLOSED effects carrying a late-admitted owner.
+    # One ordinary closed effect therefore leaves a permanently unselected entry
+    # behind, and comparing size against the reached count refused every book
+    # from that point on. R15 section 2 omits such rows as audit history.
     return _checkpoint_collection("m2.venue.AcquisitionCorrelations/v1", rows)
 
 
@@ -2166,6 +2177,15 @@ def _encode_runtime_checkpoint_venue_broker_coverage_rows(
         coverage = book._broker_coverage_ledger.get(index)
         if coverage is None:
             raise ValueError("broker coverage index does not resolve in its ledger")
+        # Prove the dereferenced ledger row belongs to the root that indexed it.
+        # The index stores a slot number, so a spliced index would otherwise emit
+        # another root's economics -- effect, leg, and cumulative quantities --
+        # under this root, sealed by the venue commitment as authentic.
+        if (
+            coverage.fact.root_fill_id != root_key.root_fill_id
+            or coverage.head_fact.root_fill_id != root_key.root_fill_id
+        ):
+            raise ValueError("reached broker coverage does not own its selected root")
         reached += 1
         rows.append(
             _require_bounded_checkpoint_row(
@@ -2185,10 +2205,13 @@ def _encode_runtime_checkpoint_venue_broker_coverage_rows(
                 ]
             )
         )
-    if book._broker_coverage_by_root.size != reached:
-        raise ValueError(
-            "broker coverage map retains a selected root outside the selection"
-        )
+    # No whole-map cardinality check. _PersistentKeyMap has get/insert_new/
+    # replace_existing and no deletion of any kind, so this index is monotonic,
+    # while the repository selects only effects with disposition IN
+    # ('OPEN','INVALIDATED') plus CLOSED effects carrying a late-admitted owner.
+    # One ordinary closed effect therefore leaves a permanently unselected entry
+    # behind, and comparing size against the reached count refused every book
+    # from that point on. R15 section 2 omits such rows as audit history.
     return _checkpoint_collection("m2.venue.BrokerCoverages/v1", rows)
 
 
@@ -2210,6 +2233,17 @@ def _encode_runtime_checkpoint_venue_human_coverage_rows(
         coverage = book._human_coverage_ledger.get(index)
         if coverage is None:
             raise ValueError("human coverage index does not resolve in its ledger")
+        # Same relation as the broker family: the index holds a ledger slot, so
+        # the dereferenced row must be proved to own the root that indexed it.
+        if coverage.fact.root_fill_id != root_key.root_fill_id:
+            raise ValueError("reached human coverage does not own its selected root")
+        if (
+            coverage.broker_fact is not None
+            and coverage.broker_fact.root_fill_id != root_key.root_fill_id
+        ):
+            raise ValueError(
+                "reached human coverage corroboration leaves its selected root"
+            )
         reached += 1
         rows.append(
             _require_bounded_checkpoint_row(
@@ -2242,10 +2276,13 @@ def _encode_runtime_checkpoint_venue_human_coverage_rows(
                 ]
             )
         )
-    if book._human_coverage_by_root.size != reached:
-        raise ValueError(
-            "human coverage map retains a selected root outside the selection"
-        )
+    # No whole-map cardinality check. _PersistentKeyMap has get/insert_new/
+    # replace_existing and no deletion of any kind, so this index is monotonic,
+    # while the repository selects only effects with disposition IN
+    # ('OPEN','INVALIDATED') plus CLOSED effects carrying a late-admitted owner.
+    # One ordinary closed effect therefore leaves a permanently unselected entry
+    # behind, and comparing size against the reached count refused every book
+    # from that point on. R15 section 2 omits such rows as audit history.
     return _checkpoint_collection("m2.venue.HumanCoverages/v1", rows)
 
 
@@ -2324,28 +2361,40 @@ def _encode_runtime_checkpoint_venue_closure_head_rows(
 def _referenced_reconciliation_inputs(
     book: _venue.VenueRecoveryBook,
     selection: _records._RuntimeCheckpointSelectionSet,
-) -> tuple[_identity.VenueInputId, ...]:
-    """Collect the input IDs named directly by the selected current venue rows.
+) -> tuple[tuple[_identity.VenueInputId, _identity.VenueLegKey], ...]:
+    """Collect each referenced input beside the leg of the row that named it.
 
     R15 section 2 admits a reconciliation row only when its input ID is directly
-    referenced by one of the selected current closure or coverage rows, so the
-    reference order is the proof order of those referencing rows: closure heads
-    over the selected owner legs, then human and broker coverage over the
-    selected roots.  An input named more than once keeps its first reference, so
-    no whole-map order and no input order is ever consulted.
+    referenced by a selected current closure or coverage row, and requires stale
+    and cross-scope referenced rows to fail. Returning the referencing row's leg
+    alongside the input is what lets the caller require *equality* with the row
+    that admitted it: a bare input tuple would only support membership in the
+    whole selected set, which admits a stale reconciliation reached through a
+    different selected leg on the same scope.
+
+    Reference order is proof order -- closure heads over the selected owner legs,
+    then human and broker coverage over the selected roots -- and an input named
+    more than once keeps its first reference, so no whole-map or input order is
+    ever consulted.
     """
 
-    ordered: dict[str, _identity.VenueInputId] = {}
+    ordered: dict[str, tuple[_identity.VenueInputId, _identity.VenueLegKey]] = {}
 
-    def _reference(input_id: _identity.VenueInputId) -> None:
+    def _reference(
+        input_id: _identity.VenueInputId, leg_key: _identity.VenueLegKey
+    ) -> None:
         if type(input_id) is not _identity.VenueInputId:
             raise TypeError("referenced input must be the exact VenueInputId type")
-        ordered.setdefault(input_id.value, input_id)
+        existing = ordered.get(input_id.value)
+        if existing is None:
+            ordered[input_id.value] = (input_id, leg_key)
+        elif existing[1] != leg_key:
+            raise ValueError("referenced input is named by two different legs")
 
     for leg_key in _selected_leg_keys_from_selection(book, selection):
         closure = book._closure_head_by_leg.get(_venue._leg_index_key(leg_key))
         if closure is not None:
-            _reference(closure.source_input_id)
+            _reference(closure.source_input_id, closure.leg_key)
     for root_key in _selected_root_keys_from_selection(book, selection):
         root_index_key = _venue._coverage_root_index_key(root_key)
         human_index = book._human_coverage_by_root.get(root_index_key)
@@ -2353,16 +2402,16 @@ def _referenced_reconciliation_inputs(
             human = book._human_coverage_ledger.get(human_index)
             if human is None:
                 raise ValueError("human coverage index does not resolve in its ledger")
-            _reference(human.source_input_id)
+            _reference(human.source_input_id, human.leg_key)
             if human.broker_source_input_id is not None:
-                _reference(human.broker_source_input_id)
+                _reference(human.broker_source_input_id, human.leg_key)
         broker_index = book._broker_coverage_by_root.get(root_index_key)
         if broker_index is not None:
             broker = book._broker_coverage_ledger.get(broker_index)
             if broker is None:
                 raise ValueError("broker coverage index does not resolve in its ledger")
-            _reference(broker.root_source_input_id)
-            _reference(broker.head_source_input_id)
+            _reference(broker.root_source_input_id, broker.leg_key)
+            _reference(broker.head_source_input_id, broker.leg_key)
     return tuple(ordered.values())
 
 
@@ -2427,10 +2476,8 @@ def _encode_runtime_checkpoint_venue_reconciliation_rows(
     state a checkpoint exists to preserve could not be checkpointed at all.
     """
 
-    selected_legs = frozenset(_selected_leg_keys_from_selection(book, selection))
     rows: list[object] = []
-    reached = 0
-    for input_id in _referenced_reconciliation_inputs(book, selection):
+    for input_id, referencing_leg in _referenced_reconciliation_inputs(book, selection):
         record = book._reconciliation_by_input.get(_venue._input_index_key(input_id))
         if record is None:
             # R15 section 2: "Missing, extra, duplicate, stale, or cross-scope
@@ -2439,9 +2486,11 @@ def _encode_runtime_checkpoint_venue_reconciliation_rows(
             raise ValueError("selected row names an absent reconciliation")
         if record.input_id != input_id:
             raise ValueError("reached reconciliation does not own its referenced input")
-        if record.leg_key not in selected_legs:
-            raise ValueError("reached reconciliation leaves the selected owner set")
-        reached += 1
+        # Equality with the row that admitted it, not membership in the selected
+        # set: a stale reconciliation on another selected leg of the same scope
+        # would satisfy membership while being reached through the wrong row.
+        if record.leg_key != referencing_leg:
+            raise ValueError("reached reconciliation does not own its referencing leg")
         rows.append(
             _require_bounded_checkpoint_row(
                 _encode_runtime_checkpoint_venue_reconciliation_row(record)
@@ -2760,23 +2809,30 @@ def _encode_runtime_checkpoint_venue_bootstrap_target_rows(
 def _referenced_execution_reconciliation_inputs(
     book: _venue.VenueRecoveryBook,
     selection: _records._RuntimeCheckpointSelectionSet,
-) -> tuple[_identity.VenueInputId, ...]:
-    """Collect the catch-up input IDs named by the selected bootstrap targets.
+) -> tuple[tuple[_identity.VenueInputId, _fills.PositionScope], ...]:
+    """Collect each referenced catch-up input beside its referencing scope.
 
     A registry outcome is minted from one ``CatchUpExecutionRegistry`` item, and a
     bootstrap target is the only selected current row that retains such an input
     identity: its origin ``bootstrap_input_id`` and its serving
-    ``checkpoint_input_id``.  The reference order is therefore the proof order of
-    the selected position scopes, with the first reference of a repeated input
-    keeping its place.
+    ``checkpoint_input_id``. The scope of the target that named the input travels
+    with it so the caller can require equality rather than membership in the whole
+    selected scope set, which would admit a registry outcome carrying scope B
+    through scope A's bootstrap target.
     """
 
-    ordered: dict[str, _identity.VenueInputId] = {}
+    ordered: dict[str, tuple[_identity.VenueInputId, _fills.PositionScope]] = {}
 
-    def _reference(input_id: _identity.VenueInputId) -> None:
+    def _reference(
+        input_id: _identity.VenueInputId, position_scope: _fills.PositionScope
+    ) -> None:
         if type(input_id) is not _identity.VenueInputId:
             raise TypeError("referenced input must be the exact VenueInputId type")
-        ordered.setdefault(input_id.value, input_id)
+        existing = ordered.get(input_id.value)
+        if existing is None:
+            ordered[input_id.value] = (input_id, position_scope)
+        elif existing[1] != position_scope:
+            raise ValueError("referenced input is named by two different scopes")
 
     for position_scope in _selected_position_scopes_from_selection(book, selection):
         value = book._bootstrap_bound_target_by_scope.get(
@@ -2792,8 +2848,8 @@ def _referenced_execution_reconciliation_inputs(
             raise TypeError(
                 "bootstrap target is neither an active nor a consumed record"
             )
-        _reference(anchor_record.bootstrap_input_id)
-        _reference(anchor_record.checkpoint_input_id)
+        _reference(anchor_record.bootstrap_input_id, position_scope)
+        _reference(anchor_record.checkpoint_input_id, position_scope)
     return tuple(ordered.values())
 
 
@@ -2856,12 +2912,10 @@ def _encode_runtime_checkpoint_venue_execution_reconciliation_rows(
     input is ordinary history, not a splice.
     """
 
-    selected_scopes = frozenset(
-        _selected_position_scopes_from_selection(book, selection)
-    )
     rows: list[object] = []
-    reached = 0
-    for input_id in _referenced_execution_reconciliation_inputs(book, selection):
+    for input_id, referencing_scope in _referenced_execution_reconciliation_inputs(
+        book, selection
+    ):
         record = book._execution_reconciliation_by_input.get(
             _venue._input_index_key(input_id)
         )
@@ -2871,11 +2925,12 @@ def _encode_runtime_checkpoint_venue_execution_reconciliation_rows(
             raise ValueError(
                 "reached execution reconciliation does not own its referenced input"
             )
-        if record.position_scope not in selected_scopes:
+        # Equality with the target that named it, not membership: a cross-scope
+        # outcome would otherwise be admitted through another scope's target.
+        if record.position_scope != referencing_scope:
             raise ValueError(
-                "reached execution reconciliation leaves the selected scope set"
+                "reached execution reconciliation does not own its referencing scope"
             )
-        reached += 1
         rows.append(
             _require_bounded_checkpoint_row(
                 _encode_runtime_checkpoint_venue_execution_reconciliation_row(record)
