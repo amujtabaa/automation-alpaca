@@ -2523,6 +2523,31 @@ def test_r20_venue_owner_attempt_null_attempt_and_unselected_leg() -> None:
         )
 
 
+def _closure_selection(
+    selection: records._RuntimeCheckpointSelectionSet,
+    closure: venue.VenueTerminalClosure,
+) -> records._RuntimeCheckpointSelectionSet:
+    """Add the ClosureChainRecord the projector binds this closure head against."""
+
+    forged = deepcopy(selection)
+    object.__setattr__(
+        forged,
+        "closure_heads",
+        (
+            records.ClosureChainRecord(
+                1,
+                1,
+                closure.leg_key.order_id,
+                closure.ordinal,
+                1,
+                closure.kind.value,
+                None if closure.predecessor_closure_id is None else 1,
+            ),
+        ),
+    )
+    return forged
+
+
 def _root_selection(
     selection: records._RuntimeCheckpointSelectionSet, root_fill_id: str
 ) -> records._RuntimeCheckpointSelectionSet:
@@ -2952,7 +2977,9 @@ def test_r20_venue_closure_head_rows_project_selected_legs() -> None:
             venue._closure_commitment(closure),
         ),
     )
-    selection = _owner_selection(_venue_claim_selection(), "owner-order-1")
+    selection = _closure_selection(
+        _owner_selection(_venue_claim_selection(), "owner-order-1"), closure
+    )
 
     rows = checkpoint_codec._encode_runtime_checkpoint_venue_closure_head_rows(
         book, selection
@@ -2976,6 +3003,43 @@ def test_r20_venue_closure_head_rows_project_selected_legs() -> None:
         book, _venue_claim_selection()
     )
     assert empty == ["m2.venue.ClosureHeads/v1", 0, []]
+
+    # The selected record is the witness: a head whose ordinal disagrees with the
+    # durable closure_chain row must not be signed as authentic.
+    drifted = _closure_selection(
+        _owner_selection(_venue_claim_selection(), "owner-order-1"), closure
+    )
+    object.__setattr__(
+        drifted,
+        "closure_heads",
+        (
+            records.ClosureChainRecord(
+                1,
+                1,
+                _FIXTURE_LEG_KEY.order_id,
+                closure.ordinal + 1,
+                1,
+                closure.kind.value,
+                None,
+            ),
+        ),
+    )
+    with pytest.raises(ValueError, match="disagrees with its selected record"):
+        checkpoint_codec._encode_runtime_checkpoint_venue_closure_head_rows(
+            book, drifted
+        )
+
+    # A head the book carries but the proof does not select is not projectable.
+    with pytest.raises(ValueError, match="is not a selected closure"):
+        checkpoint_codec._encode_runtime_checkpoint_venue_closure_head_rows(
+            book, _owner_selection(_venue_claim_selection(), "owner-order-1")
+        )
+
+    # And a head the proof selects but the book lacks is a truncated set.
+    with pytest.raises(ValueError, match="has no current closure row"):
+        checkpoint_codec._encode_runtime_checkpoint_venue_closure_head_rows(
+            state.venue, selection
+        )
 
     spliced = copy(book)
     other_leg = identity.VenueLegKey(
@@ -4054,8 +4118,11 @@ def test_r20_projected_venue_and_authority_wires_pass_their_own_validators() -> 
     book = _book_with_execution_reconciliations(
         book, ((bootstrap_input, _fixture_resolved_registry_outcome(bootstrap_input)),)
     )
-    selection = _root_selection(
-        _owner_selection(_venue_claim_selection(), "owner-order-1"), "root-1"
+    selection = _closure_selection(
+        _root_selection(
+            _owner_selection(_venue_claim_selection(), "owner-order-1"), "root-1"
+        ),
+        closure,
     )
 
     venue_wire, venue_commitment, venue_source_owner = (

@@ -2301,14 +2301,36 @@ def _encode_runtime_checkpoint_venue_closure_head_rows(
     """
 
     atom = _operations._encode_m2_m1_atom
+    # R17 section 1 makes the repository proof the sole membership witness, and
+    # every peer family binds its reached row against the selected record. The
+    # closure family had no such binding at all, so a book whose head disagreed
+    # with the durable closure_chain -- a different ordinal or kind -- was signed
+    # as authentic. ClosureChainRecord.closure_id is a database surrogate and does
+    # not compare with the owner's ClosureId, so the bindable fields are the
+    # owner, the ordinal, the kind, and whether a predecessor exists.
+    selected_closures = {record.owner_id: record for record in selection.closure_heads}
+    if len(selected_closures) != len(selection.closure_heads):
+        raise ValueError("selected closure heads repeat an owner")
     rows: list[object] = []
     reached = 0
     for leg_key in _selected_leg_keys_from_selection(book, selection):
         closure = book._closure_head_by_leg.get(_venue._leg_index_key(leg_key))
         if closure is None:
+            if leg_key.order_id in selected_closures:
+                raise ValueError("selected closure head has no current closure row")
             continue
         if closure.leg_key != leg_key:
             raise ValueError("reached closure does not own its selected leg")
+        record = selected_closures.get(leg_key.order_id)
+        if record is None:
+            raise ValueError("reached closure head is not a selected closure")
+        if (
+            closure.ordinal != record.ordinal
+            or closure.kind.value != record.closure_kind
+            or (closure.predecessor_closure_id is None)
+            != (record.predecessor_closure_id is None)
+        ):
+            raise ValueError("reached closure disagrees with its selected record")
         reached += 1
         rows.append(
             _require_bounded_checkpoint_row(
