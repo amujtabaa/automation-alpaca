@@ -1871,6 +1871,18 @@ def _encode_runtime_checkpoint_claim_permit(
     ]
 
 
+def _require_bounded_checkpoint_row(row: list[object]) -> list[object]:
+    """Contract 2.4: one canonical semantic row is at most 2,097,152 bytes.
+
+    The limit is a refusal, never a truncation: an oversize row cannot produce a
+    serving checkpoint.
+    """
+
+    if len(_encode_canonical_json(row)) > _MAX_RUNTIME_CHECKPOINT_ROW_BYTES:
+        raise ValueError("checkpoint row exceeds its canonical byte limit")
+    return row
+
+
 def _encode_runtime_checkpoint_claim_row(
     claim: _authority.ClaimEffect | _authority.ClaimAcquisitionEffect,
 ) -> list[object]:
@@ -1916,7 +1928,7 @@ def _encode_runtime_checkpoint_effect_authorization_row(
         if claim.effect_id != authorization.request.effect_id:
             raise ValueError("claim does not name the same effect as its authorization")
         claim_row = _encode_runtime_checkpoint_claim_row(claim)
-    return [
+    row: list[object] = [
         "m2.authority.EffectAuthorization/v1",
         _operations._encode_m2_broker_effect_request(authorization.request),
         _operations._encode_m2_m1_atom(authorization.session_id),
@@ -1932,6 +1944,58 @@ def _encode_runtime_checkpoint_effect_authorization_row(
         ),
         claim_row,
     ]
+    return _require_bounded_checkpoint_row(row)
+
+
+def _encode_runtime_checkpoint_effect_authorization_rows(
+    state: _authority.ExecutionAuthorityState,
+    selected_effect_ids: tuple[_identity.EffectId, ...],
+) -> list[object]:
+    """Project the authorization reached by each proof-selected effect.
+
+    ``_effect_authority_by_id``, ``_claim_by_effect`` and ``_claim_by_occurrence`` are
+    R20 section 2 permitted authenticated supersets: only rows reached by a selected
+    effect are checkpointed, and their whole-map sizes are never compared against the
+    selection. Unrelated closed-effect history is omitted, not refused.
+
+    Two relations are proved rather than assumed from the key that reached the row: the
+    authorization must own the selected effect ID, and a claim must resolve back to the
+    same row through its canonical occurrence index.
+    """
+
+    reached: dict[bytes, list[object]] = {}
+    for effect_id in selected_effect_ids:
+        if type(effect_id) is not _identity.EffectId:
+            raise TypeError("selected effect ID must be exact EffectId")
+        effect_key = _authority._effect_key(effect_id)
+        authorization = state._effect_authority_by_id.get(effect_key)
+        if authorization is None:
+            continue
+        if type(authorization) is not _authority._EffectAuthorization:
+            raise TypeError("effect authorization must be exact _EffectAuthorization")
+        if authorization.request.effect_id != effect_id:
+            raise ValueError(
+                "reached authorization does not own its selected effect ID"
+            )
+        claim = state._claim_by_effect.get(effect_key)
+        if claim is not None:
+            resolved = state._claim_by_occurrence.get(
+                _authority._claim_key(claim.claim_occurrence_id)
+            )
+            if resolved is not claim:
+                raise ValueError(
+                    "claim does not resolve to the same row by canonical occurrence"
+                )
+        order_key = _atom_order_key(effect_id)
+        if order_key in reached:
+            raise ValueError("selected effects retain a duplicate effect ID")
+        reached[order_key] = _encode_runtime_checkpoint_effect_authorization_row(
+            authorization, claim
+        )
+    return _checkpoint_collection(
+        "m2.authority.EffectAuthorizations/v1",
+        [reached[order_key] for order_key in sorted(reached)],
+    )
 
 
 def _encode_runtime_checkpoint_manual_row(
@@ -2029,6 +2093,7 @@ def _encode_runtime_checkpoint_authority(
     venue_commitment: bytes,
     application_generation_id: _identity.ApplicationGenerationId,
     selected_position_scopes: tuple[_fills.PositionScope, ...],
+    selected_effect_ids: tuple[_identity.EffectId, ...],
 ) -> tuple[list[object], bytes, bytes]:
     """Encode the corrected R2 authority top row and its exact empty collections."""
 
@@ -2038,8 +2103,10 @@ def _encode_runtime_checkpoint_authority(
     manual_rows = _encode_runtime_checkpoint_manual_rows(
         state, application_generation_id, selected_position_scopes
     )
+    effect_authorization_rows = _encode_runtime_checkpoint_effect_authorization_rows(
+        state, selected_effect_ids
+    )
     payload_maps = (
-        state._effect_authority_by_id,
         state._acquisition_descriptor_by_effect,
         state._acquisition_currentness_by_scope,
         state._acquisition_descriptor_by_scope,
@@ -2075,7 +2142,7 @@ def _encode_runtime_checkpoint_authority(
             _operations._encode_m2_bytes(venue_commitment),
         ],
         None,
-        _checkpoint_collection("m2.authority.EffectAuthorizations/v1", []),
+        effect_authorization_rows,
         manual_rows,
         _checkpoint_collection("m2.authority.AcquisitionDescriptors/v1", []),
         _checkpoint_collection("m2.authority.AcquisitionSlots/v1", []),
@@ -2460,6 +2527,9 @@ def _project_runtime_checkpoint(
     venue_wire, venue_commitment, venue_source_owner_commitment = (
         _encode_runtime_checkpoint_venue(venue)
     )
+    selected_effect_ids = tuple(
+        record.effect_external for record in selection_proof._selection.effects
+    )
     selected_position_scopes = tuple(
         _fills.PositionScope(
             venue_scope.broker,
@@ -2478,6 +2548,7 @@ def _project_runtime_checkpoint(
         venue_commitment,
         request.application_generation_id,
         selected_position_scopes,
+        selected_effect_ids,
     )
     scope_wires: list[
         tuple[int, list[object], list[object], list[object], list[object]]

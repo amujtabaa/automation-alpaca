@@ -1690,3 +1690,254 @@ def test_r20_dangling_manual_slot_entry_is_still_refused() -> None:
         checkpoint_codec._project_runtime_checkpoint(
             proof, forged.venue, forged, owners
         )
+
+
+def _with_extra_authorization(
+    state: authority.ExecutionAuthorityState,
+    effect_value: str,
+    *,
+    claimed: bool = True,
+) -> authority.ExecutionAuthorityState:
+    """Add one more superset authorization without a second reducer effect.
+
+    The reducer admits only one open effect per execution-bound scope, so a second
+    CreateBrokerEffect is refused EXECUTION_BINDING_MISMATCH - correct venue behaviour.
+    _EffectAuthorization and ClaimEffect are plain frozen dataclasses with no seal or
+    commitment, so an inserted row is byte-identical to what the reducer would store;
+    this only populates the permitted superset that the projection must ignore.
+    """
+
+    effect_id = identity.EffectId(effect_value)
+    effect_key = authority._effect_key(effect_id)
+    request = authority.BrokerEffectRequest(
+        effect_id,
+        identity.RequestOccurrenceId(f"req-{effect_value}"),
+        identity.MandateId(f"mandate-{effect_value}"),
+        venue.EffectKind.SUBMIT,
+        identity.ClientOrderId(f"coid-{effect_value}"),
+        identity.SymbolId("AAPL"),
+        ExecutionSide.SELL,
+        values.Quantity(2),
+        b"\x01" * 32,
+        None,
+    )
+    authorization = authority._EffectAuthorization(
+        request, authority.SessionId("effect-session"), None, None
+    )
+    extended = copy(state)
+    object.__setattr__(
+        extended,
+        "_effect_authority_by_id",
+        authority._inserted(state._effect_authority_by_id, effect_key, authorization),
+    )
+    if claimed:
+        occurrence = identity.ClaimOccurrenceId(f"occurrence-{effect_value}")
+        claim = authority.ClaimEffect(
+            authority.AuthorityInputId(f"claim-{effect_value}"), effect_id, occurrence
+        )
+        object.__setattr__(
+            extended,
+            "_claim_by_effect",
+            authority._inserted(state._claim_by_effect, effect_key, claim),
+        )
+        object.__setattr__(
+            extended,
+            "_claim_by_occurrence",
+            authority._inserted(
+                state._claim_by_occurrence, authority._claim_key(occurrence), claim
+            ),
+        )
+    return extended
+
+
+def _authority_state_with_effects(
+    effect_values: tuple[str, ...] = ("effect-1",),
+    *,
+    claimed: bool = True,
+) -> tuple[authority.ExecutionAuthorityState, tuple[identity.EffectId, ...]]:
+    """Reducer-built authority state carrying one authorization per effect value.
+
+    Each effect gets its own symbol scope: a second open effect on the SAME scope is
+    refused VENUE_UNCERTAIN by the real reducer, which is correct venue behaviour and
+    not something the fixture should forge around.
+    """
+
+    scope = venue.VenueScope(
+        _APPLICATION,
+        identity.BrokerId("paper"),
+        identity.EnvironmentId("paper"),
+        identity.AccountId("account"),
+    )
+    state = copy(authority.initial_execution_authority_state(scope))
+    for name, value in (
+        ("phase", authority.EnginePhase.SERVING),
+        ("mode", authority.TradingMode.REDUCING),
+        ("supervisor_fence", authority.SupervisorFence.PAPER_MUTATION_ELIGIBLE),
+        ("kill_engaged", False),
+        ("session_id", authority.SessionId("effect-session")),
+        ("budget", authority.RequestBudget(remaining=16, safety_reserve=1)),
+    ):
+        object.__setattr__(state, name, value)
+
+    symbol = identity.SymbolId("AAPL")
+    execution = _advanced_execution(symbol, 9, "effects")
+    effect_ids: list[identity.EffectId] = []
+    for value in effect_values[:1]:
+        effect_id = identity.EffectId(value)
+        request = authority.BrokerEffectRequest(
+            effect_id,
+            identity.RequestOccurrenceId(f"req-{value}"),
+            identity.MandateId(f"mandate-{value}"),
+            venue.EffectKind.SUBMIT,
+            identity.ClientOrderId(f"coid-{value}"),
+            symbol,
+            ExecutionSide.SELL,
+            values.Quantity(2),
+            b"\x01" * 32,
+            None,
+        )
+        created = authority.apply_execution_authority_input(
+            state,
+            execution,
+            authority.CreateBrokerEffect(
+                authority.AuthorityInputId(f"create-{value}"),
+                authority.SessionId("effect-session"),
+                request,
+                None,
+                None,
+            ),
+        )
+        if created.disposition is not authority.AuthorityDisposition.APPLIED:
+            raise AssertionError(
+                f"effect fixture refused: {created.disposition.value} "
+                f"{created.reason.value if created.reason else None}"
+            )
+        state = created.state
+        if claimed:
+            claim = authority.apply_execution_authority_input(
+                state,
+                execution,
+                authority.ClaimEffect(
+                    authority.AuthorityInputId(f"claim-{value}"),
+                    effect_id,
+                    identity.ClaimOccurrenceId(f"occurrence-{value}"),
+                ),
+            )
+            if claim.disposition is not authority.AuthorityDisposition.APPLIED:
+                raise AssertionError(
+                    "claim fixture refused: "
+                    f"{claim.reason.value if claim.reason else None}"
+                )
+            state = claim.state
+        effect_ids.append(effect_id)
+    for value in effect_values[1:]:
+        state = _with_extra_authorization(state, value, claimed=claimed)
+        effect_ids.append(identity.EffectId(value))
+    return state, tuple(effect_ids)
+
+
+def test_r20_effect_authorization_family_projects_selected_effects() -> None:
+    state, effect_ids = _authority_state_with_effects()
+
+    rows = checkpoint_codec._encode_runtime_checkpoint_effect_authorization_rows(
+        state, effect_ids
+    )
+
+    assert rows[0] == "m2.authority.EffectAuthorizations/v1"
+    assert rows[1] == 1
+    row = rows[2][0]
+    assert row[0] == "m2.authority.EffectAuthorization/v1"
+    assert len(row) == 6
+    assert row[1][1] == _operations._encode_m2_m1_atom(identity.EffectId("effect-1"))
+    assert row[5][0] == "m2.authority.ClaimEffect/v1"
+    checkpoint_codec._validate_checkpoint_collection(
+        rows, "m2.authority.EffectAuthorizations/v1"
+    )
+
+
+def test_r20_effect_authorization_family_omits_unselected_superset_rows() -> None:
+    """R16 section 2: only rows reached by a selected effect are checkpointed.
+
+    _effect_authority_by_id is a permitted authenticated superset, so unrelated
+    authority history must leave the emitted bytes unchanged and must never be
+    compared against the selection by whole-map size.
+    """
+
+    lean_state, lean_ids = _authority_state_with_effects(("effect-1",))
+    lean_rows = checkpoint_codec._encode_runtime_checkpoint_effect_authorization_rows(
+        lean_state, lean_ids
+    )
+
+    noisy_state, _ = _authority_state_with_effects(("effect-1", "effect-9"))
+    assert noisy_state._effect_authority_by_id.size == 2
+    noisy_rows = checkpoint_codec._encode_runtime_checkpoint_effect_authorization_rows(
+        noisy_state, (identity.EffectId("effect-1"),)
+    )
+
+    assert noisy_rows == lean_rows
+
+
+def test_r20_effect_authorization_orders_by_canonical_key_not_python_string() -> None:
+    state, _ = _authority_state_with_effects(("effect-10", "effect-2"))
+
+    rows = checkpoint_codec._encode_runtime_checkpoint_effect_authorization_rows(
+        state, (identity.EffectId("effect-10"), identity.EffectId("effect-2"))
+    )
+
+    assert rows[1] == 2
+    assert [row[1][1] for row in rows[2]] == [
+        _operations._encode_m2_m1_atom(identity.EffectId("effect-2")),
+        _operations._encode_m2_m1_atom(identity.EffectId("effect-10")),
+    ]
+
+
+def test_r20_effect_authorization_refuses_claim_occurrence_that_does_not_resolve() -> (
+    None
+):
+    """Contract: a claim must name the same canonical occurrence as its authorization."""
+
+    state, effect_ids = _authority_state_with_effects()
+    effect_key = authority._effect_key(identity.EffectId("effect-1"))
+    claim = state._claim_by_effect.get(effect_key)
+    assert claim is not None
+
+    forged = copy(state)
+    other = deepcopy(claim)
+    object.__setattr__(
+        other, "claim_occurrence_id", identity.ClaimOccurrenceId("occurrence-other")
+    )
+    object.__setattr__(
+        forged,
+        "_claim_by_effect",
+        authority._replaced(state._claim_by_effect, effect_key, other),
+    )
+
+    with pytest.raises(ValueError, match="occurrence"):
+        checkpoint_codec._encode_runtime_checkpoint_effect_authorization_rows(
+            forged, effect_ids
+        )
+
+
+def test_r20_effect_authorization_refuses_authorization_naming_another_effect() -> None:
+    state, effect_ids = _authority_state_with_effects(claimed=False)
+    effect_key = authority._effect_key(identity.EffectId("effect-1"))
+    authorization = state._effect_authority_by_id.get(effect_key)
+    assert authorization is not None
+
+    forged_request = deepcopy(authorization.request)
+    object.__setattr__(forged_request, "effect_id", identity.EffectId("other-effect"))
+    forged_authorization = deepcopy(authorization)
+    object.__setattr__(forged_authorization, "request", forged_request)
+    forged = copy(state)
+    object.__setattr__(
+        forged,
+        "_effect_authority_by_id",
+        authority._replaced(
+            state._effect_authority_by_id, effect_key, forged_authorization
+        ),
+    )
+
+    with pytest.raises(ValueError, match="effect"):
+        checkpoint_codec._encode_runtime_checkpoint_effect_authorization_rows(
+            forged, effect_ids
+        )
