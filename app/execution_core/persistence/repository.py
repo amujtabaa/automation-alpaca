@@ -4226,7 +4226,7 @@ SELECT * FROM admitted ORDER BY 2,1""",
 {_RUNTIME_CHECKPOINT_QUALIFYING_EFFECT_SQL}, admitted AS MATERIALIZED (
     SELECT {_RC_ACCEPTANCE}
     FROM qualifying_effect AS selected
-    JOIN acceptance_set AS acceptance ON acceptance.effect_id=selected.effect_id
+    CROSS JOIN acceptance_set AS acceptance ON acceptance.effect_id=selected.effect_id
     LIMIT 65536
 )
 SELECT * FROM admitted ORDER BY 2,1""",

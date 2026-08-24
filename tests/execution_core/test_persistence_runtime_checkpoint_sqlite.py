@@ -21,6 +21,8 @@ import persistence_setup_support as setup_support
 import test_persistence_repository as base
 
 
+_INDEX_IN_PLAN = _re.compile(r"USING (?:COVERING )?INDEX (\w+)")
+
 _SQL_SOURCE_ALIAS = _re.compile(
     r"\b(?:FROM|JOIN)\s+([A-Za-z_][A-Za-z_0-9]*)(?:\s+AS\s+([A-Za-z_][A-Za-z_0-9]*))?",
     _re.IGNORECASE,
@@ -1369,6 +1371,15 @@ def test_all_thirteen_selection_queries_have_bounded_indexed_plans(
             " AND name NOT LIKE 'sqlite_%'"
         ).fetchall()
     )
+    partial_indexes = frozenset(
+        str(name).upper()
+        for name, index_sql in connection.execute(
+            "SELECT name, sql FROM sqlite_master WHERE type='index' AND sql IS NOT NULL"
+        ).fetchall()
+        # The predicate follows the column list, and the DDL puts it on its own
+        # line, so this must not assume a space before WHERE.
+        if _re.search(r"\)\s*WHERE\s", str(index_sql), _re.S | _re.I)
+    )
 
     unbounded: set[tuple[int, str]] = set()
 
@@ -1378,22 +1389,33 @@ def test_all_thirteen_selection_queries_have_bounded_indexed_plans(
         assert plan, f"Q{ordinal} produced no plan"
         details = tuple(str(row[-1]).upper() for row in plan)
         assert any("SEARCH " in detail for detail in details), (ordinal, details)
-        # The bounded-plan property is "no unindexed pass over a base table". A
-        # scan of a materialized CTE or subquery is bounded by that CTE's own
-        # selection, and an index scan is bounded by its index; only a bare scan
-        # of a base table grows with the database. Resolving aliases against
-        # sqlite_master states that directly, where the previous fixed list of
-        # CTE names could not: it named CTEs rather than the aliases the planner
-        # actually reports, and it had fallen behind the query set it guards.
+        # The bounded-plan property is "no pass over a base table whose length
+        # tracks history". Three cases, and only the third is a violation:
+        #
+        #   * a scan of a materialized CTE or subquery is bounded by that CTE's
+        #     own selection;
+        #   * a scan of a PARTIAL index is bounded by that index's predicate --
+        #     the ix_*_checkpoint_* indexes exist precisely so a scan of them
+        #     costs live state rather than history, and scanning them is the
+        #     intended design;
+        #   * any other scan of a base table -- including one through a full
+        #     index -- visits every row ever written.
+        #
+        # An earlier revision of this control excused every "USING INDEX" scan on
+        # the reasoning that an index bounds it. That reasoning is wrong: a full
+        # index has exactly as many entries as its table, so scanning it is the
+        # same unbounded pass. Only the predicate of a partial index bounds one.
         table_names = _base_table_plan_names(sql, base_tables)
         for detail in details:
             if not detail.startswith("SCAN "):
                 continue
-            if "USING INDEX" in detail or "USING COVERING INDEX" in detail:
-                continue
             scanned = detail.split()[1]
-            if scanned in table_names:
-                unbounded.add((ordinal, detail))
+            if scanned not in table_names:
+                continue
+            index = _INDEX_IN_PLAN.search(detail)
+            if index is not None and index.group(1) in partial_indexes:
+                continue
+            unbounded.add((ordinal, detail))
         # An automatic index over a base table means SQLite is compensating for a
         # missing schema index and will index the whole table -- unbounded. Over a
         # materialized CTE it is a transient index on that CTE's own bounded
@@ -1409,14 +1431,19 @@ def test_all_thirteen_selection_queries_have_bounded_indexed_plans(
     # Exactly the known, dispositioned violations -- equality, not a subset, so a
     # new one fails and a fixed one must be removed from this set deliberately.
     #
-    # Q9 joins ``acceptance_set AS acceptance`` on ``effect_id``. That column is
-    # UNIQUE so an index exists, but the planner reverses the join and passes over
-    # the whole table, which grows with total effect history rather than with the
-    # selection. The plan is stable across ANALYZE, so it is not an empty-database
-    # artifact. Every other base-table join in these queries pins its index with
-    # INDEXED BY; this one does not, and adding it is a repository SQL change
-    # behind the human gate. Tracked as a WO-0168c bundle finding.
-    assert unbounded == {(9, "SCAN ACCEPTANCE")}, unbounded
+    # Each is the same shape: the planner leads with a base table instead of the
+    # bounded CTE beside it, so the pass costs total history rather than the
+    # selection. Q9 carried a sixth and is fixed: pinning the join order with
+    # CROSS JOIN turned its SCAN into a SEARCH. The same one-token remedy clears
+    # all five of these (measured 5 -> 0), but it is a repository SQL change
+    # across five more queries and is not yet authorized.
+    assert unbounded == {
+        (7, "SCAN OWNER USING INDEX IX_VENUE_IDENTITY_OWNER_EFFECT"),
+        (8, "SCAN CLAIM USING INDEX IX_DISPATCH_CLAIM_EFFECT"),
+        (10, "SCAN EVIDENCE USING INDEX IX_ACCEPTANCE_EVIDENCE_SET"),
+        (11, "SCAN OWNER USING COVERING INDEX IX_VENUE_IDENTITY_OWNER_EFFECT"),
+        (12, "SCAN ROUTE USING INDEX IX_ACQUISITION_ROOT_ROUTE_OWNER"),
+    }, unbounded
 
     connection.rollback()
     connection.close()
