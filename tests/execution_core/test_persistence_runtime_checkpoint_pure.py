@@ -2375,3 +2375,121 @@ def test_r20_venue_economic_high_water_rows_project_selected_owners() -> None:
     checkpoint_codec._validate_checkpoint_collection(
         rows, "m2.venue.EconomicHighWaters/v1"
     )
+
+
+def _book_with_owner_leg(
+    book: venue.VenueRecoveryBook,
+    leg_key: identity.VenueLegKey,
+    effect_scope: venue.VenueEffectScope,
+    *,
+    with_attempt: bool = True,
+) -> venue.VenueRecoveryBook:
+    """Populate the owner and leg-current indexes for one leg."""
+
+    owner = venue.VenueIdentityOwner(
+        leg_key, effect_scope, identity.VenueObservationId("observation-1")
+    )
+    forged = copy(book)
+    object.__setattr__(
+        forged,
+        "_owner_by_leg",
+        book._owner_by_leg.insert_new(
+            venue._leg_index_key(leg_key), owner, venue._owner_value_commitment(owner)
+        ),
+    )
+    if with_attempt:
+        attempt = venue.VenueAttempt(
+            leg_key,
+            venue.VenueAttemptState.WORKING,
+            None,
+            values.Quantity(2),
+            identity.VenueObservationId("observation-1"),
+        )
+        current = venue._LegCurrent(attempt)
+        object.__setattr__(
+            forged,
+            "_leg_current_by_leg",
+            book._leg_current_by_leg.insert_new(
+                venue._leg_index_key(leg_key), current, current.commitment
+            ),
+        )
+    return forged
+
+
+def _owner_selection(
+    selection: records._RuntimeCheckpointSelectionSet, order_id: str
+) -> records._RuntimeCheckpointSelectionSet:
+    forged = deepcopy(selection)
+    object.__setattr__(
+        forged,
+        "owners",
+        (
+            records.VenueIdentityOwnerRecord(
+                1,
+                _EXECUTION_PROFILE,
+                identity.OrderId(order_id),
+                identity.VenueObservationId("observation-1"),
+                1,
+                None,
+                identity.AcquisitionGenerationId("ab" * 32),
+                False,
+            ),
+        ),
+    )
+    return forged
+
+
+def test_r20_venue_owner_attempt_rows_carry_dense_checkpoint_ordinals() -> None:
+    state, _ = _authority_state_with_effects()
+    effect_scope = state.venue._effect_by_id.get(
+        venue._effect_index_key(identity.EffectId("effect-1"))
+    ).effect.scope
+    leg_key = identity.VenueLegKey(
+        identity.BrokerId("paper"),
+        identity.EnvironmentId("paper"),
+        identity.AccountId("account"),
+        identity.OrderId("owner-order-1"),
+    )
+    book = _book_with_owner_leg(state.venue, leg_key, effect_scope)
+    selection = _owner_selection(_venue_claim_selection(), "owner-order-1")
+
+    rows = checkpoint_codec._encode_runtime_checkpoint_venue_owner_attempt_rows(
+        book, selection
+    )
+
+    assert rows[0] == "m2.venue.OwnerAttempts/v1"
+    assert rows[1] == 1
+    row = rows[2][0]
+    assert row[0] == "m2.venue.OwnerAttempt/v1"
+    assert len(row) == 6
+    assert row[1] == 0
+    assert row[2] == _operations._encode_m2_m1_atom(leg_key)
+    assert row[3] == _operations._encode_m2_m1_atom(identity.EffectId("effect-1"))
+    assert row[5][0] == "m2.venue.Attempt/v1"
+    assert len(row[5]) == 6
+    checkpoint_codec._validate_checkpoint_collection(rows, "m2.venue.OwnerAttempts/v1")
+
+
+def test_r20_venue_owner_attempt_null_attempt_and_unselected_leg() -> None:
+    state, _ = _authority_state_with_effects()
+    effect_scope = state.venue._effect_by_id.get(
+        venue._effect_index_key(identity.EffectId("effect-1"))
+    ).effect.scope
+    leg_key = identity.VenueLegKey(
+        identity.BrokerId("paper"),
+        identity.EnvironmentId("paper"),
+        identity.AccountId("account"),
+        identity.OrderId("owner-order-1"),
+    )
+    book = _book_with_owner_leg(state.venue, leg_key, effect_scope, with_attempt=False)
+    selection = _owner_selection(_venue_claim_selection(), "owner-order-1")
+
+    rows = checkpoint_codec._encode_runtime_checkpoint_venue_owner_attempt_rows(
+        book, selection
+    )
+    assert rows[2][0][5] is None
+
+    with pytest.raises(ValueError, match="selected owner"):
+        checkpoint_codec._encode_runtime_checkpoint_venue_owner_attempt_rows(
+            book, _venue_claim_selection()
+        )

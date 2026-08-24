@@ -1923,6 +1923,68 @@ def _encode_runtime_checkpoint_venue_high_water_rows(
     return _checkpoint_collection("m2.venue.EconomicHighWaters/v1", rows)
 
 
+def _encode_runtime_checkpoint_venue_owner_attempt_rows(
+    book: _venue.VenueRecoveryBook,
+    selection: _records._RuntimeCheckpointSelectionSet,
+) -> list[object]:
+    """Project each proof-selected owner leg with its current attempt.
+
+    This family reads two owner maps at one key: ``_owner_by_leg`` supplies the leg,
+    effect and observation identities, and ``_leg_current_by_leg`` supplies the
+    optional current attempt. Member 1 is the R18 dense ``checkpoint_ordinal`` over the
+    proof-selected owner set, exactly as the effect family does.
+    """
+
+    atom = _operations._encode_m2_m1_atom
+    rows: list[object] = []
+    reached = 0
+    for ordinal, leg_key in enumerate(
+        _selected_leg_keys_from_selection(book, selection)
+    ):
+        leg_index = _venue._leg_index_key(leg_key)
+        owner = book._owner_by_leg.get(leg_index)
+        if owner is None:
+            raise ValueError("selected owner leg has no current owner row")
+        if owner.leg_key != leg_key:
+            raise ValueError("reached owner does not own its selected leg")
+        reached += 1
+        current = book._leg_current_by_leg.get(leg_index)
+        attempt = None if current is None else current.attempt
+        attempt_row: list[object] | None = None
+        if attempt is not None:
+            if attempt.leg_key != leg_key:
+                raise ValueError("reached attempt does not own its selected leg")
+            attempt_row = [
+                "m2.venue.Attempt/v1",
+                atom(attempt.leg_key),
+                _checkpoint_enum("m1.venue.VenueAttemptState", attempt.status),
+                (
+                    None
+                    if attempt.pending_operation is None
+                    else _checkpoint_enum(
+                        "m1.venue.PendingVenueOperation", attempt.pending_operation
+                    )
+                ),
+                atom(attempt.cumulative_quantity),
+                atom(attempt.last_observation_id),
+            ]
+        rows.append(
+            _require_bounded_checkpoint_row(
+                [
+                    "m2.venue.OwnerAttempt/v1",
+                    ordinal,
+                    atom(leg_key),
+                    atom(owner.effect_scope.effect_id),
+                    atom(owner.observation_id),
+                    attempt_row,
+                ]
+            )
+        )
+    if book._owner_by_leg.size != reached:
+        raise ValueError("owner map retains a leg outside the selected owner set")
+    return _checkpoint_collection("m2.venue.OwnerAttempts/v1", rows)
+
+
 def _encode_runtime_checkpoint_venue_protection_cursor_rows(
     book: _venue.VenueRecoveryBook,
     selection: _records._RuntimeCheckpointSelectionSet,
@@ -2162,7 +2224,6 @@ def _encode_runtime_checkpoint_venue(
     if type(book) is not _venue.VenueRecoveryBook:
         raise TypeError("venue owner must be exact VenueRecoveryBook")
     payload_maps = (
-        book._owner_by_leg,
         book._acquisition_correlation_by_root,
         book._closure_head_by_leg,
         book._human_coverage_by_root,
@@ -2181,6 +2242,9 @@ def _encode_runtime_checkpoint_venue(
         book, selection
     )
     high_water_rows = _encode_runtime_checkpoint_venue_high_water_rows(book, selection)
+    owner_attempt_rows = _encode_runtime_checkpoint_venue_owner_attempt_rows(
+        book, selection
+    )
     execution_scope_rows = _encode_runtime_checkpoint_venue_execution_scope_rows(
         book, selection
     )
@@ -2215,7 +2279,7 @@ def _encode_runtime_checkpoint_venue(
         authority_epoch_rows,
         effect_rows,
         claim_rows,
-        _checkpoint_collection("m2.venue.OwnerAttempts/v1", []),
+        owner_attempt_rows,
         _checkpoint_collection("m2.venue.AcquisitionCorrelations/v1", []),
         _checkpoint_collection("m2.venue.ClosureHeads/v1", []),
         high_water_rows,
