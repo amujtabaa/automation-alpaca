@@ -301,6 +301,14 @@ def _require_sha256_text(name: str, value: object) -> str:
     return value
 
 
+def _require_exact_signed_int(name: str, value: object) -> int:
+    """Admit a signed wire integer while refusing the ``bool`` subclass of ``int``."""
+
+    if type(value) is not int:
+        raise TypeError(f"{name} must be exact int")
+    return value
+
+
 def _require_nonnegative_int(name: str, value: object) -> int:
     if type(value) is not int:
         raise TypeError(f"{name} must be exact int")
@@ -2422,6 +2430,304 @@ def _encode_runtime_checkpoint_venue_reconciliation_rows(
     return _checkpoint_collection("m2.venue.Reconciliations/v1", rows)
 
 
+def _encode_runtime_checkpoint_venue_scope(scope: _venue.VenueScope) -> list[object]:
+    """Encode the frozen 5-member venue scope."""
+
+    if type(scope) is not _venue.VenueScope:
+        raise TypeError("venue scope must be exact VenueScope")
+    atom = _operations._encode_m2_m1_atom
+    return [
+        "m2.venue.Scope/v1",
+        atom(scope.generation),
+        atom(scope.broker),
+        atom(scope.environment),
+        atom(scope.account),
+    ]
+
+
+def _encode_runtime_checkpoint_venue_execution_binding(
+    binding: _venue.VenueExecutionBinding,
+) -> list[object]:
+    """Encode the frozen 5-member venue execution binding."""
+
+    if type(binding) is not _venue.VenueExecutionBinding:
+        raise TypeError("execution binding must be exact VenueExecutionBinding")
+    return [
+        "m2.venue.ExecutionBinding/v1",
+        _operations._encode_m2_position_scope(binding.position_scope),
+        _operations._encode_m2_bytes(binding.position_commitment),
+        _operations._encode_m2_bytes(binding.root_heads_commitment),
+        _require_nonnegative_int("binding integrity bits", binding.integrity_bits),
+    ]
+
+
+def _encode_runtime_checkpoint_venue_transition_cursor(
+    cursor: _venue._ProtectionCursor,
+) -> list[object]:
+    """Encode the frozen 6-member inert protection transition cursor.
+
+    The execution commitment and its checkpoint are wholly present or wholly null;
+    the source dataclass already refuses a partial pair, and encoding them from the
+    one source object keeps that pairing on the wire.
+    """
+
+    if type(cursor) is not _venue._ProtectionCursor:
+        raise TypeError("transition cursor must be exact _ProtectionCursor")
+    return [
+        "m2.venue.ProtectionTransitionCursor/v1",
+        _require_nonnegative_int("transition cursor ordinal", cursor.ordinal),
+        _operations._encode_m2_bytes(cursor.head),
+        (
+            None
+            if cursor.mandate_id is None
+            else _operations._encode_m2_m1_atom(cursor.mandate_id)
+        ),
+        (
+            None
+            if cursor.execution_commitment is None
+            else _operations._encode_m2_bytes(cursor.execution_commitment)
+        ),
+        (
+            None
+            if cursor.execution_checkpoint is None
+            else _encode_runtime_checkpoint_venue_execution_checkpoint(
+                cursor.execution_checkpoint
+            )
+        ),
+    ]
+
+
+def _encode_runtime_checkpoint_venue_atom_tuple(
+    tag: str, values: tuple[_durable_codec._OwningValue, ...], subject: str
+) -> list[object]:
+    """Encode one count-bearing summary tuple in source order without duplicates."""
+
+    if type(values) is not tuple:
+        raise TypeError(f"{subject} must be an exact tuple")
+    atom = _operations._encode_m2_m1_atom
+    rows: list[object] = []
+    seen: set[bytes] = set()
+    for value in values:
+        encoded = atom(value)
+        order_key = _array_order_key(encoded)
+        if order_key in seen:
+            raise ValueError(f"{subject} retains a duplicate member")
+        seen.add(order_key)
+        rows.append(encoded)
+    return _checkpoint_collection(tag, rows)
+
+
+def _encode_runtime_checkpoint_venue_symbol_authority_summary(
+    summary: _venue._SymbolAuthoritySummary,
+) -> list[object]:
+    """Encode the frozen 10-member inert symbol authority summary."""
+
+    if type(summary) is not _venue._SymbolAuthoritySummary:
+        raise TypeError("summary must be exact _SymbolAuthoritySummary")
+    return [
+        "m2.venue.SymbolAuthoritySummary/v1",
+        _require_nonnegative_int("summary effect count", summary.effect_count),
+        _require_nonnegative_int(
+            "summary blocking effect count", summary.blocking_effect_count
+        ),
+        _require_nonnegative_int(
+            "summary blocking buy effect count", summary.blocking_buy_effect_count
+        ),
+        _require_nonnegative_int(
+            "summary stand-downable buy count", summary.stand_downable_buy_count
+        ),
+        _encode_runtime_checkpoint_venue_atom_tuple(
+            "m2.venue.StandDownEffects/v1",
+            summary.stand_downable_buy_effect_ids,
+            "summary stand-down effects",
+        ),
+        _encode_runtime_checkpoint_venue_atom_tuple(
+            "m2.venue.CancellableBuyLegs/v1",
+            summary.known_cancellable_buy_leg_keys,
+            "summary cancellable buy legs",
+        ),
+        _encode_runtime_checkpoint_venue_atom_tuple(
+            "m2.venue.CancelPendingBuyLegs/v1",
+            summary.known_cancel_pending_buy_leg_keys,
+            "summary cancel-pending buy legs",
+        ),
+        _require_nonnegative_int(
+            "summary waiting buy parent count", summary.waiting_buy_parent_count
+        ),
+        _require_nonnegative_int(
+            "summary unknown buy effect count", summary.unknown_buy_effect_count
+        ),
+    ]
+
+
+def _encode_runtime_checkpoint_venue_transition_proof(
+    proof: _venue._ProtectionTransitionProof,
+) -> list[object]:
+    """Encode the frozen 25-member inert venue transition proof.
+
+    R1 admits this proof as inert evidence carried by a bootstrap record: decode
+    never allocates the source proof, cursor, summary, or book.  R2 requires the
+    exact source type and authentic lineage here, so a forged or spliced proof
+    cannot reach the wire.
+    """
+
+    if type(proof) is not _venue._ProtectionTransitionProof:
+        raise TypeError("transition proof must be exact _ProtectionTransitionProof")
+    if not proof.lineage_is_authentic:
+        raise ValueError("transition proof lineage is not authentic")
+    cursor = _encode_runtime_checkpoint_venue_transition_cursor
+    checkpoint = _encode_runtime_checkpoint_venue_execution_checkpoint
+    summary = _encode_runtime_checkpoint_venue_symbol_authority_summary
+    binding = _encode_runtime_checkpoint_venue_execution_binding
+    digest = _operations._encode_m2_bytes
+    return [
+        "m2.venue.ProtectionTransitionProof/v1",
+        _operations._encode_m2_position_scope(proof.position_scope),
+        cursor(proof.predecessor_cursor),
+        cursor(proof.cursor),
+        _encode_runtime_checkpoint_venue_scope(proof.predecessor_book_scope),
+        _encode_runtime_checkpoint_venue_scope(proof.book_scope),
+        digest(proof.predecessor_book_commitment),
+        digest(proof.book_commitment),
+        digest(proof.predecessor_execution_commitment),
+        digest(proof.execution_commitment),
+        checkpoint(proof.predecessor_execution_checkpoint),
+        checkpoint(proof.execution_checkpoint),
+        summary(proof.predecessor_summary),
+        summary(proof.summary),
+        None
+        if proof.predecessor_binding is None
+        else binding(proof.predecessor_binding),
+        None if proof.binding is None else binding(proof.binding),
+        proof.predecessor_execution_binding_matches,
+        proof.execution_binding_matches,
+        proof.predecessor_account_reconciliation_clear,
+        proof.account_reconciliation_clear,
+        digest(proof.command_commitment),
+        _checkpoint_enum("m1.venue.VenueRecoveryDisposition", proof.disposition),
+        _require_exact_signed_int("transition quantity delta", proof.quantity_delta),
+        _checkpoint_enum("m1.venue.ProtectionTransitionSourceKind", proof.source_kind),
+        digest(proof.source_binding),
+    ]
+
+
+def _encode_runtime_checkpoint_venue_bootstrap_active(
+    record: _venue._BootstrapBoundTargetRecord,
+) -> list[object]:
+    """Encode the frozen 25-member active bootstrap target row.
+
+    The map seal, commitment, and record seal are derived rather than carried: R2
+    refuses to trust a retained seal, so none of them appears in the bytes.
+    """
+
+    if type(record) is not _venue._BootstrapBoundTargetRecord:
+        raise TypeError("bootstrap record must be exact _BootstrapBoundTargetRecord")
+    atom = _operations._encode_m2_m1_atom
+    digest = _operations._encode_m2_bytes
+    count = _require_nonnegative_int
+    return [
+        "m2.venue.BootstrapTargetActive/v1",
+        atom(record.application_generation_id),
+        _operations._encode_m2_position_scope(record.position_scope),
+        _checkpoint_enum("m1.venue.BootstrapSourceKind", record.source_kind),
+        digest(record.source_execution_commitment),
+        digest(record.target_genesis_execution_commitment),
+        digest(record.target_execution_commitment),
+        _encode_runtime_checkpoint_venue_execution_binding(record.binding),
+        count("bootstrap account registry count", record.account_registry_count),
+        digest(record.account_registry_commitment),
+        count(
+            "bootstrap reconciliation transition count",
+            record.reconciliation_transition_count,
+        ),
+        digest(record.reconciliation_transition_head),
+        atom(record.bootstrap_input_id),
+        digest(record.bootstrap_input_commitment),
+        digest(record.bootstrap_target_execution_commitment),
+        count(
+            "bootstrap origin registry count", record.bootstrap_account_registry_count
+        ),
+        digest(record.bootstrap_account_registry_commitment),
+        count(
+            "bootstrap origin reconciliation count",
+            record.bootstrap_reconciliation_transition_count,
+        ),
+        digest(record.bootstrap_reconciliation_transition_head),
+        digest(record.bootstrap_neutral_checkpoint_proof_commitment),
+        _encode_runtime_checkpoint_venue_transition_proof(
+            record._bootstrap_neutral_checkpoint_proof
+        ),
+        atom(record.checkpoint_input_id),
+        digest(record.checkpoint_command_commitment),
+        digest(record.neutral_checkpoint_proof_commitment),
+        _encode_runtime_checkpoint_venue_transition_proof(
+            record._neutral_checkpoint_proof
+        ),
+    ]
+
+
+def _encode_runtime_checkpoint_venue_bootstrap_target(
+    value: object,
+) -> tuple[list[object], _venue._BootstrapBoundTargetRecord]:
+    """Encode one member of the closed active/consumed bootstrap union.
+
+    Returns the row beside the active record it anchors on, so the caller checks
+    the scope of the one record that owns it rather than re-deriving the union.
+
+    R2 refuses the staged replacement value and the raw map-seal bytes outright:
+    both are transient reducer states that a published book never retains, so a
+    checkpoint carrying either is evidence of an interrupted or spliced write.
+    """
+
+    if type(value) is _venue._BootstrapBoundTargetRecord:
+        return _encode_runtime_checkpoint_venue_bootstrap_active(value), value
+    if type(value) is _venue._ConsumedBootstrapBoundTargetRecord:
+        active = value.active_record
+        if type(active) is not _venue._BootstrapBoundTargetRecord:
+            raise TypeError("consumed bootstrap target retains no exact active record")
+        atom = _operations._encode_m2_m1_atom
+        row: list[object] = [
+            "m2.venue.BootstrapTargetConsumed/v1",
+            _encode_runtime_checkpoint_venue_bootstrap_active(active),
+            atom(value.effect_id),
+            atom(value.request_occurrence_id),
+            atom(value.request_input_id),
+            _operations._encode_m2_bytes(value.effect_scope_commitment),
+        ]
+        return row, active
+    raise TypeError("bootstrap target is neither an active nor a consumed record")
+
+
+def _encode_runtime_checkpoint_venue_bootstrap_target_rows(
+    book: _venue.VenueRecoveryBook,
+    selection: _records._RuntimeCheckpointSelectionSet,
+) -> list[object]:
+    """Project the bootstrap target of each proof-selected position scope.
+
+    ``_bootstrap_bound_target_by_scope`` is an exact current selected-scope map, so
+    a retained key outside the selection fails closed.
+    """
+
+    rows: list[object] = []
+    reached = 0
+    for position_scope in _selected_position_scopes_from_selection(book, selection):
+        value = book._bootstrap_bound_target_by_scope.get(
+            _venue._position_scope_index_key(position_scope)
+        )
+        if value is None:
+            continue
+        row, anchor = _encode_runtime_checkpoint_venue_bootstrap_target(value)
+        if anchor.position_scope != position_scope:
+            raise ValueError("reached bootstrap target does not own its selected scope")
+        reached += 1
+        rows.append(_require_bounded_checkpoint_row(row))
+    if book._bootstrap_bound_target_by_scope.size != reached:
+        raise ValueError(
+            "bootstrap target map retains a key outside the selected scope set"
+        )
+    return _checkpoint_collection("m2.venue.BootstrapTargets/v1", rows)
+
+
 def _encode_runtime_checkpoint_venue_protection_cursor_rows(
     book: _venue.VenueRecoveryBook,
     selection: _records._RuntimeCheckpointSelectionSet,
@@ -2660,11 +2966,7 @@ def _encode_runtime_checkpoint_venue(
 
     if type(book) is not _venue.VenueRecoveryBook:
         raise TypeError("venue owner must be exact VenueRecoveryBook")
-    payload_maps = (
-        book._execution_reconciliation_by_input,
-        book._bootstrap_bound_target_by_scope,
-    )
-    if any(retained.size for retained in payload_maps):
+    if book._execution_reconciliation_by_input.size:
         raise ValueError(
             "nonempty venue checkpoint rows are not admitted by this projector"
         )
@@ -2698,6 +3000,9 @@ def _encode_runtime_checkpoint_venue(
         book, selection
     )
     reconciliation_rows = _encode_runtime_checkpoint_venue_reconciliation_rows(
+        book, selection
+    )
+    bootstrap_target_rows = _encode_runtime_checkpoint_venue_bootstrap_target_rows(
         book, selection
     )
     claim_rows = _encode_runtime_checkpoint_venue_claim_rows(book, selection)
@@ -2738,7 +3043,7 @@ def _encode_runtime_checkpoint_venue(
         reconciliation_rows,
         _checkpoint_collection("m2.venue.ExecutionReconciliations/v1", []),
         execution_scope_rows,
-        _checkpoint_collection("m2.venue.BootstrapTargets/v1", []),
+        bootstrap_target_rows,
         protection_cursor_rows,
     ]
     commitment = _checkpoint_row_commitment(b"execution-core/m2-venue/state/v1", row)

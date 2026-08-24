@@ -3017,3 +3017,256 @@ def test_r20_venue_reconciliation_refuses_a_row_outside_the_selected_legs() -> N
         checkpoint_codec._encode_runtime_checkpoint_venue_reconciliation_rows(
             book, selection
         )
+
+
+_FIXTURE_POSITION_SCOPE = PositionScope(
+    identity.BrokerId("paper"),
+    identity.EnvironmentId("paper"),
+    identity.AccountId("account"),
+    identity.SymbolId("AAPL"),
+)
+_FIXTURE_VENUE_SCOPE = venue.VenueScope(
+    _APPLICATION,
+    identity.BrokerId("paper"),
+    identity.EnvironmentId("paper"),
+    identity.AccountId("account"),
+)
+
+
+def _digest(marker: int) -> bytes:
+    return bytes((marker,)) * 32
+
+
+def _fixture_execution_checkpoint() -> venue.VenueExecutionCheckpoint:
+    return venue.VenueExecutionCheckpoint(
+        position_scope=_FIXTURE_POSITION_SCOPE,
+        registry_count=0,
+        registry_commitment=_digest(1),
+        position_commitment=_digest(2),
+        root_heads_commitment=_digest(3),
+        integrity_bits=0,
+        account_reconciliation_required=False,
+        reconciliation_transition_count=0,
+        reconciliation_transition_head=_digest(4),
+    )
+
+
+def _fixture_transition_proof() -> venue._ProtectionTransitionProof:
+    """A genesis, non-advancing, ordinary proof the venue itself calls authentic."""
+
+    genesis = venue._protection_genesis_cursor()
+    checkpoint = _fixture_execution_checkpoint()
+    return venue._ProtectionTransitionProof(
+        position_scope=_FIXTURE_POSITION_SCOPE,
+        predecessor_cursor=genesis,
+        cursor=genesis,
+        predecessor_book_scope=_FIXTURE_VENUE_SCOPE,
+        book_scope=_FIXTURE_VENUE_SCOPE,
+        predecessor_book_commitment=_digest(5),
+        book_commitment=_digest(5),
+        predecessor_execution_commitment=_digest(6),
+        execution_commitment=_digest(6),
+        predecessor_execution_checkpoint=checkpoint,
+        execution_checkpoint=checkpoint,
+        predecessor_summary=venue._SymbolAuthoritySummary(),
+        summary=venue._SymbolAuthoritySummary(),
+        predecessor_binding=None,
+        binding=None,
+        predecessor_execution_binding_matches=True,
+        execution_binding_matches=True,
+        predecessor_account_reconciliation_clear=True,
+        account_reconciliation_clear=True,
+        command_commitment=_digest(7),
+        disposition=venue.VenueRecoveryDisposition.REFUSED,
+        quantity_delta=0,
+    )
+
+
+def _fixture_bootstrap_record() -> venue._BootstrapBoundTargetRecord:
+    """One authentic active record minted through the venue's own constructor."""
+
+    binding = venue.VenueExecutionBinding(
+        position_scope=_FIXTURE_POSITION_SCOPE,
+        position_commitment=_digest(2),
+        root_heads_commitment=_digest(3),
+        integrity_bits=0,
+    )
+    registry_input = venue._new_bootstrap_target_registry_input(
+        application_generation_id=_APPLICATION,
+        source_kind=venue._BootstrapSourceKind.EMPTY_ACCOUNT,
+        position_scope=_FIXTURE_POSITION_SCOPE,
+        source_execution_commitment=_digest(8),
+        target_genesis_execution_commitment=_digest(9),
+        target_execution_commitment=_digest(10),
+        prior_account_registry_count=0,
+        prior_account_registry_commitment=_digest(11),
+        reconciliation_transition_count=0,
+        reconciliation_transition_head=_digest(12),
+    )
+    return venue._new_bootstrap_bound_target_record(
+        application_generation_id=_APPLICATION,
+        position_scope=_FIXTURE_POSITION_SCOPE,
+        source_kind=venue._BootstrapSourceKind.EMPTY_ACCOUNT,
+        source_execution_commitment=_digest(8),
+        target_genesis_execution_commitment=_digest(9),
+        target_execution_commitment=_digest(10),
+        binding=binding,
+        account_registry_count=0,
+        account_registry_commitment=_digest(11),
+        reconciliation_transition_count=0,
+        reconciliation_transition_head=_digest(12),
+        bootstrap_input=registry_input,
+        neutral_checkpoint_proof=_fixture_transition_proof(),
+    )
+
+
+def _fixture_consumed_bootstrap_record() -> object:
+    effect = venue.BrokerEffect(
+        venue.VenueEffectScope(
+            _APPLICATION,
+            identity.BrokerId("paper"),
+            identity.EnvironmentId("paper"),
+            identity.AccountId("account"),
+            identity.EffectId("bootstrap-effect"),
+            identity.RequestOccurrenceId("bootstrap-request"),
+            identity.MandateId("bootstrap-mandate"),
+            venue.EffectKind.SUBMIT,
+            identity.ClientOrderId("bootstrap-coid"),
+            identity.SymbolId("AAPL"),
+            ExecutionSide.BUY,
+            values.Quantity(1),
+            b"\x07" * 32,
+        )
+    )
+    return venue._new_consumed_bootstrap_bound_target_record(
+        active_record=_fixture_bootstrap_record(),
+        effect=effect,
+        request_input_id=identity.VenueInputId("bootstrap-input"),
+    )
+
+
+def _book_with_bootstrap_target(
+    book: venue.VenueRecoveryBook,
+    value: object,
+    position_scope: PositionScope = _FIXTURE_POSITION_SCOPE,
+) -> venue.VenueRecoveryBook:
+    forged = copy(book)
+    object.__setattr__(
+        forged,
+        "_bootstrap_bound_target_by_scope",
+        book._bootstrap_bound_target_by_scope.insert_new(
+            venue._position_scope_index_key(position_scope), value, b"\x04" * 32
+        ),
+    )
+    return forged
+
+
+def _bootstrap_selection() -> records._RuntimeCheckpointSelectionSet:
+    return _venue_claim_selection()
+
+
+def test_r20_venue_transition_proof_encodes_its_twenty_five_inert_members() -> None:
+    row = checkpoint_codec._encode_runtime_checkpoint_venue_transition_proof(
+        _fixture_transition_proof()
+    )
+
+    assert row[0] == "m2.venue.ProtectionTransitionProof/v1"
+    assert len(row) == 25
+    assert row[2][0] == "m2.venue.ProtectionTransitionCursor/v1"
+    assert len(row[2]) == 6
+    assert row[2][4] is None and row[2][5] is None
+    assert row[4][0] == "m2.venue.Scope/v1" and len(row[4]) == 5
+    assert row[12][0] == "m2.venue.SymbolAuthoritySummary/v1"
+    assert len(row[12]) == 10
+    assert row[12][5] == ["m2.venue.StandDownEffects/v1", 0, []]
+    assert row[14] is None and row[15] is None
+    assert row[21] == ["m1.venue.VenueRecoveryDisposition", "REFUSED"]
+    assert row[22] == 0
+    assert row[23] == ["m1.venue.ProtectionTransitionSourceKind", "ORDINARY"]
+    checkpoint_codec._validate_checkpoint_nested_value(row)
+
+
+def test_r20_venue_transition_proof_refuses_an_inauthentic_lineage() -> None:
+    proof = _fixture_transition_proof()
+    forged = copy(proof)
+    # An APPLIED disposition on a cursor that never advanced is exactly what the
+    # venue's own lineage check rejects; the projector must not launder it.
+    object.__setattr__(forged, "disposition", venue.VenueRecoveryDisposition.APPLIED)
+
+    with pytest.raises(ValueError, match="lineage is not authentic"):
+        checkpoint_codec._encode_runtime_checkpoint_venue_transition_proof(forged)
+
+
+def test_r20_venue_bootstrap_target_rows_project_the_active_record() -> None:
+    state, _ = _authority_state_with_effects()
+    book = _book_with_bootstrap_target(state.venue, _fixture_bootstrap_record())
+
+    rows = checkpoint_codec._encode_runtime_checkpoint_venue_bootstrap_target_rows(
+        book, _bootstrap_selection()
+    )
+
+    assert rows[0] == "m2.venue.BootstrapTargets/v1"
+    assert rows[1] == 1
+    row = rows[2][0]
+    assert row[0] == "m2.venue.BootstrapTargetActive/v1"
+    assert len(row) == 25
+    assert row[3] == ["m1.venue.BootstrapSourceKind", "EMPTY_ACCOUNT"]
+    assert row[7][0] == "m2.venue.ExecutionBinding/v1" and len(row[7]) == 5
+    for index in (20, 24):
+        assert row[index][0] == "m2.venue.ProtectionTransitionProof/v1"
+        assert len(row[index]) == 25
+    checkpoint_codec._validate_checkpoint_collection(
+        rows, "m2.venue.BootstrapTargets/v1"
+    )
+
+
+def test_r20_venue_bootstrap_target_rows_project_the_consumed_record() -> None:
+    state, _ = _authority_state_with_effects()
+    book = _book_with_bootstrap_target(
+        state.venue, _fixture_consumed_bootstrap_record()
+    )
+
+    rows = checkpoint_codec._encode_runtime_checkpoint_venue_bootstrap_target_rows(
+        book, _bootstrap_selection()
+    )
+
+    row = rows[2][0]
+    assert row[0] == "m2.venue.BootstrapTargetConsumed/v1"
+    assert len(row) == 6
+    assert row[1][0] == "m2.venue.BootstrapTargetActive/v1"
+    assert len(row[1]) == 25
+    checkpoint_codec._validate_checkpoint_collection(
+        rows, "m2.venue.BootstrapTargets/v1"
+    )
+
+
+@pytest.mark.parametrize("value", [b"\x05" * 32, object()])
+def test_r20_venue_bootstrap_target_refuses_a_staged_or_seal_value(
+    value: object,
+) -> None:
+    state, _ = _authority_state_with_effects()
+    book = _book_with_bootstrap_target(state.venue, value)
+
+    with pytest.raises(TypeError, match="neither an active nor a consumed record"):
+        checkpoint_codec._encode_runtime_checkpoint_venue_bootstrap_target_rows(
+            book, _bootstrap_selection()
+        )
+
+
+def test_r20_venue_bootstrap_target_map_refuses_an_unselected_scope() -> None:
+    state, _ = _authority_state_with_effects()
+    book = _book_with_bootstrap_target(
+        state.venue,
+        _fixture_bootstrap_record(),
+        PositionScope(
+            identity.BrokerId("paper"),
+            identity.EnvironmentId("paper"),
+            identity.AccountId("account"),
+            identity.SymbolId("MSFT"),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="outside the selected scope set"):
+        checkpoint_codec._encode_runtime_checkpoint_venue_bootstrap_target_rows(
+            book, _bootstrap_selection()
+        )
