@@ -1985,6 +1985,61 @@ def _encode_runtime_checkpoint_venue_owner_attempt_rows(
     return _checkpoint_collection("m2.venue.OwnerAttempts/v1", rows)
 
 
+def _selected_root_keys_from_selection(
+    book: _venue.VenueRecoveryBook,
+    selection: _records._RuntimeCheckpointSelectionSet,
+) -> tuple[_identity.RootFillKey, ...]:
+    """Derive the exact selected root-fill identities from the repository selection."""
+
+    return tuple(
+        _identity.RootFillKey(
+            book.scope.broker,
+            book.scope.environment,
+            book.scope.account,
+            record.root_fill_id,
+        )
+        for record in selection.roots
+    )
+
+
+def _encode_runtime_checkpoint_venue_correlation_rows(
+    book: _venue.VenueRecoveryBook,
+    selection: _records._RuntimeCheckpointSelectionSet,
+) -> list[object]:
+    """Project the acquisition correlation of each proof-selected root."""
+
+    atom = _operations._encode_m2_m1_atom
+    rows: list[object] = []
+    reached = 0
+    for root_key in _selected_root_keys_from_selection(book, selection):
+        entry = book._acquisition_correlation_by_root.get(
+            _venue._coverage_root_index_key(root_key)
+        )
+        if entry is None:
+            continue
+        if entry.root_key != root_key:
+            raise ValueError("reached correlation does not own its selected root")
+        reached += 1
+        rows.append(
+            _require_bounded_checkpoint_row(
+                [
+                    "m2.venue.AcquisitionCorrelation/v1",
+                    atom(entry.application_generation_id),
+                    _operations._encode_m2_position_scope(entry.position_scope),
+                    atom(entry.request_occurrence_id),
+                    atom(entry.effect_id),
+                    atom(entry.leg_key),
+                    atom(entry.root_key),
+                ]
+            )
+        )
+    if book._acquisition_correlation_by_root.size != reached:
+        raise ValueError(
+            "acquisition correlation map retains a selected root outside the selection"
+        )
+    return _checkpoint_collection("m2.venue.AcquisitionCorrelations/v1", rows)
+
+
 def _encode_runtime_checkpoint_venue_protection_cursor_rows(
     book: _venue.VenueRecoveryBook,
     selection: _records._RuntimeCheckpointSelectionSet,
@@ -2224,7 +2279,6 @@ def _encode_runtime_checkpoint_venue(
     if type(book) is not _venue.VenueRecoveryBook:
         raise TypeError("venue owner must be exact VenueRecoveryBook")
     payload_maps = (
-        book._acquisition_correlation_by_root,
         book._closure_head_by_leg,
         book._human_coverage_by_root,
         book._broker_coverage_by_root,
@@ -2243,6 +2297,9 @@ def _encode_runtime_checkpoint_venue(
     )
     high_water_rows = _encode_runtime_checkpoint_venue_high_water_rows(book, selection)
     owner_attempt_rows = _encode_runtime_checkpoint_venue_owner_attempt_rows(
+        book, selection
+    )
+    correlation_rows = _encode_runtime_checkpoint_venue_correlation_rows(
         book, selection
     )
     execution_scope_rows = _encode_runtime_checkpoint_venue_execution_scope_rows(
@@ -2280,7 +2337,7 @@ def _encode_runtime_checkpoint_venue(
         effect_rows,
         claim_rows,
         owner_attempt_rows,
-        _checkpoint_collection("m2.venue.AcquisitionCorrelations/v1", []),
+        correlation_rows,
         _checkpoint_collection("m2.venue.ClosureHeads/v1", []),
         high_water_rows,
         _checkpoint_collection("m2.venue.HumanCoverages/v1", []),

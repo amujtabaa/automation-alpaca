@@ -2493,3 +2493,84 @@ def test_r20_venue_owner_attempt_null_attempt_and_unselected_leg() -> None:
         checkpoint_codec._encode_runtime_checkpoint_venue_owner_attempt_rows(
             book, _venue_claim_selection()
         )
+
+
+def _root_selection(
+    selection: records._RuntimeCheckpointSelectionSet, root_fill_id: str
+) -> records._RuntimeCheckpointSelectionSet:
+    forged = deepcopy(selection)
+    object.__setattr__(
+        forged,
+        "roots",
+        (
+            records.RootFillRecord(
+                1,
+                1,
+                _APPLICATION,
+                _EXECUTION_PROFILE,
+                identity.AcquisitionGenerationId("ab" * 32),
+                identity.RootFillId(root_fill_id),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                0,
+            ),
+        ),
+    )
+    return forged
+
+
+def test_r20_venue_acquisition_correlation_rows_project_selected_roots() -> None:
+    state, _ = _authority_state_with_effects()
+    root_key = identity.RootFillKey(
+        identity.BrokerId("paper"),
+        identity.EnvironmentId("paper"),
+        identity.AccountId("account"),
+        identity.RootFillId("root-1"),
+    )
+    leg_key = identity.VenueLegKey(
+        identity.BrokerId("paper"),
+        identity.EnvironmentId("paper"),
+        identity.AccountId("account"),
+        identity.OrderId("owner-order-1"),
+    )
+    entry = venue._AcquisitionCorrelationEntry(
+        _APPLICATION,
+        _DORMANT_POSITION_SCOPE,
+        identity.RequestOccurrenceId("req-effect-1"),
+        identity.EffectId("effect-1"),
+        leg_key,
+        root_key,
+    )
+    book = copy(state.venue)
+    object.__setattr__(
+        book,
+        "_acquisition_correlation_by_root",
+        state.venue._acquisition_correlation_by_root.insert_new(
+            venue._coverage_root_index_key(root_key), entry, entry.commitment
+        ),
+    )
+    selection = _root_selection(_venue_claim_selection(), "root-1")
+
+    rows = checkpoint_codec._encode_runtime_checkpoint_venue_correlation_rows(
+        book, selection
+    )
+
+    assert rows[0] == "m2.venue.AcquisitionCorrelations/v1"
+    assert rows[1] == 1
+    row = rows[2][0]
+    assert row[0] == "m2.venue.AcquisitionCorrelation/v1"
+    assert len(row) == 7
+    assert row[2] == _operations._encode_m2_position_scope(_DORMANT_POSITION_SCOPE)
+    assert row[6] == _operations._encode_m2_m1_atom(root_key)
+    checkpoint_codec._validate_checkpoint_collection(
+        rows, "m2.venue.AcquisitionCorrelations/v1"
+    )
+
+    with pytest.raises(ValueError, match="selected root"):
+        checkpoint_codec._encode_runtime_checkpoint_venue_correlation_rows(
+            book, _venue_claim_selection()
+        )
