@@ -1042,6 +1042,7 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
     sqlite_connect_names: set[str] = set()
     dynamic_import_module_names: set[str] = set()
     dynamic_import_names: set[str] = {"__import__"}
+    builtins_module_names: set[str] = {"__builtins__"}
     operator_module_names: set[str] = set()
     attrgetter_names: set[str] = set()
     sqlite_connection_import_lines: list[int] = []
@@ -1084,7 +1085,15 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
                         attrgetter_names.add(imported.asname or "attrgetter")
             if node.module == "builtins":
                 for imported in node.names:
-                    if imported.name in {"getattr", "vars", "eval", "exec"}:
+                    if imported.name == "__import__":
+                        dynamic_import_names.add(imported.asname or "__import__")
+                    if imported.name in {
+                        "__import__",
+                        "getattr",
+                        "vars",
+                        "eval",
+                        "exec",
+                    }:
                         dynamic_builtin_lines.append(node.lineno)
             if node.module == "approved_schema_digest":
                 for imported in node.names:
@@ -1114,6 +1123,7 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
                 if imported.name == "operator":
                     operator_module_names.add(imported.asname or "operator")
                 if imported.name == "builtins":
+                    builtins_module_names.add(imported.asname or "builtins")
                     dynamic_builtin_lines.append(node.lineno)
 
     def _literal_dynamic_import_target(call: ast.Call) -> str | None:
@@ -1121,9 +1131,18 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
             (isinstance(call.func, ast.Name) and call.func.id in dynamic_import_names)
             or (
                 isinstance(call.func, ast.Attribute)
-                and call.func.attr == "import_module"
+                and call.func.attr in {"__import__", "import_module"}
                 and isinstance(call.func.value, ast.Name)
-                and call.func.value.id in dynamic_import_module_names
+                and (
+                    (
+                        call.func.attr == "import_module"
+                        and call.func.value.id in dynamic_import_module_names
+                    )
+                    or (
+                        call.func.attr == "__import__"
+                        and call.func.value.id in builtins_module_names
+                    )
+                )
             )
         )
         if (
@@ -1160,7 +1179,12 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
     has_sqlite_surface = bool(
         sqlite_module_names or sqlite_connect_names or dynamic_sqlite_or_schema_lines
     )
-    has_gate_surface = has_sqlite_surface or bool(installer_names)
+    # A canonical approval import marks a potential gate-bearing fixture.  It
+    # may not recover a hidden SQLite module through importlib or builtins just
+    # because the literal connection path has not yet been recognized.
+    has_gate_surface = bool(
+        has_sqlite_surface or installer_names or canonical_gate_imports
+    )
     if has_sqlite_surface:
         violations.extend(
             f"{label}:{line}: SQLite connection direct import"
@@ -1347,9 +1371,18 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
             return call.func.id in dynamic_import_names
         return bool(
             isinstance(call.func, ast.Attribute)
-            and call.func.attr == "import_module"
+            and call.func.attr in {"__import__", "import_module"}
             and isinstance(call.func.value, ast.Name)
-            and call.func.value.id in dynamic_import_module_names
+            and (
+                (
+                    call.func.attr == "import_module"
+                    and call.func.value.id in dynamic_import_module_names
+                )
+                or (
+                    call.func.attr == "__import__"
+                    and call.func.value.id in builtins_module_names
+                )
+            )
         )
 
     def _is_installer_call(call: ast.Call) -> bool:
@@ -1364,6 +1397,8 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
     for node in ast.walk(tree):
         if not has_gate_surface:
             continue
+        if isinstance(node, ast.Name) and node.id == "__builtins__":
+            violations.append(f"{label}:{node.lineno}: dynamic builtin namespace route")
         if isinstance(node, ast.Call) and _is_dynamic_import_call(node):
             violations.append(f"{label}:{node.lineno}: dynamic import route")
         if isinstance(node, ast.Call) and _call_tail(node.func) in {"eval", "exec"}:
@@ -1786,6 +1821,54 @@ def open_connection(path):
     return importlib.import_module('sqlite3').connect(path)
 """,
             "literal dynamic SQLite/schema import",
+        ),
+        (
+            """
+from approved_schema_digest import require_approved_ddl_execution
+def open_connection(path):
+    require_approved_ddl_execution()
+    return __import__('sqlite3').connect(path)
+""",
+            "literal dynamic SQLite/schema import",
+        ),
+        (
+            """
+import builtins
+from approved_schema_digest import require_approved_ddl_execution
+def open_connection(path):
+    require_approved_ddl_execution()
+    return builtins.__import__('sqlite3').connect(path)
+""",
+            "dynamic builtin import",
+        ),
+        (
+            """
+from builtins import __import__ as module_loader
+from approved_schema_digest import require_approved_ddl_execution
+def open_connection(path):
+    require_approved_ddl_execution()
+    return module_loader('sqlite3').connect(path)
+""",
+            "dynamic builtin import",
+        ),
+        (
+            """
+from approved_schema_digest import require_approved_ddl_execution
+def open_connection(path):
+    require_approved_ddl_execution()
+    return __builtins__['__import__']('sqlite3').connect(path)
+""",
+            "dynamic builtin namespace route",
+        ),
+        (
+            """
+import importlib
+from approved_schema_digest import require_approved_ddl_execution
+def open_connection(path):
+    require_approved_ddl_execution()
+    return getattr(importlib, 'import_module')('sqlite3').connect(path)
+""",
+            "dynamic import route",
         ),
         (
             # Alternate public sqlite3 module paths are not the accepted grammar.
