@@ -714,7 +714,15 @@ def test_owner_projector_refuses_missing_forged_and_unordered_scope_owners() -> 
         checkpoint_codec._project_runtime_checkpoint(proof, book, state, (forged,))
 
 
-def test_owner_projector_refuses_spliced_authority_and_nonempty_source_order() -> None:
+def test_owner_projector_refuses_spliced_authority_and_ignores_source_order() -> None:
+    """R17 section 1: projection never reads _effect_order, so it cannot move bytes.
+
+    This previously asserted that a nonempty source order was REFUSED. R17 deletes the
+    source-order dependency outright - the selection proof is the sole membership and
+    order witness - so the control is now the stronger positive one: unrelated source
+    order must leave the projected payload byte-identical.
+    """
+
     proof = _selection_proof()
     book, state = _empty_owners()
     other_book, other_state = _empty_owners("other-account")
@@ -722,6 +730,9 @@ def test_owner_projector_refuses_spliced_authority_and_nonempty_source_order() -
     with pytest.raises(ValueError, match="selected venue owner"):
         checkpoint_codec._project_runtime_checkpoint(proof, book, other_state, ())
 
+    clean_bytes = checkpoint_codec.encode_runtime_checkpoint(
+        checkpoint_codec._project_runtime_checkpoint(proof, book, state, ())
+    )
     sequence_type = type(book._effect_order)
     object.__setattr__(
         book,
@@ -730,8 +741,11 @@ def test_owner_projector_refuses_spliced_authority_and_nonempty_source_order() -
             (identity.EffectId("unselected-effect"),), lambda _value: b"x" * 32
         ),
     )
-    with pytest.raises((RuntimeError, ValueError)):
+    noisy_bytes = checkpoint_codec.encode_runtime_checkpoint(
         checkpoint_codec._project_runtime_checkpoint(proof, book, state, ())
+    )
+
+    assert noisy_bytes == clean_bytes
     assert other_book.scope.account == identity.AccountId("other-account")
 
 
@@ -2048,5 +2062,63 @@ def test_r20_venue_claim_refuses_claim_naming_an_unselected_effect() -> None:
 
     with pytest.raises(ValueError, match="unselected effect"):
         checkpoint_codec._encode_runtime_checkpoint_venue_claim_rows(
+            state.venue, forged
+        )
+
+
+def test_r20_venue_effect_rows_carry_dense_proof_order_checkpoint_ordinals() -> None:
+    """R18 section 1: I(checkpoint_ordinal) is the dense 0..n-1 proof-order index."""
+
+    state, _ = _authority_state_with_effects()
+    selection = _venue_claim_selection()
+
+    rows = checkpoint_codec._encode_runtime_checkpoint_venue_effect_rows(
+        state.venue, selection
+    )
+
+    assert rows[0] == "m2.venue.Effects/v1"
+    assert rows[1] == 1
+    row = rows[2][0]
+    assert row[0] == "m2.venue.EffectCurrent/v1"
+    assert len(row) == 10
+    assert row[1] == 0
+    scope_row = row[2]
+    assert scope_row[0] == "m2.venue.EffectScope/v1"
+    assert len(scope_row) == 15
+    assert scope_row[5] == _operations._encode_m2_m1_atom(identity.EffectId("effect-1"))
+    # the fixture claims the effect, so the current owner state is DISPATCH_CLAIMED
+    assert row[3] == ["m1.venue.BrokerEffectState", "DISPATCH_CLAIMED"]
+    assert row[7] == ["m2.venue.Contradictions/v1", 0, []]
+    checkpoint_codec._validate_checkpoint_collection(rows, "m2.venue.Effects/v1")
+
+
+def test_r20_venue_effect_rows_refuse_a_record_disagreeing_with_its_owner() -> None:
+    state, _ = _authority_state_with_effects()
+    selection = _venue_claim_selection()
+    forged = deepcopy(selection)
+    record = selection.effects[0]
+    other = deepcopy(record)
+    object.__setattr__(other, "side", "BUY")
+    object.__setattr__(forged, "effects", (other,))
+
+    with pytest.raises(ValueError, match="selected record"):
+        checkpoint_codec._encode_runtime_checkpoint_venue_effect_rows(
+            state.venue, forged
+        )
+
+
+def test_r20_venue_effect_rows_refuse_an_unreachable_selected_effect() -> None:
+    state, _ = _authority_state_with_effects()
+    selection = _venue_claim_selection()
+    forged = deepcopy(selection)
+    object.__setattr__(
+        forged,
+        "effects",
+        (_venue_effect_record(identity.EffectId("effect-absent"), 1),),
+    )
+    object.__setattr__(forged, "claims", ())
+
+    with pytest.raises(ValueError, match="no current owner"):
+        checkpoint_codec._encode_runtime_checkpoint_venue_effect_rows(
             state.venue, forged
         )

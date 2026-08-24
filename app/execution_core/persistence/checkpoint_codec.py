@@ -1743,6 +1743,134 @@ def _encode_dormant_protection(
     return row, source_projection
 
 
+def _encode_runtime_checkpoint_venue_effect_scope(
+    scope: _venue.VenueEffectScope,
+) -> list[object]:
+    """Encode the frozen 15-member venue effect scope."""
+
+    atom = _operations._encode_m2_m1_atom
+    return [
+        "m2.venue.EffectScope/v1",
+        atom(scope.generation),
+        atom(scope.broker),
+        atom(scope.environment),
+        atom(scope.account),
+        atom(scope.effect_id),
+        atom(scope.request_occurrence_id),
+        atom(scope.mandate_id),
+        _checkpoint_enum("m1.venue.EffectKind", scope.kind),
+        None if scope.client_order_id is None else atom(scope.client_order_id),
+        atom(scope.symbol_id),
+        _checkpoint_enum("m1.fills.ExecutionSide", scope.side),
+        atom(scope.quantity),
+        _operations._encode_m2_bytes(scope.economic_scope),
+        None if scope.target_leg_key is None else atom(scope.target_leg_key),
+    ]
+
+
+def _encode_runtime_checkpoint_venue_acceptance_proof(
+    proof: _venue.AcceptanceProof,
+) -> list[object]:
+    """Encode the frozen 6-member acceptance proof."""
+
+    atom = _operations._encode_m2_m1_atom
+    return [
+        "m2.venue.AcceptanceProof/v1",
+        _checkpoint_enum("m1.venue.AcceptanceProofKind", proof.kind),
+        atom(proof.effect_scope.effect_id),
+        (
+            None
+            if proof.claim_occurrence_id is None
+            else atom(proof.claim_occurrence_id)
+        ),
+        atom(proof.evidence_reference),
+        _operations._encode_m2_bytes(proof.evidence_digest),
+    ]
+
+
+def _encode_runtime_checkpoint_venue_effect_rows(
+    book: _venue.VenueRecoveryBook,
+    selection: _records._RuntimeCheckpointSelectionSet,
+) -> list[object]:
+    """Project each proof-selected effect by direct current-owner key.
+
+    R17 section 1: the selection proof is the sole membership and order witness, so
+    rows are emitted in proof order and the projector never reads ``_effect_order``,
+    ``_owner_order`` or any rank map. R18 section 1 fixes member 1 as the dense
+    ``checkpoint_ordinal`` — the zero-based index of the row in its proof-selected
+    family — which deliberately does not claim reducer insertion order.
+    """
+
+    atom = _operations._encode_m2_m1_atom
+    seen: set[bytes] = set()
+    rows: list[object] = []
+    for ordinal, record in enumerate(selection.effects):
+        effect_external = record.effect_external
+        current = book._effect_by_id.get(_venue._effect_index_key(effect_external))
+        if current is None:
+            raise ValueError("selected effect has no current owner row")
+        scope = current.effect.scope
+        if scope.effect_id != effect_external:
+            raise ValueError("reached effect does not own its selected identity")
+        if (
+            scope.request_occurrence_id != record.request_occurrence_id
+            or scope.mandate_id != record.mandate_id
+            or scope.kind.value != record.effect_kind
+            or scope.client_order_id != record.client_order_id
+            or scope.side.value != record.side
+            or scope.quantity != record.quantity
+            or scope.economic_scope != record.economic_scope
+        ):
+            raise ValueError("reached effect disagrees with its selected record")
+        order_key = _atom_order_key(effect_external)
+        if order_key in seen:
+            raise ValueError("selected effects retain a duplicate effect")
+        seen.add(order_key)
+        effect = current.effect
+        contradictions: list[object] = [
+            [
+                "m2.venue.AcceptanceContradiction/v1",
+                evidence_ordinal,
+                atom(contradiction.leg_key),
+                atom(contradiction.observation_id),
+            ]
+            for evidence_ordinal, contradiction in enumerate(
+                effect.contradiction_evidence
+            )
+        ]
+        rows.append(
+            _require_bounded_checkpoint_row(
+                [
+                    "m2.venue.EffectCurrent/v1",
+                    ordinal,
+                    _encode_runtime_checkpoint_venue_effect_scope(scope),
+                    _checkpoint_enum("m1.venue.BrokerEffectState", effect.state),
+                    _checkpoint_enum(
+                        "m1.venue.AcceptanceSetState", effect.acceptance_set_state
+                    ),
+                    (
+                        None
+                        if effect.claim_occurrence_id is None
+                        else atom(effect.claim_occurrence_id)
+                    ),
+                    (
+                        None
+                        if effect.acceptance_proof is None
+                        else _encode_runtime_checkpoint_venue_acceptance_proof(
+                            effect.acceptance_proof
+                        )
+                    ),
+                    _checkpoint_collection(
+                        "m2.venue.Contradictions/v1", contradictions
+                    ),
+                    current.operator_epoch,
+                    current.account_epoch,
+                ]
+            )
+        )
+    return _checkpoint_collection("m2.venue.Effects/v1", rows)
+
+
 def _encode_runtime_checkpoint_venue_claim_rows(
     book: _venue.VenueRecoveryBook,
     selection: _records._RuntimeCheckpointSelectionSet,
@@ -1798,10 +1926,8 @@ def _encode_runtime_checkpoint_venue(
 
     if type(book) is not _venue.VenueRecoveryBook:
         raise TypeError("venue owner must be exact VenueRecoveryBook")
-    book._validate_full()
     payload_maps = (
         book._authority_epoch_by_scope,
-        book._effect_by_id,
         book._owner_by_leg,
         book._acquisition_correlation_by_root,
         book._closure_head_by_leg,
@@ -1819,8 +1945,7 @@ def _encode_runtime_checkpoint_venue(
         raise ValueError(
             "nonempty venue checkpoint rows are not admitted by this projector"
         )
-    if book._effect_order.length or book._owner_order.length:
-        raise ValueError("venue source order is not represented by selected rows")
+    effect_rows = _encode_runtime_checkpoint_venue_effect_rows(book, selection)
     claim_rows = _encode_runtime_checkpoint_venue_claim_rows(book, selection)
     registry_count = book.execution_registry_count
     registry_commitment = book.execution_registry_commitment
@@ -1847,7 +1972,7 @@ def _encode_runtime_checkpoint_venue(
             else _operations._encode_m2_bytes(book._registry_transition_head_commitment)
         ),
         _checkpoint_collection("m2.venue.AuthorityEpochs/v1", []),
-        _checkpoint_collection("m2.venue.Effects/v1", []),
+        effect_rows,
         claim_rows,
         _checkpoint_collection("m2.venue.OwnerAttempts/v1", []),
         _checkpoint_collection("m2.venue.AcquisitionCorrelations/v1", []),
@@ -2546,7 +2671,6 @@ def _project_runtime_checkpoint(
     if type(scope_owners) is not tuple:
         raise TypeError("scope_owners must be an exact tuple")
 
-    venue._validate_full()
     _authority._validate_authority_state(authority)
     if authority.venue is not venue:
         raise ValueError("authority does not retain the selected venue owner")
