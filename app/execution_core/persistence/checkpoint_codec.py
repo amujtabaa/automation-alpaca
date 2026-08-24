@@ -942,7 +942,7 @@ def _validate_runtime_checkpoint_authority_wire(value: list[object]) -> None:
         _validate_checkpoint_collection(member, tag)
     retained = _require_sha256_text("authority checkpoint commitment", value[13])
     expected = _checkpoint_row_commitment(
-        b"execution-core/m2-authority/state/v1", value[:13]
+        b"execution-core/m2-authority/checkpoint/v1", value[:13]
     ).hex()
     if retained != expected:
         raise ValueError("authority checkpoint commitment does not match its row")
@@ -1796,6 +1796,8 @@ def _encode_runtime_checkpoint_manual_row(
 
     if type(manual) is not _authority._ManualFlatten:
         raise TypeError("manual flatten must be exact _ManualFlatten")
+    if type(manual.phase) is not _authority._FlattenPhase:
+        raise TypeError("manual flatten phase must be exact _FlattenPhase")
     cancel_effect_ids = manual.cancel_effect_ids
     if type(cancel_effect_ids) is not tuple:
         raise TypeError("manual cancel effect IDs must be an exact tuple")
@@ -1850,10 +1852,22 @@ def _encode_runtime_checkpoint_manual_rows(
         manual = state._manual_by_id.get(_authority._manual_key(flatten_id))
         if manual is None:
             raise ValueError("selected scope names an absent manual flatten")
+        if type(manual) is not _authority._ManualFlatten:
+            raise TypeError("manual flatten must be exact _ManualFlatten")
+        if type(manual.command) is not _authority.BeginManualFlatten:
+            raise TypeError("manual flatten command must be exact BeginManualFlatten")
+        if manual.command.flatten_id != flatten_id:
+            raise ValueError("reached manual flatten does not own its index flatten ID")
+        if manual.command.symbol_id != position_scope.symbol_id:
+            raise ValueError(
+                "reached manual flatten does not own its selected scope symbol"
+            )
         if flatten_id.value in reached:
             raise ValueError("selected scopes retain a duplicate manual flatten")
         reached[flatten_id.value] = manual
-    if state._manual_by_id.size != len(reached):
+    if state._manual_by_id.size != len(
+        reached
+    ) or state._manual_flatten_by_scope.size != len(reached):
         raise ValueError("manual flatten state is not reachable from selected scopes")
     return _checkpoint_collection(
         "m2.authority.ManualFlattens/v1",
@@ -1869,7 +1883,7 @@ def _encode_runtime_checkpoint_authority(
     venue_commitment: bytes,
     application_generation_id: _identity.ApplicationGenerationId,
     selected_position_scopes: tuple[_fills.PositionScope, ...],
-) -> tuple[list[object], bytes]:
+) -> tuple[list[object], bytes, bytes]:
     """Encode the corrected R2 authority top row and its exact empty collections."""
 
     if type(state) is not _authority.ExecutionAuthorityState:
@@ -1921,10 +1935,13 @@ def _encode_runtime_checkpoint_authority(
         _checkpoint_collection("m2.authority.AcquisitionSlots/v1", []),
     ]
     commitment = _checkpoint_row_commitment(
-        b"execution-core/m2-authority/state/v1", row
+        b"execution-core/m2-authority/checkpoint/v1", row
+    )
+    source_owner_commitment = _checkpoint_row_commitment(
+        b"execution-core/m2-authority/source-owner/v1", row
     )
     row.append(_operations._encode_m2_bytes(commitment))
-    return row, commitment
+    return row, commitment, source_owner_commitment
 
 
 def _encode_runtime_checkpoint_generation(
@@ -2306,7 +2323,11 @@ def _project_runtime_checkpoint(
         )
         for selected in selected_scopes
     )
-    authority_wire, authority_commitment = _encode_runtime_checkpoint_authority(
+    (
+        authority_wire,
+        authority_commitment,
+        authority_source_owner_commitment,
+    ) = _encode_runtime_checkpoint_authority(
         authority,
         venue_commitment,
         request.application_generation_id,
@@ -2492,7 +2513,7 @@ def _project_runtime_checkpoint(
         authority_wire=authority_wire,
         scope_wires=tuple(scope_wires),
         venue_owner_commitment=venue_source_owner_commitment,
-        authority_owner_commitment=authority_commitment,
+        authority_owner_commitment=authority_source_owner_commitment,
         scope_owner_commitments=tuple(owner_commitments),
     )
 

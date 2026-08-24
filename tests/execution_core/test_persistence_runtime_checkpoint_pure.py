@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+from copy import copy
 from copy import deepcopy
 import hashlib
 import inspect
@@ -20,7 +21,6 @@ from app.execution_core.persistence import (
     operations as _operations,
     records,
 )
-import persistence_setup_support as setup_support
 
 
 _EXECUTION_PROFILE = "11" * 32
@@ -974,7 +974,7 @@ def test_r20_swapping_venue_wire_and_source_owner_commitments_fails() -> None:
     assert checkpoint_codec.RuntimeCheckpointEnvelope._is_authentic(envelope)
 
 
-def test_r20_both_venue_commitments_track_every_selected_source_member() -> None:
+def test_r20_both_venue_commitments_differ_across_distinct_selected_accounts() -> None:
     first_proof = _selection_proof()
     second_proof = _selection_proof()
     first_book, first_state = _empty_owners("account-a")
@@ -998,6 +998,73 @@ def test_r20_both_venue_commitments_track_every_selected_source_member() -> None
     )
 
 
+def _authority_state_with_manual_flattens(
+    scope: venue.VenueScope,
+    symbols: tuple[identity.SymbolId, ...],
+    *,
+    session: str = "manual-fixture-session",
+) -> authority.ExecutionAuthorityState:
+    """Build manual state through the real reducer, forging only environment proof."""
+
+    state = copy(authority.initial_execution_authority_state(scope))
+    for name, value in (
+        ("phase", authority.EnginePhase.SERVING),
+        ("mode", authority.TradingMode.REDUCING),
+        ("supervisor_fence", authority.SupervisorFence.PAPER_MUTATION_ELIGIBLE),
+        ("kill_engaged", False),
+        ("session_id", authority.SessionId(session)),
+        ("budget", authority.RequestBudget(remaining=8, safety_reserve=1)),
+    ):
+        object.__setattr__(state, name, value)
+
+    for index, symbol in enumerate(symbols):
+        execution = ExecutionSnapshot.flat(
+            PositionScope(scope.broker, scope.environment, scope.account, symbol)
+        )
+        command = authority.BeginManualFlatten(
+            authority.AuthorityInputId(f"manual-input-{index}"),
+            authority.ManualFlattenId(f"manual-flatten-{symbol.value}"),
+            authority.SessionId(session),
+            symbol,
+            identity.ActorId("fixture-operator"),
+            "fixture manual flatten",
+            identity.EvidenceReference(f"manual-evidence-{index}"),
+            None,
+        )
+        transition = authority.apply_execution_authority_input(
+            state, execution, command
+        )
+        assert transition.disposition is authority.AuthorityDisposition.APPLIED, (
+            f"manual fixture refused: {transition.disposition} {transition.reason}"
+        )
+        state = transition.state
+    return state
+
+
+def _forge_stored_manual(
+    state: authority.ExecutionAuthorityState,
+    flatten_value: str,
+    **command_changes: object,
+) -> authority.ExecutionAuthorityState:
+    """Return a state whose stored manual disagrees with the index that reaches it."""
+
+    key = authority._manual_key(authority.ManualFlattenId(flatten_value))
+    manual = state._manual_by_id.get(key)
+    assert manual is not None
+    forged_command = deepcopy(manual.command)
+    for name, value in command_changes.items():
+        object.__setattr__(forged_command, name, value)
+    forged_manual = deepcopy(manual)
+    object.__setattr__(forged_manual, "command", forged_command)
+    forged_state = deepcopy(state)
+    object.__setattr__(
+        forged_state,
+        "_manual_by_id",
+        authority._replaced(state._manual_by_id, key, forged_manual),
+    )
+    return forged_state
+
+
 def _manual_projection_inputs(
     symbols: tuple[identity.SymbolId, ...] = (identity.SymbolId("AAPL"),),
 ) -> tuple[
@@ -1009,9 +1076,7 @@ def _manual_projection_inputs(
     """Reuse the dormant selection, but with reducer-built manual flatten state."""
 
     proof, _book, state, owners = _dormant_projection_inputs()
-    manual_state = setup_support.authority_state_with_manual_flattens(
-        state.venue.scope, symbols
-    )
+    manual_state = _authority_state_with_manual_flattens(state.venue.scope, symbols)
     return proof, manual_state.venue, manual_state, owners
 
 
@@ -1038,6 +1103,15 @@ def test_r20_manual_flatten_rows_project_exact_wire_from_selected_scope() -> Non
         None,
     ]
     assert len(row) == 5
+
+    # Pin the nested command layout independently of the encoder under test.
+    command_row = row[1]
+    assert command_row[0] == "m1.authority.BeginManualFlatten/v1"
+    assert len(command_row) == 9
+    assert command_row[2] == ["1", "manual_flatten_id", ["manual-flatten-AAPL"]]
+    assert command_row[4] == ["1", "symbol_id", ["AAPL"]]
+    assert command_row[6] == "fixture manual flatten"
+    assert command_row[8] is None
     assert checkpoint_codec.RuntimeCheckpointEnvelope._is_authentic(envelope)
 
 
@@ -1082,13 +1156,17 @@ def test_r20_manual_cancel_effects_are_ordered_deduped_and_capped() -> None:
                 cancel_effect_ids=(identity.EffectId("e-1"), identity.EffectId("e-1")),
             )
         )
+    at_cap = tuple(identity.EffectId(f"e-{index:06d}") for index in range(65_535))
+    accepted = checkpoint_codec._encode_runtime_checkpoint_manual_row(
+        _replace_manual(manual, cancel_effect_ids=at_cap)
+    )
+    assert accepted[3][1] == 65_535
+
     with pytest.raises(ValueError, match="bounded|cap"):
         checkpoint_codec._encode_runtime_checkpoint_manual_row(
             _replace_manual(
                 manual,
-                cancel_effect_ids=tuple(
-                    identity.EffectId(f"e-{index}") for index in range(65_536)
-                ),
+                cancel_effect_ids=at_cap + (identity.EffectId("e-overflow"),),
             )
         )
 
@@ -1098,3 +1176,101 @@ def _replace_manual(manual: Any, **changes: object) -> Any:
     for name, value in changes.items():
         object.__setattr__(forged, name, value)
     return forged
+
+
+def test_r20_manual_disagreeing_with_its_index_flatten_id_is_refused() -> None:
+    """R20 s3: a stored manual must own the flatten ID that reached it."""
+
+    proof, book, state, owners = _manual_projection_inputs()
+    forged = _forge_stored_manual(
+        state,
+        "manual-flatten-AAPL",
+        flatten_id=authority.ManualFlattenId("manual-flatten-FORGED"),
+    )
+
+    with pytest.raises(ValueError, match="flatten"):
+        checkpoint_codec._project_runtime_checkpoint(
+            proof, forged.venue, forged, owners
+        )
+
+
+def test_r20_manual_disagreeing_with_its_reached_scope_is_refused() -> None:
+    """R20 s3: a manual reached through one scope may not name another symbol."""
+
+    proof, book, state, owners = _manual_projection_inputs()
+    forged = _forge_stored_manual(
+        state, "manual-flatten-AAPL", symbol_id=identity.SymbolId("MSFT")
+    )
+
+    with pytest.raises(ValueError, match="scope|symbol"):
+        checkpoint_codec._project_runtime_checkpoint(
+            proof, forged.venue, forged, owners
+        )
+
+
+def test_r20_dangling_manual_slot_entry_is_refused() -> None:
+    """R15 s4 cardinality is proved against BOTH authority manual maps, not one."""
+
+    proof, book, state, owners = _manual_projection_inputs()
+    unselected = PositionScope(
+        book.scope.broker,
+        book.scope.environment,
+        book.scope.account,
+        identity.SymbolId("MSFT"),
+    )
+    forged = deepcopy(state)
+    object.__setattr__(
+        forged,
+        "_manual_flatten_by_scope",
+        authority._inserted(
+            state._manual_flatten_by_scope,
+            authority._acquisition_scope_key(book.scope.generation, unselected),
+            authority.ManualFlattenId("manual-flatten-AAPL"),
+        ),
+    )
+    assert forged._manual_flatten_by_scope.size == 2
+    assert forged._manual_by_id.size == 1
+
+    with pytest.raises(ValueError, match="manual"):
+        checkpoint_codec._project_runtime_checkpoint(
+            proof, forged.venue, forged, owners
+        )
+
+
+def test_r20_manual_phase_must_be_an_exact_flatten_phase() -> None:
+    """Every other manual row member is exact-type checked; phase must be too."""
+
+    _, _, state, _ = _manual_projection_inputs()
+    manual = state._manual_by_id.get(
+        authority._manual_key(authority.ManualFlattenId("manual-flatten-AAPL"))
+    )
+    assert manual is not None
+    forged = deepcopy(manual)
+    object.__setattr__(forged, "phase", identity.SymbolId("NOT-A-PHASE"))
+
+    with pytest.raises(TypeError, match="phase"):
+        checkpoint_codec._encode_runtime_checkpoint_manual_row(forged)
+
+
+def test_r20_authority_owner_provenance_is_distinct_source_owner_domain() -> None:
+    """R15 s4 / R20 s4: authority wire and owner commitments are distinct domains."""
+
+    proof, book, state, owners = _manual_projection_inputs()
+
+    envelope = checkpoint_codec._project_runtime_checkpoint(proof, book, state, owners)
+    payload = json.loads(checkpoint_codec.encode_runtime_checkpoint(envelope))
+    source_members = payload[8][:-1]
+    preimage = envelope._owner_preimage
+
+    expected_wire = _contract_k(
+        "execution-core/m2-authority/checkpoint/v1", source_members
+    )
+    expected_source_owner = _contract_k(
+        "execution-core/m2-authority/source-owner/v1", source_members
+    )
+
+    assert expected_wire != expected_source_owner
+    assert payload[8][-1] == expected_wire
+    assert preimage is not None
+    assert preimage.authority_owner_commitment == bytes.fromhex(expected_source_owner)
+    assert preimage.authority_owner_commitment != bytes.fromhex(payload[8][-1])
