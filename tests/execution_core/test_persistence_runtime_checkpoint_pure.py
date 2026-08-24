@@ -2162,3 +2162,102 @@ def test_r20_venue_protection_cursor_refuses_an_unselected_scope_entry() -> None
         checkpoint_codec._encode_runtime_checkpoint_venue_protection_cursor_rows(
             state.venue, forged
         )
+
+
+def test_r20_venue_execution_scope_rows_project_selected_scopes() -> None:
+    state, _ = _authority_state_with_effects()
+    selection = _venue_claim_selection()
+
+    rows = checkpoint_codec._encode_runtime_checkpoint_venue_execution_scope_rows(
+        state.venue, selection
+    )
+
+    assert rows[0] == "m2.venue.ExecutionScopes/v1"
+    assert rows[1] == 1
+    row = rows[2][0]
+    assert row[0] == "m2.venue.ExecutionScopeCurrent/v1"
+    assert len(row) == 3
+    assert row[1][0] == "m2.position.execution-state/v1"
+    assert row[2][0] == "m2.venue.ExecutionCheckpoint/v1"
+    assert len(row[2]) == 10
+    checkpoint_codec._validate_checkpoint_collection(
+        rows, "m2.venue.ExecutionScopes/v1"
+    )
+
+
+def test_r20_venue_execution_scope_refuses_an_unselected_scope_entry() -> None:
+    state, _ = _authority_state_with_effects()
+    selection = _venue_claim_selection()
+    forged = deepcopy(selection)
+    object.__setattr__(forged, "scopes", ())
+
+    with pytest.raises(ValueError, match="selected scope"):
+        checkpoint_codec._encode_runtime_checkpoint_venue_execution_scope_rows(
+            state.venue, forged
+        )
+
+
+def test_r20_composite_durable_atom_is_admitted_as_a_nested_value() -> None:
+    """The validator must admit exactly what the frozen atom encoder can emit.
+
+    _encode_m2_durable_atom accepts a field that is either text or a nested atom, so a
+    composite atom such as a reported price is legitimate wire. The checkpoint
+    validator previously required every field to be text, which refused any execution
+    state carrying a price - that is, every non-flat position.
+    """
+
+    price = values.ReportedPrice(
+        units=values.PriceUnits(100),
+        scale=_PRICE_SCALE,
+        tick=values.TickMetadata(tick_units=values.PriceUnits(1), scale=_PRICE_SCALE),
+    )
+    composite = _operations._encode_m2_m1_atom(price)
+
+    assert composite[0] == "1"
+    assert any(type(field) is list for field in composite[2])
+    checkpoint_codec._validate_checkpoint_nested_value(composite)
+
+    # a malformed nested field must still fail closed
+    forged = deepcopy(composite)
+    forged[2][0] = ["9", "not-an-atom", []]
+    with pytest.raises(ValueError, match="durable atom"):
+        checkpoint_codec._validate_checkpoint_nested_value(forged)
+
+    forged_scalar = deepcopy(composite)
+    forged_scalar[2][0] = 7
+    with pytest.raises(ValueError, match="durable atom"):
+        checkpoint_codec._validate_checkpoint_nested_value(forged_scalar)
+
+
+def test_r20_tail_fold_input_registered_arity_matches_its_encoder() -> None:
+    """The nested-row registry is tag-inclusive and must match the frozen encoder.
+
+    _encode_m2_tail_fold_input emits the tag plus seven fields, and its decoder asserts
+    seven fields, so the admitted nested-row length is eight. It was registered as
+    seven, which refused every bound tail-fold proof - reachable only once a non-flat
+    position reaches a checkpoint.
+    """
+
+    state, _ = _authority_state_with_effects()
+    selection = _venue_claim_selection()
+    rows = checkpoint_codec._encode_runtime_checkpoint_venue_execution_scope_rows(
+        state.venue, selection
+    )
+    execution_state = rows[2][0][1]
+    tail_folds = [
+        member
+        for member in execution_state
+        if type(member) is list
+        and member
+        and member[0] == "m2.position.tail-fold-input/v1"
+    ]
+
+    assert tail_folds, "fixture must produce a bound tail-fold proof"
+    for tail_fold in tail_folds:
+        assert (
+            len(tail_fold)
+            == checkpoint_codec._CHECKPOINT_FIXED_ROW_LENGTHS[
+                "m2.position.tail-fold-input/v1"
+            ]
+        )
+        checkpoint_codec._validate_checkpoint_nested_value(tail_fold)

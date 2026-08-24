@@ -722,7 +722,6 @@ _CHECKPOINT_FIXED_ROW_LENGTHS = {
     "m2.authority.ClaimEffect/v1": 4,
     "m2.authority.ClaimAcquisitionEffect/v1": 5,
     "m2.authority.AcquisitionClaimPermit/v1": 22,
-    _M2_POSITION_SCOPE_TAG: 5,
     "m1.authority.BrokerEffectRequest/v1": 11,
     "m2.authority.ManualFlatten/v1": 5,
     "m1.authority.BeginManualFlatten/v1": 9,
@@ -753,7 +752,7 @@ _CHECKPOINT_FIXED_ROW_LENGTHS = {
     "m2.acquisition.DormantRegistry/v2": 5,
     "m2.scalar.Fraction/v1": 3,
     "m2.position.PositionIntegrity": 2,
-    _M2_TAIL_FOLD_INPUT_TAG: 7,
+    _M2_TAIL_FOLD_INPUT_TAG: 8,
 }
 
 _CHECKPOINT_ENUM_OWNERS = {
@@ -813,13 +812,17 @@ def _validate_checkpoint_nested_value(value: object) -> None:
         raise ValueError("checkpoint nested value has no admitted tagged shape")
     tag = value[0]
     if tag == "1":
-        if (
-            len(value) != 3
-            or type(value[1]) is not str
-            or type(value[2]) is not list
-            or any(type(field) is not str for field in value[2])
-        ):
+        if len(value) != 3 or type(value[1]) is not str or type(value[2]) is not list:
             raise ValueError("checkpoint durable atom has the wrong exact shape")
+        for field in value[2]:
+            # mirrors _encode_m2_durable_atom exactly: a field is text or one nested
+            # atom. Requiring text alone refused every composite value, and therefore
+            # every execution state carrying a price.
+            if type(field) is str:
+                continue
+            if type(field) is not list or not field or field[0] != "1":
+                raise ValueError("checkpoint durable atom has the wrong exact shape")
+            _validate_checkpoint_nested_value(field)
         return
     if tag in _CHECKPOINT_ENUM_OWNERS:
         if len(value) != 2 or type(value[1]) is not str:
@@ -827,6 +830,12 @@ def _validate_checkpoint_nested_value(value: object) -> None:
         return
     if tag in _CHECKPOINT_COLLECTION_TAGS:
         _validate_checkpoint_collection(value, tag)
+        return
+    component_length = _COMPONENT_MEMBER_COUNTS.get(tag)
+    if component_length is not None:
+        if len(value) != component_length:
+            raise ValueError(f"{tag} has the wrong exact shape")
+        _validate_component_wire(tag, value)
         return
     expected_length = _CHECKPOINT_FIXED_ROW_LENGTHS.get(tag)
     if expected_length is None or len(value) != expected_length:
@@ -1126,6 +1135,20 @@ def _decode_component(
     expected_count = _COMPONENT_MEMBER_COUNTS[actual_tag]
     if len(value) != expected_count or type(value[0]) is not str:
         raise ValueError(f"{actual_tag} has the wrong exact shape")
+    _validate_component_wire(actual_tag, value)
+    canonical = _encode_canonical_json(value)
+    if len(canonical) > _MAX_RUNTIME_CHECKPOINT_COMPONENT_BYTES:
+        raise OverflowError("checkpoint component exceeds its byte limit")
+    return _issue_component(actual_tag, canonical)
+
+
+def _validate_component_wire(actual_tag: str, value: list[object]) -> None:
+    """Validate one component body by its own exact validator.
+
+    A component nested inside a row is still a component: the generic nested-row walk
+    cannot check it, so both the top-level decode path and nested members route here.
+    """
+
     if actual_tag == _M2_POSITION_SCOPE_TAG:
         _operations._decode_m2_position_scope(value)
     elif actual_tag == _M2_VENUE_STATE_TAG:
@@ -1142,10 +1165,6 @@ def _decode_component(
         _validate_runtime_checkpoint_protection_wire(value)
     elif actual_tag == _M2_DORMANT_PROTECTION_TAG:
         _validate_runtime_checkpoint_dormant_protection_wire(value)
-    canonical = _encode_canonical_json(value)
-    if len(canonical) > _MAX_RUNTIME_CHECKPOINT_COMPONENT_BYTES:
-        raise OverflowError("checkpoint component exceeds its byte limit")
-    return _issue_component(actual_tag, canonical)
 
 
 def _decode_runtime_checkpoint(
@@ -1781,6 +1800,50 @@ def _selected_position_scopes_from_selection(
     )
 
 
+def _encode_runtime_checkpoint_venue_execution_scope_rows(
+    book: _venue.VenueRecoveryBook,
+    selection: _records._RuntimeCheckpointSelectionSet,
+) -> list[object]:
+    """Project the current execution snapshot of each proof-selected scope.
+
+    ``_execution_snapshot_by_scope`` is an exact current selected-scope map, so a key
+    outside the selection fails closed. The nested checkpoint is re-derived from the
+    same snapshot through ``VenueExecutionCheckpoint.from_execution`` rather than
+    carried independently, so it cannot disagree with the state beside it.
+    """
+
+    rows: list[object] = []
+    reached = 0
+    for position_scope in _selected_position_scopes_from_selection(book, selection):
+        snapshot = book._execution_snapshot_by_scope.get(
+            _venue._position_scope_index_key(position_scope)
+        )
+        if snapshot is None:
+            continue
+        if snapshot.position.scope != position_scope:
+            raise ValueError(
+                "reached execution snapshot does not own its selected scope"
+            )
+        reached += 1
+        execution_state = _position._m2_execution_state_from_snapshot(snapshot)
+        rows.append(
+            _require_bounded_checkpoint_row(
+                [
+                    "m2.venue.ExecutionScopeCurrent/v1",
+                    _encode_m2_execution_state_component(execution_state),
+                    _encode_runtime_checkpoint_venue_execution_checkpoint(
+                        _venue.VenueExecutionCheckpoint.from_execution(snapshot)
+                    ),
+                ]
+            )
+        )
+    if book._execution_snapshot_by_scope.size != reached:
+        raise ValueError(
+            "execution snapshot map retains a key outside the selected scope set"
+        )
+    return _checkpoint_collection("m2.venue.ExecutionScopes/v1", rows)
+
+
 def _encode_runtime_checkpoint_venue_protection_cursor_rows(
     book: _venue.VenueRecoveryBook,
     selection: _records._RuntimeCheckpointSelectionSet,
@@ -2030,7 +2093,6 @@ def _encode_runtime_checkpoint_venue(
         book._coverage_provenance_by_scope,
         book._reconciliation_by_input,
         book._execution_reconciliation_by_input,
-        book._execution_snapshot_by_scope,
         book._bootstrap_bound_target_by_scope,
     )
     if any(retained.size for retained in payload_maps):
@@ -2038,6 +2100,9 @@ def _encode_runtime_checkpoint_venue(
             "nonempty venue checkpoint rows are not admitted by this projector"
         )
     effect_rows = _encode_runtime_checkpoint_venue_effect_rows(book, selection)
+    execution_scope_rows = _encode_runtime_checkpoint_venue_execution_scope_rows(
+        book, selection
+    )
     protection_cursor_rows = _encode_runtime_checkpoint_venue_protection_cursor_rows(
         book, selection
     )
@@ -2078,7 +2143,7 @@ def _encode_runtime_checkpoint_venue(
         _checkpoint_collection("m2.venue.CoverageProvenances/v1", []),
         _checkpoint_collection("m2.venue.Reconciliations/v1", []),
         _checkpoint_collection("m2.venue.ExecutionReconciliations/v1", []),
-        _checkpoint_collection("m2.venue.ExecutionScopes/v1", []),
+        execution_scope_rows,
         _checkpoint_collection("m2.venue.BootstrapTargets/v1", []),
         protection_cursor_rows,
     ]
