@@ -723,6 +723,30 @@ _CHECKPOINT_FIXED_ROW_LENGTHS = {
     "m2.authority.ClaimAcquisitionEffect/v1": 5,
     "m2.authority.AcquisitionClaimPermit/v1": 22,
     "m1.authority.BrokerEffectRequest/v1": 11,
+    "m1.acquisition.AcquisitionMandate/v1": 15,
+    "m1.authority.AcquisitionEffectTerms/v1": 5,
+    "m1.authority.AdvanceManualFlatten/v1": 3,
+    "m1.authority.ClaimBrokerQuery/v1": 5,
+    "m1.authority.ClaimEffect/v1": 4,
+    "m1.authority.CreateBrokerEffect/v1": 6,
+    "m1.authority.EngageKill/v1": 5,
+    "m1.fills.ExecutionScope/v1": 7,
+    "m1.fills.PositionScope/v1": 5,
+    "m1.protection.EvidencePolicy/v1": 7,
+    "m1.protection.ExecutionGuard/v1": 3,
+    "m1.protection.MarketOccurrence/v1": 16,
+    "m1.protection.ProtectionMandate/v1": 17,
+    "m1.recovery.IngestHumanAttestedFill/v1": 4,
+    "m1.recovery.RecordBrokerFillEvidence/v1": 10,
+    "m1.recovery.ReleaseVenueLeg/v1": 12,
+    "m1.venue.DiscoverVenueLeg/v1": 5,
+    "m1.venue.ObserveVenueStatus/v1": 8,
+    "m1.venue.RecordTransportOutcome/v1": 4,
+    "m1.venue.RecoverClaimedEffect/v1": 3,
+    "m1.fills.BrokerFillFact/v1": 6,
+    "m1.fills.BrokerTradeCorrectFact/v1": 7,
+    "m1.fills.BrokerTradeBustFact/v1": 6,
+    "m1.fills.HumanAttestedFillFact/v1": 14,
     "m2.authority.ManualFlatten/v1": 5,
     "m1.authority.BeginManualFlatten/v1": 9,
     "m2.authority.EmergencyGrant/v1": 8,
@@ -2103,6 +2127,55 @@ def _encode_runtime_checkpoint_venue_coverage_provenance_rows(
     return _checkpoint_collection("m2.venue.CoverageProvenances/v1", rows)
 
 
+def _encode_runtime_checkpoint_venue_broker_coverage_rows(
+    book: _venue.VenueRecoveryBook,
+    selection: _records._RuntimeCheckpointSelectionSet,
+) -> list[object]:
+    """Project the broker coverage of each proof-selected root.
+
+    The owner map stores an integer index into ``_broker_coverage_ledger`` rather than
+    the coverage itself, so each proof-selected root is dereferenced through the
+    ledger; a dangling index fails closed.
+    """
+
+    atom = _operations._encode_m2_m1_atom
+    rows: list[object] = []
+    reached = 0
+    for root_key in _selected_root_keys_from_selection(book, selection):
+        index = book._broker_coverage_by_root.get(
+            _venue._coverage_root_index_key(root_key)
+        )
+        if index is None:
+            continue
+        coverage = book._broker_coverage_ledger.get(index)
+        if coverage is None:
+            raise ValueError("broker coverage index does not resolve in its ledger")
+        reached += 1
+        rows.append(
+            _require_bounded_checkpoint_row(
+                [
+                    "m2.venue.BrokerCoverage/v1",
+                    atom(coverage.effect_id),
+                    atom(coverage.leg_key),
+                    atom(coverage.prior_cumulative_quantity),
+                    atom(coverage.resulting_cumulative_quantity),
+                    _operations._encode_m2_broker_fill_fact(coverage.fact),
+                    _operations._encode_m2_bytes(coverage.evidence_digest),
+                    atom(coverage.root_source_input_id),
+                    _operations._encode_m2_broker_execution_fact(coverage.head_fact),
+                    _operations._encode_m2_bytes(coverage.head_evidence_digest),
+                    atom(coverage.head_source_input_id),
+                    coverage.mapping_exact,
+                ]
+            )
+        )
+    if book._broker_coverage_by_root.size != reached:
+        raise ValueError(
+            "broker coverage map retains a selected root outside the selection"
+        )
+    return _checkpoint_collection("m2.venue.BrokerCoverages/v1", rows)
+
+
 def _encode_runtime_checkpoint_venue_protection_cursor_rows(
     book: _venue.VenueRecoveryBook,
     selection: _records._RuntimeCheckpointSelectionSet,
@@ -2344,7 +2417,6 @@ def _encode_runtime_checkpoint_venue(
     payload_maps = (
         book._closure_head_by_leg,
         book._human_coverage_by_root,
-        book._broker_coverage_by_root,
         book._reconciliation_by_input,
         book._execution_reconciliation_by_input,
         book._bootstrap_bound_target_by_scope,
@@ -2366,6 +2438,9 @@ def _encode_runtime_checkpoint_venue(
     )
     coverage_provenance_rows = (
         _encode_runtime_checkpoint_venue_coverage_provenance_rows(book, selection)
+    )
+    broker_coverage_rows = _encode_runtime_checkpoint_venue_broker_coverage_rows(
+        book, selection
     )
     execution_scope_rows = _encode_runtime_checkpoint_venue_execution_scope_rows(
         book, selection
@@ -2406,7 +2481,7 @@ def _encode_runtime_checkpoint_venue(
         _checkpoint_collection("m2.venue.ClosureHeads/v1", []),
         high_water_rows,
         _checkpoint_collection("m2.venue.HumanCoverages/v1", []),
-        _checkpoint_collection("m2.venue.BrokerCoverages/v1", []),
+        broker_coverage_rows,
         coverage_provenance_rows,
         _checkpoint_collection("m2.venue.Reconciliations/v1", []),
         _checkpoint_collection("m2.venue.ExecutionReconciliations/v1", []),

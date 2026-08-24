@@ -2634,3 +2634,102 @@ def test_r20_venue_coverage_provenance_rows_flatten_selected_roots() -> None:
         checkpoint_codec._encode_runtime_checkpoint_venue_coverage_provenance_rows(
             book, _venue_claim_selection()
         )
+
+
+_FIXTURE_LEG_KEY = identity.VenueLegKey(
+    identity.BrokerId("paper"),
+    identity.EnvironmentId("paper"),
+    identity.AccountId("account"),
+    identity.OrderId("owner-order-1"),
+)
+_FIXTURE_ROOT_KEY = identity.RootFillKey(
+    identity.BrokerId("paper"),
+    identity.EnvironmentId("paper"),
+    identity.AccountId("account"),
+    identity.RootFillId("root-1"),
+)
+
+
+def _fixture_broker_fill_fact(label: str) -> BrokerFillFact:
+    return BrokerFillFact(
+        key=ExecutionFactKey(
+            broker=identity.BrokerId("paper"),
+            environment=identity.EnvironmentId("paper"),
+            account=identity.AccountId("account"),
+            source_event_id=identity.SourceEventId(f"coverage-{label}"),
+        ),
+        scope=ExecutionScope(
+            broker=identity.BrokerId("paper"),
+            environment=identity.EnvironmentId("paper"),
+            account=identity.AccountId("account"),
+            order_id=identity.OrderId("owner-order-1"),
+            symbol_id=identity.SymbolId("AAPL"),
+            side=ExecutionSide.BUY,
+        ),
+        root_fill_id=identity.RootFillId("root-1"),
+        quantity=values.Quantity(2),
+        price=_FIXTURE_PRICE,
+    )
+
+
+def _book_with_broker_coverage(
+    book: venue.VenueRecoveryBook,
+) -> venue.VenueRecoveryBook:
+    from app.execution_core import recovery as _recovery
+
+    coverage = _recovery._BrokerCoverage(
+        identity.EffectId("effect-1"),
+        _FIXTURE_LEG_KEY,
+        values.Quantity(0),
+        values.Quantity(2),
+        _fixture_broker_fill_fact("broker"),
+        b"\xdd" * 32,
+        identity.VenueInputId("input-1"),
+        _fixture_broker_fill_fact("broker"),
+        b"\xee" * 32,
+        identity.VenueInputId("input-1"),
+        True,
+    )
+    ledger_type = type(book._broker_coverage_ledger)
+    forged = copy(book)
+    object.__setattr__(
+        forged,
+        "_broker_coverage_ledger",
+        ledger_type.from_values((coverage,), lambda _value: b"\x01" * 32),
+    )
+    object.__setattr__(
+        forged,
+        "_broker_coverage_by_root",
+        book._broker_coverage_by_root.insert_new(
+            venue._coverage_root_index_key(_FIXTURE_ROOT_KEY), 0, b"\x02" * 32
+        ),
+    )
+    return forged
+
+
+def test_r20_venue_broker_coverage_rows_dereference_the_ledger() -> None:
+    state, _ = _authority_state_with_effects()
+    book = _book_with_broker_coverage(state.venue)
+    selection = _root_selection(_venue_claim_selection(), "root-1")
+
+    rows = checkpoint_codec._encode_runtime_checkpoint_venue_broker_coverage_rows(
+        book, selection
+    )
+
+    assert rows[0] == "m2.venue.BrokerCoverages/v1"
+    assert rows[1] == 1
+    row = rows[2][0]
+    assert row[0] == "m2.venue.BrokerCoverage/v1"
+    assert len(row) == 12
+    assert row[1] == _operations._encode_m2_m1_atom(identity.EffectId("effect-1"))
+    assert row[5][0] == "m1.fills.BrokerFillFact/v1"
+    assert row[6] == "dd" * 32
+    assert row[11] is True
+    checkpoint_codec._validate_checkpoint_collection(
+        rows, "m2.venue.BrokerCoverages/v1"
+    )
+
+    with pytest.raises(ValueError, match="selected root"):
+        checkpoint_codec._encode_runtime_checkpoint_venue_broker_coverage_rows(
+            book, _venue_claim_selection()
+        )
