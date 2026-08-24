@@ -13,9 +13,17 @@ from typing import Any
 
 import pytest
 
-from app.execution_core import authority, identity, profiles, venue
-from app.execution_core.fills import PositionScope
-from app.execution_core.position import ExecutionSnapshot
+from decimal import Decimal
+
+from app.execution_core import authority, identity, profiles, values, venue
+from app.execution_core.fills import (
+    BrokerFillFact,
+    ExecutionFactKey,
+    ExecutionScope,
+    ExecutionSide,
+    PositionScope,
+)
+from app.execution_core.position import ExecutionSnapshot, apply_broker_execution_fact
 from app.execution_core.persistence import (
     checkpoint_codec,
     operations as _operations,
@@ -1371,3 +1379,193 @@ def test_r20_claim_permit_refuses_forged_and_wrong_type_values() -> None:
         object.__setattr__(forged, name, value)
         with pytest.raises(ValueError, match="authentic"):
             checkpoint_codec._encode_runtime_checkpoint_claim_permit(forged)
+
+
+_PRICE_SCALE = values.PriceScale(Decimal("0.01"))
+_FIXTURE_PRICE = values.ReportedPrice(
+    units=values.PriceUnits(100),
+    scale=_PRICE_SCALE,
+    tick=values.TickMetadata(tick_units=values.PriceUnits(1), scale=_PRICE_SCALE),
+)
+
+
+def _advanced_execution(
+    symbol: identity.SymbolId, quantity: int, label: str
+) -> ExecutionSnapshot:
+    """Advance a real position through the fills reducer; no forging."""
+
+    base = ExecutionSnapshot.flat(
+        PositionScope(
+            identity.BrokerId("paper"),
+            identity.EnvironmentId("paper"),
+            identity.AccountId("account"),
+            symbol,
+        )
+    )
+    fact = BrokerFillFact(
+        key=ExecutionFactKey(
+            broker=identity.BrokerId("paper"),
+            environment=identity.EnvironmentId("paper"),
+            account=identity.AccountId("account"),
+            source_event_id=identity.SourceEventId(f"fixture-{label}-fill"),
+        ),
+        scope=ExecutionScope(
+            broker=identity.BrokerId("paper"),
+            environment=identity.EnvironmentId("paper"),
+            account=identity.AccountId("account"),
+            order_id=identity.OrderId(f"fixture-{label}-order"),
+            symbol_id=symbol,
+            side=ExecutionSide.BUY,
+        ),
+        root_fill_id=identity.RootFillId(f"fixture-{label}-root"),
+        quantity=values.Quantity(quantity),
+        price=_FIXTURE_PRICE,
+    )
+    transition = apply_broker_execution_fact(
+        base.position, base.integrity, base.root_heads, base.seen_facts, fact
+    )
+    return ExecutionSnapshot(
+        position=transition.position,
+        integrity=transition.integrity,
+        root_heads=transition.root_heads,
+        seen_facts=transition.seen_facts,
+    )
+
+
+def _authority_state_with_effect(
+    *,
+    claimed: bool = True,
+    symbol: identity.SymbolId = identity.SymbolId("AAPL"),
+    effect_value: str = "effect-1",
+) -> tuple[authority.ExecutionAuthorityState, identity.EffectId]:
+    """Real reducer-built effect authorization; only environment proof is forged."""
+
+    scope = venue.VenueScope(
+        _APPLICATION,
+        identity.BrokerId("paper"),
+        identity.EnvironmentId("paper"),
+        identity.AccountId("account"),
+    )
+    state = copy(authority.initial_execution_authority_state(scope))
+    for name, value in (
+        ("phase", authority.EnginePhase.SERVING),
+        ("mode", authority.TradingMode.REDUCING),
+        ("supervisor_fence", authority.SupervisorFence.PAPER_MUTATION_ELIGIBLE),
+        ("kill_engaged", False),
+        ("session_id", authority.SessionId("effect-session")),
+        ("budget", authority.RequestBudget(remaining=8, safety_reserve=1)),
+    ):
+        object.__setattr__(state, name, value)
+
+    execution = _advanced_execution(symbol, 5, effect_value)
+    effect_id = identity.EffectId(effect_value)
+    request = authority.BrokerEffectRequest(
+        effect_id,
+        identity.RequestOccurrenceId(f"req-{effect_value}"),
+        identity.MandateId(f"mandate-{effect_value}"),
+        venue.EffectKind.SUBMIT,
+        identity.ClientOrderId(f"coid-{effect_value}"),
+        symbol,
+        ExecutionSide.SELL,
+        values.Quantity(2),
+        b"\x01" * 32,
+        None,
+    )
+    created = authority.apply_execution_authority_input(
+        state,
+        execution,
+        authority.CreateBrokerEffect(
+            authority.AuthorityInputId(f"create-{effect_value}"),
+            authority.SessionId("effect-session"),
+            request,
+            None,
+            None,
+        ),
+    )
+    assert created.disposition is authority.AuthorityDisposition.APPLIED, (
+        f"effect fixture refused: {created.disposition} {created.reason}"
+    )
+    state = created.state
+    if claimed:
+        claimed_transition = authority.apply_execution_authority_input(
+            state,
+            execution,
+            authority.ClaimEffect(
+                authority.AuthorityInputId(f"claim-{effect_value}"),
+                effect_id,
+                identity.ClaimOccurrenceId(f"occurrence-{effect_value}"),
+            ),
+        )
+        assert (
+            claimed_transition.disposition is authority.AuthorityDisposition.APPLIED
+        ), f"claim fixture refused: {claimed_transition.reason}"
+        state = claimed_transition.state
+    return state, effect_id
+
+
+def test_r20_claim_row_encodes_the_exact_claim_effect_variant() -> None:
+    state, effect_id = _authority_state_with_effect()
+    claim = state._claim_by_effect.get(authority._effect_key(effect_id))
+    assert claim is not None
+
+    row = checkpoint_codec._encode_runtime_checkpoint_claim_row(claim)
+
+    assert row == [
+        "m2.authority.ClaimEffect/v1",
+        _operations._encode_m2_m1_atom(claim.input_id),
+        _operations._encode_m2_m1_atom(effect_id),
+        _operations._encode_m2_m1_atom(claim.claim_occurrence_id),
+    ]
+    checkpoint_codec._validate_checkpoint_nested_value(row)
+
+
+def test_r20_effect_authorization_row_nests_its_claim() -> None:
+    state, effect_id = _authority_state_with_effect()
+    authorization = state._effect_authority_by_id.get(authority._effect_key(effect_id))
+    claim = state._claim_by_effect.get(authority._effect_key(effect_id))
+    assert authorization is not None
+
+    row = checkpoint_codec._encode_runtime_checkpoint_effect_authorization_row(
+        authorization, claim
+    )
+
+    assert len(row) == 6
+    assert row[0] == "m2.authority.EffectAuthorization/v1"
+    assert row[1] == _operations._encode_m2_broker_effect_request(authorization.request)
+    assert row[1][1] == _operations._encode_m2_m1_atom(effect_id)
+    assert row[2] == _operations._encode_m2_m1_atom(authorization.session_id)
+    assert row[3] is None
+    assert row[4] is None
+    assert row[5] == checkpoint_codec._encode_runtime_checkpoint_claim_row(claim)
+    checkpoint_codec._validate_checkpoint_nested_value(row)
+
+
+def test_r20_effect_authorization_row_without_a_claim_is_null() -> None:
+    state, effect_id = _authority_state_with_effect(claimed=False)
+    authorization = state._effect_authority_by_id.get(authority._effect_key(effect_id))
+    assert authorization is not None
+    assert state._claim_by_effect.get(authority._effect_key(effect_id)) is None
+
+    row = checkpoint_codec._encode_runtime_checkpoint_effect_authorization_row(
+        authorization, None
+    )
+
+    assert row[5] is None
+    assert len(row) == 6
+    checkpoint_codec._validate_checkpoint_nested_value(row)
+
+
+def test_r20_effect_authorization_refuses_a_claim_naming_another_effect() -> None:
+    """Contract: every claim must name the same effect as its authorization."""
+
+    state, effect_id = _authority_state_with_effect()
+    authorization = state._effect_authority_by_id.get(authority._effect_key(effect_id))
+    claim = state._claim_by_effect.get(authority._effect_key(effect_id))
+    assert authorization is not None and claim is not None
+
+    forged = deepcopy(claim)
+    object.__setattr__(forged, "effect_id", identity.EffectId("other-effect"))
+    with pytest.raises(ValueError, match="effect"):
+        checkpoint_codec._encode_runtime_checkpoint_effect_authorization_row(
+            authorization, forged
+        )

@@ -723,6 +723,7 @@ _CHECKPOINT_FIXED_ROW_LENGTHS = {
     "m2.authority.ClaimAcquisitionEffect/v1": 5,
     "m2.authority.AcquisitionClaimPermit/v1": 22,
     _M2_POSITION_SCOPE_TAG: 5,
+    "m1.authority.BrokerEffectRequest/v1": 11,
     "m2.authority.ManualFlatten/v1": 5,
     "m1.authority.BeginManualFlatten/v1": 9,
     "m2.authority.EmergencyGrant/v1": 8,
@@ -1836,6 +1837,69 @@ def _encode_runtime_checkpoint_claim_permit(
         _operations._encode_m2_bytes(permit.currentness_commitment),
         _operations._encode_m2_bytes(permit.descriptor_commitment),
         _operations._encode_m2_bytes(permit.active_commitment),
+    ]
+
+
+def _encode_runtime_checkpoint_claim_row(
+    claim: _authority.ClaimEffect | _authority.ClaimAcquisitionEffect,
+) -> list[object]:
+    """Encode the exact ClaimRow variant for one authority-sealed claim."""
+
+    if type(claim) is _authority.ClaimEffect:
+        return [
+            "m2.authority.ClaimEffect/v1",
+            _operations._encode_m2_m1_atom(claim.input_id),
+            _operations._encode_m2_m1_atom(claim.effect_id),
+            _operations._encode_m2_m1_atom(claim.claim_occurrence_id),
+        ]
+    if type(claim) is _authority.ClaimAcquisitionEffect:
+        return [
+            "m2.authority.ClaimAcquisitionEffect/v1",
+            _operations._encode_m2_m1_atom(claim.input_id),
+            _operations._encode_m2_m1_atom(claim.effect_id),
+            _operations._encode_m2_m1_atom(claim.claim_occurrence_id),
+            _encode_runtime_checkpoint_claim_permit(claim.permit),
+        ]
+    raise TypeError("claim must be exact ClaimEffect or ClaimAcquisitionEffect")
+
+
+def _encode_runtime_checkpoint_effect_authorization_row(
+    authorization: _authority._EffectAuthorization,
+    claim: _authority.ClaimEffect | _authority.ClaimAcquisitionEffect | None,
+) -> list[object]:
+    """Encode one effect authorization with its claim nested beneath it.
+
+    The frozen contract requires every claim to name the same effect as the
+    authorization it sits under, so the relation is proved here rather than assumed
+    from the map key that reached them.
+    """
+
+    if type(authorization) is not _authority._EffectAuthorization:
+        raise TypeError("effect authorization must be exact _EffectAuthorization")
+    if type(authorization.request) is not _authority.BrokerEffectRequest:
+        raise TypeError(
+            "effect authorization request must be exact BrokerEffectRequest"
+        )
+    claim_row: list[object] | None = None
+    if claim is not None:
+        if claim.effect_id != authorization.request.effect_id:
+            raise ValueError("claim does not name the same effect as its authorization")
+        claim_row = _encode_runtime_checkpoint_claim_row(claim)
+    return [
+        "m2.authority.EffectAuthorization/v1",
+        _operations._encode_m2_broker_effect_request(authorization.request),
+        _operations._encode_m2_m1_atom(authorization.session_id),
+        (
+            None
+            if authorization.manual_flatten_id is None
+            else _operations._encode_m2_m1_atom(authorization.manual_flatten_id)
+        ),
+        (
+            None
+            if authorization.emergency_grant_id is None
+            else _operations._encode_m2_m1_atom(authorization.emergency_grant_id)
+        ),
+        claim_row,
     ]
 
 
