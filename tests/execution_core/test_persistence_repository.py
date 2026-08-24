@@ -129,6 +129,101 @@ def _checkpoint(*, head: int = 0, version: int = 1) -> records.KernelCheckpointR
     )
 
 
+def _retain_kernel_checkpoint(
+    connection: sqlite3.Connection, *, head: int = 0, version: int = 1
+) -> records.KernelCheckpointRecord:
+    """Install the kernel checkpoint (and the payload it requires) for a proof read.
+
+    ``load_current_proof`` treats the kernel checkpoint as required, and there is no
+    ``store_kernel_checkpoint`` route -- the only writer is
+    ``store_runtime_checkpoint``, which needs a fully projected envelope this file
+    does not build. ``trg_kernel_checkpoint_payload_required_insert`` additionally
+    refuses a checkpoint whose exact payload is not already retained, so both rows
+    go in together, payload first.
+    """
+
+    checkpoint = _checkpoint(head=head, version=version)
+    payload = f"wo167-payload-{head}-{version}".encode("utf-8")
+    connection.execute(
+        """
+        INSERT INTO runtime_checkpoint_payload (
+            application_generation_id, execution_profile_id,
+            market_source_profile_id, currentness_head_ordinal,
+            checkpoint_version_ordinal, payload_bytes, payload_length,
+            payload_sha256
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            APP_ID.value,
+            EXECUTION_PROFILE_ID,
+            MARKET_PROFILE_ID,
+            head,
+            version,
+            payload,
+            len(payload),
+            checkpoint.checkpoint_sha256,
+        ),
+    )
+    connection.execute(
+        "INSERT INTO kernel_checkpoint ("
+        " application_generation_id, currentness_head_ordinal,"
+        " checkpoint_sha256, checkpoint_version_ordinal) VALUES (?, ?, ?, ?)",
+        (
+            APP_ID.value,
+            head,
+            checkpoint.checkpoint_sha256,
+            version,
+        ),
+    )
+    return checkpoint
+
+
+def _sync_kernel_checkpoint_to_controller(
+    connection: sqlite3.Connection, *, version: int
+) -> None:
+    """Advance the kernel checkpoint to the controller's current head.
+
+    ``load_current_proof`` requires ``checkpoint.currentness_head_ordinal ==
+    controller.currentness_head_ordinal``, so a proof read taken after fills have
+    advanced the controller needs the checkpoint moved with it. The advance
+    trigger requires the payload at the new coordinate to be retained first.
+    """
+
+    head = int(
+        connection.execute(
+            "SELECT currentness_head_ordinal FROM symbol_controller WHERE scope_id = 1"
+        ).fetchone()[0]
+    )
+    checkpoint = _checkpoint(head=head, version=version)
+    payload = f"wo167-payload-{head}-{version}".encode("utf-8")
+    connection.execute(
+        """
+        INSERT INTO runtime_checkpoint_payload (
+            application_generation_id, execution_profile_id,
+            market_source_profile_id, currentness_head_ordinal,
+            checkpoint_version_ordinal, payload_bytes, payload_length,
+            payload_sha256
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            APP_ID.value,
+            EXECUTION_PROFILE_ID,
+            MARKET_PROFILE_ID,
+            head,
+            version,
+            payload,
+            len(payload),
+            checkpoint.checkpoint_sha256,
+        ),
+    )
+    connection.execute(
+        "UPDATE kernel_checkpoint SET currentness_head_ordinal = ?,"
+        " checkpoint_sha256 = ?, checkpoint_version_ordinal = ?"
+        " WHERE application_generation_id = ?",
+        (head, checkpoint.checkpoint_sha256, version, APP_ID.value),
+    )
+
+
 def _market_stream() -> records.MarketStreamAuthorityRecord:
     return records.MarketStreamAuthorityRecord(
         STREAM_ID,
@@ -424,6 +519,8 @@ def test_exact_exports_and_outcome_invariants() -> None:
         "load_protection_authority",
         "load_root_fill",
         "load_root_fill_by_external",
+        "load_runtime_checkpoint",
+        "load_runtime_checkpoint_payload",
         "load_scope",
         "load_symbol_controller",
         "load_venue_effect",
@@ -448,10 +545,12 @@ def test_exact_exports_and_outcome_invariants() -> None:
         "store_market_stream_authority",
         "store_protection_authority",
         "store_root_fill",
+        "store_runtime_checkpoint",
         "store_scope",
         "store_symbol_controller",
         "store_venue_effect",
         "store_venue_identity_owner",
+        "select_runtime_checkpoint",
     )
     expected_record_exports = (
         "AcceptanceEvidenceRecord",
@@ -478,6 +577,11 @@ def test_exact_exports_and_outcome_invariants() -> None:
         "RepositoryOutcome",
         "RepositoryOutcomeKind",
         "RootFillRecord",
+        "RuntimeCheckpointLoadRequest",
+        "RuntimeCheckpointPayloadRecord",
+        "RuntimeCheckpointSelectionProof",
+        "RuntimeCheckpointSelectionRequest",
+        "RuntimeCheckpointWriteReceipt",
         "ScopeRecord",
         "SymbolControllerRecord",
         "VenueEffectRecord",
@@ -620,6 +724,7 @@ def test_profiles_application_scope_generation_and_current_round_trip(
 
 def test_all_remaining_families_and_total_current_proof_round_trip(connection) -> None:
     _foundation(connection)
+    _retain_kernel_checkpoint(connection)
     _expect_applied(
         repository.store_root_fill(
             connection, _root(), capability=_setup_write_capability(connection)
@@ -742,6 +847,7 @@ def test_all_remaining_families_and_total_current_proof_round_trip(connection) -
     ):
         _assert_found(outcome, expected)
 
+    _sync_kernel_checkpoint_to_controller(connection, version=2)
     root_proof = repository.load_current_proof(
         connection,
         records.CurrentProofRequest(APP_ID, 1, root_fill_key_id=1),
@@ -1897,6 +2003,7 @@ def test_duplicate_probe_cannot_hide_broken_execution_fact_authority(
 
 def test_requested_effect_proof_propagates_claim_read_failure(connection) -> None:
     _foundation(connection)
+    _retain_kernel_checkpoint(connection)
     effect = _effect(1, controller_head=0, protection_version=1)
     _expect_applied(
         repository.store_venue_effect(
