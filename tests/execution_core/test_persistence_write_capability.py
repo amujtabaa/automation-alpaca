@@ -720,12 +720,20 @@ def test_setup_issuer_and_support_imports_have_the_frozen_direction() -> None:
         for path in test_root.glob("test_*.py")
         if "persistence_setup_support" in path.read_text(encoding="utf-8")
     }
-    assert importers <= {
-        "test_persistence_schema.py",
+    # Exact, not a subset. As an upper bound this admitted silent drift in the
+    # loosening direction, and it had drifted: test_persistence_schema.py was
+    # entitled here but never imported the module, while the checkpoint SQLite
+    # proof imported it without being listed. Equality makes every addition AND
+    # every removal a deliberate act, which is the whole point of enumerating
+    # who can reach a setup write capability.
+    assert importers == {
         "test_persistence_repository.py",
         "test_persistence_directness.py",
         "test_persistence_input_receipt.py",
         "test_persistence_write_capability.py",
+        # WO-0168c: the held checkpoint proof must exercise
+        # store_runtime_checkpoint, so it needs the singular test-side route.
+        "test_persistence_runtime_checkpoint_sqlite.py",
     }
     assert "test_persistence_write_capability.py" in importers
 

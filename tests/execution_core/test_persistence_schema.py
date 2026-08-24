@@ -94,6 +94,48 @@ def _installed_connection(tmp_path: object) -> sqlite3.Connection:
     return connection
 
 
+def _retain_checkpoint_payload(
+    connection: sqlite3.Connection,
+    *,
+    generation_id: str,
+    head_ordinal: int,
+    version_ordinal: int,
+    checkpoint_sha256: str,
+) -> None:
+    """Stage the payload a kernel checkpoint at this coordinate requires.
+
+    ``trg_kernel_checkpoint_payload_required_insert`` and its advance twin refuse a
+    kernel checkpoint whose exact payload is not already retained, so a test that
+    installs or advances one must retain the payload first. The trigger joins on
+    ``payload_sha256 = checkpoint_sha256``, and the schema does not verify that a
+    payload's declared digest is the hash of its own bytes -- it cannot do so
+    cheaply in SQLite -- so the fixture stores the checkpoint identity the caller
+    pins and carries opaque bytes beside it.
+    """
+
+    payload = f"payload-{head_ordinal}-{version_ordinal}".encode("utf-8")
+    connection.execute(
+        """
+        INSERT INTO runtime_checkpoint_payload (
+            application_generation_id, execution_profile_id,
+            market_source_profile_id, currentness_head_ordinal,
+            checkpoint_version_ordinal, payload_bytes, payload_length,
+            payload_sha256
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            generation_id,
+            _DEFAULT_EXECUTION_PROFILE_ID,
+            _DEFAULT_MARKET_SOURCE_PROFILE_ID,
+            head_ordinal,
+            version_ordinal,
+            payload,
+            len(payload),
+            checkpoint_sha256,
+        ),
+    )
+
+
 def _insert_profiles_and_generation(connection: sqlite3.Connection) -> str:
     connection.execute(
         """
@@ -3460,6 +3502,13 @@ def test_market_stream_route_is_exact_scope_session_and_source_profile(
 def test_monotonic_heads_refuse_regression(tmp_path: object) -> None:
     connection = _installed_connection(tmp_path)
     generation_id = _insert_profiles_and_generation(connection)
+    _retain_checkpoint_payload(
+        connection,
+        generation_id=generation_id,
+        head_ordinal=5,
+        version_ordinal=1,
+        checkpoint_sha256="77" * 32,
+    )
     connection.execute(
         """
         INSERT INTO kernel_checkpoint (
@@ -3471,14 +3520,33 @@ def test_monotonic_heads_refuse_regression(tmp_path: object) -> None:
         (generation_id, "77" * 32),
     )
 
+    # Satisfy every other precondition of the regressing update -- including its
+    # retained payload -- so the monotonic trigger is the one that refuses it
+    # rather than the payload trigger that would otherwise speak first.
+    _retain_checkpoint_payload(
+        connection,
+        generation_id=generation_id,
+        head_ordinal=4,
+        version_ordinal=2,
+        checkpoint_sha256="77" * 32,
+    )
     with pytest.raises(sqlite3.IntegrityError, match="head may only advance"):
         connection.execute(
             "UPDATE kernel_checkpoint SET currentness_head_ordinal = 4,"
             " checkpoint_version_ordinal = 2"
         )
+    # Version 2 now belongs to the refused coordinate, and a payload is keyed by
+    # (generation, version), so the accepted advance takes the next version.
+    _retain_checkpoint_payload(
+        connection,
+        generation_id=generation_id,
+        head_ordinal=6,
+        version_ordinal=3,
+        checkpoint_sha256="77" * 32,
+    )
     connection.execute(
         "UPDATE kernel_checkpoint"
-        " SET currentness_head_ordinal = 6, checkpoint_version_ordinal = 2"
+        " SET currentness_head_ordinal = 6, checkpoint_version_ordinal = 3"
     )
 
 
@@ -3488,6 +3556,13 @@ def test_current_proof_payloads_require_fresh_heads_or_versions(
     connection = _installed_connection(tmp_path)
     generation_id = _DEFAULT_GENERATION_ID
     _seed_scope_with_live_generation(connection)
+    _retain_checkpoint_payload(
+        connection,
+        generation_id=generation_id,
+        head_ordinal=5,
+        version_ordinal=1,
+        checkpoint_sha256="77" * 32,
+    )
     connection.execute(
         "INSERT INTO kernel_checkpoint VALUES (?, 5, ?, 1)",
         (generation_id, "77" * 32),
@@ -3531,7 +3606,15 @@ def test_current_proof_payloads_require_fresh_heads_or_versions(
         " SET state_commitment_sha256 = state_commitment_sha256"
     )
 
-    with pytest.raises(sqlite3.IntegrityError, match="checkpoint version must advance"):
+    # A payload is keyed by (generation, checkpoint_version_ordinal), so replacing
+    # the hash without advancing the version can have no retained payload: the
+    # payload trigger is the binding refusal here and
+    # trg_kernel_checkpoint_versioned_replace is unreachable through this path.
+    # The property under test -- a material replacement needs a fresh version --
+    # is what is still being refused.
+    with pytest.raises(
+        sqlite3.IntegrityError, match="requires an exact retained payload"
+    ):
         connection.execute(
             "UPDATE kernel_checkpoint SET checkpoint_sha256 = ?",
             ("78" * 32,),
@@ -3558,6 +3641,13 @@ def test_current_proof_payloads_require_fresh_heads_or_versions(
 
     # Positive controls: every material replacement carries a fresh owning
     # version/head and remains valid.
+    _retain_checkpoint_payload(
+        connection,
+        generation_id=generation_id,
+        head_ordinal=6,
+        version_ordinal=2,
+        checkpoint_sha256="78" * 32,
+    )
     connection.execute(
         "UPDATE kernel_checkpoint"
         " SET checkpoint_sha256 = ?, currentness_head_ordinal = 6,"
@@ -3836,6 +3926,13 @@ def test_direct_head_lookups_use_indexes_not_scans(tmp_path: object) -> None:
         )
         predecessor = index
 
+    _retain_checkpoint_payload(
+        connection,
+        generation_id=_DEFAULT_GENERATION_ID,
+        head_ordinal=50,
+        version_ordinal=1,
+        checkpoint_sha256="75" * 32,
+    )
     connection.execute(
         "INSERT INTO kernel_checkpoint VALUES (?, 50, ?, 1)",
         (_DEFAULT_GENERATION_ID, "75" * 32),
