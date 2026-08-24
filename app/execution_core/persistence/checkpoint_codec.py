@@ -1743,8 +1743,56 @@ def _encode_dormant_protection(
     return row, source_projection
 
 
+def _encode_runtime_checkpoint_venue_claim_rows(
+    book: _venue.VenueRecoveryBook,
+    selection: _records._RuntimeCheckpointSelectionSet,
+) -> list[object]:
+    """Project each proof-selected dispatch claim by direct current-owner key.
+
+    R20 section 2 keeps R17 proof-family order for database-selected venue families:
+    rows are emitted in selection order and are never re-sorted, unlike the authority
+    collections which use canonical semantic-key order. ``DispatchClaimRecord`` carries
+    the repository surrogate effect ID, so each claim resolves through the selected
+    effect family to the exact external identity before the direct-key lookup.
+    """
+
+    external_by_surrogate = {
+        record.effect_id: record.effect_external for record in selection.effects
+    }
+    seen: set[bytes] = set()
+    rows: list[object] = []
+    for record in selection.claims:
+        effect_external = external_by_surrogate.get(record.effect_id)
+        if effect_external is None:
+            raise ValueError("selected dispatch claim names an unselected effect")
+        claim = book._claim_by_effect.get(_venue._effect_index_key(effect_external))
+        if claim is None:
+            raise ValueError("selected dispatch claim has no current owner row")
+        if claim.effect_scope.effect_id != effect_external:
+            raise ValueError("reached dispatch claim does not own its selected effect")
+        if claim.claim_occurrence_id != record.claim_occurrence_id:
+            raise ValueError(
+                "reached dispatch claim disagrees with its selected record"
+            )
+        order_key = _atom_order_key(effect_external)
+        if order_key in seen:
+            raise ValueError("selected dispatch claims retain a duplicate effect")
+        seen.add(order_key)
+        rows.append(
+            _require_bounded_checkpoint_row(
+                [
+                    "m2.venue.DispatchClaim/v1",
+                    _operations._encode_m2_m1_atom(effect_external),
+                    _operations._encode_m2_m1_atom(claim.claim_occurrence_id),
+                ]
+            )
+        )
+    return _checkpoint_collection("m2.venue.Claims/v1", rows)
+
+
 def _encode_runtime_checkpoint_venue(
     book: _venue.VenueRecoveryBook,
+    selection: _records._RuntimeCheckpointSelectionSet,
 ) -> tuple[list[object], bytes, bytes]:
     """Encode the frozen venue top row without serializing audit history."""
 
@@ -1754,7 +1802,6 @@ def _encode_runtime_checkpoint_venue(
     payload_maps = (
         book._authority_epoch_by_scope,
         book._effect_by_id,
-        book._claim_by_effect,
         book._owner_by_leg,
         book._acquisition_correlation_by_root,
         book._closure_head_by_leg,
@@ -1774,6 +1821,7 @@ def _encode_runtime_checkpoint_venue(
         )
     if book._effect_order.length or book._owner_order.length:
         raise ValueError("venue source order is not represented by selected rows")
+    claim_rows = _encode_runtime_checkpoint_venue_claim_rows(book, selection)
     registry_count = book.execution_registry_count
     registry_commitment = book.execution_registry_commitment
     row: list[object] = [
@@ -1800,7 +1848,7 @@ def _encode_runtime_checkpoint_venue(
         ),
         _checkpoint_collection("m2.venue.AuthorityEpochs/v1", []),
         _checkpoint_collection("m2.venue.Effects/v1", []),
-        _checkpoint_collection("m2.venue.Claims/v1", []),
+        claim_rows,
         _checkpoint_collection("m2.venue.OwnerAttempts/v1", []),
         _checkpoint_collection("m2.venue.AcquisitionCorrelations/v1", []),
         _checkpoint_collection("m2.venue.ClosureHeads/v1", []),
@@ -2525,7 +2573,7 @@ def _project_runtime_checkpoint(
         raise ValueError("top owner coordinates do not match selection proof")
 
     venue_wire, venue_commitment, venue_source_owner_commitment = (
-        _encode_runtime_checkpoint_venue(venue)
+        _encode_runtime_checkpoint_venue(venue, selection_proof._selection)
     )
     selected_effect_ids = tuple(
         record.effect_external for record in selection_proof._selection.effects

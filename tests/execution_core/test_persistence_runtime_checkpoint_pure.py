@@ -1941,3 +1941,112 @@ def test_r20_effect_authorization_refuses_authorization_naming_another_effect() 
         checkpoint_codec._encode_runtime_checkpoint_effect_authorization_rows(
             forged, effect_ids
         )
+
+
+def _venue_effect_record(
+    effect_id: identity.EffectId, ordinal: int
+) -> records.VenueEffectRecord:
+    """One repository-shaped selected effect row."""
+
+    return records.VenueEffectRecord(
+        ordinal,
+        effect_id,
+        1,
+        _APPLICATION,
+        _EXECUTION_PROFILE,
+        identity.AcquisitionGenerationId("ab" * 32),
+        "cd" * 32,
+        7,
+        3,
+        "ACQUISITION",
+        identity.RequestOccurrenceId(f"req-{effect_id.value}"),
+        identity.MandateId(f"mandate-{effect_id.value}"),
+        "SUBMIT",
+        identity.ClientOrderId(f"coid-{effect_id.value}"),
+        None,
+        "SELL",
+        values.Quantity(2),
+        b"\x01" * 32,
+        "OPEN",
+        "OPEN",
+        None,
+        None,
+        None,
+        None,
+        ordinal,
+    )
+
+
+def _venue_claim_selection(
+    effect_values: tuple[str, ...] = ("effect-1",),
+) -> records._RuntimeCheckpointSelectionSet:
+    """Selection carrying one effect and its dispatch claim, in proof order."""
+
+    effects = tuple(
+        _venue_effect_record(identity.EffectId(value), index + 1)
+        for index, value in enumerate(effect_values)
+    )
+    claims = tuple(
+        records.DispatchClaimRecord(
+            index + 1,
+            index + 1,
+            _EXECUTION_PROFILE,
+            identity.ClaimOccurrenceId(f"occurrence-{value}"),
+            index + 1,
+        )
+        for index, value in enumerate(effect_values)
+    )
+    base = _dormant_selection()
+    forged = deepcopy(base)
+    object.__setattr__(forged, "effects", effects)
+    object.__setattr__(forged, "claims", claims)
+    return forged
+
+
+def test_r20_venue_claim_rows_project_in_proof_order() -> None:
+    """R20 section 2: venue families keep R17 proof order, not a re-sort."""
+
+    state, _ = _authority_state_with_effects()
+    selection = _venue_claim_selection()
+
+    rows = checkpoint_codec._encode_runtime_checkpoint_venue_claim_rows(
+        state.venue, selection
+    )
+
+    assert rows[0] == "m2.venue.Claims/v1"
+    assert rows[1] == 1
+    assert rows[2][0] == [
+        "m2.venue.DispatchClaim/v1",
+        _operations._encode_m2_m1_atom(identity.EffectId("effect-1")),
+        _operations._encode_m2_m1_atom(
+            identity.ClaimOccurrenceId("occurrence-effect-1")
+        ),
+    ]
+    checkpoint_codec._validate_checkpoint_collection(rows, "m2.venue.Claims/v1")
+
+
+def test_r20_venue_claim_refuses_record_disagreeing_with_its_owner() -> None:
+    state, _ = _authority_state_with_effects()
+    selection = _venue_claim_selection()
+    forged_claim = records.DispatchClaimRecord(
+        1, 1, _EXECUTION_PROFILE, identity.ClaimOccurrenceId("occurrence-wrong"), 1
+    )
+    forged = deepcopy(selection)
+    object.__setattr__(forged, "claims", (forged_claim,))
+
+    with pytest.raises(ValueError, match="selected record"):
+        checkpoint_codec._encode_runtime_checkpoint_venue_claim_rows(
+            state.venue, forged
+        )
+
+
+def test_r20_venue_claim_refuses_claim_naming_an_unselected_effect() -> None:
+    state, _ = _authority_state_with_effects()
+    selection = _venue_claim_selection()
+    forged = deepcopy(selection)
+    object.__setattr__(forged, "effects", ())
+
+    with pytest.raises(ValueError, match="unselected effect"):
+        checkpoint_codec._encode_runtime_checkpoint_venue_claim_rows(
+            state.venue, forged
+        )
