@@ -722,6 +722,7 @@ _CHECKPOINT_FIXED_ROW_LENGTHS = {
     "m2.authority.ClaimEffect/v1": 4,
     "m2.authority.ClaimAcquisitionEffect/v1": 5,
     "m2.authority.AcquisitionClaimPermit/v1": 22,
+    _M2_POSITION_SCOPE_TAG: 5,
     "m2.authority.ManualFlatten/v1": 5,
     "m1.authority.BeginManualFlatten/v1": 9,
     "m2.authority.EmergencyGrant/v1": 8,
@@ -1787,6 +1788,55 @@ def _encode_runtime_checkpoint_venue(
     )
     row.append(_operations._encode_m2_bytes(commitment))
     return row, commitment, source_owner_commitment
+
+
+def _encode_runtime_checkpoint_claim_permit(
+    permit: _authority.AcquisitionClaimPermit,
+) -> list[object]:
+    """Encode the 21 semantic claim-permit members in exact contract order.
+
+    ``commitment`` and ``_seal`` are derived from these members and are deliberately
+    absent from the wire; the owning constructor re-derives them on decode. The permit
+    is re-authenticated here rather than trusted, so a member tampered after minting
+    cannot reach the checkpoint.
+    """
+
+    if type(permit) is not _authority.AcquisitionClaimPermit:
+        raise TypeError("claim permit must be exact AcquisitionClaimPermit")
+    if not _authority._acquisition_claim_permit_is_authentic(permit):
+        raise ValueError("claim permit is not authority-authentic")
+    return [
+        "m2.authority.AcquisitionClaimPermit/v1",
+        _operations._encode_m2_m1_atom(permit.input_id),
+        _operations._encode_m2_m1_atom(permit.application_generation_id),
+        _operations._encode_m2_position_scope(permit.position_scope),
+        _operations._encode_m2_m1_atom(permit.session_id),
+        _operations._encode_m2_m1_atom(permit.generation_id),
+        _operations._encode_m2_m1_atom(permit.acquisition_mandate_id),
+        _operations._encode_m2_m1_atom(permit.protection_mandate_id),
+        _operations._encode_m2_bytes(permit.binding_commitment),
+        _operations._encode_m2_bytes(
+            permit.emergency_recovery_compatibility_commitment
+        ),
+        _operations._encode_m2_bytes(permit.controller_head),
+        _require_nonnegative_int(
+            "claim permit successor ordinal", permit.successor_ordinal
+        ),
+        _operations._encode_m2_bytes(permit.execution_snapshot_commitment),
+        _operations._encode_m2_bytes(permit.scope_execution_commitment),
+        _operations._encode_m2_bytes(permit.venue_commitment),
+        _operations._encode_m2_bytes(permit.authority_context_commitment),
+        (
+            None
+            if permit.protection_commitment is None
+            else _operations._encode_m2_bytes(permit.protection_commitment)
+        ),
+        _operations._encode_m2_m1_atom(permit.effect_id),
+        _operations._encode_m2_m1_atom(permit.claim_occurrence_id),
+        _operations._encode_m2_bytes(permit.currentness_commitment),
+        _operations._encode_m2_bytes(permit.descriptor_commitment),
+        _operations._encode_m2_bytes(permit.active_commitment),
+    ]
 
 
 def _encode_runtime_checkpoint_manual_row(

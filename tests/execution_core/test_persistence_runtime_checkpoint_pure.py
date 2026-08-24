@@ -1274,3 +1274,100 @@ def test_r20_authority_owner_provenance_is_distinct_source_owner_domain() -> Non
     assert preimage is not None
     assert preimage.authority_owner_commitment == bytes.fromhex(expected_source_owner)
     assert preimage.authority_owner_commitment != bytes.fromhex(payload[8][-1])
+
+
+def _claim_permit(
+    *,
+    protection_commitment: bytes | None = bytes.fromhex("bb" * 32),
+    successor_ordinal: int = 3,
+) -> authority.AcquisitionClaimPermit:
+    """Mint one real permit through the authority constructor, not by hand."""
+
+    return authority._new_acquisition_claim_permit(
+        input_id=authority.AuthorityInputId("permit-input"),
+        application_generation_id=_APPLICATION,
+        position_scope=_DORMANT_POSITION_SCOPE,
+        session_id=authority.SessionId("permit-session"),
+        generation_id=identity.AcquisitionGenerationId("ab" * 32),
+        acquisition_mandate_id=identity.AcquisitionMandateId("acq-mandate"),
+        protection_mandate_id=identity.MandateId("prot-mandate"),
+        binding_commitment=bytes.fromhex("11" * 32),
+        emergency_recovery_compatibility_commitment=bytes.fromhex("22" * 32),
+        controller_head=bytes.fromhex("33" * 32),
+        successor_ordinal=successor_ordinal,
+        execution_snapshot_commitment=bytes.fromhex("44" * 32),
+        scope_execution_commitment=bytes.fromhex("55" * 32),
+        venue_commitment=bytes.fromhex("66" * 32),
+        authority_context_commitment=bytes.fromhex("77" * 32),
+        protection_commitment=protection_commitment,
+        effect_id=identity.EffectId("permit-effect"),
+        claim_occurrence_id=identity.ClaimOccurrenceId("permit-occurrence"),
+        currentness_commitment=bytes.fromhex("88" * 32),
+        descriptor_commitment=bytes.fromhex("99" * 32),
+        active_commitment=bytes.fromhex("aa" * 32),
+    )
+
+
+def test_r20_claim_permit_encodes_the_exact_21_semantic_members() -> None:
+    permit = _claim_permit()
+    row = checkpoint_codec._encode_runtime_checkpoint_claim_permit(permit)
+
+    assert row == [
+        "m2.authority.AcquisitionClaimPermit/v1",
+        _operations._encode_m2_m1_atom(permit.input_id),
+        _operations._encode_m2_m1_atom(_APPLICATION),
+        _operations._encode_m2_position_scope(_DORMANT_POSITION_SCOPE),
+        _operations._encode_m2_m1_atom(permit.session_id),
+        _operations._encode_m2_m1_atom(permit.generation_id),
+        _operations._encode_m2_m1_atom(permit.acquisition_mandate_id),
+        _operations._encode_m2_m1_atom(permit.protection_mandate_id),
+        "11" * 32,
+        "22" * 32,
+        "33" * 32,
+        3,
+        "44" * 32,
+        "55" * 32,
+        "66" * 32,
+        "77" * 32,
+        "bb" * 32,
+        _operations._encode_m2_m1_atom(permit.effect_id),
+        _operations._encode_m2_m1_atom(permit.claim_occurrence_id),
+        "88" * 32,
+        "99" * 32,
+        "aa" * 32,
+    ]
+    assert len(row) == 22
+    # derived members are re-derived on decode, never carried on the wire
+    assert permit.commitment.hex() not in row
+    assert permit._seal.hex() not in row
+    # the whole row is admissible to the nested checkpoint validator
+    checkpoint_codec._validate_checkpoint_nested_value(row)
+
+
+def test_r20_claim_permit_optional_protection_commitment_is_null() -> None:
+    row = checkpoint_codec._encode_runtime_checkpoint_claim_permit(
+        _claim_permit(protection_commitment=None)
+    )
+
+    assert row[16] is None
+    assert len(row) == 22
+    checkpoint_codec._validate_checkpoint_nested_value(row)
+
+
+def test_r20_claim_permit_refuses_forged_and_wrong_type_values() -> None:
+    permit = _claim_permit()
+
+    with pytest.raises(TypeError, match="permit"):
+        checkpoint_codec._encode_runtime_checkpoint_claim_permit(
+            _DORMANT_POSITION_SCOPE
+        )
+
+    for name, value in (
+        ("effect_id", identity.EffectId("tampered-effect")),
+        ("successor_ordinal", 9),
+        ("active_commitment", bytes.fromhex("cc" * 32)),
+    ):
+        forged = deepcopy(permit)
+        object.__setattr__(forged, name, value)
+        with pytest.raises(ValueError, match="authentic"):
+            checkpoint_codec._encode_runtime_checkpoint_claim_permit(forged)
