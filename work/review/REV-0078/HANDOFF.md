@@ -180,7 +180,7 @@ Tracked in `FINDING-protection-stateful-replay-disposition.md`, which also recor
 | `FINDING-schema-approval-gate-is-self-approving.md` | P2 now, P0 the day `execution_core` is wired in. Every `install_schema` caller passes the digest computed from the artifact it approves, so the check is `sha256(x) == sha256(x)`. **Blocks going live.** |
 | `FINDING-protection-stateful-replay-disposition.md` | P1, predates WO-0168c, proven outside its import graph |
 | `FINDING-preexisting-suite-floor-2026-08-24.md` | The three remaining failures, attributed |
-| R15 §3 / R16 §2 conflict on `_manual_by_id` | Decision gap recorded per CLAUDE.md's conflict rule; code follows R16, which supersedes §§1/4/5 but not §3 |
+| R15 §3 / R16 §2 conflict on `_manual_by_id` | **Ratified by Ameen 2026-08-24** — R16's reachable-current rule governs; R15 §3's cardinality sentences superseded. See `work/queue/M2-EXECUTION-2026-08-21/36-R16-MANUAL-RULE-RATIFICATION.md`. Verify the enforcement table there rather than re-weighing the conflict |
 | Pre-existing tautologies at `pure:1551`, `:1554`, `:2258` | Predate this diff; recorded, not fixed |
 
 ---

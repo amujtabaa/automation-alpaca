@@ -3514,6 +3514,10 @@ def _encode_runtime_checkpoint_manual_rows(
     ``_manual_by_id`` holds directly reachable current rows, where "older unreachable
     IDs are omitted" — comparing a selected subset against its whole size is the
     cardinality mutant R16 requires to fail, so it is deliberately not compared here.
+
+    Ameen ratified this rule on 2026-08-24, superseding R15 section 3's conflicting
+    cardinality sentences (36-R16-MANUAL-RULE-RATIFICATION.md). The strict refusals
+    it retains — missing, stale, duplicate, cross-scope — are each pinned by name.
     """
 
     reached: dict[bytes, _authority._ManualFlatten] = {}

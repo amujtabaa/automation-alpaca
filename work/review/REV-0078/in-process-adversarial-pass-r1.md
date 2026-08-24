@@ -39,12 +39,12 @@ They agreed independently on the most severe finding.
 | P1 | Packet bound stopped at `2cfbce0` | Extended in `request-r1.md` Amendment 1. |
 | P2 | Plan-control alias regex required `AS` | Bare aliases now resolved, with keyword guarding. |
 | P2 | Import-direction control detected a bare substring | Now AST-based. Probed: a comment-only mention does not count; a real import does. |
+| P2 | Undeclared R15 §3 / R16 §2 conflict on `_manual_by_id` | Ratified by Ameen 2026-08-24: R16's reachable-current rule governs, R15 §3's cardinality sentences superseded. Recorded in `36-R16-MANUAL-RULE-RATIFICATION.md`; the previously unpinned duplicate refusal now has a mutation-checked test. |
 
 ## Still open — recorded for the independent reviewer and for Ameen
 
 | Sev | Finding | Why not acted on |
 | --- | --- | --- |
-| P2 | Undeclared R15 §3 / R16 §2 conflict on `_manual_by_id`: R16 supersedes §§1, 4, 5 but not §3, and the code follows R16 with the choice recorded only in a docstring. | CLAUDE.md conflict rule says record the decision gap. Recorded here. |
 | P2 | Pre-existing tautologies in `test_persistence_runtime_checkpoint_pure.py` (`:1554`, `:1551`, `:2258`) compute the expectation with the same production helper under test. Not from this diff. | Out of scope; recorded. |
 | P2 | Plans are measured on a ~9-row database with no `ANALYZE`; planner choices there are weak evidence about production shapes. | Real limitation of the control. |
 

@@ -1260,6 +1260,34 @@ def test_r20_dangling_manual_slot_entry_is_refused() -> None:
         )
 
 
+def test_r20_duplicate_manual_reach_is_refused() -> None:
+    """Two reaches resolving to one manual fail closed rather than double-emit.
+
+    Ratified 2026-08-24 (36-R16-MANUAL-RULE-RATIFICATION): the reachable-current
+    rule omits unreachable history but RETAINS strict refusal of missing, stale,
+    duplicate, and cross-scope current links. Distinct honest scopes cannot share
+    a symbol, so the symbol refusal shadows the duplicate guard for spliced
+    slots; the direct duplicate reach is a repeated selected scope, and the
+    guard also backstops the symbol check if it ever weakens.
+    """
+
+    scope = venue.VenueScope(
+        _APPLICATION,
+        identity.BrokerId("paper"),
+        identity.EnvironmentId("paper"),
+        identity.AccountId("account"),
+    )
+    state = _authority_state_with_manual_flattens(scope, (identity.SymbolId("AAPL"),))
+    position_scope = PositionScope(
+        scope.broker, scope.environment, scope.account, identity.SymbolId("AAPL")
+    )
+
+    with pytest.raises(ValueError, match="duplicate manual flatten"):
+        checkpoint_codec._encode_runtime_checkpoint_manual_rows(
+            state, _APPLICATION, (position_scope, position_scope)
+        )
+
+
 def test_r20_manual_phase_must_be_an_exact_flatten_phase() -> None:
     """Every other manual row member is exact-type checked; phase must be too."""
 
