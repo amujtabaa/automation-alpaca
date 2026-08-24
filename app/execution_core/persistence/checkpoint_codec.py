@@ -794,6 +794,13 @@ _CHECKPOINT_ENUM_OWNERS = {
     "m1.authority.SupervisorFence",
     "m1.authority.FlattenPhase",
     "m1.authority.AcquisitionCurrentnessSourceKind",
+    # Nested inside AcquisitionEffectTerms, which reaches a checkpoint row only
+    # through an acquisition effect permit. The other owners _encode_m2_enum can
+    # emit -- AuthorityQueryKind, MarketKind, OperationDomain -- belong to query
+    # claims, market records, and the operations envelope, none of which a
+    # checkpoint row carries, so admitting them here would widen the wire for
+    # nothing.
+    "m1.authority.AcquisitionOrderType",
     "m1.acquisition.AcquisitionRecoveryClass",
     "m1.acquisition.GenerationRouteKind",
     "m1.acquisition.GenerationServingClass",
@@ -3444,6 +3451,276 @@ def _encode_runtime_checkpoint_manual_rows(
     )
 
 
+def _encode_runtime_checkpoint_acquisition_effect_permit(
+    permit: _authority.AcquisitionEffectPermit,
+) -> list[object]:
+    """Encode the 21 semantic members of one sealed acquisition effect permit.
+
+    ``commitment`` and ``_seal`` are derived and deliberately absent from the wire.
+    The permit is re-authenticated rather than trusted, exactly as the claim permit
+    beside it is, so a member tampered after minting cannot reach the checkpoint.
+    """
+
+    if type(permit) is not _authority.AcquisitionEffectPermit:
+        raise TypeError("effect permit must be exact AcquisitionEffectPermit")
+    if not _authority._acquisition_effect_permit_is_authentic(permit):
+        raise ValueError("effect permit is not authority-authentic")
+    atom = _operations._encode_m2_m1_atom
+    digest = _operations._encode_m2_bytes
+    return [
+        "m2.authority.AcquisitionEffectPermit/v1",
+        atom(permit.input_id),
+        atom(permit.application_generation_id),
+        _operations._encode_m2_position_scope(permit.position_scope),
+        atom(permit.session_id),
+        atom(permit.generation_id),
+        atom(permit.acquisition_mandate_id),
+        atom(permit.protection_mandate_id),
+        digest(permit.binding_commitment),
+        digest(permit.emergency_recovery_compatibility_commitment),
+        digest(permit.predecessor_controller_head),
+        digest(permit.controller_head),
+        _require_nonnegative_int(
+            "effect permit successor ordinal", permit.successor_ordinal
+        ),
+        digest(permit.execution_snapshot_commitment),
+        digest(permit.scope_execution_commitment),
+        digest(permit.venue_commitment),
+        digest(permit.authority_context_commitment),
+        (
+            None
+            if permit.protection_commitment is None
+            else digest(permit.protection_commitment)
+        ),
+        _operations._encode_m2_acquisition_effect_terms(permit.terms),
+        atom(permit.effect_id),
+        atom(permit.request_occurrence_id),
+        atom(permit.client_order_id),
+    ]
+
+
+def _encode_runtime_checkpoint_acquisition_currentness(
+    entry: _authority._AcquisitionCurrentnessEntry,
+) -> list[object]:
+    """Encode the 15 semantic members of one sealed scope currentness entry."""
+
+    if type(entry) is not _authority._AcquisitionCurrentnessEntry:
+        raise TypeError("currentness must be exact _AcquisitionCurrentnessEntry")
+    if not _authority._acquisition_currentness_entry_is_authentic(entry):
+        raise ValueError("currentness entry is not authority-authentic")
+    atom = _operations._encode_m2_m1_atom
+    digest = _operations._encode_m2_bytes
+    return [
+        "m2.authority.AcquisitionCurrentness/v1",
+        _checkpoint_enum(
+            "m1.authority.AcquisitionCurrentnessSourceKind", entry.source_kind
+        ),
+        atom(entry.application_generation_id),
+        _operations._encode_m2_position_scope(entry.position_scope),
+        atom(entry.session_id),
+        atom(entry.generation_id),
+        atom(entry.acquisition_mandate_id),
+        atom(entry.protection_mandate_id),
+        digest(entry.binding_commitment),
+        digest(entry.emergency_recovery_compatibility_commitment),
+        digest(entry.controller_head),
+        _require_nonnegative_int(
+            "currentness successor ordinal", entry.successor_ordinal
+        ),
+        digest(entry.scope_execution_commitment),
+        digest(entry.venue_commitment),
+        (
+            None
+            if entry.protection_commitment is None
+            else digest(entry.protection_commitment)
+        ),
+        digest(entry.predecessor_slot_commitment),
+    ]
+
+
+def _acquisition_slot_value_reference(
+    value: object, subject: str
+) -> tuple[_identity.EffectId, bytes] | None:
+    """Reduce a scope-slot value to the one descriptor reference it names."""
+
+    if value is None:
+        return None
+    if type(value) is _authority._AcquisitionEffectDescriptor:
+        if not _authority._acquisition_effect_descriptor_is_authentic(value):
+            raise ValueError(f"{subject} descriptor is not authority-authentic")
+        return value.permit.effect_id, value.commitment
+    if type(value) is _authority._AcquisitionActiveEffect:
+        if not _authority._acquisition_active_effect_is_authentic(value):
+            raise ValueError(f"{subject} active record is not authority-authentic")
+        return value.effect_id, value.descriptor_commitment
+    if type(value) is _authority._AcquisitionInactiveSlot:
+        if not _authority._acquisition_inactive_slot_is_authentic(value):
+            raise ValueError(f"{subject} inactive slot is not authority-authentic")
+        return value.predecessor_effect_id, value.predecessor_descriptor_commitment
+    raise TypeError(f"{subject} is not an admitted acquisition slot value")
+
+
+def _encode_runtime_checkpoint_acquisition_slot_value(
+    descriptor: object, active: object
+) -> tuple[list[object], _identity.EffectId | None]:
+    """Encode the single SlotValue the descriptor and active indexes must agree on.
+
+    Contract 07 kept a separate member per index; R2 collapses them because the two
+    are required to be the same variant naming the same effect.  Encoding one value
+    from both indexes is what makes a mixed pair unrepresentable rather than merely
+    discouraged: disagreement raises here instead of producing a wire row.
+
+    Returns the row beside the effect ID it names, so the caller collects descriptor
+    references without re-reading the encoded atom back out of the row.
+    """
+
+    if (descriptor is None) != (active is None):
+        raise ValueError("acquisition slot retains a partial descriptor/active pair")
+    if descriptor is None:
+        return ["m2.authority.AcquisitionSlotEmpty/v1"], None
+    descriptor_reference = _acquisition_slot_value_reference(descriptor, "slot")
+    active_reference = _acquisition_slot_value_reference(active, "slot active")
+    if descriptor_reference != active_reference:
+        raise ValueError("acquisition slot descriptor and active disagree")
+    atom = _operations._encode_m2_m1_atom
+    if type(descriptor) is _authority._AcquisitionInactiveSlot:
+        if type(active) is not _authority._AcquisitionInactiveSlot:
+            raise ValueError("acquisition slot mixes an inactive and active variant")
+        if descriptor.successor_generation_id != active.successor_generation_id:
+            raise ValueError("acquisition slot inactive successors disagree")
+        return [
+            "m2.authority.AcquisitionSlotInactive/v1",
+            atom(descriptor.predecessor_effect_id),
+            _operations._encode_m2_bytes(descriptor.predecessor_descriptor_commitment),
+            atom(descriptor.successor_generation_id),
+        ], descriptor.predecessor_effect_id
+    if type(active) is _authority._AcquisitionInactiveSlot:
+        raise ValueError("acquisition slot mixes an active and inactive variant")
+    if descriptor_reference is None:
+        raise ValueError("acquisition slot names no descriptor reference")
+    effect_id, descriptor_commitment = descriptor_reference
+    return [
+        "m2.authority.AcquisitionSlotActive/v1",
+        atom(effect_id),
+        _operations._encode_m2_bytes(descriptor_commitment),
+    ], effect_id
+
+
+def _encode_runtime_checkpoint_acquisition_slot_rows(
+    state: _authority.ExecutionAuthorityState,
+    application_generation_id: _identity.ApplicationGenerationId,
+    selected_position_scopes: tuple[_fills.PositionScope, ...],
+) -> tuple[list[object], tuple[_identity.EffectId, ...]]:
+    """Project one slot row per selected scope and report the effects it names.
+
+    All three scope maps are exact current selected-scope maps under the R16 section 2
+    taxonomy, so each is compared against *its own* reached count: comparing all three
+    against the slot count would let an unselected-scope entry hide behind a selected
+    scope that happens to carry no descriptor.  R20 section 2 orders these rows by the
+    canonical ``PositionScope`` bytes rather than by any map or input order.
+    """
+
+    reached: dict[bytes, list[object]] = {}
+    referenced: list[_identity.EffectId] = []
+    reached_descriptors = 0
+    reached_actives = 0
+    for position_scope in selected_position_scopes:
+        slot_key = _authority._acquisition_scope_key(
+            application_generation_id, position_scope
+        )
+        currentness = state._acquisition_currentness_by_scope.get(slot_key)
+        descriptor = state._acquisition_descriptor_by_scope.get(slot_key)
+        active = state._acquisition_active_by_scope.get(slot_key)
+        if currentness is None:
+            if descriptor is not None or active is not None:
+                raise ValueError("acquisition slot omits its required currentness")
+            continue
+        if currentness.position_scope != position_scope:
+            raise ValueError("reached currentness does not own its selected scope")
+        reached_descriptors += descriptor is not None
+        reached_actives += active is not None
+        slot_value, effect_id = _encode_runtime_checkpoint_acquisition_slot_value(
+            descriptor, active
+        )
+        if effect_id is not None:
+            referenced.append(effect_id)
+        order_key = _array_order_key(
+            _operations._encode_m2_position_scope(position_scope)
+        )
+        if order_key in reached:
+            raise ValueError("selected scopes retain a duplicate acquisition slot")
+        reached[order_key] = _require_bounded_checkpoint_row(
+            [
+                "m2.authority.AcquisitionSlot/v1",
+                _operations._encode_m2_position_scope(position_scope),
+                _encode_runtime_checkpoint_acquisition_currentness(currentness),
+                slot_value,
+            ]
+        )
+    for name, index, count in (
+        ("currentness", state._acquisition_currentness_by_scope, len(reached)),
+        ("descriptor", state._acquisition_descriptor_by_scope, reached_descriptors),
+        ("active", state._acquisition_active_by_scope, reached_actives),
+    ):
+        if index.size != count:
+            raise ValueError(
+                f"acquisition {name} scope index retains an unselected scope"
+            )
+    rows = _checkpoint_collection(
+        "m2.authority.AcquisitionSlots/v1",
+        [reached[order_key] for order_key in sorted(reached)],
+    )
+    return rows, tuple(referenced)
+
+
+def _encode_runtime_checkpoint_acquisition_descriptor_rows(
+    state: _authority.ExecutionAuthorityState,
+    slot_effect_ids: tuple[_identity.EffectId, ...],
+    selected_effect_ids: tuple[_identity.EffectId, ...],
+) -> list[object]:
+    """Project every descriptor named by a retained slot or a selected effect.
+
+    ``_acquisition_descriptor_by_effect`` is a permitted authenticated superset in the
+    R16 section 2 taxonomy: it keeps predecessor descriptors that no current row
+    reaches, so it deliberately gets no whole-map cardinality check.  A slot
+    reference that does not resolve is still a refusal, because a slot names only a
+    retained descriptor.  R20 section 2 orders the rows by canonical effect ID.
+    """
+
+    reached: dict[bytes, list[object]] = {}
+    for effect_id, required in (
+        *((effect_id, True) for effect_id in slot_effect_ids),
+        *((effect_id, False) for effect_id in selected_effect_ids),
+    ):
+        descriptor = state._acquisition_descriptor_by_effect.get(
+            _authority._effect_key(effect_id)
+        )
+        if descriptor is None:
+            if required:
+                raise ValueError("acquisition slot names an absent descriptor")
+            continue
+        if type(descriptor) is not _authority._AcquisitionEffectDescriptor:
+            raise TypeError("descriptor must be exact _AcquisitionEffectDescriptor")
+        if not _authority._acquisition_effect_descriptor_is_authentic(descriptor):
+            raise ValueError("reached descriptor is not authority-authentic")
+        if descriptor.permit.effect_id != effect_id:
+            raise ValueError("reached descriptor does not own its index effect ID")
+        order_key = _atom_order_key(effect_id)
+        if order_key in reached:
+            continue
+        reached[order_key] = _require_bounded_checkpoint_row(
+            [
+                "m2.authority.AcquisitionDescriptor/v1",
+                _operations._encode_m2_m1_atom(effect_id),
+                _encode_runtime_checkpoint_acquisition_effect_permit(descriptor.permit),
+            ]
+        )
+    return _checkpoint_collection(
+        "m2.authority.AcquisitionDescriptors/v1",
+        [reached[order_key] for order_key in sorted(reached)],
+    )
+
+
 def _encode_runtime_checkpoint_authority(
     state: _authority.ExecutionAuthorityState,
     venue_commitment: bytes,
@@ -3451,7 +3728,7 @@ def _encode_runtime_checkpoint_authority(
     selected_position_scopes: tuple[_fills.PositionScope, ...],
     selected_effect_ids: tuple[_identity.EffectId, ...],
 ) -> tuple[list[object], bytes, bytes]:
-    """Encode the corrected R2 authority top row and its exact empty collections."""
+    """Encode the corrected R2 14-member authority top row from current owner maps."""
 
     if type(state) is not _authority.ExecutionAuthorityState:
         raise TypeError("authority owner must be exact ExecutionAuthorityState")
@@ -3462,14 +3739,12 @@ def _encode_runtime_checkpoint_authority(
     effect_authorization_rows = _encode_runtime_checkpoint_effect_authorization_rows(
         state, selected_effect_ids
     )
-    payload_maps = (
-        state._acquisition_descriptor_by_effect,
-        state._acquisition_currentness_by_scope,
-        state._acquisition_descriptor_by_scope,
-        state._acquisition_active_by_scope,
+    slot_rows, slot_effect_ids = _encode_runtime_checkpoint_acquisition_slot_rows(
+        state, application_generation_id, selected_position_scopes
     )
-    if any(retained.size for retained in payload_maps):
-        raise ValueError("nonempty authority checkpoint rows are not admitted")
+    descriptor_rows = _encode_runtime_checkpoint_acquisition_descriptor_rows(
+        state, slot_effect_ids, selected_effect_ids
+    )
     if state._emergency_grant is not None:
         raise ValueError("emergency authority checkpoint row is not admitted")
     scope = state.venue.scope
@@ -3500,8 +3775,8 @@ def _encode_runtime_checkpoint_authority(
         None,
         effect_authorization_rows,
         manual_rows,
-        _checkpoint_collection("m2.authority.AcquisitionDescriptors/v1", []),
-        _checkpoint_collection("m2.authority.AcquisitionSlots/v1", []),
+        descriptor_rows,
+        slot_rows,
     ]
     commitment = _checkpoint_row_commitment(
         b"execution-core/m2-authority/checkpoint/v1", row

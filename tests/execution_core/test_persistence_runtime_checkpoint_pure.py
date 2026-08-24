@@ -3479,3 +3479,290 @@ def test_r20_venue_execution_reconciliation_refuses_a_row_outside_the_scopes() -
         checkpoint_codec._encode_runtime_checkpoint_venue_execution_reconciliation_rows(
             book, _bootstrap_selection()
         )
+
+
+_ACQ_GENERATION = identity.AcquisitionGenerationId("ab" * 32)
+_ACQ_SUCCESSOR_GENERATION = identity.AcquisitionGenerationId("cd" * 32)
+
+
+def _effect_permit(
+    effect_value: str = "acq-effect-1",
+    *,
+    generation_id: identity.AcquisitionGenerationId = _ACQ_GENERATION,
+) -> authority.AcquisitionEffectPermit:
+    """Mint one real effect permit through the authority constructor, not by hand."""
+
+    return authority._new_acquisition_effect_permit(
+        input_id=authority.AuthorityInputId(f"{effect_value}-input"),
+        application_generation_id=_APPLICATION,
+        position_scope=_DORMANT_POSITION_SCOPE,
+        session_id=authority.SessionId("permit-session"),
+        generation_id=generation_id,
+        acquisition_mandate_id=identity.AcquisitionMandateId("acq-mandate"),
+        protection_mandate_id=identity.MandateId("prot-mandate"),
+        binding_commitment=bytes.fromhex("11" * 32),
+        emergency_recovery_compatibility_commitment=bytes.fromhex("22" * 32),
+        predecessor_controller_head=bytes.fromhex("32" * 32),
+        controller_head=bytes.fromhex("33" * 32),
+        successor_ordinal=3,
+        execution_snapshot_commitment=bytes.fromhex("44" * 32),
+        scope_execution_commitment=bytes.fromhex("55" * 32),
+        venue_commitment=bytes.fromhex("66" * 32),
+        authority_context_commitment=bytes.fromhex("77" * 32),
+        protection_commitment=bytes.fromhex("bb" * 32),
+        terms=authority.AcquisitionEffectTerms(
+            quantity=values.Quantity(2),
+            limit_price=_FIXTURE_PRICE,
+            order_type=authority.AcquisitionOrderType.LIMIT,
+            evaluation_time=17,
+        ),
+        effect_id=identity.EffectId(effect_value),
+        request_occurrence_id=identity.RequestOccurrenceId(f"{effect_value}-request"),
+        client_order_id=identity.ClientOrderId(f"{effect_value}-coid"),
+    )
+
+
+def _currentness_entry() -> object:
+    return authority._new_acquisition_currentness_entry(
+        source_kind=authority._AcquisitionCurrentnessSourceKind.CANONICAL_FACT,
+        application_generation_id=_APPLICATION,
+        position_scope=_DORMANT_POSITION_SCOPE,
+        session_id=authority.SessionId("permit-session"),
+        generation_id=_ACQ_GENERATION,
+        acquisition_mandate_id=identity.AcquisitionMandateId("acq-mandate"),
+        protection_mandate_id=identity.MandateId("prot-mandate"),
+        binding_commitment=bytes.fromhex("11" * 32),
+        emergency_recovery_compatibility_commitment=bytes.fromhex("22" * 32),
+        controller_head=bytes.fromhex("33" * 32),
+        successor_ordinal=3,
+        scope_execution_commitment=bytes.fromhex("55" * 32),
+        venue_commitment=bytes.fromhex("66" * 32),
+        protection_commitment=bytes.fromhex("bb" * 32),
+        predecessor_slot_commitment=bytes.fromhex("cc" * 32),
+    )
+
+
+def _state_with_acquisition_slot(
+    state: authority.ExecutionAuthorityState,
+    *,
+    inactive: bool = False,
+    empty: bool = False,
+) -> authority.ExecutionAuthorityState:
+    """Install one authentic slot for the fixture scope through real constructors."""
+
+    forged = copy(state)
+    slot_key = authority._acquisition_scope_key(_APPLICATION, _DORMANT_POSITION_SCOPE)
+    object.__setattr__(
+        forged,
+        "_acquisition_currentness_by_scope",
+        state._acquisition_currentness_by_scope.insert_new(
+            slot_key, _currentness_entry(), b"\x11" * 32
+        ),
+    )
+    if empty:
+        return forged
+    permit = _effect_permit()
+    descriptor = authority._new_acquisition_effect_descriptor(permit)
+    active = authority._new_acquisition_active_effect(descriptor)
+    scope_descriptor: object = descriptor
+    scope_active: object = active
+    if inactive:
+        scope_descriptor = authority._new_acquisition_inactive_slot(
+            active, descriptor, _ACQ_SUCCESSOR_GENERATION
+        )
+        scope_active = scope_descriptor
+    object.__setattr__(
+        forged,
+        "_acquisition_descriptor_by_effect",
+        state._acquisition_descriptor_by_effect.insert_new(
+            authority._effect_key(permit.effect_id), descriptor, b"\x12" * 32
+        ),
+    )
+    object.__setattr__(
+        forged,
+        "_acquisition_descriptor_by_scope",
+        state._acquisition_descriptor_by_scope.insert_new(
+            slot_key, scope_descriptor, b"\x13" * 32
+        ),
+    )
+    object.__setattr__(
+        forged,
+        "_acquisition_active_by_scope",
+        state._acquisition_active_by_scope.insert_new(
+            slot_key, scope_active, b"\x14" * 32
+        ),
+    )
+    return forged
+
+
+def test_r20_acquisition_effect_permit_encodes_its_21_semantic_members() -> None:
+    row = checkpoint_codec._encode_runtime_checkpoint_acquisition_effect_permit(
+        _effect_permit()
+    )
+
+    assert row[0] == "m2.authority.AcquisitionEffectPermit/v1"
+    assert len(row) == 22
+    assert row[3][0] == "m1.fills.PositionScope/v1"
+    assert row[12] == 3
+    assert row[18][0] == "m1.authority.AcquisitionEffectTerms/v1"
+    checkpoint_codec._validate_checkpoint_nested_value(row)
+
+
+def test_r20_acquisition_effect_permit_refuses_an_inauthentic_member() -> None:
+    permit = _effect_permit()
+    forged = copy(permit)
+    object.__setattr__(forged, "successor_ordinal", 4)
+
+    with pytest.raises(ValueError, match="not authority-authentic"):
+        checkpoint_codec._encode_runtime_checkpoint_acquisition_effect_permit(forged)
+
+
+def test_r20_acquisition_slot_rows_project_an_active_scope() -> None:
+    state, _ = _authority_state_with_effects()
+    state = _state_with_acquisition_slot(state)
+
+    rows, referenced = (
+        checkpoint_codec._encode_runtime_checkpoint_acquisition_slot_rows(
+            state, _APPLICATION, (_DORMANT_POSITION_SCOPE,)
+        )
+    )
+
+    assert rows[0] == "m2.authority.AcquisitionSlots/v1"
+    assert rows[1] == 1
+    row = rows[2][0]
+    assert row[0] == "m2.authority.AcquisitionSlot/v1"
+    assert len(row) == 4
+    assert row[2][0] == "m2.authority.AcquisitionCurrentness/v1"
+    assert len(row[2]) == 16
+    assert row[3][0] == "m2.authority.AcquisitionSlotActive/v1"
+    assert len(row[3]) == 3
+    assert referenced == (identity.EffectId("acq-effect-1"),)
+    checkpoint_codec._validate_checkpoint_collection(
+        rows, "m2.authority.AcquisitionSlots/v1"
+    )
+
+
+def test_r20_acquisition_slot_rows_project_an_inactive_scope() -> None:
+    state, _ = _authority_state_with_effects()
+    state = _state_with_acquisition_slot(state, inactive=True)
+
+    rows, referenced = (
+        checkpoint_codec._encode_runtime_checkpoint_acquisition_slot_rows(
+            state, _APPLICATION, (_DORMANT_POSITION_SCOPE,)
+        )
+    )
+
+    row = rows[2][0]
+    assert row[3][0] == "m2.authority.AcquisitionSlotInactive/v1"
+    assert len(row[3]) == 4
+    assert referenced == (identity.EffectId("acq-effect-1"),)
+    checkpoint_codec._validate_checkpoint_collection(
+        rows, "m2.authority.AcquisitionSlots/v1"
+    )
+
+
+def test_r20_acquisition_slot_rows_project_an_empty_scope() -> None:
+    state, _ = _authority_state_with_effects()
+    state = _state_with_acquisition_slot(state, empty=True)
+
+    rows, referenced = (
+        checkpoint_codec._encode_runtime_checkpoint_acquisition_slot_rows(
+            state, _APPLICATION, (_DORMANT_POSITION_SCOPE,)
+        )
+    )
+
+    assert rows[2][0][3] == ["m2.authority.AcquisitionSlotEmpty/v1"]
+    assert referenced == ()
+    checkpoint_codec._validate_checkpoint_collection(
+        rows, "m2.authority.AcquisitionSlots/v1"
+    )
+
+
+def test_r20_acquisition_slot_rows_refuse_a_mixed_descriptor_and_active_pair() -> None:
+    state, _ = _authority_state_with_effects()
+    state = _state_with_acquisition_slot(state)
+    slot_key = authority._acquisition_scope_key(_APPLICATION, _DORMANT_POSITION_SCOPE)
+    forged = copy(state)
+    permit = _effect_permit()
+    descriptor = authority._new_acquisition_effect_descriptor(permit)
+    active = authority._new_acquisition_active_effect(descriptor)
+    object.__setattr__(
+        forged,
+        "_acquisition_descriptor_by_scope",
+        state._acquisition_descriptor_by_scope.replace_existing(
+            slot_key,
+            authority._new_acquisition_inactive_slot(
+                active, descriptor, _ACQ_SUCCESSOR_GENERATION
+            ),
+            b"\x15" * 32,
+        ),
+    )
+
+    with pytest.raises(ValueError, match="mixes an inactive and active variant"):
+        checkpoint_codec._encode_runtime_checkpoint_acquisition_slot_rows(
+            forged, _APPLICATION, (_DORMANT_POSITION_SCOPE,)
+        )
+
+
+def test_r20_acquisition_slot_rows_refuse_an_unselected_scope_entry() -> None:
+    state, _ = _authority_state_with_effects()
+    state = _state_with_acquisition_slot(state)
+
+    with pytest.raises(ValueError, match="currentness scope index retains"):
+        checkpoint_codec._encode_runtime_checkpoint_acquisition_slot_rows(
+            state, _APPLICATION, ()
+        )
+
+
+def test_r20_acquisition_slot_rows_refuse_a_slot_without_currentness() -> None:
+    state, _ = _authority_state_with_effects()
+    state = _state_with_acquisition_slot(state)
+    forged = copy(state)
+    object.__setattr__(
+        forged,
+        "_acquisition_currentness_by_scope",
+        type(state._acquisition_currentness_by_scope).empty(),
+    )
+
+    with pytest.raises(ValueError, match="omits its required currentness"):
+        checkpoint_codec._encode_runtime_checkpoint_acquisition_slot_rows(
+            forged, _APPLICATION, (_DORMANT_POSITION_SCOPE,)
+        )
+
+
+def test_r20_acquisition_descriptor_rows_project_slot_and_selected_effects() -> None:
+    state, _ = _authority_state_with_effects()
+    state = _state_with_acquisition_slot(state)
+    effect_id = identity.EffectId("acq-effect-1")
+
+    rows = checkpoint_codec._encode_runtime_checkpoint_acquisition_descriptor_rows(
+        state, (effect_id,), (effect_id, identity.EffectId("effect-1"))
+    )
+
+    assert rows[0] == "m2.authority.AcquisitionDescriptors/v1"
+    # The selected effect without a descriptor contributes nothing; the slot
+    # reference is not duplicated by naming the same effect twice.
+    assert rows[1] == 1
+    row = rows[2][0]
+    assert row[0] == "m2.authority.AcquisitionDescriptor/v1"
+    assert len(row) == 3
+    assert row[2][0] == "m2.authority.AcquisitionEffectPermit/v1"
+    checkpoint_codec._validate_checkpoint_collection(
+        rows, "m2.authority.AcquisitionDescriptors/v1"
+    )
+
+
+def test_r20_acquisition_descriptor_rows_refuse_an_absent_slot_descriptor() -> None:
+    state, _ = _authority_state_with_effects()
+    state = _state_with_acquisition_slot(state)
+    forged = copy(state)
+    object.__setattr__(
+        forged,
+        "_acquisition_descriptor_by_effect",
+        type(state._acquisition_descriptor_by_effect).empty(),
+    )
+
+    with pytest.raises(ValueError, match="names an absent descriptor"):
+        checkpoint_codec._encode_runtime_checkpoint_acquisition_descriptor_rows(
+            forged, (identity.EffectId("acq-effect-1"),), ()
+        )
