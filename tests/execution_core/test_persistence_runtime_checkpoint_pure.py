@@ -3798,3 +3798,98 @@ def test_r20_emergency_grant_refuses_a_member_of_the_wrong_exact_type() -> None:
 
     with pytest.raises(ValueError):
         checkpoint_codec._encode_runtime_checkpoint_emergency_grant(forged)
+
+
+def test_r20_projected_venue_and_authority_wires_pass_their_own_validators() -> None:
+    """The projector's own output must satisfy the wire validator it ships with.
+
+    Every family test above checks one collection in isolation. This is the closure
+    over all of them: a fully populated book and authority state project through the
+    real top-row encoders, and the resulting rows are handed straight to the
+    validators the load path uses. A family that encodes a shape its own validator
+    refuses cannot survive here.
+    """
+
+    state, _ = _authority_state_with_effects()
+    effect_scope = state.venue._effect_by_id.get(
+        venue._effect_index_key(identity.EffectId("effect-1"))
+    ).effect.scope
+    book = _book_with_owner_leg(state.venue, _FIXTURE_LEG_KEY, effect_scope)
+    book = _book_with_bootstrap_target(
+        _book_with_broker_coverage(book), _fixture_bootstrap_record()
+    )
+    closure = venue.VenueTerminalClosure(
+        _FIXTURE_LEG_KEY,
+        identity.ClosureId("closure-1"),
+        1,
+        None,
+        venue.VenueAttemptState.WORKING,
+        values.Quantity(2),
+        values.Quantity(2),
+        identity.EvidenceReference("evidence-1"),
+        venue.VenueClosureKind.BROKER_TERMINAL,
+        identity.VenueInputId("input-1"),
+    )
+    object.__setattr__(
+        book,
+        "_closure_head_by_leg",
+        book._closure_head_by_leg.insert_new(
+            venue._leg_index_key(_FIXTURE_LEG_KEY),
+            closure,
+            venue._closure_commitment(closure),
+        ),
+    )
+    book = _book_with_reconciliations(
+        book, (("input-1", _fixture_fill_reconciliation("input-1")),)
+    )
+    bootstrap_input, _ = _bootstrap_input_ids()
+    book = _book_with_execution_reconciliations(
+        book, ((bootstrap_input, _fixture_resolved_registry_outcome(bootstrap_input)),)
+    )
+    selection = _root_selection(
+        _owner_selection(_venue_claim_selection(), "owner-order-1"), "root-1"
+    )
+
+    venue_wire, venue_commitment, venue_source_owner = (
+        checkpoint_codec._encode_runtime_checkpoint_venue(book, selection)
+    )
+
+    assert venue_wire[0] == "m2.venue.State/v1"
+    assert len(venue_wire) == 23
+    assert venue_commitment != venue_source_owner
+    checkpoint_codec._validate_runtime_checkpoint_venue_wire(venue_wire)
+
+    authority_state = _state_with_acquisition_slot(state)
+    object.__setattr__(authority_state, "venue", book)
+    authority_wire, authority_commitment, authority_source_owner = (
+        checkpoint_codec._encode_runtime_checkpoint_authority(
+            authority_state,
+            venue_commitment,
+            _APPLICATION,
+            (_DORMANT_POSITION_SCOPE,),
+            (identity.EffectId("effect-1"),),
+        )
+    )
+
+    assert authority_wire[0] == "m2.authority.Checkpoint/v1"
+    assert len(authority_wire) == 14
+    assert authority_commitment != authority_source_owner
+    checkpoint_codec._validate_runtime_checkpoint_authority_wire(authority_wire)
+
+    # The families this session added are populated, not the empty forms the
+    # earlier refusal-only projector emitted. Each is checked by its own tag so a
+    # layout change cannot silently retarget the assertion.
+    for index, tag in (
+        (12, "m2.venue.ClosureHeads/v1"),
+        (17, "m2.venue.Reconciliations/v1"),
+        (18, "m2.venue.ExecutionReconciliations/v1"),
+        (20, "m2.venue.BootstrapTargets/v1"),
+    ):
+        assert venue_wire[index][0] == tag, (index, venue_wire[index][0])
+        assert venue_wire[index][1] == 1, (tag, venue_wire[index][1])
+    for index, tag in (
+        (11, "m2.authority.AcquisitionDescriptors/v1"),
+        (12, "m2.authority.AcquisitionSlots/v1"),
+    ):
+        assert authority_wire[index][0] == tag, (index, authority_wire[index][0])
+        assert authority_wire[index][1] == 1, (tag, authority_wire[index][1])
