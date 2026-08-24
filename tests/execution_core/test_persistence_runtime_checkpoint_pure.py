@@ -2733,3 +2733,84 @@ def test_r20_venue_broker_coverage_rows_dereference_the_ledger() -> None:
         checkpoint_codec._encode_runtime_checkpoint_venue_broker_coverage_rows(
             book, _venue_claim_selection()
         )
+
+
+def _book_with_human_coverage(
+    book: venue.VenueRecoveryBook,
+) -> venue.VenueRecoveryBook:
+    from app.execution_core import recovery as _recovery
+    from app.execution_core.fills import HumanAttestedFillFact
+
+    fact = HumanAttestedFillFact(
+        key=ExecutionFactKey(
+            broker=identity.BrokerId("paper"),
+            environment=identity.EnvironmentId("paper"),
+            account=identity.AccountId("account"),
+            source_event_id=identity.SourceEventId("human-1"),
+        ),
+        scope=ExecutionScope(
+            broker=identity.BrokerId("paper"),
+            environment=identity.EnvironmentId("paper"),
+            account=identity.AccountId("account"),
+            order_id=identity.OrderId("owner-order-1"),
+            symbol_id=identity.SymbolId("AAPL"),
+            side=ExecutionSide.BUY,
+        ),
+        root_fill_id=identity.RootFillId("root-1"),
+        leg_key=_FIXTURE_LEG_KEY,
+        request_occurrence_id=identity.RequestOccurrenceId("req-effect-1"),
+        claim_occurrence_id=identity.ClaimOccurrenceId("occurrence-effect-1"),
+        quantity=values.Quantity(2),
+        prior_cumulative_quantity=values.Quantity(0),
+        resulting_cumulative_quantity=values.Quantity(2),
+        price=_FIXTURE_PRICE,
+        actor=identity.ActorId("operator"),
+        reason="fixture human coverage",
+        evidence_reference=identity.EvidenceReference("evidence-1"),
+    )
+    coverage = _recovery.HumanCoverage(
+        identity.EffectId("effect-1"),
+        _FIXTURE_LEG_KEY,
+        fact,
+        identity.VenueInputId("input-1"),
+    )
+    ledger_type = type(book._human_coverage_ledger)
+    forged = copy(book)
+    object.__setattr__(
+        forged,
+        "_human_coverage_ledger",
+        ledger_type.from_values((coverage,), lambda _value: b"\x03" * 32),
+    )
+    object.__setattr__(
+        forged,
+        "_human_coverage_by_root",
+        book._human_coverage_by_root.insert_new(
+            venue._coverage_root_index_key(_FIXTURE_ROOT_KEY), 0, b"\x04" * 32
+        ),
+    )
+    return forged
+
+
+def test_r20_venue_human_coverage_rows_dereference_the_ledger() -> None:
+    state, _ = _authority_state_with_effects()
+    book = _book_with_human_coverage(state.venue)
+    selection = _root_selection(_venue_claim_selection(), "root-1")
+
+    rows = checkpoint_codec._encode_runtime_checkpoint_venue_human_coverage_rows(
+        book, selection
+    )
+
+    assert rows[0] == "m2.venue.HumanCoverages/v1"
+    assert rows[1] == 1
+    row = rows[2][0]
+    assert row[0] == "m2.venue.HumanCoverage/v1"
+    assert len(row) == 9
+    assert row[3][0] == "m1.fills.HumanAttestedFillFact/v1"
+    assert row[5] is False
+    assert row[6] is None and row[7] is None and row[8] is None
+    checkpoint_codec._validate_checkpoint_collection(rows, "m2.venue.HumanCoverages/v1")
+
+    with pytest.raises(ValueError, match="selected root"):
+        checkpoint_codec._encode_runtime_checkpoint_venue_human_coverage_rows(
+            book, _venue_claim_selection()
+        )
