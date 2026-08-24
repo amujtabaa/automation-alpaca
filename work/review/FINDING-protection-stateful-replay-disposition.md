@@ -69,6 +69,18 @@ injected clocks, no unseeded randomness, and deterministic IDs/queues; hypothesi
 Consequence for triage: **the failure count above is a floor, not a fixed number.** Any fix must
 be validated with `derandomize=True` or a pinned seed, or a green run proves nothing.
 
+### The same setting also makes the full suite unrunnable
+
+`deadline=None` removes any per-example time limit, so one generated example can run unbounded.
+Measured 2026-08-24: a full `pytest tests/` run (6,793 collected) reached ~1% and then advanced at
+roughly six tests per minute, and had to be abandoned. Excluding the five stateful files
+(`test_protection_stateful`, `test_venue_stateful`, `test_acquisition_stateful`,
+`test_authority_stateful`, `test_fill_position_stateful` — 37 tests between them) the same suite
+completes normally.
+
+So this defect currently costs the project its whole-repository gate, not just a stable failure
+count. Fixing the determinism fixes both.
+
 ## What resolves it
 
 1. Make the machines deterministic first (`derandomize=True` or an explicit seed/profile), so the
