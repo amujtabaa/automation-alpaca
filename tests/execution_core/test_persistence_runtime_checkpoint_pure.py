@@ -18,6 +18,7 @@ from decimal import Decimal
 from app.execution_core import authority, identity, profiles, values, venue
 from app.execution_core.fills import (
     BrokerFillFact,
+    BrokerTradeCorrectFact,
     ExecutionFactKey,
     ExecutionScope,
     ExecutionSide,
@@ -2860,4 +2861,159 @@ def test_r20_venue_closure_head_rows_project_selected_legs() -> None:
     with pytest.raises(ValueError, match="selected owner"):
         checkpoint_codec._encode_runtime_checkpoint_venue_closure_head_rows(
             book, _venue_claim_selection()
+        )
+
+
+def _fixture_fill_reconciliation(input_value: str) -> object:
+    from app.execution_core import recovery as _recovery
+
+    return _recovery.ReconciliationRecord(
+        identity.VenueInputId(input_value),
+        identity.EffectId("effect-1"),
+        _FIXTURE_LEG_KEY,
+        values.Quantity(0),
+        values.Quantity(2),
+        _fixture_broker_fill_fact("recon"),
+        b"\xab" * 32,
+        "unsafe to apply",
+    )
+
+
+def _fixture_revision_reconciliation(input_value: str) -> object:
+    from app.execution_core import recovery as _recovery
+
+    return _recovery.RevisionReconciliationRecord(
+        identity.VenueInputId(input_value),
+        identity.EffectId("effect-1"),
+        _FIXTURE_LEG_KEY,
+        values.Quantity(2),
+        values.Quantity(2),
+        values.Quantity(3),
+        BrokerTradeCorrectFact(
+            key=ExecutionFactKey(
+                broker=identity.BrokerId("paper"),
+                environment=identity.EnvironmentId("paper"),
+                account=identity.AccountId("account"),
+                source_event_id=identity.SourceEventId("revision-1"),
+            ),
+            scope=ExecutionScope(
+                broker=identity.BrokerId("paper"),
+                environment=identity.EnvironmentId("paper"),
+                account=identity.AccountId("account"),
+                order_id=identity.OrderId("owner-order-1"),
+                symbol_id=identity.SymbolId("AAPL"),
+                side=ExecutionSide.BUY,
+            ),
+            root_fill_id=identity.RootFillId("root-1"),
+            predecessor_source_event_id=identity.SourceEventId("coverage-broker"),
+            revised_quantity=values.Quantity(3),
+            revised_price=_FIXTURE_PRICE,
+        ),
+        b"\xac" * 32,
+        False,
+        "revision unresolved",
+    )
+
+
+def _book_with_reconciliations(
+    book: venue.VenueRecoveryBook,
+    records_by_input: tuple[tuple[str, object], ...],
+) -> venue.VenueRecoveryBook:
+    forged = copy(book)
+    index = book._reconciliation_by_input
+    for input_value, record in records_by_input:
+        index = index.insert_new(
+            venue._input_index_key(identity.VenueInputId(input_value)),
+            record,
+            b"\x03" * 32,
+        )
+    object.__setattr__(forged, "_reconciliation_by_input", index)
+    return forged
+
+
+def _reconciliation_selection() -> records._RuntimeCheckpointSelectionSet:
+    return _root_selection(
+        _owner_selection(_venue_claim_selection(), "owner-order-1"), "root-1"
+    )
+
+
+def test_r20_venue_reconciliation_rows_project_both_referenced_union_arms() -> None:
+    state, _ = _authority_state_with_effects()
+    book = _book_with_broker_coverage(state.venue)
+    closure = venue.VenueTerminalClosure(
+        _FIXTURE_LEG_KEY,
+        identity.ClosureId("closure-1"),
+        1,
+        None,
+        venue.VenueAttemptState.WORKING,
+        values.Quantity(2),
+        values.Quantity(2),
+        identity.EvidenceReference("evidence-1"),
+        venue.VenueClosureKind.BROKER_TERMINAL,
+        identity.VenueInputId("input-2"),
+    )
+    object.__setattr__(
+        book,
+        "_closure_head_by_leg",
+        book._closure_head_by_leg.insert_new(
+            venue._leg_index_key(_FIXTURE_LEG_KEY),
+            closure,
+            venue._closure_commitment(closure),
+        ),
+    )
+    book = _book_with_reconciliations(
+        book,
+        (
+            ("input-1", _fixture_fill_reconciliation("input-1")),
+            ("input-2", _fixture_revision_reconciliation("input-2")),
+        ),
+    )
+
+    rows = checkpoint_codec._encode_runtime_checkpoint_venue_reconciliation_rows(
+        book, _reconciliation_selection()
+    )
+
+    assert rows[0] == "m2.venue.Reconciliations/v1"
+    assert rows[1] == 2
+    # Closure heads are walked before coverage, so the closure's input leads.
+    assert rows[2][0][0] == "m2.venue.RevisionReconciliation/v1"
+    assert len(rows[2][0]) == 11
+    assert rows[2][0][10] == "revision unresolved"
+    assert rows[2][1][0] == "m2.venue.FillReconciliation/v1"
+    assert len(rows[2][1]) == 9
+    assert rows[2][1][8] == "unsafe to apply"
+    checkpoint_codec._validate_checkpoint_collection(
+        rows, "m2.venue.Reconciliations/v1"
+    )
+
+
+def test_r20_venue_reconciliation_index_refuses_an_unreferenced_input() -> None:
+    state, _ = _authority_state_with_effects()
+    book = _book_with_reconciliations(
+        _book_with_broker_coverage(state.venue),
+        (
+            ("input-1", _fixture_fill_reconciliation("input-1")),
+            ("input-9", _fixture_fill_reconciliation("input-9")),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="unreferenced input"):
+        checkpoint_codec._encode_runtime_checkpoint_venue_reconciliation_rows(
+            book, _reconciliation_selection()
+        )
+
+
+def test_r20_venue_reconciliation_refuses_a_row_outside_the_selected_legs() -> None:
+    state, _ = _authority_state_with_effects()
+    book = _book_with_reconciliations(
+        _book_with_broker_coverage(state.venue),
+        (("input-1", _fixture_fill_reconciliation("input-1")),),
+    )
+    selection = _root_selection(
+        _owner_selection(_venue_claim_selection(), "owner-order-9"), "root-1"
+    )
+
+    with pytest.raises(ValueError, match="selected owner set"):
+        checkpoint_codec._encode_runtime_checkpoint_venue_reconciliation_rows(
+            book, selection
         )

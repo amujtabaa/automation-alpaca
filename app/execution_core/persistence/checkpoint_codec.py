@@ -25,6 +25,7 @@ from .. import fills as _fills
 from .. import identity as _identity
 from .. import position as _position
 from .. import protection as _protection
+from .. import recovery as _recovery
 from .. import values as _values
 from .. import venue as _venue
 from . import operations as _operations
@@ -2301,6 +2302,126 @@ def _encode_runtime_checkpoint_venue_closure_head_rows(
     return _checkpoint_collection("m2.venue.ClosureHeads/v1", rows)
 
 
+def _referenced_reconciliation_inputs(
+    book: _venue.VenueRecoveryBook,
+    selection: _records._RuntimeCheckpointSelectionSet,
+) -> tuple[_identity.VenueInputId, ...]:
+    """Collect the input IDs named directly by the selected current venue rows.
+
+    R15 section 2 admits a reconciliation row only when its input ID is directly
+    referenced by one of the selected current closure or coverage rows, so the
+    reference order is the proof order of those referencing rows: closure heads
+    over the selected owner legs, then human and broker coverage over the
+    selected roots.  An input named more than once keeps its first reference, so
+    no whole-map order and no input order is ever consulted.
+    """
+
+    ordered: dict[str, _identity.VenueInputId] = {}
+
+    def _reference(input_id: _identity.VenueInputId) -> None:
+        if type(input_id) is not _identity.VenueInputId:
+            raise TypeError("referenced input must be the exact VenueInputId type")
+        ordered.setdefault(input_id.value, input_id)
+
+    for leg_key in _selected_leg_keys_from_selection(book, selection):
+        closure = book._closure_head_by_leg.get(_venue._leg_index_key(leg_key))
+        if closure is not None:
+            _reference(closure.source_input_id)
+    for root_key in _selected_root_keys_from_selection(book, selection):
+        root_index_key = _venue._coverage_root_index_key(root_key)
+        human_index = book._human_coverage_by_root.get(root_index_key)
+        if human_index is not None:
+            human = book._human_coverage_ledger.get(human_index)
+            if human is None:
+                raise ValueError("human coverage index does not resolve in its ledger")
+            _reference(human.source_input_id)
+            if human.broker_source_input_id is not None:
+                _reference(human.broker_source_input_id)
+        broker_index = book._broker_coverage_by_root.get(root_index_key)
+        if broker_index is not None:
+            broker = book._broker_coverage_ledger.get(broker_index)
+            if broker is None:
+                raise ValueError("broker coverage index does not resolve in its ledger")
+            _reference(broker.root_source_input_id)
+            _reference(broker.head_source_input_id)
+    return tuple(ordered.values())
+
+
+def _encode_runtime_checkpoint_venue_reconciliation_row(
+    record: _recovery.ReconciliationRecord | _recovery.RevisionReconciliationRecord,
+) -> list[object]:
+    """Encode one member of the closed fill/revision reconciliation union."""
+
+    atom = _operations._encode_m2_m1_atom
+    if type(record) is _recovery.ReconciliationRecord:
+        return [
+            "m2.venue.FillReconciliation/v1",
+            atom(record.input_id),
+            atom(record.effect_id),
+            atom(record.leg_key),
+            atom(record.prior_cumulative_quantity),
+            atom(record.resulting_cumulative_quantity),
+            _operations._encode_m2_broker_fill_fact(record.fact),
+            _operations._encode_m2_bytes(record.evidence_digest),
+            record.reason,
+        ]
+    if type(record) is _recovery.RevisionReconciliationRecord:
+        fact = record.fact
+        if type(fact) is _fills.BrokerTradeCorrectFact:
+            encoded_fact = _operations._encode_m2_broker_trade_correct_fact(fact)
+        elif type(fact) is _fills.BrokerTradeBustFact:
+            encoded_fact = _operations._encode_m2_broker_trade_bust_fact(fact)
+        else:
+            raise TypeError("revision reconciliation fact is not an admitted type")
+        return [
+            "m2.venue.RevisionReconciliation/v1",
+            atom(record.input_id),
+            atom(record.effect_id),
+            atom(record.leg_key),
+            atom(record.prior_root_quantity),
+            atom(record.prior_venue_cumulative_quantity),
+            atom(record.resulting_venue_cumulative_quantity),
+            encoded_fact,
+            _operations._encode_m2_bytes(record.evidence_digest),
+            record.canonical_applied,
+            record.reason,
+        ]
+    raise TypeError("reconciliation record is not an admitted exact type")
+
+
+def _encode_runtime_checkpoint_venue_reconciliation_rows(
+    book: _venue.VenueRecoveryBook,
+    selection: _records._RuntimeCheckpointSelectionSet,
+) -> list[object]:
+    """Project every reconciliation named by a selected closure or coverage row.
+
+    The map is an exact current index rather than a permitted superset: an input
+    it retains that no selected current row names is a splice, so the reached
+    count must equal the whole map size.
+    """
+
+    selected_legs = frozenset(_selected_leg_keys_from_selection(book, selection))
+    rows: list[object] = []
+    reached = 0
+    for input_id in _referenced_reconciliation_inputs(book, selection):
+        record = book._reconciliation_by_input.get(_venue._input_index_key(input_id))
+        if record is None:
+            continue
+        if record.input_id != input_id:
+            raise ValueError("reached reconciliation does not own its referenced input")
+        if record.leg_key not in selected_legs:
+            raise ValueError("reached reconciliation leaves the selected owner set")
+        reached += 1
+        rows.append(
+            _require_bounded_checkpoint_row(
+                _encode_runtime_checkpoint_venue_reconciliation_row(record)
+            )
+        )
+    if book._reconciliation_by_input.size != reached:
+        raise ValueError("reconciliation index retains an unreferenced input")
+    return _checkpoint_collection("m2.venue.Reconciliations/v1", rows)
+
+
 def _encode_runtime_checkpoint_venue_protection_cursor_rows(
     book: _venue.VenueRecoveryBook,
     selection: _records._RuntimeCheckpointSelectionSet,
@@ -2540,7 +2661,6 @@ def _encode_runtime_checkpoint_venue(
     if type(book) is not _venue.VenueRecoveryBook:
         raise TypeError("venue owner must be exact VenueRecoveryBook")
     payload_maps = (
-        book._reconciliation_by_input,
         book._execution_reconciliation_by_input,
         book._bootstrap_bound_target_by_scope,
     )
@@ -2575,6 +2695,9 @@ def _encode_runtime_checkpoint_venue(
         book, selection
     )
     protection_cursor_rows = _encode_runtime_checkpoint_venue_protection_cursor_rows(
+        book, selection
+    )
+    reconciliation_rows = _encode_runtime_checkpoint_venue_reconciliation_rows(
         book, selection
     )
     claim_rows = _encode_runtime_checkpoint_venue_claim_rows(book, selection)
@@ -2612,7 +2735,7 @@ def _encode_runtime_checkpoint_venue(
         human_coverage_rows,
         broker_coverage_rows,
         coverage_provenance_rows,
-        _checkpoint_collection("m2.venue.Reconciliations/v1", []),
+        reconciliation_rows,
         _checkpoint_collection("m2.venue.ExecutionReconciliations/v1", []),
         execution_scope_rows,
         _checkpoint_collection("m2.venue.BootstrapTargets/v1", []),
