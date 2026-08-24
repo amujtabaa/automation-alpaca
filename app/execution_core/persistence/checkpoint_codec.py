@@ -1318,6 +1318,37 @@ def _checkpoint_collection(tag: str, rows: list[object]) -> list[object]:
     return [tag, len(rows), rows]
 
 
+_ORDER_OCTET_ATOM = 0x06
+_ORDER_OCTET_ARRAY = 0x08
+
+
+def _order_component(octet: int, value: object) -> bytes:
+    """Contract 2.4 ``order_component``: type octet, u64-be length, canonical JSON.
+
+    Collections are ordered by these bytes, never by Python comparison, repr, locale
+    collation, implicit text conversion, or a digest surrogate. The length frame is
+    load-bearing: it is what makes the ordering injective across nested shapes, and it
+    reorders keys that a plain string comparison would sort differently.
+    """
+
+    canonical = _json.dumps(
+        value, ensure_ascii=True, allow_nan=False, separators=(",", ":")
+    ).encode("utf-8")
+    return bytes((octet,)) + _struct_pack(">Q", len(canonical)) + canonical
+
+
+def _atom_order_key(value: _durable_codec._OwningValue) -> bytes:
+    """Canonical order key for one ``A`` durable-atom collection member."""
+
+    return _order_component(_ORDER_OCTET_ATOM, _operations._encode_m2_m1_atom(value))
+
+
+def _array_order_key(wire: list[object]) -> bytes:
+    """Canonical order key for one fully tagged fixed-array collection member."""
+
+    return _order_component(_ORDER_OCTET_ARRAY, wire)
+
+
 def _checkpoint_row_commitment(domain: bytes, row: list[object]) -> bytes:
     """Commit one already canonical explicit row under its frozen owner domain."""
 
@@ -1920,8 +1951,8 @@ def _encode_runtime_checkpoint_manual_row(
     for effect_id in cancel_effect_ids:
         if type(effect_id) is not _identity.EffectId:
             raise TypeError("manual cancel effect must be exact EffectId")
-    ordered = sorted(cancel_effect_ids, key=lambda effect_id: effect_id.value)
-    if len({effect_id.value for effect_id in ordered}) != len(ordered):
+    ordered = sorted(cancel_effect_ids, key=_atom_order_key)
+    if len({_atom_order_key(effect_id) for effect_id in ordered}) != len(ordered):
         raise ValueError("manual cancel effects retain a duplicate effect ID")
     sell_effect_id = manual.sell_effect_id
     if sell_effect_id is not None and type(sell_effect_id) is not _identity.EffectId:
@@ -1949,13 +1980,15 @@ def _encode_runtime_checkpoint_manual_rows(
 ) -> list[object]:
     """Project each manual reached from a selected scope, refusing any that is not.
 
-    Manual state is payload-owned rather than repository-selected, so it is not one
-    of the four permitted supersets: every retained manual must be reachable through
-    ``_manual_flatten_by_scope`` then ``_manual_by_id`` from a selected scope. An
-    unreachable manual fails closed instead of being dropped from the checkpoint.
+    R16 section 2 fixes the per-family rule, and the two maps sit in different
+    categories. ``_manual_flatten_by_scope`` is an exact current selected-scope map, so
+    every present key must be a selected scope and a dangling entry fails closed.
+    ``_manual_by_id`` holds directly reachable current rows, where "older unreachable
+    IDs are omitted" — comparing a selected subset against its whole size is the
+    cardinality mutant R16 requires to fail, so it is deliberately not compared here.
     """
 
-    reached: dict[str, _authority._ManualFlatten] = {}
+    reached: dict[bytes, _authority._ManualFlatten] = {}
     for position_scope in selected_position_scopes:
         slot_key = _authority._acquisition_scope_key(
             application_generation_id, position_scope
@@ -1976,18 +2009,17 @@ def _encode_runtime_checkpoint_manual_rows(
             raise ValueError(
                 "reached manual flatten does not own its selected scope symbol"
             )
-        if flatten_id.value in reached:
+        order_key = _atom_order_key(flatten_id)
+        if order_key in reached:
             raise ValueError("selected scopes retain a duplicate manual flatten")
-        reached[flatten_id.value] = manual
-    if state._manual_by_id.size != len(
-        reached
-    ) or state._manual_flatten_by_scope.size != len(reached):
-        raise ValueError("manual flatten state is not reachable from selected scopes")
+        reached[order_key] = manual
+    if state._manual_flatten_by_scope.size != len(reached):
+        raise ValueError("manual flatten scope index retains an unselected scope")
     return _checkpoint_collection(
         "m2.authority.ManualFlattens/v1",
         [
-            _encode_runtime_checkpoint_manual_row(reached[flatten_value])
-            for flatten_value in sorted(reached)
+            _encode_runtime_checkpoint_manual_row(reached[order_key])
+            for order_key in sorted(reached)
         ],
     )
 

@@ -1569,3 +1569,124 @@ def test_r20_effect_authorization_refuses_a_claim_naming_another_effect() -> Non
         checkpoint_codec._encode_runtime_checkpoint_effect_authorization_row(
             authorization, forged
         )
+
+
+def _order_component_oracle(octet: int, value: object) -> bytes:
+    """Independent contract-07 section 2.4 order_component, built from the text."""
+
+    canonical = json.dumps(
+        value, ensure_ascii=True, allow_nan=False, separators=(",", ":")
+    ).encode("utf-8")
+    return bytes((octet,)) + struct.pack(">Q", len(canonical)) + canonical
+
+
+def test_r20_collection_order_is_contract_order_component_not_python_strings() -> None:
+    """Contract 2.4 forbids Python comparison; length-framing reorders these ids."""
+
+    small = identity.EffectId("e-2")
+    large = identity.EffectId("e-10")
+    # Python string order and canonical order genuinely disagree for this pair.
+    assert large.value < small.value
+    assert _order_component_oracle(
+        0x06, _operations._encode_m2_m1_atom(small)
+    ) < _order_component_oracle(0x06, _operations._encode_m2_m1_atom(large))
+
+    _, _, state, _ = _manual_projection_inputs()
+    manual = state._manual_by_id.get(
+        authority._manual_key(authority.ManualFlattenId("manual-flatten-AAPL"))
+    )
+    assert manual is not None
+
+    row = checkpoint_codec._encode_runtime_checkpoint_manual_row(
+        _replace_manual(manual, cancel_effect_ids=(large, small))
+    )
+    assert row[3][2] == [
+        _operations._encode_m2_m1_atom(small),
+        _operations._encode_m2_m1_atom(large),
+    ]
+
+
+def test_r20_unreachable_manual_id_is_omitted_not_refused() -> None:
+    """R16 section 2: _manual_by_id is directly-reachable rows, not a current map.
+
+    Older unreachable IDs are omitted; comparing a selected subset against this
+    map's whole size is the cardinality mutant R16 requires to fail.
+    """
+
+    proof, book, state, owners = _manual_projection_inputs()
+    stale = deepcopy(state)
+    object.__setattr__(
+        stale,
+        "_manual_by_id",
+        authority._inserted(
+            state._manual_by_id,
+            authority._manual_key(authority.ManualFlattenId("stale-flatten")),
+            state._manual_by_id.get(
+                authority._manual_key(authority.ManualFlattenId("manual-flatten-AAPL"))
+            ),
+        ),
+    )
+    assert stale._manual_by_id.size == 2
+    assert stale._manual_flatten_by_scope.size == 1
+
+    envelope = checkpoint_codec._project_runtime_checkpoint(
+        proof, stale.venue, stale, owners
+    )
+    payload = json.loads(checkpoint_codec.encode_runtime_checkpoint(envelope))
+    assert payload[8][10][1] == 1
+
+
+def test_r20_noise_invariance_unreachable_manual_leaves_payload_bytes_identical() -> (
+    None
+):
+    """R16 section 2's named control: unrelated history must not move the bytes."""
+
+    proof, book, state, owners = _manual_projection_inputs()
+    clean_bytes = checkpoint_codec.encode_runtime_checkpoint(
+        checkpoint_codec._project_runtime_checkpoint(proof, book, state, owners)
+    )
+
+    noisy = deepcopy(state)
+    object.__setattr__(
+        noisy,
+        "_manual_by_id",
+        authority._inserted(
+            state._manual_by_id,
+            authority._manual_key(authority.ManualFlattenId("unrelated-closed")),
+            state._manual_by_id.get(
+                authority._manual_key(authority.ManualFlattenId("manual-flatten-AAPL"))
+            ),
+        ),
+    )
+    noisy_bytes = checkpoint_codec.encode_runtime_checkpoint(
+        checkpoint_codec._project_runtime_checkpoint(proof, noisy.venue, noisy, owners)
+    )
+
+    assert noisy_bytes == clean_bytes
+
+
+def test_r20_dangling_manual_slot_entry_is_still_refused() -> None:
+    """The scope-index half of the rule stays exact: every present key is selected."""
+
+    proof, book, state, owners = _manual_projection_inputs()
+    unselected = PositionScope(
+        book.scope.broker,
+        book.scope.environment,
+        book.scope.account,
+        identity.SymbolId("MSFT"),
+    )
+    forged = deepcopy(state)
+    object.__setattr__(
+        forged,
+        "_manual_flatten_by_scope",
+        authority._inserted(
+            state._manual_flatten_by_scope,
+            authority._acquisition_scope_key(book.scope.generation, unselected),
+            authority.ManualFlattenId("manual-flatten-AAPL"),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="manual"):
+        checkpoint_codec._project_runtime_checkpoint(
+            proof, forged.venue, forged, owners
+        )
