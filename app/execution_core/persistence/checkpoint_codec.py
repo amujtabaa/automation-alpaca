@@ -1844,6 +1844,85 @@ def _encode_runtime_checkpoint_venue_execution_scope_rows(
     return _checkpoint_collection("m2.venue.ExecutionScopes/v1", rows)
 
 
+def _encode_runtime_checkpoint_venue_authority_epoch_rows(
+    book: _venue.VenueRecoveryBook,
+    selection: _records._RuntimeCheckpointSelectionSet,
+) -> list[object]:
+    """Project the authority epoch of each proof-selected scope."""
+
+    rows: list[object] = []
+    reached = 0
+    for position_scope in _selected_position_scopes_from_selection(book, selection):
+        epoch = book._authority_epoch_by_scope.get(
+            _venue._position_scope_index_key(position_scope)
+        )
+        if epoch is None:
+            continue
+        reached += 1
+        rows.append(
+            _require_bounded_checkpoint_row(
+                [
+                    "m2.venue.AuthorityEpoch/v1",
+                    _operations._encode_m2_position_scope(position_scope),
+                    _require_nonnegative_int("authority epoch", epoch),
+                ]
+            )
+        )
+    if book._authority_epoch_by_scope.size != reached:
+        raise ValueError(
+            "authority epoch map retains a key outside the selected scope set"
+        )
+    return _checkpoint_collection("m2.venue.AuthorityEpochs/v1", rows)
+
+
+def _selected_leg_keys_from_selection(
+    book: _venue.VenueRecoveryBook,
+    selection: _records._RuntimeCheckpointSelectionSet,
+) -> tuple[_identity.VenueLegKey, ...]:
+    """Derive the exact selected venue leg identities from the repository selection."""
+
+    return tuple(
+        _identity.VenueLegKey(
+            book.scope.broker,
+            book.scope.environment,
+            book.scope.account,
+            record.owner_id,
+        )
+        for record in selection.owners
+    )
+
+
+def _encode_runtime_checkpoint_venue_high_water_rows(
+    book: _venue.VenueRecoveryBook,
+    selection: _records._RuntimeCheckpointSelectionSet,
+) -> list[object]:
+    """Project the economic high water of each proof-selected owner leg."""
+
+    rows: list[object] = []
+    reached = 0
+    for leg_key in _selected_leg_keys_from_selection(book, selection):
+        high_water = book._economic_high_water_by_leg.get(
+            _venue._leg_index_key(leg_key)
+        )
+        if high_water is None:
+            continue
+        reached += 1
+        rows.append(
+            _require_bounded_checkpoint_row(
+                [
+                    "m2.venue.EconomicHighWater/v1",
+                    _operations._encode_m2_m1_atom(leg_key),
+                    _require_nonnegative_int("economic high water", high_water),
+                ]
+            )
+        )
+    if book._economic_high_water_by_leg.size != reached:
+        raise ValueError(
+            "economic high water map retains a leg outside the selected owner set"
+        )
+    return _checkpoint_collection("m2.venue.EconomicHighWaters/v1", rows)
+
+
 def _encode_runtime_checkpoint_venue_protection_cursor_rows(
     book: _venue.VenueRecoveryBook,
     selection: _records._RuntimeCheckpointSelectionSet,
@@ -2083,11 +2162,9 @@ def _encode_runtime_checkpoint_venue(
     if type(book) is not _venue.VenueRecoveryBook:
         raise TypeError("venue owner must be exact VenueRecoveryBook")
     payload_maps = (
-        book._authority_epoch_by_scope,
         book._owner_by_leg,
         book._acquisition_correlation_by_root,
         book._closure_head_by_leg,
-        book._economic_high_water_by_leg,
         book._human_coverage_by_root,
         book._broker_coverage_by_root,
         book._coverage_provenance_by_scope,
@@ -2100,6 +2177,10 @@ def _encode_runtime_checkpoint_venue(
             "nonempty venue checkpoint rows are not admitted by this projector"
         )
     effect_rows = _encode_runtime_checkpoint_venue_effect_rows(book, selection)
+    authority_epoch_rows = _encode_runtime_checkpoint_venue_authority_epoch_rows(
+        book, selection
+    )
+    high_water_rows = _encode_runtime_checkpoint_venue_high_water_rows(book, selection)
     execution_scope_rows = _encode_runtime_checkpoint_venue_execution_scope_rows(
         book, selection
     )
@@ -2131,13 +2212,13 @@ def _encode_runtime_checkpoint_venue(
             if book._registry_transition_head_commitment is None
             else _operations._encode_m2_bytes(book._registry_transition_head_commitment)
         ),
-        _checkpoint_collection("m2.venue.AuthorityEpochs/v1", []),
+        authority_epoch_rows,
         effect_rows,
         claim_rows,
         _checkpoint_collection("m2.venue.OwnerAttempts/v1", []),
         _checkpoint_collection("m2.venue.AcquisitionCorrelations/v1", []),
         _checkpoint_collection("m2.venue.ClosureHeads/v1", []),
-        _checkpoint_collection("m2.venue.EconomicHighWaters/v1", []),
+        high_water_rows,
         _checkpoint_collection("m2.venue.HumanCoverages/v1", []),
         _checkpoint_collection("m2.venue.BrokerCoverages/v1", []),
         _checkpoint_collection("m2.venue.CoverageProvenances/v1", []),

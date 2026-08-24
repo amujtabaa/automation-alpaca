@@ -2261,3 +2261,117 @@ def test_r20_tail_fold_input_registered_arity_matches_its_encoder() -> None:
             ]
         )
         checkpoint_codec._validate_checkpoint_nested_value(tail_fold)
+
+
+def _book_with_int_index(
+    book: venue.VenueRecoveryBook,
+    field_name: str,
+    key: bytes,
+    value: int,
+    domain: bytes,
+) -> venue.VenueRecoveryBook:
+    """Populate one int-valued venue index using the book's own commitment domain.
+
+    These two maps are not reachable from the pure reducer path this suite can drive,
+    so the entry is inserted directly under the exact domain venue.py uses. The value
+    is a plain int with no seal, so the inserted row is identical to a reduced one.
+    """
+
+    retained = getattr(book, field_name)
+    commitment = venue._commit_parts(domain, venue._encode_text(str(value)))
+    forged = copy(book)
+    object.__setattr__(forged, field_name, retained.insert_new(key, value, commitment))
+    return forged
+
+
+def test_r20_venue_authority_epoch_rows_project_selected_scopes() -> None:
+    state, _ = _authority_state_with_effects()
+    selection = _venue_claim_selection()
+    book = _book_with_int_index(
+        state.venue,
+        "_authority_epoch_by_scope",
+        venue._position_scope_index_key(_DORMANT_POSITION_SCOPE),
+        4,
+        b"execution-core/venue-authority-epoch/v1",
+    )
+
+    rows = checkpoint_codec._encode_runtime_checkpoint_venue_authority_epoch_rows(
+        book, selection
+    )
+
+    assert rows[0] == "m2.venue.AuthorityEpochs/v1"
+    assert rows[1] == 1
+    assert rows[2][0] == [
+        "m2.venue.AuthorityEpoch/v1",
+        _operations._encode_m2_position_scope(_DORMANT_POSITION_SCOPE),
+        4,
+    ]
+    checkpoint_codec._validate_checkpoint_collection(
+        rows, "m2.venue.AuthorityEpochs/v1"
+    )
+
+
+def test_r20_venue_authority_epoch_refuses_an_unselected_scope_entry() -> None:
+    state, _ = _authority_state_with_effects()
+    selection = _venue_claim_selection()
+    book = _book_with_int_index(
+        state.venue,
+        "_authority_epoch_by_scope",
+        venue._position_scope_index_key(_DORMANT_POSITION_SCOPE),
+        4,
+        b"execution-core/venue-authority-epoch/v1",
+    )
+    forged = deepcopy(selection)
+    object.__setattr__(forged, "scopes", ())
+
+    with pytest.raises(ValueError, match="selected scope"):
+        checkpoint_codec._encode_runtime_checkpoint_venue_authority_epoch_rows(
+            book, forged
+        )
+
+
+def test_r20_venue_economic_high_water_rows_project_selected_owners() -> None:
+    state, _ = _authority_state_with_effects()
+    selection = _venue_claim_selection()
+    leg_key = identity.VenueLegKey(
+        identity.BrokerId("paper"),
+        identity.EnvironmentId("paper"),
+        identity.AccountId("account"),
+        identity.OrderId("owner-order-1"),
+    )
+    book = _book_with_int_index(
+        state.venue,
+        "_economic_high_water_by_leg",
+        venue._leg_index_key(leg_key),
+        6,
+        b"execution-core/venue-economic-high-water/v1",
+    )
+    owners = (
+        records.VenueIdentityOwnerRecord(
+            1,
+            _EXECUTION_PROFILE,
+            identity.OrderId("owner-order-1"),
+            identity.VenueObservationId("observation-1"),
+            1,
+            None,
+            identity.AcquisitionGenerationId("ab" * 32),
+            False,
+        ),
+    )
+    forged = deepcopy(selection)
+    object.__setattr__(forged, "owners", owners)
+
+    rows = checkpoint_codec._encode_runtime_checkpoint_venue_high_water_rows(
+        book, forged
+    )
+
+    assert rows[0] == "m2.venue.EconomicHighWaters/v1"
+    assert rows[1] == 1
+    assert rows[2][0] == [
+        "m2.venue.EconomicHighWater/v1",
+        _operations._encode_m2_m1_atom(leg_key),
+        6,
+    ]
+    checkpoint_codec._validate_checkpoint_collection(
+        rows, "m2.venue.EconomicHighWaters/v1"
+    )
