@@ -10,8 +10,10 @@ from typing import Any, Callable
 
 import pytest
 
+import hashlib
+
 from app.execution_core import identity
-from app.execution_core.persistence import records
+from app.execution_core.persistence import operations, records
 import app.execution_core.persistence.repository as repository
 from app.execution_core.persistence.schema import (
     SchemaInstallError,
@@ -19,6 +21,7 @@ from app.execution_core.persistence.schema import (
     schema_ddl_digest,
 )
 import persistence_setup_support as setup_support
+import test_persistence_input_receipt as receipts
 import test_persistence_repository as fixtures
 
 
@@ -103,6 +106,12 @@ def _apply_mutator(
 
 def _seed_complete(connection: sqlite3.Connection) -> None:
     fixtures._foundation(connection)
+    # load_current_proof treats the kernel checkpoint as required, and this file
+    # already lists it among the omittable base members, so the complete seed must
+    # contain it. There is no store_kernel_checkpoint route -- the only writer is
+    # store_runtime_checkpoint, which needs a projected envelope -- so it goes in
+    # directly, payload first for the payload-required trigger.
+    fixtures._retain_kernel_checkpoint(connection)
     fixtures._expect_applied(
         repository.store_root_fill(
             connection, fixtures._root(), capability=_setup_write_capability(connection)
@@ -137,6 +146,71 @@ def _seed_complete(connection: sqlite3.Connection) -> None:
         (repository.store_closure, _closure(2)),
     ):
         fixtures._expect_applied(_apply_mutator(connection, operation, value))
+    # The applied facts advance the controller head, and the proof requires the
+    # checkpoint head to equal it.
+    fixtures._sync_kernel_checkpoint_to_controller(connection, version=2)
+
+
+_INPUT_DOMAIN = operations.OperationDomain.VENUE_RECOVERY
+_KEY_KIND = operations.InputSemanticKeyKind.VENUE_COMMAND_V2
+
+
+def _transacted(connection: Any, call: Callable[[], Any]) -> Any:
+    """Run a call that requires an already-open transaction.
+
+    select/load/store_runtime_checkpoint check ``in_transaction`` before the
+    schema guard and return an integrity outcome when it is false, so a harness
+    that hands them an idle connection never reaches the guard at all. The check
+    executes no SQL, so "no domain SQL before the guard" still holds -- the
+    harness simply has to satisfy the precondition.
+    """
+
+    if getattr(connection, "in_transaction", False) is True:
+        return call()
+    connection.execute("BEGIN")
+    try:
+        return call()
+    finally:
+        connection.rollback()
+
+
+def _durable_input() -> records.DurableInputRecord:
+    # The venue operation, so the record's input_domain is VENUE_RECOVERY -- the
+    # collision domain a venue semantic key is required to sit in.
+    return receipts._durable_input_record(
+        receipts._passive_venue_operation(),
+        technical_state="CLAIMED",
+        created_ordinal=1,
+    )
+
+
+def _durable_outcome() -> records.DurableInputOutcomeRecord:
+    return receipts._durable_input_outcome_record(receipts._decision_receipt_record())
+
+
+def _semantic_key() -> records.DurableInputSemanticKeyRecord:
+    record = _durable_input()
+    # The key bytes carry their own canonical prefix, so they must be minted by
+    # the encoder rather than hand-built.
+    # A venue key takes exactly one profile coordinate and no generation/scope,
+    # so the record's key_application_generation_id and key_scope_id are null.
+    key_bytes = operations.encode_m2_semantic_key(
+        _KEY_KIND,
+        (fixtures.EXECUTION_PROFILE_ID,),
+        ("venue-semantic-digest", "cc" * 32),
+    )
+    return records.DurableInputSemanticKeyRecord(
+        _KEY_KIND,
+        None,
+        fixtures.EXECUTION_PROFILE_ID,
+        None,
+        key_bytes,
+        hashlib.sha256(key_bytes).hexdigest(),
+        record.application_generation_id,
+        record.input_domain,
+        record.input_identity_sha256,
+        1,
+    )
 
 
 def _operation_cases() -> dict[str, Callable[[Any], Any]]:
@@ -293,6 +367,79 @@ def _operation_cases() -> dict[str, Callable[[Any], Any]]:
         ),
         "store_scope": lambda c: repository.store_scope(
             c, fixtures._scope(), capability=_setup_write_capability(c)
+        ),
+        # The sixteen below had fallen out of this map entirely -- twelve of them
+        # predate WO-0168c -- so the guard was never proved for any of them. The
+        # record builders live in test_persistence_input_receipt, which already
+        # owns these families.
+        "claim_durable_input": lambda c: repository.claim_durable_input(
+            c, _durable_input(), capability=_setup_write_capability(c)
+        ),
+        "finalize_durable_input": lambda c: repository.finalize_durable_input(
+            c, _durable_input(), capability=_setup_write_capability(c)
+        ),
+        "store_durable_input_outcome": lambda c: repository.store_durable_input_outcome(
+            c, _durable_outcome(), capability=_setup_write_capability(c)
+        ),
+        "store_durable_input_semantic_key": lambda c: (
+            repository.store_durable_input_semantic_key(
+                c, _semantic_key(), capability=_setup_write_capability(c)
+            )
+        ),
+        "store_broker_outbox": lambda c: repository.store_broker_outbox(
+            c, receipts._broker_outbox_record(), capability=_setup_write_capability(c)
+        ),
+        "store_decision_receipt": lambda c: repository.store_decision_receipt(
+            c,
+            receipts._decision_receipt_record(),
+            capability=_setup_write_capability(c),
+        ),
+        "store_runtime_checkpoint": lambda c: _transacted(
+            c,
+            lambda: repository.store_runtime_checkpoint(
+                c, object(), object(), capability=_setup_write_capability(c)
+            ),
+        ),
+        "load_broker_outbox": lambda c: repository.load_broker_outbox(c, 1),
+        "load_decision_receipt": lambda c: repository.load_decision_receipt(
+            c, fixtures.APP_ID, _INPUT_DOMAIN, "aa" * 32
+        ),
+        "load_durable_input": lambda c: repository.load_durable_input(
+            c, fixtures.APP_ID, _INPUT_DOMAIN, "aa" * 32
+        ),
+        "load_durable_input_outcome": lambda c: repository.load_durable_input_outcome(
+            c, fixtures.APP_ID, _INPUT_DOMAIN, "aa" * 32
+        ),
+        "load_durable_input_by_semantic_key": lambda c: (
+            repository.load_durable_input_by_semantic_key(
+                c, _KEY_KIND, None, fixtures.EXECUTION_PROFILE_ID, None, b"k"
+            )
+        ),
+        "load_durable_input_semantic_key": lambda c: (
+            repository.load_durable_input_semantic_key(
+                c, _KEY_KIND, None, fixtures.EXECUTION_PROFILE_ID, None, b"k"
+            )
+        ),
+        # This one type-checks its request before the guard, so an opaque object
+        # would return an integrity outcome and never reach the catalog check.
+        "load_runtime_checkpoint": lambda c: _transacted(
+            c,
+            lambda: repository.load_runtime_checkpoint(
+                c,
+                records.RuntimeCheckpointLoadRequest(
+                    fixtures.APP_ID,
+                    fixtures.EXECUTION_PROFILE_ID,
+                    fixtures.MARKET_PROFILE_ID,
+                ),
+            ),
+        ),
+        "select_runtime_checkpoint": lambda c: _transacted(
+            c, lambda: repository.select_runtime_checkpoint(c, object())
+        ),
+        "load_runtime_checkpoint_payload": lambda c: (
+            repository.load_runtime_checkpoint_payload(
+                c, fixtures.APP_ID, 0, 1, "aa" * 32
+            )
         ),
         "store_symbol_controller": lambda c: repository.store_symbol_controller(
             c, fixtures._controller(), capability=_setup_write_capability(c)
@@ -473,6 +620,10 @@ def test_every_public_operation_executes_the_schema_guard_first(
         pass
 
     class TripwireConnection:
+        # store_runtime_checkpoint returns _integrity() before reaching the guard
+        # on a non-transactional connection, so the sentinel would never fire.
+        in_transaction = True
+
         def execute(self, sql: str, parameters: tuple[Any, ...] = ()) -> Any:
             del sql, parameters
             raise AssertionError("domain SQL ran before the schema guard")
@@ -983,6 +1134,7 @@ def test_total_proof_uses_only_fixed_direct_key_queries_under_history_stress(
 
 def test_root_proof_binds_fact_head_id_not_root_coordinate(connection) -> None:
     fixtures._foundation(connection)
+    fixtures._retain_kernel_checkpoint(connection)
     root_key = 41
     fact_id = 7
     root = dataclasses.replace(
@@ -1022,6 +1174,7 @@ def test_root_proof_binds_fact_head_id_not_root_coordinate(connection) -> None:
             capability=_setup_write_capability(connection),
         )
     )
+    fixtures._sync_kernel_checkpoint_to_controller(connection, version=2)
 
     _capture_proof_queries(
         connection,
@@ -1410,6 +1563,7 @@ def test_total_proof_accepts_an_all_null_active_stream_tuple(connection) -> None
         ),
     ):
         fixtures._expect_applied(_apply_mutator(connection, operation, value))
+    fixtures._retain_kernel_checkpoint(connection)
 
     outcome = repository.load_current_proof(
         connection,
@@ -1465,6 +1619,11 @@ def test_scope_proof_refuses_every_incomplete_foundation_stage(connection) -> No
     ):
         fixtures._expect_applied(_apply_mutator(connection, operation, value))
         assert_incomplete()
+
+    # The kernel checkpoint is a required proof member too, and on its own it is
+    # no more sufficient than any other stage.
+    fixtures._retain_kernel_checkpoint(connection)
+    assert_incomplete()
 
     fixtures._expect_applied(
         repository.store_protection_authority(
