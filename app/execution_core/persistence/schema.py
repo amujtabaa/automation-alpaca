@@ -1735,8 +1735,7 @@ CREATE TRIGGER trg_acquisition_generation_predecessor_valid
 BEGIN
     SELECT RAISE (
         ABORT,
-        'acquisition predecessor must be retired and compatibility-equal '
-            || 'at the immediate prior ordinal of the same scope'
+        'acquisition predecessor must be retired and compatibility-equal at the immediate prior ordinal of the same scope'
     )
     WHERE NOT EXISTS (
             SELECT 1
@@ -3052,8 +3051,7 @@ CREATE TRIGGER trg_venue_effect_close_requires_proof
 BEGIN
     SELECT RAISE (
         ABORT,
-        'venue_effect CLOSED requires exact proof; NEVER_DISPATCHED requires '
-            || 'CANCELED_BEFORE_DISPATCH and no claim'
+        'venue_effect CLOSED requires exact proof; NEVER_DISPATCHED requires CANCELED_BEFORE_DISPATCH and no claim'
     );
 END;
 
@@ -4618,7 +4616,7 @@ END;
 """
 
 _SCHEMA_CATALOG_SHA256 = (
-    "145393452d7bd0f0227076f14daa5b6115e44581609e456646b82de663df0a08"
+    "c717f6a6c84b37cb13773416c90b50d14f377e39928d7f9c626e769296e632d2"
 )
 
 

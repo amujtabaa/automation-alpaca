@@ -30,7 +30,7 @@ from app.execution_core.persistence.schema import (
 
 
 _GATE_DIGEST: str | None = (
-    "2dc33ba1af41d7516b2cde43cac85ea6644dc9ab904501065aae1c77b14d3859"
+    "2636c72793515a46c893d93084750b45ea2f151c58055480d5c601eb8c0faac5"
 )
 
 _OPEN_CONNECTIONS: list[sqlite3.Connection] = []
