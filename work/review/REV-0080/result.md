@@ -71,8 +71,8 @@ DDL installation, database-bearing test, or runtime composition was performed.
 
 Verdict: **ACCEPT-WITH-CHANGES**
 
-P0: 0  
-P1: 2  
+P0: 0
+P1: 2
 P2: 1
 
 Unverified: Changed-DDL installation, SQLite-bearing tests, query-plan behavior,
