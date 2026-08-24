@@ -49,6 +49,7 @@ allowed_paths:
   - work/review/REV-0079/**
   - work/review/REV-0080/**
   - work/review/REV-0081/**
+  - work/review/REV-0082/**
   - work/review/FINDING-preexisting-suite-floor-2026-08-24.md
   - work/review/FINDING-protection-stateful-replay-disposition.md
   - work/review/FINDING-schema-approval-gate-is-self-approving.md
@@ -202,3 +203,25 @@ preserved and future evidence is scoped to the candidate paths it actually check
 remediation. The source and test paths were already released by this work order.
 This amendment creates no DDL change, SQLite execution authority, changed-DDL
 installation, or expansion of the human gate.
+
+## Amendment — REV-0082 exact remediation review route (2026-08-24)
+
+REV-0081 reviewed `9984232fcc6fce9b9261798858262e529c3729e2` and returned
+`P0=0`, `P1=4`, `P2=1`. Its P1 root remediations are frozen at
+`7b240744a7399eb55b1d8e4bf0b41c1f11a0c95d`, tree
+`bd0274f086c8d156bad6b6e1fc5fb45c43980df8`: INVALIDATED runtime
+contradictions now equal the selected durable invalidation rows (owner,
+observation, and ordinal order); NEVER_DISPATCHED additionally requires the
+selected cancellation lifecycle; and the source-level DDL audit accepts only
+the canonical, un-rebound approval accessor and direct runtime-safe SQLite
+grammar. The negative controls prove the specific dynamic, alternate-import,
+default-expression, duplicate, and splice failures rather than an unrelated
+missing-gate failure. Direct, aliased, builtins, and namespace-recovered dynamic
+SQLite imports are also refused without blocking unrelated fixture delegation.
+The P2 unrelated bare `.install_schema()` false positive is covered by a passing
+unrelated-source control.
+
+`work/review/REV-0082/**` is added solely for a new independent exact-head
+review of this remediation. The source and test paths were already released by
+this work order. This amendment creates no DDL change, SQLite execution
+authority, changed-DDL installation, or expansion of the human gate.

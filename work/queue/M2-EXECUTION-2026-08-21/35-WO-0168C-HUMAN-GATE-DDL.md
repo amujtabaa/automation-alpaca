@@ -362,3 +362,30 @@ with `P0=0` and `P1=0`, after which Ameen must separately approve the exact
 commit, tree, DDL digest, byte count, catalog digest, SQL-manifest identity, and
 fresh-file-only commands. Until all of those conditions hold, the SQLite gate
 remains **NOT_RUN**.
+
+---
+
+# Amendment 6 — REV-0081 disposition and next exact-review route
+
+Date: 2026-08-24 · Recorded by: Codex implementation seat
+
+REV-0081 reviewed `9984232fcc6fce9b9261798858262e529c3729e2` and returned
+`P0=0`, `P1=4`, `P2=1`; it therefore does not qualify as an executable packet.
+The four P1 root remediations are frozen at
+`7b240744a7399eb55b1d8e4bf0b41c1f11a0c95d`, tree
+`bd0274f086c8d156bad6b6e1fc5fb45c43980df8`. They bind invalidated runtime
+contradictions to all selected durable invalidation rows; enforce the required
+NEVER_DISPATCHED cancellation lifecycle; and make the static pre-open audit
+fail closed for forged/rebound approval accessors, literal dynamic SQLite
+imports (including builtins/namespace recovery), alternate SQLite routes, and
+pre-body connection evaluation. The unrelated bare-installer false positive is
+explicitly refused.
+
+No DDL bytes, schema digest, byte count, catalog digest, or approval literal
+changed, and no SQLite connection or SQLite-bearing test was executed. The next
+possible executable packet is `work/review/REV-0082/request.md`, bound to that
+remediation candidate. It must receive an independent exact-head result with
+`P0=0` and `P1=0`, after which Ameen must separately approve the exact commit,
+tree, DDL digest, byte count, catalog digest, SQL-manifest identity, and
+fresh-file-only commands. Until all of those conditions hold, the SQLite gate
+remains **NOT_RUN**.
