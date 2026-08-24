@@ -4034,11 +4034,11 @@ WITH selected_scope(scope_id) AS MATERIALIZED (
 live_generation AS MATERIALIZED (
     SELECT generation.acquisition_generation_id,generation.scope_id
     FROM selected_scope AS selected
-    JOIN symbol_controller AS controller ON controller.scope_id=selected.scope_id
-    JOIN acquisition_generation AS generation
+    CROSS JOIN symbol_controller AS controller ON controller.scope_id=selected.scope_id
+    CROSS JOIN acquisition_generation AS generation
       ON generation.acquisition_generation_id=controller.live_acquisition_generation_id
      AND generation.scope_id=selected.scope_id AND generation.status='LIVE'
-    JOIN acquisition_generation_current AS current
+    CROSS JOIN acquisition_generation_current AS current
       ON current.acquisition_generation_id=generation.acquisition_generation_id
      AND current.scope_id=generation.scope_id
     WHERE controller.live_acquisition_generation_id IS NOT NULL
@@ -4047,10 +4047,10 @@ live_generation AS MATERIALIZED (
 effect_unresolved AS MATERIALIZED (
     SELECT current.acquisition_generation_id,current.scope_id
     FROM selected_scope AS selected
-    JOIN acquisition_generation_current AS current
+    CROSS JOIN acquisition_generation_current AS current
       INDEXED BY ix_acquisition_generation_current_checkpoint_effect
       ON current.scope_id=selected.scope_id AND current.unresolved_effect_count>0
-    JOIN acquisition_generation AS generation
+    CROSS JOIN acquisition_generation AS generation
       ON generation.acquisition_generation_id=current.acquisition_generation_id
      AND generation.scope_id=current.scope_id AND generation.status='RETIRED_UNSERVING'
     LIMIT 65536
@@ -4058,10 +4058,10 @@ effect_unresolved AS MATERIALIZED (
 protection_active AS MATERIALIZED (
     SELECT current.acquisition_generation_id,current.scope_id
     FROM selected_scope AS selected
-    JOIN acquisition_generation_current AS current
+    CROSS JOIN acquisition_generation_current AS current
       INDEXED BY ix_acquisition_generation_current_checkpoint_protection
       ON current.scope_id=selected.scope_id AND current.active_protection_count>0
-    JOIN acquisition_generation AS generation
+    CROSS JOIN acquisition_generation AS generation
       ON generation.acquisition_generation_id=current.acquisition_generation_id
      AND generation.scope_id=current.scope_id AND generation.status='RETIRED_UNSERVING'
     LIMIT 65536
@@ -4079,16 +4079,16 @@ _RUNTIME_CHECKPOINT_QUALIFYING_EFFECT_SQL = """
 , qualifying_effect(effect_id) AS MATERIALIZED (
     SELECT effect.effect_id
     FROM selected_generation AS selected
-    JOIN venue_effect AS effect INDEXED BY ix_venue_effect_generation_disposition
+    CROSS JOIN venue_effect AS effect INDEXED BY ix_venue_effect_generation_disposition
       ON effect.acquisition_generation_id=selected.acquisition_generation_id
      AND effect.disposition IN ('OPEN','INVALIDATED')
     UNION
     SELECT effect.effect_id
     FROM selected_generation AS selected
-    JOIN venue_identity_owner AS owner INDEXED BY ix_venue_owner_checkpoint_late
+    CROSS JOIN venue_identity_owner AS owner INDEXED BY ix_venue_owner_checkpoint_late
       ON owner.owner_generation_id=selected.acquisition_generation_id
      AND owner.admitted_after_effect_closed=1
-    JOIN venue_effect AS effect ON effect.effect_id=owner.effect_id
+    CROSS JOIN venue_effect AS effect ON effect.effect_id=owner.effect_id
      AND effect.scope_id=selected.scope_id
      AND effect.acquisition_generation_id=selected.acquisition_generation_id
      AND effect.disposition='CLOSED'
@@ -4153,10 +4153,10 @@ WITH selected_scope(scope_id) AS MATERIALIZED (
 effect_unresolved AS MATERIALIZED (
     SELECT {_RC_GENERATION},{_RC_GENERATION_CURRENT}
     FROM selected_scope AS selected
-    JOIN acquisition_generation_current AS current
+    CROSS JOIN acquisition_generation_current AS current
       INDEXED BY ix_acquisition_generation_current_checkpoint_effect
       ON current.scope_id=selected.scope_id AND current.unresolved_effect_count>0
-    JOIN acquisition_generation AS generation
+    CROSS JOIN acquisition_generation AS generation
       ON generation.acquisition_generation_id=current.acquisition_generation_id
      AND generation.scope_id=current.scope_id
      AND generation.status='RETIRED_UNSERVING'
@@ -4165,10 +4165,10 @@ effect_unresolved AS MATERIALIZED (
 protection_active AS MATERIALIZED (
     SELECT {_RC_GENERATION},{_RC_GENERATION_CURRENT}
     FROM selected_scope AS selected
-    JOIN acquisition_generation_current AS current
+    CROSS JOIN acquisition_generation_current AS current
       INDEXED BY ix_acquisition_generation_current_checkpoint_protection
       ON current.scope_id=selected.scope_id AND current.active_protection_count>0
-    JOIN acquisition_generation AS generation
+    CROSS JOIN acquisition_generation AS generation
       ON generation.acquisition_generation_id=current.acquisition_generation_id
      AND generation.scope_id=current.scope_id
      AND generation.status='RETIRED_UNSERVING'
@@ -4185,7 +4185,7 @@ LIMIT 65536
     f"""{_RUNTIME_CHECKPOINT_SELECTED_GENERATION_SQL}, admitted AS MATERIALIZED (
     SELECT {_RC_EFFECT}
     FROM selected_generation AS selected
-    JOIN venue_effect AS effect INDEXED BY ix_venue_effect_generation_disposition
+    CROSS JOIN venue_effect AS effect INDEXED BY ix_venue_effect_generation_disposition
       ON effect.acquisition_generation_id=selected.acquisition_generation_id
      AND effect.disposition IN ('OPEN','INVALIDATED')
     LIMIT 65536
@@ -4194,10 +4194,10 @@ SELECT * FROM admitted ORDER BY 25,1""",
     f"""{_RUNTIME_CHECKPOINT_SELECTED_GENERATION_SQL}, admitted AS MATERIALIZED (
     SELECT {_RC_OWNER},{_RC_EFFECT}
     FROM selected_generation AS selected
-    JOIN venue_identity_owner AS owner INDEXED BY ix_venue_owner_checkpoint_late
+    CROSS JOIN venue_identity_owner AS owner INDEXED BY ix_venue_owner_checkpoint_late
       ON owner.owner_generation_id=selected.acquisition_generation_id
      AND owner.admitted_after_effect_closed=1
-    JOIN venue_effect AS effect ON effect.effect_id=owner.effect_id
+    CROSS JOIN venue_effect AS effect ON effect.effect_id=owner.effect_id
      AND effect.scope_id=selected.scope_id
      AND effect.acquisition_generation_id=selected.acquisition_generation_id
      AND effect.disposition='CLOSED'
@@ -4208,7 +4208,7 @@ SELECT * FROM admitted ORDER BY 7,5,3""",
 {_RUNTIME_CHECKPOINT_QUALIFYING_EFFECT_SQL}, admitted AS MATERIALIZED (
     SELECT {_RC_OWNER}
     FROM qualifying_effect AS selected
-    JOIN venue_identity_owner AS owner INDEXED BY ix_venue_identity_owner_effect
+    CROSS JOIN venue_identity_owner AS owner INDEXED BY ix_venue_identity_owner_effect
       ON owner.effect_id=selected.effect_id
     LIMIT 65536
 )
@@ -4217,7 +4217,7 @@ SELECT * FROM admitted ORDER BY 5,3,4""",
 {_RUNTIME_CHECKPOINT_QUALIFYING_EFFECT_SQL}, admitted AS MATERIALIZED (
     SELECT {_RC_CLAIM}
     FROM qualifying_effect AS selected
-    JOIN dispatch_claim AS claim INDEXED BY ix_dispatch_claim_effect
+    CROSS JOIN dispatch_claim AS claim INDEXED BY ix_dispatch_claim_effect
       ON claim.effect_id=selected.effect_id
     LIMIT 65536
 )
@@ -4234,8 +4234,8 @@ SELECT * FROM admitted ORDER BY 2,1""",
 {_RUNTIME_CHECKPOINT_QUALIFYING_EFFECT_SQL}, admitted AS MATERIALIZED (
     SELECT {_RC_EVIDENCE}
     FROM qualifying_effect AS selected
-    JOIN acceptance_set AS acceptance ON acceptance.effect_id=selected.effect_id
-    JOIN acceptance_evidence AS evidence INDEXED BY ix_acceptance_evidence_set
+    CROSS JOIN acceptance_set AS acceptance ON acceptance.effect_id=selected.effect_id
+    CROSS JOIN acceptance_evidence AS evidence INDEXED BY ix_acceptance_evidence_set
       ON evidence.acceptance_set_id=acceptance.acceptance_set_id
     LIMIT 65536
 )
@@ -4244,9 +4244,9 @@ SELECT * FROM admitted ORDER BY 3,7,1""",
 {_RUNTIME_CHECKPOINT_QUALIFYING_EFFECT_SQL}, admitted AS MATERIALIZED (
     SELECT {_RC_CLOSURE}
     FROM qualifying_effect AS selected
-    JOIN venue_identity_owner AS owner INDEXED BY ix_venue_identity_owner_effect
+    CROSS JOIN venue_identity_owner AS owner INDEXED BY ix_venue_identity_owner_effect
       ON owner.effect_id=selected.effect_id
-    JOIN closure_chain AS closure ON closure.closure_id=(
+    CROSS JOIN closure_chain AS closure ON closure.closure_id=(
         SELECT candidate.closure_id
         FROM closure_chain AS candidate INDEXED BY ix_closure_chain_head
         WHERE candidate.scope_id=owner.scope_id
@@ -4261,13 +4261,13 @@ SELECT * FROM admitted ORDER BY 5,3,4""",
            CASE WHEN head.fact_id IS NULL THEN 0 ELSE 1 END,
            {_RC_FACT_HEAD},{_RC_FACT}
     FROM qualifying_effect AS selected
-    JOIN venue_identity_owner AS owner INDEXED BY ix_venue_identity_owner_effect
+    CROSS JOIN venue_identity_owner AS owner INDEXED BY ix_venue_identity_owner_effect
       ON owner.effect_id=selected.effect_id
-    JOIN acquisition_root_route AS route INDEXED BY ix_acquisition_root_route_owner
+    CROSS JOIN acquisition_root_route AS route INDEXED BY ix_acquisition_root_route_owner
       ON route.effect_id=owner.effect_id
      AND route.owner_external=owner.owner_external
      AND route.observation_external=owner.observation_external
-    JOIN root_fill AS root ON root.root_fill_key_id=route.root_fill_key_id
+    CROSS JOIN root_fill AS root ON root.root_fill_key_id=route.root_fill_key_id
      AND root.scope_id=route.scope_id
      AND root.owner_generation_id=route.acquisition_generation_id
     LEFT JOIN execution_fact_head AS head ON head.root_fill_key_id=root.root_fill_key_id
@@ -4281,7 +4281,7 @@ SELECT * FROM admitted ORDER BY 6,7,1""",
            CASE WHEN cursor.stream_generation_id IS NULL THEN 0 ELSE 1 END,
            {_RC_CURSOR}
     FROM selected_generation AS selected
-    JOIN market_stream_authority AS stream
+    CROSS JOIN market_stream_authority AS stream
       INDEXED BY ix_market_stream_authority_checkpoint_generation
       ON stream.acquisition_generation_id=selected.acquisition_generation_id
      AND stream.scope_id=selected.scope_id

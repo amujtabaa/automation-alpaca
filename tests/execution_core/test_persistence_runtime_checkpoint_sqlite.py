@@ -32,7 +32,18 @@ _SQL_SOURCE_ALIAS = _re.compile(
     _re.IGNORECASE,
 )
 _SQL_KEYWORDS_AFTER_SOURCE = frozenset(
-    {"ON", "WHERE", "JOIN", "LEFT", "INNER", "CROSS", "GROUP", "ORDER", "LIMIT", "UNION"}
+    {
+        "ON",
+        "WHERE",
+        "JOIN",
+        "LEFT",
+        "INNER",
+        "CROSS",
+        "GROUP",
+        "ORDER",
+        "LIMIT",
+        "UNION",
+    }
 )
 
 
@@ -1464,22 +1475,11 @@ def test_all_thirteen_selection_queries_have_bounded_indexed_plans(
     # CROSS JOIN turned its SCAN into a SEARCH. The same one-token remedy clears
     # all five of these (measured 5 -> 0), but it is a repository SQL change
     # across five more queries and is not yet authorized.
-    assert unbounded == {
-        # Full indexes -- one entry per table row, so a scan is a full pass.
-        (7, "SCAN OWNER USING INDEX IX_VENUE_IDENTITY_OWNER_EFFECT"),
-        (8, "SCAN CLAIM USING INDEX IX_DISPATCH_CLAIM_EFFECT"),
-        (10, "SCAN EVIDENCE USING INDEX IX_ACCEPTANCE_EVIDENCE_SET"),
-        (11, "SCAN OWNER USING COVERING INDEX IX_VENUE_IDENTITY_OWNER_EFFECT"),
-        (12, "SCAN ROUTE USING INDEX IX_ACQUISITION_ROOT_ROUTE_OWNER"),
-        # Partial, but on `admitted_after_effect_closed = 1`, which never clears.
-        (6, "SCAN OWNER USING INDEX IX_VENUE_OWNER_CHECKPOINT_LATE"),
-        (7, "SCAN OWNER USING COVERING INDEX IX_VENUE_OWNER_CHECKPOINT_LATE"),
-        (8, "SCAN OWNER USING COVERING INDEX IX_VENUE_OWNER_CHECKPOINT_LATE"),
-        (9, "SCAN OWNER USING COVERING INDEX IX_VENUE_OWNER_CHECKPOINT_LATE"),
-        (10, "SCAN OWNER USING COVERING INDEX IX_VENUE_OWNER_CHECKPOINT_LATE"),
-        (11, "SCAN OWNER USING COVERING INDEX IX_VENUE_OWNER_CHECKPOINT_LATE"),
-        (12, "SCAN OWNER USING COVERING INDEX IX_VENUE_OWNER_CHECKPOINT_LATE"),
-    }, unbounded
+    # Empty, and it must stay empty. Every base-table join inside these CTE
+    # bodies is now pinned with CROSS JOIN so the bounded CTE stays the outer
+    # loop; the twelve entries that stood here are gone. A new one means a query
+    # was added or a join order was un-pinned.
+    assert unbounded == set(), unbounded
 
     connection.rollback()
     connection.close()
