@@ -1979,10 +1979,17 @@ def _encode_runtime_checkpoint_venue_owner_attempt_rows(
     """
 
     atom = _operations._encode_m2_m1_atom
+    # REV-0078 P1-1: the leg key alone admitted a same-leg owner carrying a
+    # foreign effect/observation relationship. The selected owner record names
+    # both, so the reached owner must equal the full selected relation, with the
+    # record's surrogate effect id resolved through the selected effect rows.
+    effect_external_by_id = {
+        record.effect_id: record.effect_external for record in selection.effects
+    }
     rows: list[object] = []
     reached = 0
-    for ordinal, leg_key in enumerate(
-        _selected_leg_keys_from_selection(book, selection)
+    for ordinal, (leg_key, owner_record) in enumerate(
+        zip(_selected_leg_keys_from_selection(book, selection), selection.owners)
     ):
         leg_index = _venue._leg_index_key(leg_key)
         owner = book._owner_by_leg.get(leg_index)
@@ -1990,6 +1997,13 @@ def _encode_runtime_checkpoint_venue_owner_attempt_rows(
             raise ValueError("selected owner leg has no current owner row")
         if owner.leg_key != leg_key:
             raise ValueError("reached owner does not own its selected leg")
+        if owner.observation_id != owner_record.observation_id:
+            raise ValueError("reached owner disagrees with its selected observation")
+        selected_effect = effect_external_by_id.get(owner_record.effect_id)
+        if selected_effect is None:
+            raise ValueError("selected owner references an unselected effect")
+        if owner.effect_scope.effect_id != selected_effect:
+            raise ValueError("reached owner disagrees with its selected effect")
         reached += 1
         current = book._leg_current_by_leg.get(leg_index)
         attempt = None if current is None else current.attempt
@@ -2057,6 +2071,19 @@ def _encode_runtime_checkpoint_venue_correlation_rows(
     """Project the acquisition correlation of each proof-selected root."""
 
     atom = _operations._encode_m2_m1_atom
+    # REV-0078 P1-1: the root key alone admitted a correlation carrying a foreign
+    # effect/owner relation. The selected root route names the route this root was
+    # admitted through, so the reached entry must agree with it on effect, owner,
+    # and application generation.
+    effect_external_by_id = {
+        record.effect_id: record.effect_external for record in selection.effects
+    }
+    route_by_root_key_id = {
+        route.root_fill_key_id: route for route in selection.root_routes
+    }
+    root_key_id_by_root_fill_id = {
+        record.root_fill_id: record.root_fill_key_id for record in selection.roots
+    }
     rows: list[object] = []
     reached = 0
     for root_key in _selected_root_keys_from_selection(book, selection):
@@ -2067,6 +2094,20 @@ def _encode_runtime_checkpoint_venue_correlation_rows(
             continue
         if entry.root_key != root_key:
             raise ValueError("reached correlation does not own its selected root")
+        route = route_by_root_key_id.get(
+            root_key_id_by_root_fill_id.get(root_key.root_fill_id, -1)
+        )
+        if route is None:
+            raise ValueError("reached correlation has no selected root route")
+        route_effect = effect_external_by_id.get(route.effect_id)
+        if route_effect is None:
+            raise ValueError("selected root route references an unselected effect")
+        if (
+            entry.effect_id != route_effect
+            or entry.leg_key.order_id != route.owner_id
+            or entry.application_generation_id != route.application_generation_id
+        ):
+            raise ValueError("reached correlation disagrees with its selected route")
         reached += 1
         rows.append(
             _require_bounded_checkpoint_row(
@@ -2181,9 +2222,15 @@ def _encode_runtime_checkpoint_venue_broker_coverage_rows(
         # The index stores a slot number, so a spliced index would otherwise emit
         # another root's economics -- effect, leg, and cumulative quantities --
         # under this root, sealed by the venue commitment as authentic.
-        if (
-            coverage.fact.root_fill_id != root_key.root_fill_id
-            or coverage.head_fact.root_fill_id != root_key.root_fill_id
+        # REV-0078 P1-1: the bare root_fill_id admitted a foreign account's
+        # coverage under the same symbol string. The full RootFillKey binds
+        # broker, environment, and account as well.
+        if any(
+            fact.root_fill_id != root_key.root_fill_id
+            or fact.key.broker != root_key.broker
+            or fact.key.environment != root_key.environment
+            or fact.key.account != root_key.account
+            for fact in (coverage.fact, coverage.head_fact)
         ):
             raise ValueError("reached broker coverage does not own its selected root")
         reached += 1
@@ -2235,11 +2282,18 @@ def _encode_runtime_checkpoint_venue_human_coverage_rows(
             raise ValueError("human coverage index does not resolve in its ledger")
         # Same relation as the broker family: the index holds a ledger slot, so
         # the dereferenced row must be proved to own the root that indexed it.
-        if coverage.fact.root_fill_id != root_key.root_fill_id:
-            raise ValueError("reached human coverage does not own its selected root")
         if (
-            coverage.broker_fact is not None
-            and coverage.broker_fact.root_fill_id != root_key.root_fill_id
+            coverage.fact.root_fill_id != root_key.root_fill_id
+            or coverage.fact.key.broker != root_key.broker
+            or coverage.fact.key.environment != root_key.environment
+            or coverage.fact.key.account != root_key.account
+        ):
+            raise ValueError("reached human coverage does not own its selected root")
+        if coverage.broker_fact is not None and (
+            coverage.broker_fact.root_fill_id != root_key.root_fill_id
+            or coverage.broker_fact.key.broker != root_key.broker
+            or coverage.broker_fact.key.environment != root_key.environment
+            or coverage.broker_fact.key.account != root_key.account
         ):
             raise ValueError(
                 "reached human coverage corroboration leaves its selected root"
@@ -2383,40 +2437,53 @@ def _encode_runtime_checkpoint_venue_closure_head_rows(
 def _referenced_reconciliation_inputs(
     book: _venue.VenueRecoveryBook,
     selection: _records._RuntimeCheckpointSelectionSet,
-) -> tuple[tuple[_identity.VenueInputId, _identity.VenueLegKey], ...]:
-    """Collect each referenced input beside the leg of the row that named it.
+) -> tuple[
+    tuple[_identity.VenueInputId, _identity.VenueLegKey, _identity.EffectId | None],
+    ...,
+]:
+    """Collect each referenced input beside the identity of the row that named it.
 
     R15 section 2 admits a reconciliation row only when its input ID is directly
-    referenced by a selected current closure or coverage row, and requires stale
-    and cross-scope referenced rows to fail. Returning the referencing row's leg
-    alongside the input is what lets the caller require *equality* with the row
-    that admitted it: a bare input tuple would only support membership in the
-    whole selected set, which admits a stale reconciliation reached through a
-    different selected leg on the same scope.
+    referenced by a selected current closure or coverage row. The referencing
+    row's leg -- and its effect, where the referencer carries one -- travel with
+    the input so the consumer can require *equality* with the row that admitted
+    it rather than membership in the selected set (REV-0078 P1-1). A closure
+    carries no effect, so closure references bind the leg alone.
 
     Reference order is proof order -- closure heads over the selected owner legs,
     then human and broker coverage over the selected roots -- and an input named
     more than once keeps its first reference, so no whole-map or input order is
-    ever consulted.
+    ever consulted. One input named with two different identities is a refusal.
     """
 
-    ordered: dict[str, tuple[_identity.VenueInputId, _identity.VenueLegKey]] = {}
+    ordered: dict[
+        str,
+        tuple[_identity.VenueInputId, _identity.VenueLegKey, _identity.EffectId | None],
+    ] = {}
 
     def _reference(
-        input_id: _identity.VenueInputId, leg_key: _identity.VenueLegKey
+        input_id: _identity.VenueInputId,
+        leg_key: _identity.VenueLegKey,
+        effect_id: _identity.EffectId | None,
     ) -> None:
         if type(input_id) is not _identity.VenueInputId:
             raise TypeError("referenced input must be the exact VenueInputId type")
         existing = ordered.get(input_id.value)
         if existing is None:
-            ordered[input_id.value] = (input_id, leg_key)
+            ordered[input_id.value] = (input_id, leg_key, effect_id)
         elif existing[1] != leg_key:
             raise ValueError("referenced input is named by two different legs")
+        elif (
+            existing[2] is not None
+            and effect_id is not None
+            and existing[2] != effect_id
+        ):
+            raise ValueError("referenced input is named by two different effects")
 
     for leg_key in _selected_leg_keys_from_selection(book, selection):
         closure = book._closure_head_by_leg.get(_venue._leg_index_key(leg_key))
         if closure is not None:
-            _reference(closure.source_input_id, closure.leg_key)
+            _reference(closure.source_input_id, closure.leg_key, None)
     for root_key in _selected_root_keys_from_selection(book, selection):
         root_index_key = _venue._coverage_root_index_key(root_key)
         human_index = book._human_coverage_by_root.get(root_index_key)
@@ -2424,16 +2491,16 @@ def _referenced_reconciliation_inputs(
             human = book._human_coverage_ledger.get(human_index)
             if human is None:
                 raise ValueError("human coverage index does not resolve in its ledger")
-            _reference(human.source_input_id, human.leg_key)
+            _reference(human.source_input_id, human.leg_key, human.effect_id)
             if human.broker_source_input_id is not None:
-                _reference(human.broker_source_input_id, human.leg_key)
+                _reference(human.broker_source_input_id, human.leg_key, human.effect_id)
         broker_index = book._broker_coverage_by_root.get(root_index_key)
         if broker_index is not None:
             broker = book._broker_coverage_ledger.get(broker_index)
             if broker is None:
                 raise ValueError("broker coverage index does not resolve in its ledger")
-            _reference(broker.root_source_input_id, broker.leg_key)
-            _reference(broker.head_source_input_id, broker.leg_key)
+            _reference(broker.root_source_input_id, broker.leg_key, broker.effect_id)
+            _reference(broker.head_source_input_id, broker.leg_key, broker.effect_id)
     return tuple(ordered.values())
 
 
@@ -2485,11 +2552,14 @@ def _encode_runtime_checkpoint_venue_reconciliation_rows(
 ) -> list[object]:
     """Project every reconciliation named by a selected closure or coverage row.
 
-    R15 section 2 admits these rows by reference and says the rest are audit
-    history that is *omitted*, not refused. ``_reconciliation_by_input`` is
-    ``insert_new``-only and mirrors the append-only ledger, so under the R16
-    section 2 taxonomy it is a permitted authenticated superset and must not get a
-    whole-map cardinality check.
+    R15 section 2 is the governing rule for this venue index: rows are admitted
+    "only when their input ID is directly referenced by one of those selected
+    current closure/coverage rows," and unreferenced append-only ledger rows "are
+    audit history and are omitted." ``_reconciliation_by_input`` is
+    ``insert_new``-only beside that append-only ledger, so a whole-map
+    cardinality check contradicts the omission rule. (R16 section 2's
+    superset/exact taxonomy classifies *authority* maps and is deliberately not
+    cited as authority here -- REV-0078 P2-1.)
 
     An earlier revision compared its size against the reached count. That refused
     every book whose reducer had taken a reconciliation-required branch, because
@@ -2499,13 +2569,21 @@ def _encode_runtime_checkpoint_venue_reconciliation_rows(
     """
 
     rows: list[object] = []
-    for input_id, referencing_leg in _referenced_reconciliation_inputs(book, selection):
+    for (
+        input_id,
+        referencing_leg,
+        referencing_effect,
+    ) in _referenced_reconciliation_inputs(book, selection):
         record = book._reconciliation_by_input.get(_venue._input_index_key(input_id))
         if record is None:
-            # R15 section 2: "Missing, extra, duplicate, stale, or cross-scope
-            # referenced rows fail." A selected current row named this input, so
-            # its absence is a truncated set, not history to omit.
-            raise ValueError("selected row names an absent reconciliation")
+            # Absence is the ordinary applied path, not a truncated set: an
+            # applied fill's coverage names its own evidence input
+            # (recovery.py root_source_input_id=item.input_id) and creates no
+            # reconciliation record, and an ordinary terminal closure's source
+            # input is the observation input. An earlier revision raised here
+            # and thereby refused every applied-fill book (REV-0078 P1-4
+            # disposition disputes that arm with this evidence).
+            continue
         if record.input_id != input_id:
             raise ValueError("reached reconciliation does not own its referenced input")
         # Equality with the row that admitted it, not membership in the selected
@@ -2513,6 +2591,10 @@ def _encode_runtime_checkpoint_venue_reconciliation_rows(
         # would satisfy membership while being reached through the wrong row.
         if record.leg_key != referencing_leg:
             raise ValueError("reached reconciliation does not own its referencing leg")
+        if referencing_effect is not None and record.effect_id != referencing_effect:
+            raise ValueError(
+                "reached reconciliation does not own its referencing effect"
+            )
         rows.append(
             _require_bounded_checkpoint_row(
                 _encode_runtime_checkpoint_venue_reconciliation_row(record)
@@ -2925,9 +3007,10 @@ def _encode_runtime_checkpoint_venue_execution_reconciliation_rows(
 ) -> list[object]:
     """Project every registry outcome named by a selected bootstrap target.
 
-    Like the fill reconciliation index this is ``insert_new``-only beside an
-    append-only ledger, so it is a permitted authenticated superset and gets no
-    whole-map cardinality check. A catch-up is appended for every
+    Like the fill reconciliation index this is governed by R15 section 2's
+    selected-reference rule: ``insert_new``-only beside an append-only ledger, so
+    unreferenced rows are omitted audit history and no whole-map cardinality
+    check applies. A catch-up is appended for every
     ``CatchUpExecutionRegistry`` while a bootstrap target is refreshed only where
     one exists, the unresolved arm never advances ``checkpoint_input_id`` at all,
     and that field is replaced on each refresh -- so an unreferenced retained
@@ -2942,7 +3025,11 @@ def _encode_runtime_checkpoint_venue_execution_reconciliation_rows(
             _venue._input_index_key(input_id)
         )
         if record is None:
-            raise ValueError("selected row names an absent execution reconciliation")
+            # An initial bootstrap target's checkpoint_input_id equals its
+            # bootstrap_input_id -- the registry input, which is never a
+            # catch-up and has no registry outcome. Raising here refused every
+            # freshly bootstrapped book (REV-0078 P1-4 disposition).
+            continue
         if record.input_id != input_id:
             raise ValueError(
                 "reached execution reconciliation does not own its referenced input"
@@ -3715,7 +3802,7 @@ def _encode_runtime_checkpoint_acquisition_slot_rows(
     state: _authority.ExecutionAuthorityState,
     application_generation_id: _identity.ApplicationGenerationId,
     selected_position_scopes: tuple[_fills.PositionScope, ...],
-) -> tuple[list[object], tuple[_identity.EffectId, ...]]:
+) -> tuple[list[object], tuple[tuple[_identity.EffectId, _fills.PositionScope], ...]]:
     """Project one slot row per selected scope and report the effects it names.
 
     All three scope maps are exact current selected-scope maps under the R16 section 2
@@ -3726,7 +3813,7 @@ def _encode_runtime_checkpoint_acquisition_slot_rows(
     """
 
     reached: dict[bytes, list[object]] = {}
-    referenced: list[_identity.EffectId] = []
+    referenced: list[tuple[_identity.EffectId, _fills.PositionScope]] = []
     reached_descriptors = 0
     reached_actives = 0
     for position_scope in selected_position_scopes:
@@ -3748,7 +3835,7 @@ def _encode_runtime_checkpoint_acquisition_slot_rows(
             descriptor, active
         )
         if effect_id is not None:
-            referenced.append(effect_id)
+            referenced.append((effect_id, position_scope))
         order_key = _array_order_key(
             _operations._encode_m2_position_scope(position_scope)
         )
@@ -3780,7 +3867,8 @@ def _encode_runtime_checkpoint_acquisition_slot_rows(
 
 def _encode_runtime_checkpoint_acquisition_descriptor_rows(
     state: _authority.ExecutionAuthorityState,
-    slot_effect_ids: tuple[_identity.EffectId, ...],
+    application_generation_id: _identity.ApplicationGenerationId,
+    slot_references: tuple[tuple[_identity.EffectId, _fills.PositionScope], ...],
     selected_effect_ids: tuple[_identity.EffectId, ...],
 ) -> list[object]:
     """Project every descriptor named by a retained slot or a selected effect.
@@ -3790,12 +3878,17 @@ def _encode_runtime_checkpoint_acquisition_descriptor_rows(
     reaches, so it deliberately gets no whole-map cardinality check.  A slot
     reference that does not resolve is still a refusal, because a slot names only a
     retained descriptor.  R20 section 2 orders the rows by canonical effect ID.
+
+    REV-0078 P1-2: the effect ID alone bridged an authentic descriptor for one
+    scope onto another selected scope's slot. Each slot reference now carries the
+    referencing slot's position scope, and the resolved permit must own that
+    scope and the selected application generation exactly.
     """
 
     reached: dict[bytes, list[object]] = {}
-    for effect_id, required in (
-        *((effect_id, True) for effect_id in slot_effect_ids),
-        *((effect_id, False) for effect_id in selected_effect_ids),
+    for effect_id, referencing_scope, required in (
+        *((effect_id, scope, True) for effect_id, scope in slot_references),
+        *((effect_id, None, False) for effect_id in selected_effect_ids),
     ):
         descriptor = state._acquisition_descriptor_by_effect.get(
             _authority._effect_key(effect_id)
@@ -3810,6 +3903,17 @@ def _encode_runtime_checkpoint_acquisition_descriptor_rows(
             raise ValueError("reached descriptor is not authority-authentic")
         if descriptor.permit.effect_id != effect_id:
             raise ValueError("reached descriptor does not own its index effect ID")
+        if descriptor.permit.application_generation_id != application_generation_id:
+            raise ValueError(
+                "reached descriptor leaves the selected application generation"
+            )
+        if (
+            referencing_scope is not None
+            and descriptor.permit.position_scope != referencing_scope
+        ):
+            raise ValueError(
+                "reached descriptor does not own its referencing slot scope"
+            )
         order_key = _atom_order_key(effect_id)
         if order_key in reached:
             continue
@@ -3874,7 +3978,7 @@ def _encode_runtime_checkpoint_authority(
         state, application_generation_id, selected_position_scopes
     )
     descriptor_rows = _encode_runtime_checkpoint_acquisition_descriptor_rows(
-        state, slot_effect_ids, selected_effect_ids
+        state, application_generation_id, slot_effect_ids, selected_effect_ids
     )
     scope = state.venue.scope
     row: list[object] = [

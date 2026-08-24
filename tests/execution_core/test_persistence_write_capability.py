@@ -1010,3 +1010,39 @@ def _apply_mutator(connection, operation, *arguments):
     )
     for mutant in mutants:
         assert not _fixture_helper_shape_is_exact(mutant, require_apply_helper=True)
+
+
+def test_no_installer_approves_itself_with_a_self_derived_digest() -> None:
+    """REV-0078 P0-1: refuse `approved_ddl_sha256=schema_ddl_digest()` anywhere.
+
+    That spelling makes the installer's comparison sha256(x) == sha256(x), which
+    can never refuse -- the caller approves with a token computed from the very
+    artifact under approval. The one admitted source is the human-transcribed
+    literal in `approved_schema_digest.py`; every test that installs the schema
+    must read it from there, so changing the DDL breaks every installing fixture
+    until a human deliberately moves one value.
+    """
+
+    test_root = Path(__file__).resolve().parent
+    violations: list[str] = []
+    for path in sorted(test_root.glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            for keyword in node.keywords:
+                if keyword.arg != "approved_ddl_sha256":
+                    continue
+                value = keyword.value
+                if isinstance(value, ast.Call) and (
+                    (
+                        isinstance(value.func, ast.Name)
+                        and value.func.id == "schema_ddl_digest"
+                    )
+                    or (
+                        isinstance(value.func, ast.Attribute)
+                        and value.func.attr == "schema_ddl_digest"
+                    )
+                ):
+                    violations.append(f"{path.name}:{value.lineno}")
+    assert violations == [], violations

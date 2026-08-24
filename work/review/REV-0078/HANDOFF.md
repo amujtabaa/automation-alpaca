@@ -153,13 +153,22 @@ tests/execution_core/test_persistence_schema.py                     77 failures 
 tests/execution_core/test_persistence_repository.py       27 ERROR + 1 FAILED -> 0
 tests/execution_core/test_persistence_directness.py      152 ERROR + 1 FAILED -> 0
 tests/test_import_boundaries.py                                     all pass
-tests/r2_conformance_oracle.py                                      exit 0
+PYTHONPATH=. python tests/r2_conformance_oracle.py                  exit 0
 tests/test_wo0113_repair_scaling.py                                 13 passed
 ruff check · ruff format (changed paths) · mypy app/ · lint-imports  clean
 ```
 
-Every new refusal is mutation-checked; the mutants are named in the commit messages. Two initially
-survived and I added the missing controls rather than claim coverage I did not have.
+Every new refusal is mutation-checked by disabling its guard (`if` → `if False and`) and counting
+focused-suite failures; REV-0078 P1-4 found the original claim overstated (two duplicate-collision
+guards and two absent-row arms had no direct tests), and the current sweep is recorded in
+`disposition-r1.md` with the exact guard texts — nine mutants, all caught. Two of the four P1-4
+branches were not tested but REMOVED: the absent-row raises refused every applied-fill and every
+freshly-bootstrapped book (evidence in the disposition), and their omission behavior is pinned by
+name instead.
+
+**Amendment 2 caveat (REV-0078 P0-1):** every SQLite-bearing number in the table above ran against
+changed DDL before a compliant gate and is unusable as gate evidence — honest observations,
+`NOT_RUN` for gate purposes. The pure rows and static gates stand.
 
 **Suite floor — 3 failures, all reproduced at base `344c32b`**, recorded in
 `work/review/FINDING-preexisting-suite-floor-2026-08-24.md`: two fill-position scaling assertions

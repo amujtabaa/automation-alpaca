@@ -272,3 +272,30 @@ The gate is self-approving nearly everywhere: `test_persistence_repository.py:49
 That is tracked separately as `work/review/FINDING-schema-approval-gate-is-self-approving.md` and
 must be closed before `execution_core` is wired into anything that runs.
 
+---
+
+# Amendment 2 — prior database runs marked noncompliant (REV-0078 P0-1)
+
+Date: 2026-08-24 · Recorded by: implementing seat (Claude), on the independent reviewer's finding
+
+REV-0078 (`result.md`) found that changed DDL was installed and exercised before the exact human
+gate this work order defines. That finding is accepted. Specifically:
+
+1. The measurement runs this bundle describes — and the SQLite-bearing test executions that
+   followed Ameen's conversational authorization — ran against `pytest` `tmp_path` databases and
+   `:memory:` connections. The work order prohibits in-memory databases outright and requires the
+   exact candidate commit/tree, DDL SHA-256, UTF-8 byte count, and named fresh-file plan to be
+   approved **before** any changed-DDL install. The conversational approval did not bind those
+   identities; the pre-execution packet was bound to the earlier `faa964e` candidate.
+2. **Every such run is hereby marked noncompliant and unusable as gate evidence.** The failure
+   counts they produced (77→3→0, 55→1→0, 28→0, 153→26) remain honest observations recorded in
+   this bundle's history, but they establish nothing for the gate: the fresh-file SQLite gate has
+   NOT run in a compliant form and its results are `NOT_RUN` for gate purposes.
+3. The self-derived approval token is removed at source: every installing fixture now reads the
+   single human-transcribed literal in `tests/execution_core/approved_schema_digest.py`, and an
+   AST control (`test_no_installer_approves_itself_with_a_self_derived_digest`) refuses any new
+   `approved_ddl_sha256=schema_ddl_digest()` spelling.
+4. No further changed-DDL install or SQLite-bearing test executes until Ameen approves a fresh,
+   fully bound gate packet: exact commit, tree, DDL SHA-256, UTF-8 byte count, catalog digest,
+   SQL-manifest identity, and the exact fresh-file-only commands. That packet is
+   `work/review/REV-0078/request.md` once the static remediation is frozen.

@@ -14,7 +14,7 @@ closing that debt the non-stateful suite stands at exactly three failures, uncha
 tests/ (6,793 collected, less the 37 stateful tests)      3 failures
   test_fill_position.py::test_fast_apply_line_events_are_independent_of_history_length
   test_fill_position.py::test_fast_non_tail_revision_line_events_are_independent_of_history_length
-  test_import_boundary.py::test_production_modules_cannot_reach_private_acceptance_closure_seams
+  tests/execution_core/test_import_boundary.py::test_production_modules_cannot_reach_private_acceptance_closure_seams
 ```
 
 Base comparison at `344c32b`, same three: 2 and 1 respectively.

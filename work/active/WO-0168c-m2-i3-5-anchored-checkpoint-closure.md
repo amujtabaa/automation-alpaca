@@ -133,3 +133,29 @@ approval.
 No configured or in-memory database, migration, runtime composition, credentials, external I/O,
 broker call, order, promotion, PR, or merge to `master`. WO-0168b/M2-I4 remains separate and starts
 only after this checkpoint substrate is accepted.
+
+---
+
+## Amendment — released paths extended under recorded authority (2026-08-24)
+
+REV-0078 P1-5 found seven changed paths outside the released list. Each is named here with the
+authority that produced it, so the canonical scope check can pass against the recorded intent.
+Authority: Ameen's serial-M2 authorization (frontmatter) plus his explicit 2026-08-24 approvals in
+session — the DDL correction, "address the findings" for the adversarial-pass and REV-0078
+remediations, and the two finding-file authorizations ("You may open one", "Take them").
+
+| Path | Rationale |
+| --- | --- |
+| `tests/execution_core/test_persistence_repository.py` | WO-0168c debt unmasked by the DDL fix: export pins and kernel-checkpoint fixtures for checkpoint reads this work order added. |
+| `tests/execution_core/test_persistence_directness.py` | Self-approval removal (REV-0078 P0-1): fixture now reads the transcribed literal. |
+| `tests/execution_core/test_persistence_write_capability.py` | Import-direction control correction (authorized 2026-08-24) and the P0-1 anti-tautology AST control. |
+| `tests/execution_core/approved_schema_digest.py` | New: the single human-transcribed approval literal (P0-1). |
+| `work/queue/M2-EXECUTION-2026-08-21/35-WO-0168C-HUMAN-GATE-DDL.md` | The DDL gate bundle, its ratification amendment, and the P0-1 noncompliance record. |
+| `work/queue/M2-EXECUTION-2026-08-21/36-R16-MANUAL-RULE-RATIFICATION.md` | Ameen's ratified resolution of the R15 §3 / R16 §2 conflict (P1-6). |
+| `work/review/FINDING-protection-stateful-replay-disposition.md` | Authorized finding ("You may open one"): pre-existing defect recorded, not fixed. |
+| `work/review/FINDING-schema-approval-gate-is-self-approving.md` | Authorized finding: the self-approving gate, tracked to closure before execution_core goes live. |
+| `work/review/FINDING-preexisting-suite-floor-2026-08-24.md` | Authorized floor record: three pre-existing failures attributed to base. |
+| `work/review/REV-0078/**` | The review packet itself: request, handoff, in-process pass, reviewer result (merged unmodified), disposition. |
+
+The `app/**` and `tests/**` checkpoint paths already released by the accepted implementation
+surface are unchanged. No path beyond this table has been touched since `344c32b`.

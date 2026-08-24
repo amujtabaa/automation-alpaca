@@ -16,7 +16,8 @@ from app.execution_core import venue as _venue
 from app.execution_core.fills import PositionScope
 from app.execution_core.position import ExecutionSnapshot
 from app.execution_core.persistence import checkpoint_codec, records, repository
-from app.execution_core.persistence.schema import install_schema, schema_ddl_digest
+from app.execution_core.persistence.schema import install_schema
+from approved_schema_digest import APPROVED_DDL_SHA256
 import persistence_setup_support as setup_support
 import test_persistence_repository as base
 
@@ -25,10 +26,18 @@ _INDEX_IN_PLAN = _re.compile(r"USING (?:COVERING )?INDEX (\w+)")
 
 # `AS` is optional in SQL. Requiring it would let `FROM venue_effect effect`
 # resolve to {VENUE_EFFECT} while the planner reports EFFECT, silently excusing
-# an unbounded pass. No current query uses the bare form; nothing stops the next.
+# an unbounded pass. The alias group carries a negative lookahead over the
+# keywords that can legally follow a source -- ON/WHERE/JOIN/..., and SQLite's
+# INDEXED BY / NOT INDEXED suffixes (REV-0078 P1-3) -- because a keyword
+# consumed AS an alias does double damage: the source resolves to the keyword,
+# and a bare `JOIN next_table` swallowed that way removes the next source from
+# the set entirely.
+_SQL_SOURCE_KEYWORDS = (
+    "ON|WHERE|JOIN|LEFT|INNER|CROSS|GROUP|ORDER|LIMIT|UNION|INDEXED|NOT"
+)
 _SQL_SOURCE_ALIAS = _re.compile(
     r"\b(?:FROM|JOIN)\s+([A-Za-z_][A-Za-z_0-9]*)"
-    r"(?:\s+(?:AS\s+)?([A-Za-z_][A-Za-z_0-9]*))?",
+    rf"(?:\s+(?:AS\s+)?(?!(?:{_SQL_SOURCE_KEYWORDS})\b)([A-Za-z_][A-Za-z_0-9]*))?",
     _re.IGNORECASE,
 )
 _SQL_KEYWORDS_AFTER_SOURCE = frozenset(
@@ -43,6 +52,8 @@ _SQL_KEYWORDS_AFTER_SOURCE = frozenset(
         "ORDER",
         "LIMIT",
         "UNION",
+        "INDEXED",
+        "NOT",
     }
 )
 
@@ -91,7 +102,7 @@ def _install_foundation(
     production projector actually emits.
     """
 
-    install_schema(connection, approved_ddl_sha256=schema_ddl_digest())
+    install_schema(connection, approved_ddl_sha256=APPROVED_DDL_SHA256)
     if not dormant:
         base._foundation(connection)
         connection.commit()
@@ -1483,3 +1494,32 @@ def test_all_thirteen_selection_queries_have_bounded_indexed_plans(
 
     connection.rollback()
     connection.close()
+
+
+def test_base_table_plan_names_resolves_indexed_by_and_bare_aliases() -> None:
+    """Pure parser control for the bounded-plan test's source resolution.
+
+    REV-0078 P1-3: `FROM t INDEXED BY ix` resolved to {"INDEXED"} and the
+    planner's SCAN of the real table was silently excused. Worse, a bare keyword
+    consumed as an alias also swallowed the next `JOIN` source from the set
+    entirely. The negative lookahead in _SQL_SOURCE_ALIAS is what these pin.
+    No database is touched: this is string parsing only.
+    """
+
+    base = frozenset({"venue_effect", "dispatch_claim"})
+    cases = (
+        ("SELECT 1 FROM venue_effect INDEXED BY ix_name", {"VENUE_EFFECT"}),
+        ("SELECT 1 FROM venue_effect NOT INDEXED WHERE x=1", {"VENUE_EFFECT"}),
+        ("SELECT 1 FROM venue_effect AS effect INDEXED BY ix", {"EFFECT"}),
+        ("SELECT 1 FROM venue_effect effect", {"EFFECT"}),
+        (
+            "SELECT 1 FROM venue_effect JOIN dispatch_claim AS claim ON 1=1",
+            {"VENUE_EFFECT", "CLAIM"},
+        ),
+        (
+            "SELECT 1 FROM venue_effect JOIN dispatch_claim ON 1=1",
+            {"VENUE_EFFECT", "DISPATCH_CLAIM"},
+        ),
+    )
+    for sql, expected in cases:
+        assert set(_base_table_plan_names(sql, base)) == expected, sql

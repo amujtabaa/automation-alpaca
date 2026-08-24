@@ -2551,6 +2551,33 @@ def test_r20_venue_owner_attempt_null_attempt_and_unselected_leg() -> None:
         )
 
 
+def _route_selection(
+    selection: records._RuntimeCheckpointSelectionSet,
+    *,
+    owner_order: str = "owner-order-1",
+) -> records._RuntimeCheckpointSelectionSet:
+    """Add the AcquisitionRootRouteRecord a reached correlation binds against."""
+
+    forged = deepcopy(selection)
+    object.__setattr__(
+        forged,
+        "root_routes",
+        (
+            records.AcquisitionRootRouteRecord(
+                1,
+                1,
+                _APPLICATION,
+                _EXECUTION_PROFILE,
+                identity.AcquisitionGenerationId("ab" * 32),
+                1,
+                identity.OrderId(owner_order),
+                identity.VenueObservationId("observation-1"),
+            ),
+        ),
+    )
+    return forged
+
+
 def _closure_selection(
     selection: records._RuntimeCheckpointSelectionSet,
     closure: venue.VenueTerminalClosure,
@@ -2634,7 +2661,7 @@ def test_r20_venue_acquisition_correlation_rows_project_selected_roots() -> None
             venue._coverage_root_index_key(root_key), entry, entry.commitment
         ),
     )
-    selection = _root_selection(_venue_claim_selection(), "root-1")
+    selection = _route_selection(_root_selection(_venue_claim_selection(), "root-1"))
 
     rows = checkpoint_codec._encode_runtime_checkpoint_venue_correlation_rows(
         book, selection
@@ -2684,6 +2711,18 @@ def test_r20_venue_acquisition_correlation_rows_project_selected_roots() -> None
     with pytest.raises(ValueError, match="does not own its selected root"):
         checkpoint_codec._encode_runtime_checkpoint_venue_correlation_rows(
             spliced, selection
+        )
+
+    # REV-0078 P1-1: same root, foreign owner relation. The route record is the
+    # selected authority for how this root was admitted, so a correlation whose
+    # leg names another owner must refuse even though the root key matches.
+    foreign_owner_route = _route_selection(
+        _root_selection(_venue_claim_selection(), "root-1"),
+        owner_order="owner-order-other",
+    )
+    with pytest.raises(ValueError, match="disagrees with its selected route"):
+        checkpoint_codec._encode_runtime_checkpoint_venue_correlation_rows(
+            book, foreign_owner_route
         )
 
 
@@ -3932,7 +3971,7 @@ def test_r20_acquisition_slot_rows_project_an_active_scope() -> None:
     assert len(row[2]) == 16
     assert row[3][0] == "m2.authority.AcquisitionSlotActive/v1"
     assert len(row[3]) == 3
-    assert referenced == (identity.EffectId("acq-effect-1"),)
+    assert referenced == ((identity.EffectId("acq-effect-1"), _DORMANT_POSITION_SCOPE),)
     checkpoint_codec._validate_checkpoint_collection(
         rows, "m2.authority.AcquisitionSlots/v1"
     )
@@ -3951,7 +3990,7 @@ def test_r20_acquisition_slot_rows_project_an_inactive_scope() -> None:
     row = rows[2][0]
     assert row[3][0] == "m2.authority.AcquisitionSlotInactive/v1"
     assert len(row[3]) == 4
-    assert referenced == (identity.EffectId("acq-effect-1"),)
+    assert referenced == ((identity.EffectId("acq-effect-1"), _DORMANT_POSITION_SCOPE),)
     checkpoint_codec._validate_checkpoint_collection(
         rows, "m2.authority.AcquisitionSlots/v1"
     )
@@ -4032,7 +4071,10 @@ def test_r20_acquisition_descriptor_rows_project_slot_and_selected_effects() -> 
     effect_id = identity.EffectId("acq-effect-1")
 
     rows = checkpoint_codec._encode_runtime_checkpoint_acquisition_descriptor_rows(
-        state, (effect_id,), (effect_id, identity.EffectId("effect-1"))
+        state,
+        _APPLICATION,
+        ((effect_id, _DORMANT_POSITION_SCOPE),),
+        (effect_id, identity.EffectId("effect-1")),
     )
 
     assert rows[0] == "m2.authority.AcquisitionDescriptors/v1"
@@ -4060,7 +4102,10 @@ def test_r20_acquisition_descriptor_rows_refuse_an_absent_slot_descriptor() -> N
 
     with pytest.raises(ValueError, match="names an absent descriptor"):
         checkpoint_codec._encode_runtime_checkpoint_acquisition_descriptor_rows(
-            forged, (identity.EffectId("acq-effect-1"),), ()
+            forged,
+            _APPLICATION,
+            ((identity.EffectId("acq-effect-1"), _DORMANT_POSITION_SCOPE),),
+            (),
         )
 
 
@@ -4196,3 +4241,281 @@ def test_r20_projected_venue_and_authority_wires_pass_their_own_validators() -> 
     ):
         assert authority_wire[index][0] == tag, (index, authority_wire[index][0])
         assert authority_wire[index][1] == 1, (tag, authority_wire[index][1])
+
+
+# ---------------------------------------------------------------------------
+# REV-0078 P1-1 / P1-2 / P1-4 controls: same-key rows carrying a foreign
+# associated identity must refuse, and the corrected omission arms are pinned.
+
+
+def test_rev78_owner_with_foreign_observation_or_effect_is_refused() -> None:
+    """Same leg, foreign relation: the selected owner record is the authority."""
+
+    state, _ = _authority_state_with_effects()
+    effect_scope = state.venue._effect_by_id.get(
+        venue._effect_index_key(identity.EffectId("effect-1"))
+    ).effect.scope
+    book = _book_with_owner_leg(state.venue, _FIXTURE_LEG_KEY, effect_scope)
+    selection = _owner_selection(_venue_claim_selection(), "owner-order-1")
+
+    foreign_observation = venue.VenueIdentityOwner(
+        _FIXTURE_LEG_KEY, effect_scope, identity.VenueObservationId("observation-9")
+    )
+    spliced = copy(book)
+    object.__setattr__(
+        spliced,
+        "_owner_by_leg",
+        book._owner_by_leg.replace_existing(
+            venue._leg_index_key(_FIXTURE_LEG_KEY),
+            foreign_observation,
+            venue._owner_value_commitment(foreign_observation),
+        ),
+    )
+    with pytest.raises(ValueError, match="disagrees with its selected observation"):
+        checkpoint_codec._encode_runtime_checkpoint_venue_owner_attempt_rows(
+            spliced, selection
+        )
+
+    foreign_effect_scope = deepcopy(effect_scope)
+    object.__setattr__(foreign_effect_scope, "effect_id", identity.EffectId("effect-9"))
+    foreign_effect = venue.VenueIdentityOwner(
+        _FIXTURE_LEG_KEY,
+        foreign_effect_scope,
+        identity.VenueObservationId("observation-1"),
+    )
+    spliced_effect = copy(book)
+    object.__setattr__(
+        spliced_effect,
+        "_owner_by_leg",
+        book._owner_by_leg.replace_existing(
+            venue._leg_index_key(_FIXTURE_LEG_KEY),
+            foreign_effect,
+            venue._owner_value_commitment(foreign_effect),
+        ),
+    )
+    with pytest.raises(ValueError, match="disagrees with its selected effect"):
+        checkpoint_codec._encode_runtime_checkpoint_venue_owner_attempt_rows(
+            spliced_effect, selection
+        )
+
+
+def test_rev78_coverage_from_a_foreign_account_is_refused() -> None:
+    """Same root_fill_id string, foreign broker/environment/account: refuse.
+
+    The bare root_fill_id admitted a foreign account's economics under this
+    root; the full RootFillKey is what the selection actually proves.
+    """
+
+    state, _ = _authority_state_with_effects()
+    from app.execution_core import recovery as _recovery
+
+    foreign_fact = BrokerFillFact(
+        key=ExecutionFactKey(
+            broker=identity.BrokerId("paper"),
+            environment=identity.EnvironmentId("paper"),
+            account=identity.AccountId("other-account"),
+            source_event_id=identity.SourceEventId("coverage-foreign"),
+        ),
+        scope=ExecutionScope(
+            broker=identity.BrokerId("paper"),
+            environment=identity.EnvironmentId("paper"),
+            account=identity.AccountId("other-account"),
+            order_id=identity.OrderId("owner-order-1"),
+            symbol_id=identity.SymbolId("AAPL"),
+            side=ExecutionSide.BUY,
+        ),
+        root_fill_id=identity.RootFillId("root-1"),
+        quantity=values.Quantity(2),
+        price=_FIXTURE_PRICE,
+    )
+    coverage = _recovery._BrokerCoverage(
+        identity.EffectId("effect-1"),
+        _FIXTURE_LEG_KEY,
+        values.Quantity(0),
+        values.Quantity(2),
+        foreign_fact,
+        b"\xdd" * 32,
+        identity.VenueInputId("input-1"),
+        foreign_fact,
+        b"\xee" * 32,
+        identity.VenueInputId("input-1"),
+        True,
+    )
+    ledger_type = type(state.venue._broker_coverage_ledger)
+    book = copy(state.venue)
+    object.__setattr__(
+        book,
+        "_broker_coverage_ledger",
+        ledger_type.from_values((coverage,), lambda _value: b"\x01" * 32),
+    )
+    object.__setattr__(
+        book,
+        "_broker_coverage_by_root",
+        state.venue._broker_coverage_by_root.insert_new(
+            venue._coverage_root_index_key(_FIXTURE_ROOT_KEY), 0, b"\x02" * 32
+        ),
+    )
+
+    with pytest.raises(ValueError, match="does not own its selected root"):
+        checkpoint_codec._encode_runtime_checkpoint_venue_broker_coverage_rows(
+            book, _root_selection(_venue_claim_selection(), "root-1")
+        )
+
+
+def test_rev78_reconciliation_with_foreign_referencing_effect_is_refused() -> None:
+    """The coverage that names the input also names its effect; both must agree."""
+
+    state, _ = _authority_state_with_effects()
+    stale = _fixture_fill_reconciliation("input-1")
+    object.__setattr__(stale, "effect_id", identity.EffectId("effect-9"))
+    book = _book_with_reconciliations(
+        _book_with_broker_coverage(state.venue), (("input-1", stale),)
+    )
+
+    with pytest.raises(ValueError, match="does not own its referencing effect"):
+        checkpoint_codec._encode_runtime_checkpoint_venue_reconciliation_rows(
+            book, _reconciliation_selection()
+        )
+
+
+def test_rev78_input_named_by_two_different_legs_is_refused() -> None:
+    """P1-4: one input claimed by a closure on leg A and coverage on leg B."""
+
+    state, _ = _authority_state_with_effects()
+    book = _book_with_broker_coverage(state.venue)
+    other_leg = identity.VenueLegKey(
+        identity.BrokerId("paper"),
+        identity.EnvironmentId("paper"),
+        identity.AccountId("account"),
+        identity.OrderId("owner-order-other"),
+    )
+    closure = venue.VenueTerminalClosure(
+        other_leg,
+        identity.ClosureId("closure-collide"),
+        1,
+        None,
+        venue.VenueAttemptState.WORKING,
+        values.Quantity(2),
+        values.Quantity(2),
+        identity.EvidenceReference("evidence-collide"),
+        venue.VenueClosureKind.BROKER_TERMINAL,
+        identity.VenueInputId("input-1"),
+    )
+    object.__setattr__(
+        book,
+        "_closure_head_by_leg",
+        book._closure_head_by_leg.insert_new(
+            venue._leg_index_key(other_leg),
+            closure,
+            venue._closure_commitment(closure),
+        ),
+    )
+    selection = _root_selection(
+        _owner_selection(_venue_claim_selection(), "owner-order-other"), "root-1"
+    )
+
+    with pytest.raises(ValueError, match="named by two different legs"):
+        checkpoint_codec._referenced_reconciliation_inputs(book, selection)
+
+
+def test_rev78_input_named_by_two_different_scopes_is_refused() -> None:
+    """P1-4: one bootstrap input claimed by targets on two selected scopes."""
+
+    state, _ = _authority_state_with_effects()
+    record = _fixture_bootstrap_record()
+    book = _book_with_bootstrap_target(state.venue, record)
+    other_scope = PositionScope(
+        identity.BrokerId("paper"),
+        identity.EnvironmentId("paper"),
+        identity.AccountId("account"),
+        identity.SymbolId("MSFT"),
+    )
+    object.__setattr__(
+        book,
+        "_bootstrap_bound_target_by_scope",
+        book._bootstrap_bound_target_by_scope.insert_new(
+            venue._position_scope_index_key(other_scope), record, b"\x05" * 32
+        ),
+    )
+    selection = deepcopy(_bootstrap_selection())
+    aapl = selection.scopes[0]
+    object.__setattr__(
+        selection,
+        "scopes",
+        (
+            aapl,
+            records.ScopeRecord(
+                2,
+                aapl.application_generation_id,
+                aapl.execution_profile_id,
+                identity.SymbolId("MSFT"),
+            ),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="named by two different scopes"):
+        checkpoint_codec._referenced_execution_reconciliation_inputs(book, selection)
+
+
+def test_rev78_referenced_input_with_no_reconciliation_is_omitted() -> None:
+    """The applied path pins: coverage names its own evidence input and no
+    reconciliation exists (recovery.py root_source_input_id=item.input_id on the
+    applied arm). An earlier revision raised here and refused every applied-fill
+    book; the disputed P1-4 arm is documented in disposition-r1.md.
+    """
+
+    state, _ = _authority_state_with_effects()
+    book = _book_with_broker_coverage(state.venue)
+    assert book._reconciliation_by_input.size == 0
+
+    rows = checkpoint_codec._encode_runtime_checkpoint_venue_reconciliation_rows(
+        book, _reconciliation_selection()
+    )
+    assert rows == ["m2.venue.Reconciliations/v1", 0, []]
+
+
+def test_rev78_initial_bootstrap_with_no_registry_outcome_is_omitted() -> None:
+    """An initial bootstrap target's checkpoint input is the registry input,
+    which is never a catch-up: no registry outcome exists, and that is the
+    ordinary freshly-bootstrapped state, not a truncated set.
+    """
+
+    state, _ = _authority_state_with_effects()
+    book = _book_with_bootstrap_target(state.venue, _fixture_bootstrap_record())
+    assert book._execution_reconciliation_by_input.size == 0
+
+    rows = (
+        checkpoint_codec._encode_runtime_checkpoint_venue_execution_reconciliation_rows(
+            book, _bootstrap_selection()
+        )
+    )
+    assert rows == ["m2.venue.ExecutionReconciliations/v1", 0, []]
+
+
+def test_rev78_descriptor_for_a_foreign_scope_or_generation_is_refused() -> None:
+    """P1-2: an authentic permit for one scope must not be bridged onto another
+    selected scope's slot by the effect ID alone, nor across generations.
+    """
+
+    state, _ = _authority_state_with_effects()
+    state = _state_with_acquisition_slot(state)
+    effect_id = identity.EffectId("acq-effect-1")
+    foreign_scope = PositionScope(
+        identity.BrokerId("paper"),
+        identity.EnvironmentId("paper"),
+        identity.AccountId("account"),
+        identity.SymbolId("MSFT"),
+    )
+
+    with pytest.raises(ValueError, match="does not own its referencing slot scope"):
+        checkpoint_codec._encode_runtime_checkpoint_acquisition_descriptor_rows(
+            state, _APPLICATION, ((effect_id, foreign_scope),), ()
+        )
+
+    with pytest.raises(ValueError, match="leaves the selected application generation"):
+        checkpoint_codec._encode_runtime_checkpoint_acquisition_descriptor_rows(
+            state,
+            identity.ApplicationGenerationId("other-generation"),
+            ((effect_id, _DORMANT_POSITION_SCOPE),),
+            (),
+        )
