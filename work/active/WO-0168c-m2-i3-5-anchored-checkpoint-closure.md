@@ -64,6 +64,7 @@ allowed_paths:
   - work/review/REV-0094/**
   - work/review/REV-0095/**
   - work/review/REV-0096/**
+  - work/review/REV-0097/**
   - work/review/FINDING-preexisting-suite-floor-2026-08-24.md
   - work/review/FINDING-protection-stateful-replay-disposition.md
   - work/review/FINDING-schema-approval-gate-is-self-approving.md
