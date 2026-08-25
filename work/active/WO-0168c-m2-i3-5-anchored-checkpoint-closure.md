@@ -72,6 +72,7 @@ allowed_paths:
   - work/review/REV-0102/**
   - work/review/REV-0103/**
   - work/review/REV-0104/**
+  - work/review/REV-0105/**
   - work/review/FINDING-preexisting-suite-floor-2026-08-24.md
   - work/review/FINDING-protection-stateful-replay-disposition.md
   - work/review/FINDING-schema-approval-gate-is-self-approving.md
@@ -977,3 +978,70 @@ REV-0104 must independently review this exact source identity and return
 `P0=0/P1=0` before the changed-DDL HUMAN-GATE may be presented. Pytest, all four
 held suites, SQLite import/connection, database activity, changed-DDL execution,
 and DDL installation remain `NOT_RUN` and unauthorized.
+
+## Amendment — REV-0104 disposition and REV-0105 exact successor (2026-08-25)
+
+REV-0104 independently reviewed source commit
+`cdf17715839d7d109dbf555cb4064488ae0beefe` and returned `BLOCK`, with five P0
+and two P1 roots after deduplication. The P0 roots were callable scope-map
+returns, incomplete-import mutation through maps/bound mutators, unresolved
+cross-file import carriers, package-prefix lookup through `sys.modules`, and a
+trace-callback model that was lexical rather than effect-closed. The P1 roots
+were a filename-specific schema-test waiver and controls that did not
+independently kill the Boolean/completeness rules they claimed to prove.
+
+The successor source candidate is commit
+`fa260c77fb8d4b54fd915684254e1922eb9ae90a`, tree
+`8599f65b3479f0f575b1b33da77d7fcefdd4e650`, parent
+`369fb2c753c46a1a63b3fc2933476d9b8c573333`. Its exact changed paths and blobs
+are:
+
+- `app/execution_core/persistence/schema.py` —
+  `537c6740746611dc18299aa4f7f3a5921774609c`;
+- `tests/execution_core/test_persistence_schema.py` —
+  `3791d5548069e151c5c1c7a162af842abaa99560`; and
+- `tests/execution_core/test_persistence_write_capability.py` —
+  `ecf67b9398b9bfa1e480596cfb55a88d6914d7d2`.
+
+The root correction propagates finite callable returns and copied namespace
+maps; preserves incomplete-import map/mutator ownership and unresolved imports
+through the topology fixpoint; applies exact-or-prefix classification to module
+registry lookups; and replaces the permissive trace walk with the closed grammar
+needed by the repository's bounded line-count proof. Callback identity,
+nonlocal integer-counter ownership, and the optional CPython frame-filename
+filter are now structurally closed against later writes and aliases.
+
+The filename waiver was removed. Digest mismatch is checked by the private pure
+`_require_exact_approved_ddl_digest` guard, called immediately after deriving
+the schema digest and before any connection access. The held schema test checks
+that pure refusal; an import-free AST control pins the installer order. New
+controls independently kill each REV-0104 root and the Boolean/incomplete-target
+branches.
+
+Exact-candidate static evidence is: 30/30 source-only controls pass in 0.790
+seconds; the primary scanner covers 49 recursive execution-core Python files
+with zero violations in 122.293 seconds; the topology scanner covers the same
+49 files with zero violations in 27.904 seconds; Ruff check/format pass; mypy
+succeeds on 95 app files with `--no-incremental --no-sqlite-cache`; and all six
+import-linter contracts pass with `--no-cache`.
+
+One ad hoc source-harness command accidentally selected top-level imports as
+well as functions. Isolated Python stopped immediately with
+`ModuleNotFoundError` reporting `No module named 'app'`; no project module
+loaded and no SQLite or database capability was reached. The corrected
+function-only harness produced the evidence above. This near-miss is retained
+rather than silently omitted.
+
+Source-only recomputation leaves `SCHEMA_DDL` at SHA-256
+`2636c72793515a46c893d93084750b45ea2f151c58055480d5c601eb8c0faac5`
+and 178755 UTF-8 bytes, `_SCHEMA_CATALOG_SHA256` at
+`c717f6a6c84b37cb13773416c90b50d14f377e39928d7f9c626e769296e632d2`,
+the R4 manifest at
+`99aab5f40d43ea5dacce78e77ea47cad250cb9618223d9036a071d8a2704ed39`,
+and `APPROVED_EXECUTION_DDL_SHA256` at `None`.
+
+`work/review/REV-0105/**` is released solely for fresh exact-source review of
+this successor. REV-0105 must return `P0=0/P1=0` before the changed-DDL
+HUMAN-GATE may be presented. Pytest, all four held suites, project/SQLite
+imports, connections, database activity, changed-DDL execution, and DDL
+installation remain `NOT_RUN` and unauthorized.
