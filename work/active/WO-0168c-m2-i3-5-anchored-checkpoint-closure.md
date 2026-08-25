@@ -717,3 +717,41 @@ These are one provenance-and-time model, not filename or spelling waivers.
 
 `work/review/REV-0101/**` is released solely for the next fresh exact-source
 review. All DDL/SQLite holds and the separate Ameen HUMAN-GATE remain binding.
+
+## Amendment — REV-0101 exact finite-state candidate (2026-08-25)
+
+The REV-0100 owning findings are remediated at
+`2189d0fe6cf5428188b83255a5ef7725fac61174`, tree
+`a068104c1f9363b6557f8f41b69c980dcb605976`. The direct source commit changes
+only `test_persistence_write_capability.py` and `test_protection.py`.
+
+The replacement uses one finite binding-state model across the single-file and
+cross-file gates. Definite bindings replace older states; conditional bindings
+remain alternatives; same-position bindings are all retained; deferred parent
+state is evaluated at proven calls and conservatively from escape onward; and
+`global`/`nonlocal` writes are routed to their declared owner. Static text
+resolution carries both reachable literals and a completeness bit, so a known
+protected alternative cannot disappear and an unknown alternative cannot be
+reported as an exact singleton. Package prefixes, helper namespaces/maps,
+module descriptors, and unmodeled governed attributes remain owned. A finite
+allowlist identifies current ordinary read-only members of governed standard
+modules; every unmodeled member fails closed. Protection assertions resolve
+only explicitly named builtin identities and compare raised errors to direct
+`builtins.TypeError`/`builtins.ValueError` objects.
+
+Current exact-head evidence is source/static only: Ruff check and formatting,
+AST parsing, mypy over 95 app files, all six import-linter contracts, AI Project
+OS install/version/ledger/PKL/disposition checks, cumulative work-order scope,
+and `git diff --check` pass. Source-text-only identity recomputation leaves the
+DDL SHA-256, 178755-byte count, catalog digest, R4 manifest digest, and locked
+`None` approval literal unchanged.
+
+The prior `761 passed` CPython 3.12 and `33 passed` CPython 3.14 evidence belongs
+to `97f316b9`, not this successor. An environment execution guard refused the
+new import-based pytest rerun because it could not prove the transitive import
+graph SQLite-free. That refusal is recorded as `NOT_RUN`, not routed around and
+not represented as GREEN. REV-0101 is therefore a source-only exact-head
+review. No SQLite import/connection, held suite, DDL install, migration, or
+database activity is authorized. The changed-DDL HUMAN-GATE remains closed
+until a fresh exact-head result records `P0=0` and `P1=0`, after which Ameen must
+separately approve the exact DDL packet and named fresh-file commands.
