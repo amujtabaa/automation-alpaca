@@ -331,3 +331,33 @@ their positive/negative controls are complete in the source test.
 root correction. The source and test paths were already released by this work
 order. This amendment creates no DDL change, SQLite execution authority,
 changed-DDL installation, or expansion of the human gate.
+
+## Amendment — REV-0088 lexical-capability boundary review route (2026-08-24)
+
+REV-0087 reviewed `d9296eec74027e54c619a8d2186ea7761cd4317f` and returned
+`P0=0`, `P1=3`, `P2=0`. Its independently reproduced routes show that the
+provenance evaluator remains structurally incomplete: a late outer binding,
+aliases of known `builtins`/`sys` capability primitives, and declared
+`global`/`nonlocal` hand-offs can all evade receiver provenance. This reaches
+the work order's repeated-remediation circuit breaker. The implementation seat
+must not extend that evaluator with a fourth alias pattern.
+
+The replacement is a smaller fail-closed lexical-capability boundary. A scope
+which directly uses `globals`, `vars`, `__builtins__`, `__import__`, a known
+`builtins`/`importlib`/`sys` capability member, or a direct import of such a
+member is a dynamic-capability region. A noncanonical `.connect`/
+`.Connection` endpoint, or a static lookup of either member, is refused in that
+scope or a descendant. A dynamic source function declaring `global` or
+`nonlocal` also marks its target enclosing scope(s), so declared sibling
+hand-offs cannot escape. Canonical `sqlite3.connect` remains under the existing
+direct pre-open gate grammar. Generic custom-client methods do not create a
+dynamic-capability region merely because their names resemble a lookup or
+import; an explicit unrelated-fixture control proves that distinction.
+
+This is a test-side static-source correction only. It changes no DDL byte, no
+SQL, no public export, no runtime composition, and no human-gate authority.
+`work/review/REV-0088/**` is added solely for a new independent exact-head
+review of this root correction. The source and test paths were already released
+by this work order. SQLite execution and changed-DDL installation remain
+forbidden until the separately required exact-head P0=0/P1=0 review and human
+gate.
