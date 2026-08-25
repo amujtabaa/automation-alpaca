@@ -1310,6 +1310,8 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
         ("approved_schema_digest", "__getattribute__"): "approval-namespace-route",
         ("approved_schema_digest", "__setattr__"): "approval-bound-mutator",
         ("builtins", "__import__"): "importer",
+        ("builtins", "__dict__"): "module-map:builtins",
+        ("builtins", "dict"): "builtin-dict",
         ("builtins", "eval"): "dynamic-code",
         ("builtins", "exec"): "dynamic-code",
         ("builtins", "getattr"): "getter",
@@ -1319,11 +1321,13 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
         ("builtins", "vars"): "namespace-factory",
         ("importlib", "import_module"): "importer",
         ("operator", "attrgetter"): "attrgetter",
+        ("sys", "__dict__"): "module-map:sys",
         ("sys", "modules"): "module-registry",
     }
     _BUILTIN_CAPABILITY_KINDS = {
         "__builtins__": "module-map:builtins",
         "__import__": "importer",
+        "dict": "builtin-dict",
         "eval": "dynamic-code",
         "exec": "dynamic-code",
         "getattr": "getter",
@@ -1888,6 +1892,7 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
     _MODULE_MAP_MEMBER_KINDS = {
         "module-map:builtins": {
             "__import__": "importer",
+            "dict": "builtin-dict",
             "eval": "dynamic-code",
             "exec": "dynamic-code",
             "getattr": "getter",
@@ -1897,7 +1902,7 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
             "vars": "namespace-factory",
         },
         "module-map:importlib": {"import_module": "importer"},
-        "module-map:sys": {"modules": "module-registry"},
+        "module-map:sys": {},
         "module-registry": {
             "app.execution_core.persistence.schema": "module:schema",
             "approved_schema_digest": "module:approval",
@@ -1917,10 +1922,23 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
             "APPROVED_EXECUTION_DDL_SHA256": "approval-token",
         },
     }
+    _MODULE_REGISTRY_MUTATOR_NAMES = frozenset(
+        {
+            "__delitem__",
+            "__ior__",
+            "__setitem__",
+            "clear",
+            "pop",
+            "popitem",
+            "setdefault",
+            "update",
+        }
+    )
     _NAMESPACE_FALLBACK_KINDS = {
         "__builtins__": "module-map:builtins",
         "__import__": "importer",
         "builtins": "module:builtins",
+        "dict": "builtin-dict",
         "eval": "dynamic-code",
         "exec": "dynamic-code",
         "getattr": "getter",
@@ -1960,6 +1978,8 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
                 if kind is None
                 else kind
             )
+        if base == "module-map:sys" and key == "modules":
+            return "sys-namespace-registry"
         return _MODULE_MAP_MEMBER_KINDS.get(base, {}).get(key, "unknown-dynamic")
 
     def _capability_attribute_kind(base: str | None, member: str) -> str | None:
@@ -1969,6 +1989,8 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
             if member == "install_schema":
                 return "dynamic-installer"
             return "unknown-dynamic"
+        if base == "module-registry" and member in _MODULE_REGISTRY_MUTATOR_NAMES:
+            return "module-registry-mutator"
         if _is_mapping_kind(base) and member in {"get", "__getitem__"}:
             return f"map-getter:{base}"
         return {
@@ -1989,6 +2011,7 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
             ("module:builtins", "__dict__"): "module-map:builtins",
             ("module:builtins", "__import__"): "importer",
             ("module:builtins", "delattr"): "attribute-mutator",
+            ("module:builtins", "dict"): "builtin-dict",
             ("module:builtins", "eval"): "dynamic-code",
             ("module:builtins", "exec"): "dynamic-code",
             ("module:builtins", "getattr"): "getter",
@@ -2193,12 +2216,9 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
     def _is_module_registry_mutation_call(call: ast.Call) -> bool:
         if not isinstance(call.func, ast.Attribute):
             return False
-        if _resolve_capability_expression(call.func.value) == "module-registry":
-            return call.func.attr not in {"get", "__getitem__"}
         return bool(
-            isinstance(call.func.value, ast.Name)
-            and call.func.value.id == "dict"
-            and call.func.attr not in {"get", "__getitem__"}
+            _resolve_capability_expression(call.func.value) == "builtin-dict"
+            and call.func.attr in _MODULE_REGISTRY_MUTATOR_NAMES
             and call.args
             and _resolve_capability_expression(call.args[0]) == "module-registry"
         )
@@ -2274,6 +2294,14 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
                 violations.append(
                     f"{label}:{node.lineno}: approval module namespace route"
                 )
+            if (
+                owner_kind == "module:sys"
+                and node.attr == "modules"
+                and isinstance(node.ctx, (ast.Store, ast.Del))
+            ):
+                violations.append(
+                    f"{label}:{node.lineno}: module registry mutation route"
+                )
             if owner_kind == "module:schema" and node.attr == "__dict__":
                 violations.append(
                     f"{label}:{node.lineno}: schema module namespace route"
@@ -2300,6 +2328,17 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
         if isinstance(node, ast.Call) and _is_module_registry_mutation_call(node):
             violations.append(f"{label}:{node.lineno}: module registry mutation route")
         if (
+            isinstance(node, ast.Call)
+            and _resolve_capability_expression(node.func) == "module-registry-mutator"
+        ):
+            violations.append(f"{label}:{node.lineno}: module registry mutation route")
+        if (
+            isinstance(node, ast.Subscript)
+            and _resolve_capability_expression(node.value) == "module-registry"
+            and isinstance(node.ctx, (ast.Store, ast.Del))
+        ):
+            violations.append(f"{label}:{node.lineno}: module registry mutation route")
+        if (
             isinstance(node, ast.expr)
             and _resolve_capability_expression(node) == "module-map:approval"
         ):
@@ -2318,6 +2357,20 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
             and _resolve_capability_expression(node) == "approval-namespace-route"
         ):
             violations.append(f"{label}:{node.lineno}: approval module namespace route")
+        if (
+            isinstance(node, ast.expr)
+            and _resolve_capability_expression(node) == "module-registry-mutator"
+        ):
+            parent = parents.get(node)
+            if not (isinstance(parent, ast.Call) and parent.func is node):
+                violations.append(
+                    f"{label}:{node.lineno}: module registry mutation route"
+                )
+        if (
+            isinstance(node, ast.expr)
+            and _resolve_capability_expression(node) == "sys-namespace-registry"
+        ):
+            violations.append(f"{label}:{node.lineno}: sys module namespace route")
         if not has_gate_surface:
             continue
         if (
@@ -3754,7 +3807,7 @@ globals()['importlib'].import_module('sqlite3').connect(path)
 import sys
 vars(sys)['modules']['sqlite3'].connect(path)
 """,
-            "SQLite connection route is not direct",
+            "sys module namespace route",
         ),
         (
             """
@@ -4015,6 +4068,27 @@ setattr(
     'forged',
 )
 """,
+            "sys module namespace route",
+        ),
+        (
+            """
+import sys
+sys.modules['approved_schema_digest'] = object()
+""",
+            "module registry mutation route",
+        ),
+        (
+            """
+import sys
+del sys.modules['approved_schema_digest']
+""",
+            "module registry mutation route",
+        ),
+        (
+            """
+import sys
+dict.setdefault(sys.modules, 'approved_schema_digest', object())
+""",
             "module registry mutation route",
         ),
         (
@@ -4027,6 +4101,32 @@ sys.modules['builtins'].setattr(
 )
 """,
             "approval token mutation route",
+        ),
+        (
+            """
+from sys import __dict__ as sys_namespace
+sys_namespace['modules'].setdefault('approved_schema_digest')
+""",
+            "sys module namespace route",
+        ),
+        (
+            """
+from builtins import __dict__ as builtin_namespace
+import sys
+builtin_namespace['setattr'](
+    sys.modules['approved_schema_digest'],
+    'APPROVED_EXECUTION_DDL_SHA256',
+    'forged',
+)
+""",
+            "approval token mutation route",
+        ),
+        (
+            """
+import sys
+mutate = sys.modules.__setitem__
+""",
+            "module registry mutation route",
         ),
         (
             """
@@ -4050,5 +4150,7 @@ def mutate(box):
     delattr(box, 'APPROVED_EXECUTION_DDL_SHA256')
     return box
 unrelated_sys_member = vars(sys)['approved_schema_digest']
+def inspect(dict):
+    return dict.observe(sys.modules)
 """
     assert _schema_installer_gate_violations(ordinary, "rev0093-good.py") == []
