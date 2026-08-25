@@ -65,6 +65,7 @@ allowed_paths:
   - work/review/REV-0095/**
   - work/review/REV-0096/**
   - work/review/REV-0097/**
+  - work/review/REV-0098/**
   - work/review/FINDING-preexisting-suite-floor-2026-08-24.md
   - work/review/FINDING-protection-stateful-replay-disposition.md
   - work/review/FINDING-schema-approval-gate-is-self-approving.md
@@ -601,3 +602,32 @@ new independent exact-head review. SQLite execution and changed-DDL
 installation remain forbidden until that review records P0=0, P1=0 and Ameen
 separately approves the exact candidate, tree, DDL identity, manifest, and
 fresh-file-only commands.
+
+## Amendment — REV-0097 disposition and REV-0098 root-cause review route (2026-08-24)
+
+REV-0097 independently reviewed `b8709110d7e634b92d1af6262c28332fc25b5b93`
+and returned BLOCK with `P0=5`, `P1=1`, and `P2=0`. Its fresh-context seats
+reproduced three reflection/mutation escapes (the `sys` module registry,
+`schema.install_schema`, and builtins import machinery), a helper-module
+re-export route for the installer and approval accessor, deferred
+function-global lookup timing, and an approval accessor that was structurally
+pinned only to a private validator call rather than the validator's behavior.
+REV-0097 and its result remain immutable evidence.
+
+The one bounded root remediation is frozen at
+`ec1fbf8f94a2e10f08a33ef5d3476f336d37ce13`, tree
+`7974e3718ab1977d7eb640eea75f28e1f908607c`. It removes the arbitrary-token
+private validator, structurally pins the full public fail-closed accessor,
+models governed module mutation/reflection as value-owned capability routes,
+uses conservative function-global timing, and adds a repository-wide finite
+provenance pass that refuses re-export/recovery of the installer, approval
+accessor, and their owning modules through direct imports, module namespaces,
+maps, reflection, literal dynamic imports, and literal `sys.modules` lookup.
+This changes only the already-released pure test/gate paths. It changes no DDL
+byte, SQL, public runtime export, runtime composition, or human-gate authority.
+
+`work/review/REV-0098/**` is added solely for a fresh independent exact-head
+review of that remediation. The changed-DDL gate remains closed: no SQLite
+execution, changed-DDL installation, migration, configured or in-memory
+database, credentials, network, broker, order, promotion, or merge authority
+is created by this amendment.
