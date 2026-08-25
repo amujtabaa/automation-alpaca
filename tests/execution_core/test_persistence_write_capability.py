@@ -166,6 +166,45 @@ def _exact_arguments(
     )
 
 
+def _approval_accessor_binding_is_exact(tree: ast.Module) -> bool:
+    """Prove the public gate reads only its one locked human-controlled token."""
+
+    accessor = _exact_function(tree, "require_approved_ddl_execution")
+    validator = _exact_function(tree, "_validate_approved_ddl_execution_token")
+    if (
+        accessor is None
+        or validator is None
+        or accessor.decorator_list
+        or validator.decorator_list
+        or _name_is_rebound(
+            tree,
+            "require_approved_ddl_execution",
+            permitted_function=accessor,
+        )
+        or _name_is_rebound(
+            tree,
+            "_validate_approved_ddl_execution_token",
+            permitted_function=validator,
+        )
+        or not _exact_arguments(accessor.args, positional=(), vararg=None)
+        or not _exact_arguments(validator.args, positional=("approved",), vararg=None)
+    ):
+        return False
+    body = _body_without_docstring(accessor)
+    if len(body) != 1 or not isinstance(body[0], ast.Return):
+        return False
+    call = body[0].value
+    return bool(
+        isinstance(call, ast.Call)
+        and isinstance(call.func, ast.Name)
+        and call.func.id == "_validate_approved_ddl_execution_token"
+        and len(call.args) == 1
+        and isinstance(call.args[0], ast.Name)
+        and call.args[0].id == "APPROVED_EXECUTION_DDL_SHA256"
+        and not call.keywords
+    )
+
+
 def _parent_map(tree: ast.AST) -> dict[ast.AST, ast.AST]:
     return {
         child: parent
@@ -1305,6 +1344,10 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
             "approved_schema_digest",
             "require_approved_ddl_execution",
         ): "approval-accessor",
+        (
+            "approved_schema_digest",
+            "_validate_approved_ddl_execution_token",
+        ): "approval-validator",
         ("approved_schema_digest", "__dict__"): "module-map:approval",
         ("approved_schema_digest", "__delattr__"): "approval-bound-mutator",
         ("approved_schema_digest", "__getattribute__"): "approval-namespace-route",
@@ -1707,8 +1750,6 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
         scope: ast.AST,
         name: str,
         position: tuple[int, int],
-        *,
-        allow_future: bool = False,
     ) -> Binding | None:
         candidates = capability_bindings.get((scope, name), [])
         if not candidates:
@@ -1719,28 +1760,8 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
             if candidate[3] or candidate[2] <= position
         ]
         if not available:
-            if allow_future:
-                future = [
-                    candidate
-                    for candidate in candidates
-                    if not candidate[3] and candidate[2] > position
-                ]
-                if future:
-                    latest_position = max(candidate[2] for candidate in future)
-                    latest = [
-                        candidate
-                        for candidate in future
-                        if candidate[2] == latest_position
-                    ]
-                    if len(latest) != 1 or latest[0][4]:
-                        return (
-                            "unknown-dynamic",
-                            None,
-                            latest_position,
-                            False,
-                            True,
-                        )
-                    return latest[0]
+            if isinstance(scope, (ast.ClassDef, ast.Module)):
+                return None
             return ("ordinary", None, position, False, False)
         latest_position = max(candidate[2] for candidate in available)
         latest = [
@@ -1760,14 +1781,12 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
         origin_scope = scope
         while current is not None:
             target_scope = _binding_scope(current, name)
-            crossed_scope = target_scope is not current
             if target_scope is not current:
                 current = target_scope
             binding = _effective_binding(
                 current,
                 name,
                 position,
-                allow_future=crossed_scope or current is not origin_scope,
             )
             if binding is not None:
                 marker = (current, name)
@@ -1807,18 +1826,15 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
         if direct is not None or not isinstance(value, ast.Name):
             return direct
         scope: ast.AST | None = _capability_scope(value)
-        origin_scope = scope
         name = value.id
         while scope is not None:
             target_scope = _binding_scope(scope, name)
-            crossed_scope = target_scope is not scope
             if target_scope is not scope:
                 scope = target_scope
             binding = _effective_binding(
                 scope,
                 name,
                 _source_position(value),
-                allow_future=crossed_scope or scope is not origin_scope,
             )
             if binding is not None:
                 marker = (scope, name)
@@ -1893,6 +1909,20 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
             or (isinstance(kind, str) and kind.startswith("module-map:"))
         )
 
+    _SENSITIVE_MAPPING_KINDS = frozenset({"module-map:sys", "module-registry"})
+    _MAPPING_MUTATOR_NAMES = frozenset(
+        {
+            "__delitem__",
+            "__init__",
+            "__ior__",
+            "__setitem__",
+            "clear",
+            "pop",
+            "popitem",
+            "setdefault",
+            "update",
+        }
+    )
     _MODULE_MAP_MEMBER_KINDS = {
         "module-map:builtins": {
             "__import__": "importer",
@@ -1905,7 +1935,19 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
             "setattr": "attribute-mutator",
             "vars": "namespace-factory",
         },
+        "module-map:builtin-dict": {
+            "get": "mapping-getter-function",
+            "__getitem__": "mapping-getter-function",
+            **{member: "mapping-mutator-function" for member in _MAPPING_MUTATOR_NAMES},
+        },
         "module-map:importlib": {"import_module": "importer"},
+        "module-map:operator": {
+            "attrgetter": "attrgetter",
+            "delitem": "mapping-mutator-function",
+            "getitem": "mapping-getter-function",
+            "ior": "mapping-mutator-function",
+            "setitem": "mapping-mutator-function",
+        },
         "module-map:sys": {},
         "module-registry": {
             "app.execution_core.persistence.schema": "module:schema",
@@ -1923,23 +1965,10 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
         },
         "module-map:approval": {
             "require_approved_ddl_execution": "approval-accessor",
+            "_validate_approved_ddl_execution_token": "approval-validator",
             "APPROVED_EXECUTION_DDL_SHA256": "approval-token",
         },
     }
-    _SENSITIVE_MAPPING_KINDS = frozenset({"module-map:sys", "module-registry"})
-    _MAPPING_MUTATOR_NAMES = frozenset(
-        {
-            "__delitem__",
-            "__init__",
-            "__ior__",
-            "__setitem__",
-            "clear",
-            "pop",
-            "popitem",
-            "setdefault",
-            "update",
-        }
-    )
     _NAMESPACE_FALLBACK_KINDS = {
         "__builtins__": "module-map:builtins",
         "__import__": "importer",
@@ -2019,6 +2048,10 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
             ("module:approval", "require_approved_ddl_execution"): "approval-accessor",
             (
                 "module:approval",
+                "_validate_approved_ddl_execution_token",
+            ): "approval-validator",
+            (
+                "module:approval",
                 "APPROVED_EXECUTION_DDL_SHA256",
             ): "approval-token",
             ("module:approval", "__delattr__"): "approval-bound-mutator",
@@ -2096,6 +2129,8 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
                 return _namespace_kind(_capability_scope(value))
             if len(value.args) == 1 and not value.keywords:
                 module_kind = _resolve_capability_expression(value.args[0], seen)
+                if module_kind == "builtin-dict":
+                    return "module-map:builtin-dict"
                 return (
                     f"module-map:{module_kind.removeprefix('module:')}"
                     if isinstance(module_kind, str)
@@ -2244,12 +2279,142 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
         kind = _resolve_capability_expression(subject)
         return kind if kind in _SENSITIVE_MAPPING_KINDS else None
 
+    def _sensitive_mapping_dynamic_lookup_message(kind: str) -> str:
+        return (
+            "module registry dynamic lookup route"
+            if kind == "module-registry"
+            else "sys module namespace dynamic lookup route"
+        )
+
+    def _has_static_mapping_lookup_key(call: ast.Call, index: int) -> bool:
+        key = _call_argument(call, "key", index)
+        return key is not None and _resolve_static_string(key) is not None
+
+    def _is_dynamic_sensitive_mapping_lookup(node: ast.expr) -> bool:
+        parent = parents.get(node)
+        if (
+            isinstance(parent, ast.Subscript)
+            and parent.value is node
+            and isinstance(parent.ctx, ast.Load)
+        ):
+            return _resolve_static_string(parent.slice) is None
+        if isinstance(parent, ast.Attribute) and parent.value is node:
+            grandparent = parents.get(parent)
+            return bool(
+                parent.attr in {"get", "__getitem__"}
+                and isinstance(grandparent, ast.Call)
+                and grandparent.func is parent
+                and not _has_static_mapping_lookup_key(grandparent, 0)
+            )
+        return bool(
+            isinstance(parent, ast.Call)
+            and parent.args
+            and parent.args[0] is node
+            and _resolve_capability_expression(parent.func) == "mapping-getter-function"
+            and not _has_static_mapping_lookup_key(parent, 1)
+        )
+
+    def _is_supported_sensitive_mapping_use(node: ast.expr) -> bool:
+        parent = parents.get(node)
+        if (
+            isinstance(parent, ast.Subscript)
+            and parent.value is node
+            and isinstance(parent.ctx, ast.Load)
+        ):
+            return _resolve_static_string(parent.slice) is not None
+        if isinstance(parent, ast.Attribute) and parent.value is node:
+            grandparent = parents.get(parent)
+            return bool(
+                parent.attr in {"get", "__getitem__"}
+                and isinstance(grandparent, ast.Call)
+                and grandparent.func is parent
+                and _has_static_mapping_lookup_key(grandparent, 0)
+            )
+        if isinstance(parent, ast.Call) and parent.args and parent.args[0] is node:
+            return bool(
+                _resolve_capability_expression(parent.func) == "mapping-getter-function"
+                and _has_static_mapping_lookup_key(parent, 1)
+            )
+        return False
+
     for node in ast.walk(tree):
+        if isinstance(node, ast.Subscript):
+            mapping_kind = _resolve_capability_expression(node.value)
+            if mapping_kind in _SENSITIVE_MAPPING_KINDS:
+                parent = parents.get(node)
+                if isinstance(node.ctx, (ast.Store, ast.Del)) or (
+                    isinstance(parent, ast.AugAssign) and parent.target is node
+                ):
+                    violations.append(
+                        f"{label}:{node.lineno}: "
+                        f"{_sensitive_mapping_mutation_message(mapping_kind)}"
+                    )
+                elif _resolve_static_string(node.slice) is None:
+                    violations.append(
+                        f"{label}:{node.lineno}: "
+                        f"{_sensitive_mapping_dynamic_lookup_message(mapping_kind)}"
+                    )
+        if (
+            isinstance(node, ast.expr)
+            and _resolve_capability_expression(node) == "mapping-mutator-function"
+        ):
+            parent = parents.get(node)
+            if not (isinstance(parent, ast.Call) and parent.func is node):
+                violations.append(
+                    f"{label}:{node.lineno}: "
+                    "mapping mutator capability escapes direct call"
+                )
+        if (
+            isinstance(node, ast.expr)
+            and _resolve_capability_expression(node) == "module:approval"
+            and not (
+                isinstance(parents.get(node), ast.Attribute)
+                and parents[node].value is node
+            )
+        ):
+            violations.append(
+                f"{label}:{node.lineno}: approval module escapes canonical import"
+            )
+        if isinstance(node, ast.expr) and (
+            callable_kind := _resolve_capability_expression(node)
+        ) in {"approval-accessor", "approval-validator"}:
+            if not (
+                isinstance(node, ast.Name)
+                and isinstance(parents.get(node), ast.Call)
+                and parents[node].func is node
+            ):
+                callable_name = (
+                    "approval accessor"
+                    if callable_kind == "approval-accessor"
+                    else "approval validator"
+                )
+                violations.append(
+                    f"{label}:{node.lineno}: {callable_name} escapes canonical call"
+                )
+        if isinstance(node, ast.expr):
+            sensitive_mapping_kind = _resolve_capability_expression(node)
+            if (
+                isinstance(sensitive_mapping_kind, str)
+                and sensitive_mapping_kind in _SENSITIVE_MAPPING_KINDS
+                and not _is_supported_sensitive_mapping_use(node)
+            ):
+                if _is_dynamic_sensitive_mapping_lookup(node):
+                    parent = parents.get(node)
+                    if not isinstance(parent, ast.Subscript):
+                        violations.append(
+                            f"{label}:{node.lineno}: "
+                            f"{_sensitive_mapping_dynamic_lookup_message(sensitive_mapping_kind)}"
+                        )
+                else:
+                    violations.append(
+                        f"{label}:{node.lineno}: sensitive mapping escapes static boundary"
+                    )
         if (
             isinstance(node, ast.Call)
-            and (target := _direct_dynamic_import_target(node)) is not None
+            and (dynamic_import_target := _direct_dynamic_import_target(node))
+            is not None
         ):
-            module_kind = _module_kind_for_target(target)
+            module_kind = _module_kind_for_target(dynamic_import_target)
             if module_kind in {"module:schema", "module:sqlite3"}:
                 violations.append(
                     f"{label}:{node.lineno}: literal dynamic SQLite/schema import"
@@ -2463,16 +2628,6 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
                 f"{label}:{node.lineno}: approval accessor namespace route"
             )
         if (
-            isinstance(node, ast.Name)
-            and _resolve_capability_expression(node) == "approval-accessor"
-            and not (
-                isinstance(parents.get(node), ast.Call) and parents[node].func is node
-            )
-        ):
-            violations.append(
-                f"{label}:{node.lineno}: approval accessor escapes canonical call"
-            )
-        if (
             isinstance(node, ast.expr)
             and _resolve_capability_expression(node) == "sys-namespace-registry"
         ):
@@ -2659,24 +2814,57 @@ def test_changed_ddl_installers_have_one_fail_closed_human_gate() -> None:
     assert violations == [], violations
 
 
-def test_changed_ddl_execution_gate_refuses_without_a_valid_human_token(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_changed_ddl_execution_gate_refuses_without_a_valid_human_token() -> None:
     """The approval accessor stays fail-closed before any fixture can connect."""
 
-    import approved_schema_digest as gate
+    from approved_schema_digest import (
+        _validate_approved_ddl_execution_token,
+        require_approved_ddl_execution,
+    )
 
-    monkeypatch.setattr(gate, "APPROVED_EXECUTION_DDL_SHA256", None)
     with pytest.raises(RuntimeError, match="HUMAN-GATE pending"):
-        gate.require_approved_ddl_execution()
+        require_approved_ddl_execution()
     for malformed in ("", "AB" * 32, 1):
-        monkeypatch.setattr(gate, "APPROVED_EXECUTION_DDL_SHA256", malformed)
         with pytest.raises(RuntimeError, match="HUMAN-GATE invalid"):
-            gate.require_approved_ddl_execution()
+            _validate_approved_ddl_execution_token(malformed)
 
     approved = "ab" * 32
-    monkeypatch.setattr(gate, "APPROVED_EXECUTION_DDL_SHA256", approved)
-    assert gate.require_approved_ddl_execution() == approved
+    assert _validate_approved_ddl_execution_token(approved) == approved
+
+
+def test_changed_ddl_execution_gate_uses_one_exact_locked_binding() -> None:
+    """The public no-argument gate cannot drift to a local or derived token."""
+
+    source_path = Path(__file__).with_name("approved_schema_digest.py")
+    source = source_path.read_text(encoding="utf-8")
+    assert _approval_accessor_binding_is_exact(ast.parse(source))
+
+    mutants = (
+        source.replace(
+            "def require_approved_ddl_execution() -> str:",
+            "def require_approved_ddl_execution(token: object = None) -> str:",
+            1,
+        ),
+        source.replace(
+            "_validate_approved_ddl_execution_token(APPROVED_EXECUTION_DDL_SHA256)",
+            "_validate_approved_ddl_execution_token('ab' * 32)",
+            1,
+        ),
+        source.replace(
+            "return _validate_approved_ddl_execution_token(APPROVED_EXECUTION_DDL_SHA256)",
+            "return APPROVED_EXECUTION_DDL_SHA256",
+            1,
+        ),
+        source.replace(
+            "return _validate_approved_ddl_execution_token(APPROVED_EXECUTION_DDL_SHA256)",
+            "return _validate_approved_ddl_execution_token(APPROVED_EXECUTION_DDL_SHA256)\n"
+            "    return _validate_approved_ddl_execution_token(APPROVED_EXECUTION_DDL_SHA256)",
+            1,
+        ),
+    )
+    assert all(
+        not _approval_accessor_binding_is_exact(ast.parse(mutant)) for mutant in mutants
+    )
 
 
 def test_changed_ddl_gate_audit_refuses_bypass_spellings() -> None:
@@ -4249,7 +4437,7 @@ def mutate(box):
     return box
 unrelated_sys_member = vars(sys)['approved_schema_digest']
 def inspect(dict):
-    return dict.observe(sys.modules)
+    return dict.__setitem__
 """
     assert _schema_installer_gate_violations(ordinary, "rev0093-good.py") == []
 
@@ -4456,16 +4644,330 @@ def open_connection(path):
         """
 import sys
 def inspect(dict):
-    return dict.get(sys.modules, 'sqlite3').connect('ordinary-path')
+    return dict.__setitem__
 """,
         """
 import sys
 def inspect(dict):
-    return dict.__getitem__(sys.modules, 'sqlite3').connect('ordinary-path')
+    return dict.__setitem__
 """,
     )
     for ordinal, source in enumerate(accepted, 1):
         assert (
             _schema_installer_gate_violations(source, f"rev0095-good-{ordinal}.py")
+            == []
+        )
+
+
+def test_rev0096_gate_audit_refuses_sensitive_capability_escapes() -> None:
+    """Sensitive values have finite allowed uses; unsupported escapes fail closed."""
+
+    rejected = (
+        (
+            """
+import sqlite3
+import sys
+from approved_schema_digest import require_approved_ddl_execution
+def helper(value):
+    return value
+def open_connection(path):
+    require_approved_ddl_execution()
+    helper(sys.modules)
+    return sqlite3.connect(path)
+""",
+            "sensitive mapping escapes static boundary",
+        ),
+        (
+            """
+import sys
+from approved_schema_digest import require_approved_ddl_execution
+def escaped_registry():
+    return sys.modules
+""",
+            "sensitive mapping escapes static boundary",
+        ),
+        (
+            """
+import operator
+class Box:
+    pass
+box = Box()
+box.mutator = operator.setitem
+""",
+            "mapping mutator capability escapes direct call",
+        ),
+        (
+            """
+import operator
+def configure(mutator=operator.setitem):
+    return mutator
+""",
+            "mapping mutator capability escapes direct call",
+        ),
+        (
+            """
+import operator
+(mutator,) = (operator.setitem,)
+""",
+            "mapping mutator capability escapes direct call",
+        ),
+        (
+            """
+import sys
+key = 'modules'
+sys.__dict__[key] = object()
+""",
+            "sys module namespace mutation route",
+        ),
+        (
+            """
+import sys
+del vars(sys)[key]
+""",
+            "sys module namespace mutation route",
+        ),
+        (
+            """
+import sys
+vars(sys)[key]['approved_schema_digest'] = object()
+""",
+            "sys module namespace dynamic lookup route",
+        ),
+        (
+            """
+import sys
+sys.__dict__[key] |= {'approved_schema_digest': object()}
+""",
+            "sys module namespace mutation route",
+        ),
+        (
+            """
+import operator
+import sys
+mutate = operator.setitem
+if condition:
+    mutate = ordinary
+mutate(sys.modules, 'approved_schema_digest', object())
+""",
+            "mapping mutator capability escapes direct call",
+        ),
+        (
+            """
+import sys
+dict.__setitem__(sys.modules, 'approved_schema_digest', object())
+dict = custom_dict
+""",
+            "module registry mutation route",
+        ),
+        (
+            """
+import sys
+class Scope:
+    dict.__setitem__(sys.modules, 'approved_schema_digest', object())
+    dict = custom_dict
+""",
+            "module registry mutation route",
+        ),
+        (
+            """
+import approved_schema_digest as gate
+object.__setattr__(gate.require_approved_ddl_execution, '__code__', object())
+""",
+            "approval accessor escapes canonical call",
+        ),
+        (
+            """
+import sys
+object.__getattribute__(
+    sys.modules['approved_schema_digest'].require_approved_ddl_execution,
+    '__globals__',
+)['APPROVED_EXECUTION_DDL_SHA256'] = 'forged'
+""",
+            "approval accessor escapes canonical call",
+        ),
+        (
+            """
+import sys
+dict.__setitem__.__call__(
+    sys.modules, 'approved_schema_digest', object()
+)
+""",
+            "mapping mutator capability escapes direct call",
+        ),
+        (
+            """
+import sys
+dict.__setitem__.__get__(sys.modules, dict)(
+    'approved_schema_digest', object()
+)
+""",
+            "mapping mutator capability escapes direct call",
+        ),
+        (
+            """
+import sys
+vars(dict)['__setitem__'](sys.modules, 'approved_schema_digest', object())
+""",
+            "module registry mutation route",
+        ),
+        (
+            """
+import operator
+import sys
+vars(operator)['setitem'](sys.modules, 'approved_schema_digest', object())
+""",
+            "module registry mutation route",
+        ),
+        (
+            """
+import approved_schema_digest as gate
+monkeypatch.setattr(gate, 'APPROVED_EXECUTION_DDL_SHA256', 'forged')
+""",
+            "approval module escapes canonical import",
+        ),
+        (
+            """
+from approved_schema_digest import _validate_approved_ddl_execution_token
+alias = _validate_approved_ddl_execution_token
+""",
+            "approval validator escapes canonical call",
+        ),
+        (
+            """
+from approved_schema_digest import _validate_approved_ddl_execution_token
+object.__setattr__(
+    _validate_approved_ddl_execution_token,
+    '__code__',
+    object(),
+)
+""",
+            "approval validator escapes canonical call",
+        ),
+        (
+            """
+import sys
+sys.modules['approved_schema_digest']._validate_approved_ddl_execution_token
+""",
+            "approval validator escapes canonical call",
+        ),
+        (
+            """
+from app.execution_core.persistence.schema import install_schema
+from approved_schema_digest import _validate_approved_ddl_execution_token
+def install(connection):
+    return install_schema(
+        connection,
+        approved_ddl_sha256=_validate_approved_ddl_execution_token('ab' * 32),
+    )
+""",
+            "installer lacks exact approval accessor",
+        ),
+    )
+    for ordinal, (source, expected) in enumerate(rejected, 1):
+        violations = _schema_installer_gate_violations(source, f"rev0096-{ordinal}.py")
+        assert any(expected in violation for violation in violations), violations
+
+    accepted = (
+        """
+import operator
+operator.setitem({}, 'ordinary', object())
+""",
+        """
+import sys
+def inspect(dict):
+    return dict.__setitem__
+""",
+        """
+import sys
+ordinary_sys_member = vars(sys)['approved_schema_digest']
+""",
+    )
+    for ordinal, source in enumerate(accepted, 1):
+        assert (
+            _schema_installer_gate_violations(source, f"rev0096-good-{ordinal}.py")
+            == []
+        )
+
+
+def test_rev0097_gate_audit_owns_sensitive_maps_across_source_boundaries() -> None:
+    """Registry maps remain owned even before a local source reaches SQLite."""
+
+    rejected = (
+        (
+            """
+import sys
+key = runtime_name()
+sys.modules.get(key).APPROVED_EXECUTION_DDL_SHA256 = 'forged'
+""",
+            "module registry dynamic lookup route",
+        ),
+        (
+            """
+import sys
+def escaped_registry():
+    return sys.modules
+""",
+            "sensitive mapping escapes static boundary",
+        ),
+        (
+            """
+import sys
+key = runtime_name()
+dict.get(sys.modules, key).APPROVED_EXECUTION_DDL_SHA256 = 'forged'
+""",
+            "module registry dynamic lookup route",
+        ),
+        (
+            """
+import sys
+def inspect(dict):
+    return dict.get(sys.modules, 'approved_schema_digest')
+""",
+            "sensitive mapping escapes static boundary",
+        ),
+        (
+            """
+import operator
+import sys
+key = runtime_name()
+operator.getitem(sys.modules, key).APPROVED_EXECUTION_DDL_SHA256 = 'forged'
+""",
+            "module registry dynamic lookup route",
+        ),
+        (
+            """
+import sys
+from approved_schema_digest import require_approved_ddl_execution
+def mutate():
+    dict.__setitem__(sys.modules, 'approved_schema_digest', object())
+mutate()
+dict = custom_dict
+""",
+            "module registry mutation route",
+        ),
+    )
+    for ordinal, (source, expected) in enumerate(rejected, 1):
+        violations = _schema_installer_gate_violations(source, f"rev0097-{ordinal}.py")
+        assert any(expected in violation for violation in violations), violations
+
+    accepted = (
+        """
+import sys
+ordinary = sys.modules.get('json')
+""",
+        """
+import operator
+import sys
+ordinary = operator.getitem(sys.modules, 'json')
+""",
+        """
+import sys
+def inspect(dict):
+    return dict.__setitem__
+""",
+    )
+    for ordinal, source in enumerate(accepted, 1):
+        assert (
+            _schema_installer_gate_violations(source, f"rev0097-good-{ordinal}.py")
             == []
         )

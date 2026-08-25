@@ -20,10 +20,9 @@ from typing import Final
 APPROVED_EXECUTION_DDL_SHA256: Final[str | None] = None
 
 
-def require_approved_ddl_execution() -> str:
-    """Return the human token or refuse before any SQLite activity begins."""
+def _validate_approved_ddl_execution_token(approved: object) -> str:
+    """Validate one proposed human token without changing the locked global."""
 
-    approved = APPROVED_EXECUTION_DDL_SHA256
     if approved is None:
         raise RuntimeError(
             "HUMAN-GATE pending: changed DDL remains static-only until Ameen "
@@ -36,3 +35,9 @@ def require_approved_ddl_execution() -> str:
     ):
         raise RuntimeError("HUMAN-GATE invalid: approval token must be SHA-256 text")
     return approved
+
+
+def require_approved_ddl_execution() -> str:
+    """Return the human token or refuse before any SQLite activity begins."""
+
+    return _validate_approved_ddl_execution_token(APPROVED_EXECUTION_DDL_SHA256)
