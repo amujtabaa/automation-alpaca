@@ -1305,6 +1305,10 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
             "approved_schema_digest",
             "require_approved_ddl_execution",
         ): "approval-accessor",
+        ("approved_schema_digest", "__dict__"): "module-map:approval",
+        ("approved_schema_digest", "__delattr__"): "approval-bound-mutator",
+        ("approved_schema_digest", "__getattribute__"): "approval-namespace-route",
+        ("approved_schema_digest", "__setattr__"): "approval-bound-mutator",
         ("builtins", "__import__"): "importer",
         ("builtins", "eval"): "dynamic-code",
         ("builtins", "exec"): "dynamic-code",
@@ -1315,7 +1319,7 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
         ("builtins", "vars"): "namespace-factory",
         ("importlib", "import_module"): "importer",
         ("operator", "attrgetter"): "attrgetter",
-        ("sys", "modules"): "module-map:sys",
+        ("sys", "modules"): "module-registry",
     }
     _BUILTIN_CAPABILITY_KINDS = {
         "__builtins__": "module-map:builtins",
@@ -1876,6 +1880,7 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
     def _is_mapping_kind(kind: str | None) -> bool:
         return bool(
             kind == "global-namespace"
+            or kind == "module-registry"
             or (isinstance(kind, str) and kind.startswith("namespace:"))
             or (isinstance(kind, str) and kind.startswith("module-map:"))
         )
@@ -1892,9 +1897,15 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
             "vars": "namespace-factory",
         },
         "module-map:importlib": {"import_module": "importer"},
-        "module-map:sys": {
+        "module-map:sys": {"modules": "module-registry"},
+        "module-registry": {
+            "app.execution_core.persistence.schema": "module:schema",
             "approved_schema_digest": "module:approval",
-            "modules": "module-map:sys",
+            "builtins": "module:builtins",
+            "importlib": "module:importlib",
+            "operator": "module:operator",
+            "sqlite3": "module:sqlite3",
+            "sys": "module:sys",
         },
         "module-map:schema": {"install_schema": "dynamic-installer"},
         "module-map:sqlite3": {
@@ -1973,6 +1984,7 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
                 "APPROVED_EXECUTION_DDL_SHA256",
             ): "approval-token",
             ("module:approval", "__delattr__"): "approval-bound-mutator",
+            ("module:approval", "__getattribute__"): "approval-namespace-route",
             ("module:approval", "__setattr__"): "approval-bound-mutator",
             ("module:builtins", "__dict__"): "module-map:builtins",
             ("module:builtins", "__import__"): "importer",
@@ -1987,7 +1999,7 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
             ("module:importlib", "import_module"): "importer",
             ("module:operator", "attrgetter"): "attrgetter",
             ("module:sys", "__dict__"): "module-map:sys",
-            ("module:sys", "modules"): "module-map:sys",
+            ("module:sys", "modules"): "module-registry",
         }.get((base, member))
 
     def _static_capability_lookup_kind(
@@ -2171,6 +2183,26 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
     def _is_current_global_namespace_call(call: ast.Call) -> bool:
         return _resolve_capability_expression(call) == "global-namespace"
 
+    def _approval_mutation_message(member: str | None) -> str:
+        return (
+            "approval token mutation route"
+            if member == "APPROVED_EXECUTION_DDL_SHA256"
+            else "approval module mutation route"
+        )
+
+    def _is_module_registry_mutation_call(call: ast.Call) -> bool:
+        if not isinstance(call.func, ast.Attribute):
+            return False
+        if _resolve_capability_expression(call.func.value) == "module-registry":
+            return call.func.attr not in {"get", "__getitem__"}
+        return bool(
+            isinstance(call.func.value, ast.Name)
+            and call.func.value.id == "dict"
+            and call.func.attr not in {"get", "__getitem__"}
+            and call.args
+            and _resolve_capability_expression(call.args[0]) == "module-registry"
+        )
+
     for node in ast.walk(tree):
         if (
             isinstance(node, ast.Call)
@@ -2232,13 +2264,15 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
                 violations.append(f"{label}:{node.lineno}: module alias")
         if isinstance(node, ast.Attribute):
             owner_kind = _resolve_capability_expression(node.value)
-            if (
-                owner_kind == "module:approval"
-                and node.attr == "APPROVED_EXECUTION_DDL_SHA256"
-                and isinstance(node.ctx, (ast.Store, ast.Del))
+            if owner_kind == "module:approval" and isinstance(
+                node.ctx, (ast.Store, ast.Del)
             ):
                 violations.append(
-                    f"{label}:{node.lineno}: approval token mutation route"
+                    f"{label}:{node.lineno}: {_approval_mutation_message(node.attr)}"
+                )
+            if owner_kind == "module:approval" and node.attr == "__getattribute__":
+                violations.append(
+                    f"{label}:{node.lineno}: approval module namespace route"
                 )
             if owner_kind == "module:schema" and node.attr == "__dict__":
                 violations.append(
@@ -2251,24 +2285,20 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
                 member = _call_argument(node, "name", 1)
                 if (
                     subject is not None
-                    and member is not None
                     and _resolve_capability_expression(subject) == "module:approval"
-                    and _resolve_static_string(member)
-                    == "APPROVED_EXECUTION_DDL_SHA256"
                 ):
                     violations.append(
-                        f"{label}:{node.lineno}: approval token mutation route"
+                        f"{label}:{node.lineno}: "
+                        f"{_approval_mutation_message(None if member is None else _resolve_static_string(member))}"
                     )
             elif mutation_kind == "approval-bound-mutator":
                 member = _call_argument(node, "name", 0)
-                if (
-                    member is not None
-                    and _resolve_static_string(member)
-                    == "APPROVED_EXECUTION_DDL_SHA256"
-                ):
-                    violations.append(
-                        f"{label}:{node.lineno}: approval token mutation route"
-                    )
+                violations.append(
+                    f"{label}:{node.lineno}: "
+                    f"{_approval_mutation_message(None if member is None else _resolve_static_string(member))}"
+                )
+        if isinstance(node, ast.Call) and _is_module_registry_mutation_call(node):
+            violations.append(f"{label}:{node.lineno}: module registry mutation route")
         if (
             isinstance(node, ast.expr)
             and _resolve_capability_expression(node) == "module-map:approval"
@@ -2281,8 +2311,13 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
             parent = parents.get(node)
             if not (isinstance(parent, ast.Call) and parent.func is node):
                 violations.append(
-                    f"{label}:{node.lineno}: approval token mutation route"
+                    f"{label}:{node.lineno}: approval module mutation route"
                 )
+        if (
+            isinstance(node, ast.expr)
+            and _resolve_capability_expression(node) == "approval-namespace-route"
+        ):
+            violations.append(f"{label}:{node.lineno}: approval module namespace route")
         if not has_gate_surface:
             continue
         if (
@@ -2324,7 +2359,7 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
             if (
                 canonical_gate_imports
                 and node.attr == "modules"
-                and _resolve_capability_expression(node) == "module-map:sys"
+                and _resolve_capability_expression(node) == "module-registry"
             ):
                 violations.append(
                     f"{label}:{node.lineno}: approval module registry route"
@@ -3866,7 +3901,7 @@ def forge_gate():
     import approved_schema_digest as gate
     return gate.__setattr__
 """,
-            "approval token mutation route",
+            "approval module mutation route",
         ),
         (
             """
@@ -3906,3 +3941,114 @@ importlib.import_module('sqlite3').connect(path)
             _schema_installer_gate_violations(source, f"rev0092-good-{ordinal}.py")
             == []
         )
+
+
+def test_rev0093_approval_module_is_not_runtime_mutable() -> None:
+    """Known mutation primitives cannot alter any approval-module member."""
+
+    rejected = (
+        (
+            """
+import approved_schema_digest as gate
+gate.require_approved_ddl_execution = lambda: 'forged'
+""",
+            "approval module mutation route",
+        ),
+        (
+            """
+def forge_gate(member):
+    import approved_schema_digest as gate
+    setattr(gate, member, 'forged')
+""",
+            "approval module mutation route",
+        ),
+        (
+            """
+import approved_schema_digest as gate
+gate.__setattr__('require_approved_ddl_execution', lambda: 'forged')
+""",
+            "approval module mutation route",
+        ),
+        (
+            """
+from approved_schema_digest import __dict__ as approval_namespace
+approval_namespace.update({'APPROVED_EXECUTION_DDL_SHA256': 'forged'})
+""",
+            "approval module namespace route",
+        ),
+        (
+            """
+from approved_schema_digest import __setattr__ as mutate
+mutate('require_approved_ddl_execution', lambda: 'forged')
+""",
+            "approval module mutation route",
+        ),
+        (
+            """
+from approved_schema_digest import __delattr__ as mutate
+mutate('require_approved_ddl_execution')
+""",
+            "approval module mutation route",
+        ),
+        (
+            """
+from approved_schema_digest import __getattribute__ as recover
+recover('__dict__').update({'APPROVED_EXECUTION_DDL_SHA256': 'forged'})
+""",
+            "approval module namespace route",
+        ),
+        (
+            """
+import approved_schema_digest as gate
+gate.__getattribute__('__dict__').update(
+    {'APPROVED_EXECUTION_DDL_SHA256': 'forged'}
+)
+""",
+            "approval module namespace route",
+        ),
+        (
+            """
+import sys
+setattr(
+    vars(sys)['modules'].setdefault('approved_schema_digest'),
+    'APPROVED_EXECUTION_DDL_SHA256',
+    'forged',
+)
+""",
+            "module registry mutation route",
+        ),
+        (
+            """
+import sys
+sys.modules['builtins'].setattr(
+    sys.modules['approved_schema_digest'],
+    'APPROVED_EXECUTION_DDL_SHA256',
+    'forged',
+)
+""",
+            "approval token mutation route",
+        ),
+        (
+            """
+from builtins import delattr
+import approved_schema_digest as gate
+delattr(gate, 'APPROVED_EXECUTION_DDL_SHA256')
+""",
+            "approval token mutation route",
+        ),
+    )
+    for ordinal, (source, expected) in enumerate(rejected, 1):
+        violations = _schema_installer_gate_violations(source, f"rev0093-{ordinal}.py")
+        assert any(expected in violation for violation in violations), violations
+
+    ordinary = """
+import sys
+class Box:
+    pass
+def mutate(box):
+    setattr(box, 'APPROVED_EXECUTION_DDL_SHA256', 'ordinary')
+    delattr(box, 'APPROVED_EXECUTION_DDL_SHA256')
+    return box
+unrelated_sys_member = vars(sys)['approved_schema_digest']
+"""
+    assert _schema_installer_gate_violations(ordinary, "rev0093-good.py") == []
