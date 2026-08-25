@@ -1,7 +1,7 @@
 # REV-0097 request — WO-0168c final static approval-boundary review
 
-Date: 2026-08-24  
-Author: Codex implementation seat  
+Date: 2026-08-24
+Author: Codex implementation seat
 Verdict requested: findings only — BLOCK | ACCEPT-WITH-CHANGES | ACCEPT.
 
 This is a fresh-context review. Re-derive the requirements from repository
@@ -137,4 +137,3 @@ Return concrete findings with severity, location, requirement, evidence tag,
 impact, and smallest complete root resolution. End with verdict, P0/P1/P2
 counts, and unverified items. The independent reviewer may create only
 `work/review/REV-0097/result.md`.
-

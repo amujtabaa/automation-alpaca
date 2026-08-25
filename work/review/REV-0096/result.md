@@ -123,4 +123,3 @@ packet or enumerate every path in any broader range.
 The review seats did not independently complete the full author test matrix,
 Ruff/mypy checks, catalog/manifest recomputation, or any held SQLite/fresh-file
 test. Those activities remain intentionally NOT_RUN.
-
