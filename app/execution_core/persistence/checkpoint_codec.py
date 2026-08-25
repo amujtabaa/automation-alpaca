@@ -2211,10 +2211,11 @@ def _require_selected_effect_current_relation(
             f"reached {subject} disagrees with its selected dispatch claim"
         )
 
+    closure_proof_evidence_id = record.closure_proof_evidence_id
     closure_values = (
         record.closure_proof_kind,
         record.closure_proof_digest,
-        record.closure_proof_evidence_id,
+        closure_proof_evidence_id,
         record.closure_proof_claim_id,
     )
     if record.disposition == "OPEN":
@@ -2246,8 +2247,11 @@ def _require_selected_effect_current_relation(
             book, relations, current, record, subject
         )
         return position_scope
-    if record.disposition == "OPEN" or any(
-        value is None for value in closure_values[:3]
+    if (
+        record.disposition == "OPEN"
+        or record.closure_proof_kind is None
+        or record.closure_proof_digest is None
+        or closure_proof_evidence_id is None
     ):
         raise ValueError(f"reached {subject} has an unselected effect closure proof")
 
@@ -2259,7 +2263,7 @@ def _require_selected_effect_current_relation(
         or proof_digest.hex() != record.closure_proof_digest
     ):
         raise ValueError(f"reached {subject} disagrees with its selected closure proof")
-    evidence = relations.evidence_by_id.get(record.closure_proof_evidence_id)
+    evidence = relations.evidence_by_id.get(closure_proof_evidence_id)
     acceptance_set = relations.acceptance_sets_by_effect_id.get(record.effect_id)
     if (
         evidence is None

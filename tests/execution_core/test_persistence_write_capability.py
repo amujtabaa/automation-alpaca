@@ -167,18 +167,67 @@ def _exact_arguments(
 
 
 def _approval_accessor_binding_is_exact(tree: ast.Module) -> bool:
-    """Prove the public gate reads only its one locked human-controlled token."""
+    """Prove the gate module has one closed executable shape.
 
-    accessor = _exact_function(tree, "require_approved_ddl_execution")
+    Pinning only the accessor body is insufficient because its builtins and token
+    are resolved from module/global state when the function runs.  The human
+    unlock therefore permits exactly one byte-level semantic change: replacing
+    the token's ``None`` literal with one lowercase SHA-256 string literal.
+    """
+
+    body = list(tree.body)
     if (
-        accessor is None
-        or accessor.decorator_list
-        or _name_is_rebound(
-            tree,
-            "require_approved_ddl_execution",
-            permitted_function=accessor,
+        body
+        and isinstance(body[0], ast.Expr)
+        and isinstance(body[0].value, ast.Constant)
+        and isinstance(body[0].value.value, str)
+    ):
+        body.pop(0)
+    if len(body) != 4:
+        return False
+    future_import, typing_import, token_binding, accessor = body
+    if not (
+        isinstance(future_import, ast.ImportFrom)
+        and future_import.module == "__future__"
+        and future_import.level == 0
+        and len(future_import.names) == 1
+        and future_import.names[0].name == "annotations"
+        and future_import.names[0].asname is None
+        and isinstance(typing_import, ast.ImportFrom)
+        and typing_import.module == "typing"
+        and typing_import.level == 0
+        and len(typing_import.names) == 1
+        and typing_import.names[0].name == "Final"
+        and typing_import.names[0].asname is None
+        and isinstance(token_binding, ast.AnnAssign)
+        and token_binding.simple == 1
+        and isinstance(token_binding.target, ast.Name)
+        and token_binding.target.id == "APPROVED_EXECUTION_DDL_SHA256"
+        and isinstance(accessor, ast.FunctionDef)
+        and accessor.name == "require_approved_ddl_execution"
+        and not accessor.decorator_list
+        and _exact_arguments(accessor.args, positional=(), vararg=None)
+    ):
+        return False
+    expected_annotation = ast.parse(
+        "APPROVED_EXECUTION_DDL_SHA256: Final[str | None] = None"
+    ).body[0]
+    assert isinstance(expected_annotation, ast.AnnAssign)
+    if ast.dump(token_binding.annotation, include_attributes=False) != ast.dump(
+        expected_annotation.annotation, include_attributes=False
+    ):
+        return False
+    token = token_binding.value
+    if not (
+        isinstance(token, ast.Constant)
+        and (
+            token.value is None
+            or (
+                isinstance(token.value, str)
+                and len(token.value) == 64
+                and all(character in "0123456789abcdef" for character in token.value)
+            )
         )
-        or not _exact_arguments(accessor.args, positional=(), vararg=None)
     ):
         return False
     expected = ast.parse(
@@ -1954,6 +2003,9 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
         )
 
     _SENSITIVE_MAPPING_KINDS = frozenset({"module-map:sys", "module-registry"})
+    _MUTATION_OWNED_MAPPING_KINDS = frozenset(
+        {*_SENSITIVE_MAPPING_KINDS, "module-map:builtins"}
+    )
     _MAPPING_MUTATOR_NAMES = frozenset(
         {
             "__delitem__",
@@ -2365,11 +2417,11 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
         return None
 
     def _sensitive_mapping_mutation_message(kind: str) -> str:
-        return (
-            "module registry mutation route"
-            if kind == "module-registry"
-            else "sys module namespace mutation route"
-        )
+        if kind == "module-registry":
+            return "module registry mutation route"
+        if kind == "module-map:builtins":
+            return "builtin module mutation route"
+        return "sys module namespace mutation route"
 
     def _sensitive_mapping_mutation_call(call: ast.Call) -> str | None:
         if _resolve_capability_expression(call.func) != "mapping-mutator-function":
@@ -2378,7 +2430,7 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
         if subject is None:
             return None
         kind = _resolve_capability_expression(subject)
-        return kind if kind in _SENSITIVE_MAPPING_KINDS else None
+        return kind if kind in _MUTATION_OWNED_MAPPING_KINDS else None
 
     def _sensitive_mapping_dynamic_lookup_message(kind: str) -> str:
         return (
@@ -2438,6 +2490,55 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
             )
         return False
 
+    _GOVERNED_MODULE_KINDS = frozenset(
+        {
+            "module:approval",
+            "module:builtins",
+            "module:schema",
+            "module:sqlite3",
+            "module:sys",
+        }
+    )
+
+    def _is_supported_governed_module_use(node: ast.expr) -> bool:
+        """Accept only an operation the finite grammar owns directly."""
+
+        parent = parents.get(node)
+        if isinstance(parent, ast.Attribute) and parent.value is node:
+            # ``module.__class__`` leaves the modeled member boundary and can
+            # recover arbitrary descriptors such as ``__getattribute__``.
+            return parent.attr != "__class__"
+        if not (
+            isinstance(parent, ast.Call)
+            and any(argument is node for argument in parent.args)
+        ):
+            return False
+        function_kind = _resolve_capability_expression(parent.func)
+        if function_kind in {
+            "attribute-mutator",
+            "getter",
+            "namespace-factory",
+            "object-attribute-getter",
+            "object-attribute-mutator",
+        }:
+            # The call-level rules below own the resulting reflection or
+            # mutation.  Do not double-count its subject as an escape.
+            return True
+        if (
+            label == "tests/execution_core/test_persistence_schema.py"
+            and isinstance(parent.func, ast.Attribute)
+            and parent.func.attr == "setattr"
+            and isinstance(parent.func.value, ast.Name)
+            and parent.func.value.id == "monkeypatch"
+            and parent.args[0] is node
+        ):
+            member = _call_argument(parent, "name", 1)
+            return bool(
+                member is not None
+                and _resolve_static_string(member) == "schema_ddl_digest"
+            )
+        return False
+
     for node in ast.walk(tree):
         if isinstance(node, ast.Subscript):
             mapping_kind = _resolve_capability_expression(node.value)
@@ -2458,15 +2559,28 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
             elif mapping_kind == "module-map:builtins":
                 member = _resolve_static_string(node.slice)
                 parent = parents.get(node)
-                if (
-                    isinstance(node.ctx, (ast.Store, ast.Del))
-                    or (isinstance(parent, ast.AugAssign) and parent.target is node)
-                ) and member in {None, "__import__"}:
-                    violations.append(f"{label}:{node.lineno}: importer mutation route")
-                elif member is None:
+                if isinstance(node.ctx, (ast.Store, ast.Del)) or (
+                    isinstance(parent, ast.AugAssign) and parent.target is node
+                ):
+                    message = (
+                        "importer mutation route"
+                        if member in {None, "__import__"}
+                        else "builtin module mutation route"
+                    )
+                    violations.append(f"{label}:{node.lineno}: {message}")
+                elif member is None and has_gate_surface:
                     violations.append(
                         f"{label}:{node.lineno}: importer namespace route"
                     )
+        if (
+            has_gate_surface
+            and isinstance(node, ast.expr)
+            and _resolve_capability_expression(node) in _GOVERNED_MODULE_KINDS
+            and not _is_supported_governed_module_use(node)
+        ):
+            violations.append(
+                f"{label}:{node.lineno}: governed module escapes direct operation"
+            )
         if (
             isinstance(node, ast.expr)
             and _resolve_capability_expression(node) == "mapping-mutator-function"
@@ -2966,18 +3080,17 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
 def _repository_sensitive_reexport_violations(
     sources: dict[str, str],
 ) -> list[str]:
-    """Reject sensitive installer/gate capabilities re-exported through helpers.
+    """Reject governed capabilities recovered through repository-local helpers.
 
-    The single-file grammar proves the direct spelling in one source file. This
-    companion topology pass proves that an otherwise ordinary local module
-    cannot relay the installer, approval accessor, or their owning modules to
-    another file. It intentionally tracks only the finite governed surface;
-    ordinary fixture imports remain outside this proof.
+    This is intentionally a finite lexical proof, not a Python evaluator.  It
+    follows module exports, function-local shadows, simple aliases, and only
+    import/lookup primitives whose bindings are proven canonical.
     """
 
     trees = {
         label: ast.parse(source, filename=label) for label, source in sources.items()
     }
+    parents_by_label = {label: _parent_map(tree) for label, tree in trees.items()}
     module_to_label: dict[str, str] = {}
     package_by_label: dict[str, str] = {}
     for label in trees:
@@ -2990,9 +3103,21 @@ def _repository_sensitive_reexport_violations(
         package_by_label[label] = ".".join(
             module_parts if stem == "__init__" else module_parts[:-1]
         )
-        if parts[:2] == ["tests", "execution_core"] and stem != "__init__":
+        if (
+            parts[:2] == ["tests", "execution_core"]
+            and len(parts) == 3
+            and stem != "__init__"
+        ):
             module_to_label[stem] = label
 
+    direct_modules = {
+        "app.execution_core.persistence.schema": "module:schema",
+        "approved_schema_digest": "module:approval",
+        "builtins": "module:builtins",
+        "importlib": "module:importlib",
+        "operator": "module:operator",
+        "sys": "module:sys",
+    }
     direct_members = {
         (
             "app.execution_core.persistence.schema",
@@ -3003,13 +3128,24 @@ def _repository_sensitive_reexport_violations(
             "require_approved_ddl_execution",
         ): "approval-accessor",
         ("app.execution_core.persistence", "schema"): "module:schema",
+        ("builtins", "__import__"): "importer",
+        ("builtins", "dict"): "dict-type",
+        ("builtins", "getattr"): "getter",
+        ("builtins", "object"): "object-type",
+        ("builtins", "type"): "type-factory",
+        ("builtins", "vars"): "namespace-factory",
+        ("importlib", "import_module"): "importer",
+        ("operator", "attrgetter"): "attribute-getter-factory",
+        ("operator", "getitem"): "mapping-getter",
+        ("sys", "modules"): "module-registry",
     }
-    direct_modules = {
-        "app.execution_core.persistence.schema": "module:schema",
-        "approved_schema_digest": "module:approval",
-        "builtins": "module:builtins",
-        "importlib": "module:importlib",
-        "sys": "module:sys",
+    builtin_members = {
+        "__import__": "importer",
+        "dict": "dict-type",
+        "getattr": "getter",
+        "object": "object-type",
+        "type": "type-factory",
+        "vars": "namespace-factory",
     }
     protected = frozenset(
         {
@@ -3023,8 +3159,9 @@ def _repository_sensitive_reexport_violations(
     def _absolute_module(label: str, node: ast.ImportFrom) -> str | None:
         if node.level == 0:
             return node.module
-        package = package_by_label[label]
-        package_parts = package.split(".") if package else []
+        package_parts = (
+            package_by_label[label].split(".") if package_by_label[label] else []
+        )
         parent_count = node.level - 1
         if parent_count > len(package_parts):
             return None
@@ -3032,367 +3169,636 @@ def _repository_sensitive_reexport_violations(
         suffix = node.module.split(".") if node.module else []
         return ".".join([*prefix, *suffix]) or None
 
-    def _module_provenance(module: str) -> str | None:
-        if module in direct_modules:
-            return direct_modules[module]
-        label = module_to_label.get(module)
-        return None if label is None else f"local:{label}"
-
-    def _member_provenance(
-        module: str,
-        member: str,
-        exports: dict[str, dict[str, str]],
-    ) -> str | None:
-        direct = direct_members.get((module, member))
+    def _module_kind(module: str) -> str | None:
+        direct = direct_modules.get(module)
         if direct is not None:
             return direct
-        label = module_to_label.get(module)
-        return None if label is None else exports[label].get(member)
+        local_label = module_to_label.get(module)
+        return None if local_label is None else "local:" + local_label
 
-    exports: dict[str, dict[str, str]] = {label: {} for label in trees}
-    changed = True
-    while changed:
-        changed = False
-        for label, tree in trees.items():
-            for node in tree.body:
-                if isinstance(node, ast.ImportFrom):
-                    module = _absolute_module(label, node)
-                    if module is None:
-                        continue
-                    for imported in node.names:
-                        if imported.name == "*":
-                            continue
-                        provenance = _member_provenance(module, imported.name, exports)
-                        if provenance is None:
-                            continue
-                        bound = imported.asname or imported.name
-                        if exports[label].get(bound) != provenance:
-                            exports[label][bound] = provenance
-                            changed = True
-                elif isinstance(node, ast.Import):
-                    for imported in node.names:
-                        provenance = _module_provenance(imported.name)
-                        if provenance is None:
-                            continue
-                        bound = imported.asname or imported.name.split(".", 1)[0]
-                        if exports[label].get(bound) != provenance:
-                            exports[label][bound] = provenance
-                            changed = True
+    known_modules = frozenset((*direct_modules, *module_to_label))
 
-    def _member_from_provenance(provenance: str, member: str) -> str | None:
-        if provenance == "canonical:module:schema" and member == "install_schema":
-            return "canonical:installer"
-        if (
-            provenance == "canonical:module:approval"
-            and member == "require_approved_ddl_execution"
+    def _module_prefix_kind(module: str) -> str | None:
+        if _module_kind(module) is not None or any(
+            known.startswith(module + ".") for known in known_modules
         ):
-            return "canonical:approval-accessor"
-        if provenance == "reexport:module:schema" and member == "install_schema":
-            return "reexport:installer"
-        if (
-            provenance == "reexport:module:approval"
-            and member == "require_approved_ddl_execution"
-        ):
-            return "reexport:approval-accessor"
-        if provenance == "canonical:module:sys" and member == "modules":
-            return "module-registry"
-        if provenance in {"canonical:module:sys", "canonical:module:builtins"} and (
-            member == "__dict__"
-        ):
-            return f"module-map:{provenance.removeprefix('canonical:module:')}"
-        if provenance.startswith(("local:", "local-map:")):
-            label = provenance.split(":", 1)[1]
-            exported = exports[label].get(member)
-            return (
-                None
-                if exported is None
-                else (f"reexport:{exported}" if exported in protected else exported)
-            )
+            return "module-prefix:" + module
         return None
 
-    def _module_reference_provenance(module: str) -> str | None:
-        provenance = _module_provenance(module)
-        return (
-            None
-            if provenance is None
-            else (f"canonical:{provenance}" if module in direct_modules else provenance)
-        )
+    def _static_text(value: ast.expr | None) -> str | None:
+        if isinstance(value, ast.Constant) and isinstance(value.value, str):
+            return value.value
+        if isinstance(value, ast.BinOp) and isinstance(value.op, ast.Add):
+            left = _static_text(value.left)
+            right = _static_text(value.right)
+            if left is not None and right is not None:
+                return left + right
+        return None
 
     def _call_argument(
         call: ast.Call,
         index: int,
         *names: str,
     ) -> ast.expr | None:
-        for keyword in call.keywords:
-            if keyword.arg in names:
-                return keyword.value
-        return call.args[index] if len(call.args) > index else None
+        values = [keyword.value for keyword in call.keywords if keyword.arg in names]
+        if len(call.args) > index:
+            values.insert(0, call.args[index])
+        return values[0] if len(values) == 1 else None
 
-    def _static_text(value: ast.expr | None) -> str | None:
-        return (
-            value.value
-            if isinstance(value, ast.Constant) and isinstance(value.value, str)
-            else None
-        )
+    def _base_kind(kind: str) -> str:
+        return kind.removeprefix("relayed:")
 
-    def _describe(provenance: str) -> str:
+    def _describe(kind: str) -> str:
         return {
             "installer": "schema installer",
             "approval-accessor": "approval accessor",
             "module:schema": "schema module",
             "module:approval": "approval module",
-        }[provenance]
+        }[kind]
+
+    _FUNCTION_SCOPE_TYPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
+    _COMPREHENSION_SCOPE_TYPES = (
+        ast.ListComp,
+        ast.SetComp,
+        ast.DictComp,
+        ast.GeneratorExp,
+    )
+    _SCOPE_TYPES = (
+        *_FUNCTION_SCOPE_TYPES,
+        *_COMPREHENSION_SCOPE_TYPES,
+        ast.ClassDef,
+    )
+    function_outer_ids: dict[ast.AST, frozenset[int]] = {}
+    class_outer_ids: dict[ast.ClassDef, frozenset[int]] = {}
+    comprehension_outer_ids: dict[ast.AST, frozenset[int]] = {}
+    for tree in trees.values():
+        for candidate in ast.walk(tree):
+            if isinstance(candidate, _FUNCTION_SCOPE_TYPES):
+                arguments = candidate.args
+                argument_nodes: tuple[ast.arg, ...] = (
+                    *arguments.posonlyargs,
+                    *arguments.args,
+                    *arguments.kwonlyargs,
+                )
+                if arguments.vararg is not None:
+                    argument_nodes = (*argument_nodes, arguments.vararg)
+                if arguments.kwarg is not None:
+                    argument_nodes = (*argument_nodes, arguments.kwarg)
+                roots: tuple[ast.AST, ...] = (
+                    *getattr(candidate, "decorator_list", ()),
+                    *arguments.defaults,
+                    *(item for item in arguments.kw_defaults if item is not None),
+                    *argument_nodes,
+                    *(
+                        (candidate.returns,)
+                        if getattr(candidate, "returns", None) is not None
+                        else ()
+                    ),
+                )
+                function_outer_ids[candidate] = frozenset(
+                    id(descendant) for root in roots for descendant in ast.walk(root)
+                )
+            elif isinstance(candidate, ast.ClassDef):
+                roots = (
+                    *candidate.decorator_list,
+                    *candidate.bases,
+                    *(keyword.value for keyword in candidate.keywords),
+                )
+                class_outer_ids[candidate] = frozenset(
+                    id(descendant) for root in roots for descendant in ast.walk(root)
+                )
+            elif isinstance(candidate, _COMPREHENSION_SCOPE_TYPES):
+                comprehension_outer_ids[candidate] = frozenset(
+                    id(descendant)
+                    for descendant in ast.walk(candidate.generators[0].iter)
+                )
+
+    def _scope_for(label: str, node: ast.AST) -> ast.AST:
+        original = node
+        current = node
+        parents = parents_by_label[label]
+        while True:
+            parent = parents.get(current)
+            if parent is None:
+                return trees[label]
+            if isinstance(parent, _FUNCTION_SCOPE_TYPES):
+                if id(original) in function_outer_ids[parent]:
+                    current = parent
+                    continue
+                return parent
+            if isinstance(parent, ast.ClassDef):
+                if id(original) in class_outer_ids[parent]:
+                    current = parent
+                    continue
+                return parent
+            if isinstance(parent, _COMPREHENSION_SCOPE_TYPES):
+                if id(original) in comprehension_outer_ids[parent]:
+                    current = parent
+                    continue
+                return parent
+            if isinstance(parent, ast.Module):
+                return parent
+            current = parent
+
+    def _lexical_parent(label: str, scope: ast.AST) -> ast.AST | None:
+        parents = parents_by_label[label]
+        current = parents.get(scope)
+        skip_class = isinstance(
+            scope, (*_FUNCTION_SCOPE_TYPES, *_COMPREHENSION_SCOPE_TYPES)
+        )
+        while current is not None:
+            if isinstance(current, ast.ClassDef) and skip_class:
+                current = parents.get(current)
+                continue
+            if isinstance(current, (*_SCOPE_TYPES, ast.Module)):
+                return current
+            current = parents.get(current)
+        return None
+
+    Spec = tuple[str, object | None]
+    bindings: dict[tuple[str, ast.AST, str], list[Spec]] = {}
+
+    def _record(label: str, scope: ast.AST, name: str, spec: Spec) -> None:
+        bindings.setdefault((label, scope, name), []).append(spec)
+
+    def _target_names(target: ast.expr) -> tuple[ast.Name, ...]:
+        if isinstance(target, ast.Name):
+            return (target,)
+        if isinstance(target, ast.Starred):
+            return _target_names(target.value)
+        if isinstance(target, (ast.List, ast.Tuple)):
+            return tuple(name for item in target.elts for name in _target_names(item))
+        return ()
+
+    handled_stores: set[int] = set()
+    for label, tree in trees.items():
+        for node in ast.walk(tree):
+            scope = _scope_for(label, node)
+            if isinstance(node, ast.Assign):
+                for target in node.targets:
+                    for name in _target_names(target):
+                        handled_stores.add(id(name))
+                        _record(label, scope, name.id, ("expr", node.value))
+            elif isinstance(node, ast.AnnAssign):
+                for name in _target_names(node.target):
+                    handled_stores.add(id(name))
+                    _record(
+                        label,
+                        scope,
+                        name.id,
+                        ("ordinary", None)
+                        if node.value is None
+                        else ("expr", node.value),
+                    )
+            elif isinstance(node, ast.NamedExpr):
+                for name in _target_names(node.target):
+                    handled_stores.add(id(name))
+                    _record(label, scope, name.id, ("expr", node.value))
+            elif isinstance(node, ast.Import):
+                for imported in node.names:
+                    bound = imported.asname or imported.name.split(".", 1)[0]
+                    if imported.asname is not None:
+                        kind = _module_kind(imported.name)
+                    elif "." in imported.name:
+                        kind = _module_prefix_kind(bound)
+                    else:
+                        kind = _module_kind(imported.name)
+                    _record(
+                        label,
+                        scope,
+                        bound,
+                        ("kind", kind or "ordinary"),
+                    )
+            elif isinstance(node, ast.ImportFrom):
+                module = _absolute_module(label, node)
+                for imported in node.names:
+                    if imported.name == "*":
+                        continue
+                    bound = imported.asname or imported.name
+                    direct = (
+                        None
+                        if module is None
+                        else direct_members.get((module, imported.name))
+                    )
+                    local_label = (
+                        None if module is None else module_to_label.get(module)
+                    )
+                    imported_module = (
+                        None
+                        if module is None
+                        else _module_kind(module + "." + imported.name)
+                    )
+                    if direct is not None:
+                        _record(label, scope, bound, ("kind", direct))
+                        continue
+                    recorded = False
+                    if local_label is not None:
+                        _record(
+                            label,
+                            scope,
+                            bound,
+                            ("local-member", (local_label, imported.name)),
+                        )
+                        recorded = True
+                    if imported_module is not None:
+                        _record(label, scope, bound, ("kind", imported_module))
+                        recorded = True
+                    if not recorded:
+                        _record(label, scope, bound, ("ordinary", None))
+            elif isinstance(node, ast.arg):
+                owner = parents_by_label[label].get(node)
+                while owner is not None and not isinstance(
+                    owner, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
+                ):
+                    owner = parents_by_label[label].get(owner)
+                _record(
+                    label,
+                    trees[label] if owner is None else owner,
+                    node.arg,
+                    ("ordinary", None),
+                )
+            elif isinstance(
+                node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+            ):
+                _record(label, scope, node.name, ("ordinary", None))
+
+    for label, tree in trees.items():
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Name)
+                and isinstance(node.ctx, (ast.Store, ast.Del))
+                and id(node) not in handled_stores
+            ):
+                _record(
+                    label,
+                    _scope_for(label, node),
+                    node.id,
+                    ("ordinary", None),
+                )
+
+    exports: dict[str, dict[str, set[str]]] = {label: {} for label in trees}
+
+    def _member_kinds(owner: str, member: str) -> set[str]:
+        relayed_owner = owner.startswith("relayed:")
+        base = _base_kind(owner)
+        if member == "__dict__" and (
+            base.startswith("module:") or base.startswith("local:")
+        ):
+            return {
+                ("module-map:" if base.startswith("module:") else "local-map:")
+                + base.split(":", 1)[1]
+            }
+        if member == "__class__" and (
+            base.startswith("module:") or base.startswith("local:")
+        ):
+            return {"module-type"}
+        if member == "__getattribute__" and (
+            base.startswith("module:") or base.startswith("local:")
+        ):
+            return {"attribute-getter:" + base}
+        if base.startswith("local:"):
+            owner_label = base.removeprefix("local:")
+            values = exports[owner_label].get(member, set())
+            return {
+                ("relayed:" + value if value in protected else value)
+                for value in values
+            }
+        if base.startswith("local-map:"):
+            owner_label = base.removeprefix("local-map:")
+            values = exports[owner_label].get(member, set())
+            return {
+                ("relayed:" + value if value in protected else value)
+                for value in values
+            }
+        if base.startswith("module-prefix:"):
+            candidate = base.removeprefix("module-prefix:") + "." + member
+            kind = _module_kind(candidate) or _module_prefix_kind(candidate)
+            return set() if kind is None else {kind}
+        result = {
+            ("module:schema", "install_schema"): "installer",
+            (
+                "module:approval",
+                "require_approved_ddl_execution",
+            ): "approval-accessor",
+            ("module:builtins", "__import__"): "importer",
+            ("module:builtins", "dict"): "dict-type",
+            ("module:builtins", "getattr"): "getter",
+            ("module:builtins", "object"): "object-type",
+            ("module:builtins", "type"): "type-factory",
+            ("module:builtins", "vars"): "namespace-factory",
+            ("module:importlib", "import_module"): "importer",
+            ("module:operator", "attrgetter"): "attribute-getter-factory",
+            ("module:operator", "getitem"): "mapping-getter",
+            ("module:sys", "modules"): "module-registry",
+            ("dict-type", "get"): "mapping-getter",
+            ("dict-type", "__getitem__"): "mapping-getter",
+            ("module-type", "__getattribute__"): "object-getter",
+            ("object-type", "__getattribute__"): "object-getter",
+        }.get((base, member))
+        if (
+            result is None
+            and (
+                base.startswith("local-map:")
+                or base.startswith("module-map:")
+                or base == "module-registry"
+            )
+            and member in {"get", "__getitem__"}
+        ):
+            result = "map-getter:" + base
+        if result is None:
+            return set()
+        return {
+            "relayed:" + result if relayed_owner and result in protected else result
+        }
+
+    def _map_lookup(base: str, key: str | None) -> set[str]:
+        if base.startswith("local-map:"):
+            owner_label = base.removeprefix("local-map:")
+            if key is None:
+                return (
+                    {"dynamic-relayed:" + owner_label}
+                    if any(
+                        value in protected
+                        for values in exports[owner_label].values()
+                        for value in values
+                    )
+                    else set()
+                )
+            return _member_kinds("local:" + owner_label, key)
+        if base == "module-registry" and key is not None:
+            kind = _module_kind(key)
+            return set() if kind is None else {kind}
+        if base == "module-map:sys" and key == "modules":
+            return {"module-registry"}
+        if base == "module-map:builtins" and key is not None:
+            kind = builtin_members.get(key)
+            return set() if kind is None else {kind}
+        if base == "module-map:importlib" and key == "import_module":
+            return {"importer"}
+        if base == "module-map:operator" and key == "getitem":
+            return {"mapping-getter"}
+        if base == "module-map:schema" and key == "install_schema":
+            return {"installer"}
+        if base == "module-map:approval" and key == "require_approved_ddl_execution":
+            return {"approval-accessor"}
+        return set()
+
+    def _spec_kinds(
+        label: str,
+        spec: Spec,
+        seen: frozenset[tuple[str, int, str]],
+    ) -> set[str]:
+        category, payload = spec
+        if category == "ordinary":
+            return set()
+        if category == "kind":
+            assert isinstance(payload, str)
+            return {payload}
+        if category == "local-member":
+            assert isinstance(payload, tuple)
+            owner_label, member = payload
+            return _member_kinds("local:" + str(owner_label), str(member))
+        assert category == "expr" and isinstance(payload, ast.expr)
+        return _expression_kinds(label, payload, seen)
+
+    def _name_kinds(
+        label: str,
+        scope: ast.AST,
+        name: str,
+        seen: frozenset[tuple[str, int, str]],
+    ) -> set[str]:
+        current: ast.AST | None = scope
+        while current is not None:
+            specs = bindings.get((label, current, name))
+            if specs is not None:
+                marker = (label, id(current), name)
+                if marker in seen:
+                    return set()
+                return {
+                    kind
+                    for spec in specs
+                    for kind in _spec_kinds(label, spec, seen | {marker})
+                }
+            current = _lexical_parent(label, current)
+        builtin = builtin_members.get(name)
+        return set() if builtin is None else {builtin}
+
+    def _module_from_importer(call: ast.Call) -> set[str]:
+        target = _static_text(_call_argument(call, 0, "name"))
+        if target is None:
+            return set()
+        kind = _module_kind(target)
+        return set() if kind is None else {kind}
+
+    def _expression_kinds(
+        label: str,
+        value: ast.expr,
+        seen: frozenset[tuple[str, int, str]] = frozenset(),
+    ) -> set[str]:
+        if isinstance(value, ast.Name):
+            return _name_kinds(
+                label,
+                _scope_for(label, value),
+                value.id,
+                seen,
+            )
+        if isinstance(value, ast.NamedExpr):
+            return _expression_kinds(label, value.value, seen)
+        if isinstance(value, ast.Attribute):
+            return {
+                member_kind
+                for owner in _expression_kinds(label, value.value, seen)
+                for member_kind in _member_kinds(owner, value.attr)
+            }
+        if isinstance(value, ast.Subscript):
+            return {
+                result
+                for owner in _expression_kinds(label, value.value, seen)
+                for result in _map_lookup(owner, _static_text(value.slice))
+            }
+        if not isinstance(value, ast.Call):
+            return set()
+        function_kinds = _expression_kinds(label, value.func, seen)
+        results: set[str] = set()
+        for function_kind in function_kinds:
+            if function_kind == "importer":
+                results.update(_module_from_importer(value))
+            elif function_kind == "namespace-factory":
+                subject = _call_argument(value, 0, "object")
+                if subject is None:
+                    continue
+                for owner in _expression_kinds(label, subject, seen):
+                    base = _base_kind(owner)
+                    if base.startswith("local:"):
+                        results.add("local-map:" + base.removeprefix("local:"))
+                    elif base.startswith("module:"):
+                        results.add("module-map:" + base.removeprefix("module:"))
+            elif function_kind == "getter":
+                subject = _call_argument(value, 0, "object")
+                member = _call_argument(value, 1, "name")
+                if subject is None:
+                    continue
+                owners = _expression_kinds(label, subject, seen)
+                static_member = _static_text(member)
+                if static_member is None:
+                    results.update(
+                        "dynamic-relayed:" + _base_kind(owner).removeprefix("local:")
+                        for owner in owners
+                        if _base_kind(owner).startswith("local:")
+                        and any(
+                            kind in protected
+                            for kinds in exports[
+                                _base_kind(owner).removeprefix("local:")
+                            ].values()
+                            for kind in kinds
+                        )
+                    )
+                else:
+                    results.update(
+                        member_kind
+                        for owner in owners
+                        for member_kind in _member_kinds(owner, static_member)
+                    )
+            elif function_kind == "mapping-getter":
+                subject = _call_argument(value, 0, "object")
+                member = _call_argument(value, 1, "key")
+                if subject is not None:
+                    results.update(
+                        result
+                        for owner in _expression_kinds(label, subject, seen)
+                        for result in _map_lookup(owner, _static_text(member))
+                    )
+            elif function_kind == "attribute-getter-factory":
+                if len(value.args) == 1 and not value.keywords:
+                    member = _static_text(value.args[0])
+                    if member is not None:
+                        results.add("attribute-selector:" + member)
+            elif function_kind.startswith("attribute-selector:"):
+                subject = _call_argument(value, 0, "object")
+                if subject is not None:
+                    results.update(
+                        member_kind
+                        for owner in _expression_kinds(label, subject, seen)
+                        for member_kind in _member_kinds(
+                            owner,
+                            function_kind.removeprefix("attribute-selector:"),
+                        )
+                    )
+            elif function_kind == "type-factory":
+                subject = _call_argument(value, 0, "object")
+                if subject is not None and any(
+                    _base_kind(owner).startswith(("local:", "module:"))
+                    for owner in _expression_kinds(label, subject, seen)
+                ):
+                    results.add("module-type")
+            elif function_kind.startswith("map-getter:"):
+                member = _call_argument(value, 0, "key")
+                results.update(
+                    _map_lookup(
+                        function_kind.removeprefix("map-getter:"),
+                        _static_text(member),
+                    )
+                )
+            elif function_kind == "object-getter":
+                subject = _call_argument(value, 0, "object")
+                member = _call_argument(value, 1, "name")
+                static_member = _static_text(member)
+                if subject is not None and static_member is not None:
+                    results.update(
+                        member_kind
+                        for owner in _expression_kinds(label, subject, seen)
+                        for member_kind in _member_kinds(owner, static_member)
+                    )
+            elif function_kind.startswith("attribute-getter:"):
+                member = _call_argument(value, 0, "name")
+                static_member = _static_text(member)
+                if static_member is not None:
+                    results.update(
+                        _member_kinds(
+                            function_kind.removeprefix("attribute-getter:"),
+                            static_member,
+                        )
+                    )
+        return results
+
+    module_names = {
+        (label, name) for label, scope, name in bindings if scope is trees[label]
+    }
+    for _ in range(max(1, len(module_names) + 1)):
+        changed = False
+        for label, name in module_names:
+            kinds = {
+                _base_kind(kind)
+                for kind in _name_kinds(label, trees[label], name, frozenset())
+                if not kind.startswith("dynamic-relayed:")
+            }
+            if not kinds.issubset(exports[label].get(name, set())):
+                exports[label].setdefault(name, set()).update(kinds)
+                changed = True
+        if not changed:
+            break
 
     violations: list[str] = []
     for label, tree in trees.items():
-        bindings: dict[str, set[str]] = {}
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom):
                 module = _absolute_module(label, node)
-                if module is None:
-                    continue
-                local_origin = module_to_label.get(module)
-                for imported in node.names:
-                    if imported.name == "*":
-                        if local_origin is not None and any(
-                            provenance in protected
-                            for provenance in exports[local_origin].values()
-                        ):
-                            violations.append(
-                                f"{label}:{node.lineno}: wildcard import may recover "
-                                "a re-exported governed capability"
-                            )
-                        continue
-                    provenance = _member_provenance(module, imported.name, exports)
-                    if provenance is None:
-                        continue
-                    bound = imported.asname or imported.name
-                    direct_origin = (module, imported.name) in direct_members
-                    bound_provenance = (
-                        f"canonical:{provenance}"
-                        if direct_origin
-                        else (
-                            f"reexport:{provenance}"
-                            if local_origin is not None and provenance in protected
-                            else provenance
-                        )
-                    )
-                    bindings.setdefault(bound, set()).add(bound_provenance)
-                    if (
-                        local_origin is not None
-                        and not direct_origin
-                        and provenance in protected
-                    ):
+                local_label = None if module is None else module_to_label.get(module)
+                if local_label is not None:
+                    for imported in node.names:
+                        if imported.name == "*":
+                            if any(
+                                kind in protected
+                                for kinds in exports[local_label].values()
+                                for kind in kinds
+                            ):
+                                violations.append(
+                                    "%s:%s: wildcard import may recover a "
+                                    "re-exported governed capability"
+                                    % (label, node.lineno)
+                                )
+                            continue
+                        for kind in exports[local_label].get(imported.name, set()):
+                            if kind in protected:
+                                violations.append(
+                                    "%s:%s: %s is re-exported through %s"
+                                    % (
+                                        label,
+                                        node.lineno,
+                                        _describe(kind),
+                                        module,
+                                    )
+                                )
+            if not isinstance(node, ast.expr):
+                continue
+            for kind in _expression_kinds(label, node):
+                if kind.startswith("relayed:"):
+                    base = kind.removeprefix("relayed:")
+                    if base in protected:
                         violations.append(
-                            f"{label}:{node.lineno}: {_describe(provenance)} is "
-                            f"re-exported through {module}"
+                            "%s:%s: %s is recovered through a re-exported module"
+                            % (label, node.lineno, _describe(base))
                         )
-            elif isinstance(node, ast.Import):
-                for imported in node.names:
-                    provenance = _module_provenance(imported.name)
-                    if provenance is None:
-                        continue
-                    bound = imported.asname or imported.name.split(".", 1)[0]
-                    bindings.setdefault(bound, set()).add(
-                        (
-                            f"canonical:{provenance}"
-                            if imported.name in direct_modules
-                            else provenance
-                        )
-                    )
-
-        def _expression_provenance(value: ast.expr) -> set[str]:
-            if isinstance(value, ast.Name):
-                return bindings.get(value.id, set())
-            if isinstance(value, ast.Attribute):
-                attribute_provenances: set[str] = set()
-                for owner_provenance in _expression_provenance(value.value):
-                    if (
-                        owner_provenance.startswith("local:")
-                        and value.attr == "__dict__"
-                    ):
-                        attribute_provenances.add(
-                            f"local-map:{owner_provenance.removeprefix('local:')}"
-                        )
-                        continue
-                    member_provenance = _member_from_provenance(
-                        owner_provenance, value.attr
-                    )
-                    if member_provenance is not None:
-                        attribute_provenances.add(member_provenance)
-                return attribute_provenances
-            if isinstance(value, ast.Subscript):
-                subscript_member = _static_text(value.slice)
-                subscript_provenances: set[str] = set()
-                for owner_provenance in _expression_provenance(value.value):
-                    if (
-                        owner_provenance == "module-registry"
-                        and subscript_member is not None
-                    ):
-                        module_provenance = _module_reference_provenance(
-                            subscript_member
-                        )
-                        if module_provenance is not None:
-                            subscript_provenances.add(module_provenance)
-                    elif (
-                        owner_provenance == "module-map:sys"
-                        and subscript_member == "modules"
-                    ):
-                        subscript_provenances.add("module-registry")
-                    elif subscript_member is not None:
-                        member_provenance = _member_from_provenance(
-                            owner_provenance, subscript_member
-                        )
-                        if member_provenance is not None:
-                            subscript_provenances.add(member_provenance)
-                return subscript_provenances
-            if isinstance(value, ast.Call):
-                function = value.func
-                requested_member: str | None = None
-                owners: set[str] = set()
-                if isinstance(function, ast.Name):
-                    if function.id == "vars" and value.args:
-                        return {
-                            f"local-map:{provenance.removeprefix('local:')}"
-                            for provenance in _expression_provenance(value.args[0])
-                            if provenance.startswith("local:")
-                        }
-                    if function.id == "__import__":
-                        target = _static_text(_call_argument(value, 0, "name"))
-                        return (
-                            set()
-                            if target is None
-                            else {
-                                provenance
-                                for provenance in (
-                                    _module_reference_provenance(target),
-                                )
-                                if provenance is not None
-                            }
-                        )
-                    if function.id == "getattr":
-                        owners = _expression_provenance(
-                            _call_argument(value, 0, "object")
-                            or ast.Constant(value=None)
-                        )
-                        requested_member = _static_text(
-                            _call_argument(value, 1, "name")
-                        )
-                elif isinstance(function, ast.Attribute):
-                    if function.attr == "import_module":
-                        target = _static_text(_call_argument(value, 0, "name"))
-                        return (
-                            set()
-                            if target is None
-                            else {
-                                provenance
-                                for provenance in (
-                                    _module_reference_provenance(target),
-                                )
-                                if provenance is not None
-                            }
-                        )
-                    if function.attr == "__import__":
-                        target = _static_text(_call_argument(value, 0, "name"))
-                        return (
-                            set()
-                            if target is None
-                            else {
-                                provenance
-                                for provenance in (
-                                    _module_reference_provenance(target),
-                                )
-                                if provenance is not None
-                            }
-                        )
-                    if function.attr == "__getattribute__":
-                        if (
-                            isinstance(function.value, ast.Name)
-                            and function.value.id == "object"
-                        ):
-                            subject = _call_argument(value, 0, "object")
-                            member_value = _call_argument(value, 1, "name")
-                        else:
-                            subject = function.value
-                            member_value = _call_argument(value, 0, "name")
-                        owners = (
-                            set()
-                            if subject is None
-                            else _expression_provenance(subject)
-                        )
-                        requested_member = _static_text(member_value)
-                    elif function.attr in {"get", "__getitem__"}:
-                        owners = _expression_provenance(function.value)
-                        requested_member = _static_text(_call_argument(value, 0, "key"))
-                return {
-                    member_provenance
-                    for owner_provenance in owners
-                    if requested_member is not None
-                    and (
-                        member_provenance := _member_from_provenance(
-                            owner_provenance, requested_member
-                        )
-                    )
-                    is not None
-                }
-            return set()
-
-        def _record_reexported_provenances(
-            node: ast.expr,
-            provenances: set[str],
-        ) -> None:
-            for provenance in provenances:
-                if provenance.startswith("reexport:"):
+                elif kind.startswith("dynamic-relayed:"):
                     violations.append(
-                        f"{label}:{node.lineno}: "
-                        f"{_describe(provenance.removeprefix('reexport:'))} is "
-                        "recovered through a re-exported module"
+                        "%s:%s: dynamic lookup may recover a re-exported "
+                        "governed capability" % (label, node.lineno)
                     )
-
-        for node in ast.walk(tree):
-            if isinstance(node, (ast.Attribute, ast.Call, ast.Subscript)):
-                _record_reexported_provenances(
-                    node,
-                    _expression_provenance(node),
-                )
-            if isinstance(node, ast.Subscript) and _static_text(node.slice) is None:
-                if any(
-                    provenance.startswith("local-map:")
-                    and any(
-                        exported in protected
-                        for exported in exports[
-                            provenance.removeprefix("local-map:")
-                        ].values()
-                    )
-                    for provenance in _expression_provenance(node.value)
-                ):
-                    violations.append(
-                        f"{label}:{node.lineno}: dynamic lookup may recover a "
-                        "re-exported governed capability"
-                    )
-            if (
-                isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Name)
-                and node.func.id == "getattr"
-                and _static_text(_call_argument(node, 1, "name")) is None
-                and any(
-                    provenance.startswith("local:")
-                    and any(
-                        exported in protected
-                        for exported in exports[
-                            provenance.removeprefix("local:")
-                        ].values()
-                    )
-                    for provenance in _expression_provenance(
-                        _call_argument(node, 0, "object") or ast.Constant(value=None)
-                    )
-                )
-            ):
-                violations.append(
-                    f"{label}:{node.lineno}: dynamic lookup may recover a "
-                    "re-exported governed capability"
-                )
     return violations
+
+
+def _execution_core_python_paths(repository_root: Path) -> tuple[Path, ...]:
+    """Return every current or future execution-core Python source recursively."""
+
+    return tuple(
+        sorted(
+            (
+                *repository_root.joinpath("tests", "execution_core").rglob("*.py"),
+                *repository_root.joinpath("app", "execution_core").rglob("*.py"),
+            ),
+            key=lambda candidate: candidate.as_posix(),
+        )
+    )
 
 
 def test_changed_ddl_installers_have_one_fail_closed_human_gate() -> None:
@@ -3406,16 +3812,9 @@ def test_changed_ddl_installers_have_one_fail_closed_human_gate() -> None:
     """
 
     repository_root = Path(__file__).resolve().parents[2]
-    paths = sorted(
-        (
-            *repository_root.joinpath("tests", "execution_core").glob("*.py"),
-            *repository_root.joinpath("app", "execution_core").rglob("*.py"),
-        ),
-        key=lambda candidate: candidate.as_posix(),
-    )
     sources = {
         path.relative_to(repository_root).as_posix(): path.read_text(encoding="utf-8")
-        for path in paths
+        for path in _execution_core_python_paths(repository_root)
     }
     violations = [
         violation
@@ -3427,6 +3826,24 @@ def test_changed_ddl_installers_have_one_fail_closed_human_gate() -> None:
     ]
     violations.extend(_repository_sensitive_reexport_violations(sources))
     assert violations == [], violations
+
+
+def test_changed_ddl_gate_source_inventory_is_recursive(tmp_path: Path) -> None:
+    """A future nested test module cannot silently leave the static proof."""
+
+    nested_test = tmp_path / "tests" / "execution_core" / "nested" / "test_gate.py"
+    nested_app = tmp_path / "app" / "execution_core" / "nested" / "module.py"
+    for path in (nested_test, nested_app):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("VALUE = 1\n", encoding="utf-8")
+
+    assert {
+        path.relative_to(tmp_path).as_posix()
+        for path in _execution_core_python_paths(tmp_path)
+    } == {
+        "app/execution_core/nested/module.py",
+        "tests/execution_core/nested/test_gate.py",
+    }
 
 
 def test_changed_ddl_gate_audit_refuses_sensitive_helper_reexports() -> None:
@@ -3485,19 +3902,174 @@ sys.modules["helper"].require_approved_ddl_execution
     assert any(
         "approval accessor is re-exported through helper" in item for item in violations
     )
-    assert (
-        sum(
-            "schema installer is recovered through a re-exported module" in item
-            for item in violations
-        )
-        == 2
+    assert any(
+        "schema installer is recovered through a re-exported module" in item
+        for item in violations
+    )
+    assert any(
+        "approval accessor is recovered through a re-exported module" in item
+        for item in violations
     )
     assert any("wildcard import may recover" in item for item in violations)
-    assert (
-        sum("recovered through a re-exported module" in item for item in violations)
-        >= 6
+    assert any("dynamic lookup may recover" in item for item in violations)
+
+
+def test_rev0099_repository_topology_tracks_only_lexical_capabilities() -> None:
+    """Helper recovery follows proven functions and respects local shadows."""
+
+    helper = """
+from app.execution_core.persistence.schema import install_schema
+from approved_schema_digest import require_approved_ddl_execution
+"""
+    rejected_consumers = (
+        """
+from importlib import import_module
+import_module('helper').install_schema
+""",
+        """
+import helper
+import operator
+operator.getitem(vars(helper), 'install_schema')
+""",
+        """
+import builtins
+import helper
+builtins.getattr(helper, 'require_approved_ddl_execution')
+""",
+        """
+import relay
+relay.forwarded.install_schema
+""",
+        """
+from builtins import getattr as read_member
+import helper
+read_member(helper, 'install_schema')
+""",
+        """
+from builtins import vars as namespace
+from operator import getitem
+import helper
+getitem(namespace(helper), 'require_approved_ddl_execution')
+""",
+        """
+from importlib import import_module
+loader = import_module
+loader('helper').install_schema
+""",
+        """
+import tests.execution_core.helper
+tests.execution_core.helper.install_schema
+""",
+        """
+from tests.execution_core import helper
+helper.require_approved_ddl_execution
+""",
+        """
+from operator import attrgetter
+import helper
+attrgetter('install_schema')(helper)
+""",
+        """
+from builtins import dict, vars
+import helper
+dict.get(vars(helper), 'require_approved_ddl_execution')
+""",
+        """
+import helper
+helper.__class__.__getattribute__(helper, 'install_schema')
+""",
+        """
+import helper
+type(helper).__getattribute__(helper, 'require_approved_ddl_execution')
+""",
     )
-    assert sum("dynamic lookup may recover" in item for item in violations) == 2
+    for ordinal, consumer in enumerate(rejected_consumers, 1):
+        sources = {
+            "tests/execution_core/helper.py": helper,
+            "tests/execution_core/consumer.py": consumer,
+        }
+        if ordinal == 4:
+            sources["tests/execution_core/relay.py"] = """
+import helper
+forwarded = helper
+"""
+        assert _repository_sensitive_reexport_violations(sources), ordinal
+
+    accepted_consumers = (
+        """
+import helper
+def inspect(helper):
+    return getattr(helper, 'install_schema')
+""",
+        """
+import helper
+def getattr(value, member):
+    return object()
+getattr(helper, 'install_schema')
+""",
+        """
+class Client:
+    def import_module(self, name):
+        return object()
+client = Client()
+client.import_module('helper').install_schema
+""",
+        """
+import importlib
+def inspect(module_name, member_name):
+    return getattr(importlib.import_module(module_name), member_name)
+""",
+        """
+import helper
+def vars(value):
+    return {}
+vars(helper)['install_schema']
+""",
+        """
+import helper
+ordinary = [getattr(helper, 'install_schema') for helper in values]
+""",
+        """
+import helper
+class Client:
+    def attrgetter(self, member):
+        return lambda value: object()
+operator = Client()
+operator.attrgetter('install_schema')(helper)
+""",
+        """
+import helper
+class Mapping:
+    def get(self, mapping, member):
+        return object()
+dict = Mapping()
+dict.get(vars(helper), 'install_schema')
+""",
+    )
+    for ordinal, consumer in enumerate(accepted_consumers, 1):
+        assert (
+            _repository_sensitive_reexport_violations(
+                {
+                    "tests/execution_core/helper.py": helper,
+                    "tests/execution_core/consumer.py": consumer,
+                }
+            )
+            == []
+        ), ordinal
+
+    nested = {
+        "tests/execution_core/nested/__init__.py": "",
+        "tests/execution_core/nested/helper.py": helper,
+        "tests/execution_core/nested/consumer.py": """
+from .helper import install_schema
+install_schema
+""",
+        "tests/execution_core/nested/module_consumer.py": """
+from . import helper
+helper.require_approved_ddl_execution
+""",
+    }
+    assert _repository_sensitive_reexport_violations(nested)
 
 
 def test_changed_ddl_execution_gate_refuses_without_a_valid_human_token() -> None:
@@ -3510,7 +4082,7 @@ def test_changed_ddl_execution_gate_refuses_without_a_valid_human_token() -> Non
 
 
 def test_changed_ddl_execution_gate_uses_one_exact_locked_binding() -> None:
-    """The public no-argument gate cannot drift to a local or derived token."""
+    """The gate module cannot acquire mutable code or a derived token."""
 
     source_path = Path(__file__).with_name("approved_schema_digest.py")
     source = source_path.read_text(encoding="utf-8")
@@ -3537,10 +4109,26 @@ def test_changed_ddl_execution_gate_uses_one_exact_locked_binding() -> None:
             "return 'ab' * 32",
             1,
         ),
+        source.replace(
+            "APPROVED_EXECUTION_DDL_SHA256: Final[str | None] = None",
+            "APPROVED_EXECUTION_DDL_SHA256: Final[str | None] = 'ab' * 32",
+            1,
+        ),
+        source + "\nAPPROVED_EXECUTION_DDL_SHA256 = 'ab' * 32\n",
+        source + "\ntype = lambda value: str\n",
+        source + "\nlen = lambda value: 64\n",
+        source + "\nany = lambda values: False\n",
     )
     assert all(
         not _approval_accessor_binding_is_exact(ast.parse(mutant)) for mutant in mutants
     )
+
+    unlocked = source.replace(
+        "APPROVED_EXECUTION_DDL_SHA256: Final[str | None] = None",
+        f"APPROVED_EXECUTION_DDL_SHA256: Final[str | None] = {('ab' * 32)!r}",
+        1,
+    )
+    assert _approval_accessor_binding_is_exact(ast.parse(unlocked))
 
 
 def test_changed_ddl_gate_audit_refuses_bypass_spellings() -> None:
@@ -5723,3 +6311,61 @@ mutate()
             source, f"rev0098-late-{ordinal}.py"
         )
         assert any(expected in violation for violation in violations), violations
+
+
+def test_rev0099_gate_audit_owns_governed_module_values_without_global_syntax_bans() -> (
+    None
+):
+    """Governed modules cannot escape, while unrelated introspection stays ordinary."""
+
+    rejected = (
+        """
+from app.execution_core.persistence import schema
+from approved_schema_digest import require_approved_ddl_execution
+def escape():
+    return consume(schema)
+""",
+        """
+import builtins
+from approved_schema_digest import require_approved_ddl_execution
+escaped = [builtins]
+""",
+        """
+from app.execution_core.persistence import schema
+from approved_schema_digest import require_approved_ddl_execution
+vars(schema).update({'install_schema': object()})
+""",
+        """
+import sys
+from approved_schema_digest import require_approved_ddl_execution
+registry = sys.__class__.__getattribute__(sys, 'modules')
+registry['approved_schema_digest'] = object()
+""",
+        """
+from app.execution_core.persistence import schema
+from approved_schema_digest import require_approved_ddl_execution
+proxy.setattr(schema, 'schema_ddl_digest', object())
+""",
+        """
+import builtins
+vars(builtins)['type'] = object()
+""",
+        """
+import builtins
+import operator
+operator.setitem(vars(builtins), 'len', object())
+""",
+    )
+    for ordinal, source in enumerate(rejected, 1):
+        assert _schema_installer_gate_violations(
+            source, f"rev0099-governed-{ordinal}.py"
+        )
+
+    unrelated = """
+import builtins
+def resolve_builtin(name):
+    return vars(builtins)[name]
+"""
+    assert (
+        _schema_installer_gate_violations(unrelated, "ordinary-introspection.py") == []
+    )
