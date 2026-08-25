@@ -73,6 +73,7 @@ allowed_paths:
   - work/review/REV-0103/**
   - work/review/REV-0104/**
   - work/review/REV-0105/**
+  - work/review/REV-0106/**
   - work/review/FINDING-preexisting-suite-floor-2026-08-24.md
   - work/review/FINDING-protection-stateful-replay-disposition.md
   - work/review/FINDING-schema-approval-gate-is-self-approving.md
@@ -1045,3 +1046,34 @@ this successor. REV-0105 must return `P0=0/P1=0` before the changed-DDL
 HUMAN-GATE may be presented. Pytest, all four held suites, project/SQLite
 imports, connections, database activity, changed-DDL execution, and DDL
 installation remain `NOT_RUN` and unauthorized.
+
+## Amendment — REV-0105 disposition and root-simplification route (2026-08-25)
+
+Two fresh Max seats independently reviewed source commit
+`fa260c77fb8d4b54fd915684254e1922eb9ae90a` and returned `BLOCK`. After
+deduplication by owning defect, REV-0105 records P0=7, P1=5, P2=0.
+
+The P0 roots are: writes through scope maps do not update binding provenance;
+general callable/deferred returns and map copies do not preserve capability
+ownership; incomplete imports escape through dynamic member reflection;
+regular package objects shadow protected descendants; reflected trace setters
+do not enter the lifecycle grammar; callback/filter identity is lexical and the
+filename filter does not prove the canonical `inspect` binding; and trace state
+can be disabled inside the protected interval.
+
+The P1 roots are: discarded deferred bodies can be reported as executed;
+constant-truth Boolean short-circuiting is not modeled; the digest-order control
+does not pin a pure exact comparison; the exact counter increment admits
+non-integer values equal to `1`; and callback closure conflates unrelated
+same-spelled names instead of resolved binding identity.
+
+The successor must correct these shared semantic centers rather than enumerate
+the reported spellings. In particular, scope-map writes require one binding
+effect model; callable returns require one observation/activation model; module
+objects require exact-plus-descendant topology; and trace safety requires one
+identity-based closed lifecycle. `work/review/REV-0106/**` is released solely
+for the next exact-source review after those root corrections are frozen.
+
+The changed-DDL HUMAN-GATE remains closed. Pytest, all four held suites,
+project/SQLite imports, connections, database activity, changed-DDL execution,
+and DDL installation remain `NOT_RUN` and unauthorized.
