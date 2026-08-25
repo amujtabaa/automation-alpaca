@@ -70,6 +70,7 @@ allowed_paths:
   - work/review/REV-0100/**
   - work/review/REV-0101/**
   - work/review/REV-0102/**
+  - work/review/REV-0103/**
   - work/review/FINDING-preexisting-suite-floor-2026-08-24.md
   - work/review/FINDING-protection-stateful-replay-disposition.md
   - work/review/FINDING-schema-approval-gate-is-self-approving.md
@@ -820,3 +821,32 @@ REV-0102 must independently review this exact source identity and return
 `P0=0/P1=0` before the changed-DDL HUMAN-GATE may be presented. No SQLite
 import/connection, held suite, changed-DDL execution, database activity, or
 authority expansion is created by this amendment.
+
+## Amendment — REV-0102 disposition and REV-0103 execution-semantics route (2026-08-25)
+
+REV-0102 independently reviewed
+`501a86425c32ab8b099f897f23334cbbc0df5b36` and returned `BLOCK`. After
+deduplicating the two fresh Max seats by owning defect, the result is P0=5,
+P1=2, P2=0. The source-position model still omitted match captures,
+comparison/with-item conditional execution, and finite inline import-target
+alternatives. More fundamentally, it treated lexical positions as runtime
+timestamps across callable arguments, owner-routed writes, returned closures,
+methods, generators, and coroutines. Governed `ImportFrom` members,
+namespace-package maps, and interpreter-mutating `sys` members also lost
+provenance. The two precision findings concern passively discarded walrus
+aliases and truly unobservable local callables.
+
+The successor must replace, not extend, the unsound callable timestamp rule.
+Unproven deferred execution must fail closed through one explicit observation
+state; only directly proven synchronous calls may narrow parent state, after
+ordered argument evaluation. Generator/coroutine creation, returned closures,
+methods, and owner-routed writes must not borrow the enclosing source line as an
+execution time. Finite syntax handling must cover pattern captures, chained
+comparisons, with-item phases, literal `IfExp`/Boolean unions, governed
+`ImportFrom` members, module-prefix maps, and interpreter-mutating `sys`
+surfaces without filename waivers or a general Python evaluator. Precision must
+remain for passive local aliases and genuinely unobservable local bodies.
+
+`work/review/REV-0103/**` is released solely for a fresh exact-source review of
+that replacement. All DDL/SQLite holds and Ameen's separate HUMAN-GATE remain
+binding.
