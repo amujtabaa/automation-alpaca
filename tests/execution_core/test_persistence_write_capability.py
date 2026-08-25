@@ -2190,17 +2190,59 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
                 kinds.add(kind)
         return kinds
 
+    def _immediate_callable_return_values(boundary: ast.AST) -> tuple[ast.expr, ...]:
+        if isinstance(boundary, ast.Lambda):
+            return (boundary.body,)
+        if isinstance(boundary, ast.AsyncFunctionDef) or any(
+            isinstance(candidate, (ast.Yield, ast.YieldFrom))
+            and _capability_scope(candidate) is boundary
+            for candidate in ast.walk(boundary)
+        ):
+            return ()
+        return tuple(
+            candidate.value
+            for candidate in ast.walk(boundary)
+            if isinstance(candidate, ast.Return)
+            and candidate.value is not None
+            and _capability_scope(candidate) is boundary
+        )
+
     def _namespace_map_scopes(
         value: ast.expr,
         seen_names: frozenset[tuple[ast.AST, str]] = frozenset(),
+        seen_boundaries: frozenset[int] = frozenset(),
     ) -> set[ast.AST]:
-        if isinstance(value, ast.Call) and not value.args and not value.keywords:
+        if isinstance(value, ast.Call):
             kinds = _simple_callable_kinds(value.func, seen_names)
             scopes: set[ast.AST] = set()
-            if "global-namespace-factory" in kinds:
+            if (
+                "global-namespace-factory" in kinds
+                and not value.args
+                and not value.keywords
+            ):
                 scopes.add(tree)
-            if "namespace-factory" in kinds:
+            if "namespace-factory" in kinds and not value.args and not value.keywords:
                 scopes.add(_capability_scope(value))
+            if "builtin-dict" in kinds and len(value.args) == 1 and not value.keywords:
+                scopes.update(
+                    _namespace_map_scopes(
+                        value.args[0],
+                        seen_names,
+                        seen_boundaries,
+                    )
+                )
+            for boundary in _expression_callable_boundaries(value.func):
+                if id(boundary) in seen_boundaries:
+                    continue
+                scopes.update(
+                    namespace_scope
+                    for returned in _immediate_callable_return_values(boundary)
+                    for namespace_scope in _namespace_map_scopes(
+                        returned,
+                        seen_names,
+                        seen_boundaries | {id(boundary)},
+                    )
+                )
             return scopes
         if not isinstance(value, ast.Name):
             return set()
@@ -2215,6 +2257,7 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
             for namespace_scope in _namespace_map_scopes(
                 payload,
                 seen_names | {marker},
+                seen_boundaries,
             )
         }
 
@@ -3169,7 +3212,21 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
             if member == "APPROVED_EXECUTION_DDL_SHA256":
                 return "approval-token"
             return base
-        if base in {"incomplete-import", "unknown-dynamic"}:
+        if base == "incomplete-import":
+            if member == "__dict__":
+                return "module-map:incomplete-import"
+            if member in {"__delattr__", "__setattr__"}:
+                return "incomplete-import-bound-mutator"
+            if member in {"connect", "Connection"}:
+                return "connection-reference"
+            if member == "install_schema":
+                return "dynamic-installer"
+            if member == "require_approved_ddl_execution":
+                return "approval-accessor"
+            if member == "APPROVED_EXECUTION_DDL_SHA256":
+                return "approval-token"
+            return base
+        if base == "unknown-dynamic":
             if member in {"connect", "Connection"}:
                 return "connection-reference"
             if member == "install_schema":
@@ -3512,7 +3569,13 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
             if member == "install_schema":
                 return "schema installer mutation route"
             return "governed unknown mutation route"
-        if subject_kind in {"incomplete-import", "unknown-dynamic"}:
+        if subject_kind == "incomplete-import":
+            if member == "APPROVED_EXECUTION_DDL_SHA256":
+                return "approval token mutation route"
+            if member == "install_schema":
+                return "schema installer mutation route"
+            return "incomplete import mutation route"
+        if subject_kind == "unknown-dynamic":
             if member == "APPROVED_EXECUTION_DDL_SHA256":
                 return "approval token mutation route"
             if member == "install_schema":
@@ -3659,119 +3722,238 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
         return False
 
     def _trace_callback_is_read_only(function: ast.AST) -> bool:
-        callback_name = (
-            function.name
-            if isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef))
-            else None
+        """Accept only the closed trace grammar used by the line-count proof."""
+
+        if not isinstance(function, ast.FunctionDef):
+            return False
+        callback_name = function.name
+        parameters = (*function.args.posonlyargs, *function.args.args)
+        if not (
+            len(parameters) == 3
+            and not function.decorator_list
+            and not function.args.defaults
+            and not function.args.kwonlyargs
+            and not function.args.kw_defaults
+            and function.args.vararg is None
+            and function.args.kwarg is None
+        ):
+            return False
+
+        definition_scope = _binding_scope(
+            _capability_scope(function),
+            callback_name,
         )
+        callback_bindings = capability_bindings.get(
+            (definition_scope, callback_name),
+            (),
+        )
+        if not (
+            len(callback_bindings) == 1
+            and callback_bindings[0][0] == "function"
+            and callback_bindings[0][1] is function
+        ):
+            return False
 
-        def _callback_name_is_immutable() -> bool:
-            if callback_name is None:
-                return False
-            definition_scope = _binding_scope(
-                _capability_scope(function),
-                callback_name,
-            )
-            candidates = capability_bindings.get(
-                (definition_scope, callback_name),
-                (),
-            )
+        def _is_self_return(statement: ast.stmt) -> bool:
             return bool(
-                len(candidates) == 1
-                and candidates[0][0] == "function"
-                and candidates[0][1] is function
+                isinstance(statement, ast.Return)
+                and isinstance(statement.value, ast.Name)
+                and statement.value.id == callback_name
             )
 
-        def _safe_nonlocal_counter(name: str) -> bool:
-            owner_scope = _binding_scope(function, name)
-            observed = _effective_binding_alternatives(
-                owner_scope,
-                name,
-                _source_position(function),
-            )
-            if not observed or not all(
-                kind == "alias"
-                and isinstance(payload, ast.Constant)
-                and isinstance(payload.value, int)
-                and not isinstance(payload.value, bool)
-                for kind, payload, _, _, _ in observed
+        def _line_filter_name(test: ast.expr) -> str | None:
+            def _is_line_event(candidate: ast.expr) -> bool:
+                return bool(
+                    isinstance(candidate, ast.Compare)
+                    and isinstance(candidate.left, ast.Name)
+                    and candidate.left.id == parameters[1].arg
+                    and len(candidate.ops) == 1
+                    and isinstance(candidate.ops[0], ast.Eq)
+                    and len(candidate.comparators) == 1
+                    and isinstance(candidate.comparators[0], ast.Constant)
+                    and candidate.comparators[0].value == "line"
+                )
+
+            if _is_line_event(test):
+                return ""
+            if not (
+                isinstance(test, ast.BoolOp)
+                and isinstance(test.op, ast.And)
+                and len(test.values) == 2
+                and _is_line_event(test.values[0])
             ):
+                return None
+            membership = test.values[1]
+            if not (
+                isinstance(membership, ast.Compare)
+                and isinstance(membership.left, ast.Attribute)
+                and membership.left.attr == "co_filename"
+                and isinstance(membership.left.value, ast.Attribute)
+                and membership.left.value.attr == "f_code"
+                and isinstance(membership.left.value.value, ast.Name)
+                and membership.left.value.value.id == parameters[0].arg
+                and len(membership.ops) == 1
+                and isinstance(membership.ops[0], ast.In)
+                and len(membership.comparators) == 1
+                and isinstance(membership.comparators[0], ast.Name)
+            ):
+                return None
+            return membership.comparators[0].id
+
+        def _safe_filename_filter(name: str) -> bool:
+            owner_scope = _lexical_parent_scope(function)
+            while owner_scope is not None and not capability_bindings.get(
+                (owner_scope, name)
+            ):
+                owner_scope = _lexical_parent_scope(owner_scope)
+            if owner_scope is None:
                 return False
             writes = [
                 candidate
-                for candidate in ast.walk(function)
+                for candidate in ast.walk(tree)
                 if isinstance(candidate, ast.Name)
                 and candidate.id == name
                 and isinstance(candidate.ctx, (ast.Store, ast.Del))
+                and _binding_scope(_capability_scope(candidate), name) is owner_scope
             ]
-            return bool(
-                writes
+            if len(writes) != 1:
+                return False
+            initializer = parents.get(writes[0])
+            if not (
+                isinstance(initializer, ast.Assign)
+                and len(initializer.targets) == 1
+                and initializer.targets[0] is writes[0]
+                and isinstance(initializer.value, ast.Set)
+                and initializer.value.elts
                 and all(
-                    isinstance((parent := parents.get(candidate)), ast.AugAssign)
-                    and parent.target is candidate
-                    and isinstance(parent.op, ast.Add)
-                    and isinstance(parent.value, ast.Constant)
-                    and isinstance(parent.value.value, int)
-                    and not isinstance(parent.value.value, bool)
-                    for candidate in writes
+                    isinstance(element, ast.Call)
+                    and isinstance(element.func, ast.Attribute)
+                    and element.func.attr == "getsourcefile"
+                    and isinstance(element.func.value, ast.Name)
+                    and element.func.value.id == "inspect"
+                    and len(element.args) == 1
+                    and not element.keywords
+                    for element in initializer.value.elts
                 )
+                and _post_source_position(initializer) < _source_position(function)
+            ):
+                return False
+            for candidate in ast.walk(tree):
+                if not (
+                    isinstance(candidate, ast.Name)
+                    and isinstance(candidate.ctx, ast.Load)
+                    and candidate.id == name
+                ):
+                    continue
+                parent = parents.get(candidate)
+                if not (
+                    isinstance(parent, ast.Compare)
+                    and len(parent.comparators) == 1
+                    and parent.comparators[0] is candidate
+                    and len(parent.ops) == 1
+                    and isinstance(parent.ops[0], ast.In)
+                ):
+                    return False
+            return True
+
+        def _safe_nonlocal_counter(
+            name: str,
+            increment_target: ast.Name,
+        ) -> bool:
+            owner_scope = _binding_scope(function, name)
+            writes = [
+                candidate
+                for candidate in ast.walk(tree)
+                if isinstance(candidate, ast.Name)
+                and candidate.id == name
+                and isinstance(candidate.ctx, (ast.Store, ast.Del))
+                and _binding_scope(_capability_scope(candidate), name) is owner_scope
+            ]
+            if increment_target not in writes or len(writes) != 2:
+                return False
+            initializer = next(
+                candidate for candidate in writes if candidate is not increment_target
+            )
+            parent = parents.get(initializer)
+            if isinstance(parent, ast.Assign):
+                exact_target = (
+                    len(parent.targets) == 1 and parent.targets[0] is initializer
+                )
+                value = parent.value
+            elif isinstance(parent, ast.AnnAssign):
+                exact_target = parent.target is initializer and parent.value is not None
+                value = parent.value
+            else:
+                return False
+            return bool(
+                exact_target
+                and _post_source_position(parent) < _source_position(function)
+                and isinstance(value, ast.Constant)
+                and isinstance(value.value, int)
+                and not isinstance(value.value, bool)
             )
 
-        nonlocal_names = {
-            name
-            for candidate in ast.walk(function)
-            if isinstance(candidate, ast.Nonlocal)
-            for name in candidate.names
-        }
-        if callback_name in nonlocal_names or not all(
-            _safe_nonlocal_counter(name) for name in nonlocal_names
+        body = function.body
+        filter_name = (
+            _line_filter_name(body[1].test)
+            if len(body) == 3 and isinstance(body[1], ast.If)
+            else None
+        )
+        if len(body) == 1:
+            grammar_is_closed = _is_self_return(body[0])
+        elif (
+            len(body) == 3
+            and isinstance(body[0], ast.Nonlocal)
+            and len(body[0].names) == 1
+            and isinstance(body[1], ast.If)
+            and not body[1].orelse
+            and len(body[1].body) == 1
+            and isinstance(body[1].body[0], ast.AugAssign)
+            and isinstance(body[1].body[0].target, ast.Name)
+            and body[1].body[0].target.id == body[0].names[0]
+            and isinstance(body[1].body[0].op, ast.Add)
+            and isinstance(body[1].body[0].value, ast.Constant)
+            and body[1].body[0].value.value == 1
+            and filter_name is not None
+            and (not filter_name or _safe_filename_filter(filter_name))
+            and _is_self_return(body[2])
         ):
+            grammar_is_closed = _safe_nonlocal_counter(
+                body[0].names[0],
+                body[1].body[0].target,
+            )
+        else:
+            grammar_is_closed = False
+        if not grammar_is_closed:
             return False
-        dangerous_members = {
-            "f_builtins",
-            "f_globals",
-            "f_locals",
-            "f_trace",
-            "f_trace_lines",
-            "f_trace_opcodes",
-        }
-        for candidate in ast.walk(function):
-            if candidate is not function and isinstance(
-                candidate,
-                (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda),
-            ):
-                return False
-            if isinstance(candidate, (ast.Global, ast.Import, ast.ImportFrom)):
-                return False
-            if isinstance(candidate, ast.Return) and not (
-                candidate.value is None
-                or isinstance(candidate.value, ast.Constant)
-                and candidate.value.value is None
-                or callback_name is not None
-                and isinstance(candidate.value, ast.Name)
-                and candidate.value.id == callback_name
-                and _callback_name_is_immutable()
-            ):
-                return False
-            if (
-                callback_name is not None
-                and isinstance(candidate, ast.Name)
+
+        # The function object may be returned by itself and supplied directly
+        # to the owned trace setter.  Any other reference can alias or mutate
+        # the callback after this lexical body has been validated.
+        for candidate in ast.walk(tree):
+            if not (
+                isinstance(candidate, ast.Name)
+                and isinstance(candidate.ctx, ast.Load)
                 and candidate.id == callback_name
-                and isinstance(candidate.ctx, (ast.Store, ast.Del))
             ):
-                return False
+                continue
+            parent = parents.get(candidate)
             if (
-                isinstance(candidate, ast.Attribute)
-                and candidate.attr in dangerous_members
+                isinstance(parent, ast.Return)
+                and parent.value is candidate
+                and parent in function.body
             ):
-                return False
-            if isinstance(candidate, (ast.Attribute, ast.Subscript)) and isinstance(
-                candidate.ctx,
-                (ast.Store, ast.Del),
+                continue
+            if (
+                isinstance(parent, ast.Call)
+                and len(parent.args) == 1
+                and parent.args[0] is candidate
+                and not parent.keywords
+                and _may_resolve_trace_setter(parent.func)
+                and _resolve_capability_expression(parent.func) == "trace-setter"
             ):
-                return False
-            if isinstance(candidate, ast.Call):
-                return False
+                continue
+            return False
         return True
 
     def _is_direct_sys_gettrace_call(value: ast.AST | None) -> bool:
@@ -3986,19 +4168,6 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
             # The call-level rules below own the resulting reflection or
             # mutation.  Do not double-count its subject as an escape.
             return True
-        if (
-            label == "tests/execution_core/test_persistence_schema.py"
-            and isinstance(parent.func, ast.Attribute)
-            and parent.func.attr == "setattr"
-            and isinstance(parent.func.value, ast.Name)
-            and parent.func.value.id == "monkeypatch"
-            and parent.args[0] is node
-        ):
-            member = _call_argument(parent, "name", 1)
-            return bool(
-                member is not None
-                and _resolve_static_string(member) == "schema_ddl_digest"
-            )
         return False
 
     safe_trace_setter_call_ids = _trace_lifecycle_call_ids()
@@ -4268,6 +4437,14 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
                 violations.append(
                     f"{label}:{node.lineno}: approval accessor mutation route"
                 )
+            elif mutation_kind == "incomplete-import-bound-mutator":
+                member = _call_argument(node, "name", 0)
+                message = _governed_module_mutation_message(
+                    "incomplete-import",
+                    None if member is None else _resolve_static_string(member),
+                )
+                assert message is not None
+                violations.append(f"{label}:{node.lineno}: {message}")
             elif mutation_kind in {
                 "schema-bound-mutator",
                 "sys-bound-mutator",
@@ -4365,6 +4542,16 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
             if not (isinstance(parent, ast.Call) and parent.func is node):
                 violations.append(
                     f"{label}:{node.lineno}: approval module mutation route"
+                )
+        if (
+            isinstance(node, ast.expr)
+            and _resolve_capability_expression(node)
+            == "incomplete-import-bound-mutator"
+        ):
+            parent = parents.get(node)
+            if not (isinstance(parent, ast.Call) and parent.func is node):
+                violations.append(
+                    f"{label}:{node.lineno}: incomplete import mutation route"
                 )
         if (
             isinstance(node, ast.expr)
@@ -5419,6 +5606,7 @@ def _repository_sensitive_reexport_violations(
 
     governed_carriers = frozenset(
         {
+            "dynamic-import",
             "importer",
             "module:builtins",
             "module:importlib",
@@ -5624,7 +5812,7 @@ def _repository_sensitive_reexport_violations(
                 )
             return _member_kinds("local:" + owner_label, key)
         if base == "module-registry" and key is not None:
-            kind = _module_kind(key)
+            kind = _module_kind(key) or _module_prefix_kind(key)
             return set() if kind is None else {kind}
         if base == "module-type-map" and key == "__getattribute__":
             return {"object-getter"}
@@ -5674,6 +5862,18 @@ def _repository_sensitive_reexport_violations(
         result = tuple(values)
         callable_value_nodes_cache[id(boundary)] = result
         return result
+
+    def _immediate_callable_value_nodes(
+        label: str,
+        boundary: ast.AST,
+    ) -> tuple[ast.expr, ...]:
+        if isinstance(boundary, ast.AsyncFunctionDef) or any(
+            isinstance(candidate, (ast.Yield, ast.YieldFrom))
+            and _scope_for(label, candidate) is boundary
+            for candidate in _walk_nodes(label, boundary)
+        ):
+            return ()
+        return _callable_value_nodes(boundary)
 
     potential_binding_keys: set[tuple[str, ast.AST, str]] = set()
     potential_callable_kinds: set[str] = set()
@@ -6128,6 +6328,8 @@ def _repository_sensitive_reexport_violations(
         category, payload = spec
         if category == "kind" and isinstance(payload, str):
             return {payload}
+        if category == "function" and isinstance(payload, ast.AST):
+            return {_callable_kind(label, payload)}
         if category == "expr" and isinstance(payload, ast.expr):
             return _callable_lookup_kinds(label, payload)
         return set()
@@ -6164,41 +6366,43 @@ def _repository_sensitive_reexport_violations(
             if not isinstance(value, ast.Call):
                 return set()
             function_kinds = _callable_lookup_kinds(label, value.func)
+            result: set[str] = set()
             if (
                 "global-namespace-factory" in function_kinds
                 and not value.args
                 and not value.keywords
             ):
-                return {_scope_map_kind(label, trees[label])}
+                result.add(_scope_map_kind(label, trees[label]))
             if (
                 "namespace-factory" in function_kinds
                 and not value.args
                 and not value.keywords
             ):
-                return {_scope_map_kind(label, _scope_for(label, value))}
+                result.add(_scope_map_kind(label, _scope_for(label, value)))
+            if "dict-type" in function_kinds and len(value.args) == 1:
+                result.update(_callable_lookup_kinds(label, value.args[0]))
             if function_kinds & {"getter", "object-getter"}:
                 subject = _call_argument(value, 0, "object")
                 member = _call_argument(value, 1, "name")
                 member_name = (
                     None if member is None else _static_expression_text(label, member)
                 )
-                if subject is None or member_name is None:
-                    return set()
-                return {
-                    result
-                    for owner in _callable_lookup_kinds(label, subject)
-                    for result in _callable_member_lookup_kinds(owner, member_name)
-                }
+                if subject is not None and member_name is not None:
+                    result.update(
+                        member_kind
+                        for owner in _callable_lookup_kinds(label, subject)
+                        for member_kind in _callable_member_lookup_kinds(
+                            owner,
+                            member_name,
+                        )
+                    )
             if "attribute-getter-factory" in function_kinds:
                 member = _call_argument(value, 0, "attr")
                 member_name = (
                     None if member is None else _static_expression_text(label, member)
                 )
-                return (
-                    set()
-                    if member_name is None
-                    else {"attribute-getter:" + member_name}
-                )
+                if member_name is not None:
+                    result.add("attribute-getter:" + member_name)
             reflected_members = {
                 kind.removeprefix("attribute-getter:")
                 for kind in function_kinds
@@ -6206,15 +6410,30 @@ def _repository_sensitive_reexport_violations(
             }
             if reflected_members:
                 subject = _call_argument(value, 0, "object")
-                if subject is None:
-                    return set()
-                return {
-                    result
-                    for owner in _callable_lookup_kinds(label, subject)
-                    for member_name in reflected_members
-                    for result in _callable_member_lookup_kinds(owner, member_name)
-                }
-            return set()
+                if subject is not None:
+                    result.update(
+                        member_kind
+                        for owner in _callable_lookup_kinds(label, subject)
+                        for member_name in reflected_members
+                        for member_kind in _callable_member_lookup_kinds(
+                            owner,
+                            member_name,
+                        )
+                    )
+            for callable_kind in function_kinds:
+                owner = callable_owners.get(_base_kind(callable_kind))
+                if owner is None:
+                    continue
+                owner_label, boundary = owner
+                result.update(
+                    nested_kind
+                    for returned in _immediate_callable_value_nodes(
+                        owner_label,
+                        boundary,
+                    )
+                    for nested_kind in _callable_lookup_kinds(owner_label, returned)
+                )
+            return result
         finally:
             callable_lookup_resolution_stack.remove(marker)
 
@@ -11529,3 +11748,214 @@ import_module(TARGET)
     )
     for ordinal, sources in enumerate(accepted, 1):
         assert _repository_sensitive_reexport_violations(sources) == [], ordinal
+
+
+def test_rev0105_gate_audit_closes_reviewed_provenance_and_trace_mutants() -> None:
+    """Each reviewed primary-scanner root has a behavior-specific kill."""
+
+    rejected = (
+        (
+            """
+from importlib import import_module
+TARGET = 'sqlite3'
+def probe():
+    return import_module(TARGET).connect
+def expose():
+    return globals()
+dict(expose())['probe']('blocked.db')
+TARGET = 'json'
+""",
+            "literal dynamic SQLite/schema import",
+        ),
+        (
+            """
+from importlib import import_module
+TARGET = choose_target()
+import_module(TARGET).__dict__['APPROVED_EXECUTION_DDL_SHA256'] = 'forged'
+""",
+            "incomplete import mutation route",
+        ),
+        (
+            """
+from importlib import import_module
+TARGET = choose_target()
+import_module(TARGET).__setattr__('ordinary_member', 'forged')
+""",
+            "incomplete import mutation route",
+        ),
+        (
+            """
+from importlib import import_module
+TARGET = choose_target() or 'sqlite3'
+import_module(TARGET).loads('{}')
+""",
+            "literal dynamic SQLite/schema import",
+        ),
+        (
+            """
+from importlib import import_module
+TARGET = choose_target() or 'json'
+import_module(TARGET).ordinary_member = 'forged'
+""",
+            "incomplete import mutation route",
+        ),
+        (
+            """
+import sys
+def replacement(frame, event, argument):
+    return replacement
+def trace(frame, event, argument):
+    return trace
+previous = sys.gettrace()
+sys.settrace(trace)
+try:
+    trace.__code__ = replacement.__code__
+finally:
+    sys.settrace(previous)
+""",
+            "interpreter trace mutation route",
+        ),
+        (
+            """
+import sys
+def trace(frame, event, argument):
+    attacker[0]
+    return trace
+previous = sys.gettrace()
+sys.settrace(trace)
+try:
+    pass
+finally:
+    sys.settrace(previous)
+""",
+            "interpreter trace mutation route",
+        ),
+        (
+            """
+import sys
+def outer():
+    line_events = 0
+    def trace(frame, event, argument):
+        nonlocal line_events
+        if event == 'line':
+            line_events += 1
+        return trace
+    line_events = attacker
+    previous = sys.gettrace()
+    sys.settrace(trace)
+    try:
+        pass
+    finally:
+        sys.settrace(previous)
+outer()
+""",
+            "interpreter trace mutation route",
+        ),
+    )
+    for ordinal, (source, expected) in enumerate(rejected, 1):
+        violations = _schema_installer_gate_violations(
+            source,
+            f"rev0105-primary-{ordinal}.py",
+        )
+        assert any(expected in violation for violation in violations), violations
+
+
+def test_rev0105_topology_keeps_uncertain_carriers_and_package_prefixes_owned() -> None:
+    """Cross-file uncertainty remains protected through every reviewed carrier."""
+
+    installer = "from app.execution_core.persistence.schema import install_schema\n"
+    rejected = (
+        {
+            "tests/execution_core/helper.py": installer,
+            "tests/execution_core/consumer.py": """
+from importlib import import_module
+TARGET = 'helper'
+def probe():
+    return import_module(TARGET).install_schema
+def expose():
+    return globals()
+dict(expose())['probe']()
+TARGET = 'json'
+""",
+        },
+        {
+            "tests/execution_core/helper.py": installer,
+            "tests/execution_core/relay.py": """
+from importlib import import_module
+carrier = import_module(choose_target())
+""",
+            "tests/execution_core/consumer.py": """
+from tests.execution_core.relay import carrier
+carrier.install_schema
+""",
+        },
+        {
+            "tests/execution_core/package/helper.py": installer,
+            "tests/execution_core/consumer.py": """
+import tests.execution_core.package.helper
+import sys
+package = sys.modules['tests.execution_core.package']
+package.helper.install_schema
+""",
+        },
+        {
+            "tests/execution_core/helper.py": installer,
+            "tests/execution_core/relay.py": """
+from importlib import import_module
+TARGET = choose_target() or 'ordinary'
+carrier = import_module(TARGET)
+""",
+            "tests/execution_core/consumer.py": """
+from tests.execution_core.relay import carrier
+carrier.install_schema
+""",
+        },
+    )
+    for ordinal, sources in enumerate(rejected, 1):
+        assert _repository_sensitive_reexport_violations(sources), ordinal
+
+
+def test_rev0105_installer_digest_refusal_precedes_connection_access() -> None:
+    """The pure digest guard is the installer's first effectful operation."""
+
+    source = Path("app/execution_core/persistence/schema.py").read_text(
+        encoding="utf-8"
+    )
+    tree = ast.parse(source, filename="app/execution_core/persistence/schema.py")
+    functions = {
+        node.name: node
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    helper = functions["_require_exact_approved_ddl_digest"]
+    helper_body = (
+        helper.body[1:] if ast.get_docstring(helper) is not None else helper.body
+    )
+    assert len(helper_body) == 1
+    assert isinstance(helper_body[0], ast.If)
+    assert len(helper_body[0].body) == 1
+    assert isinstance(helper_body[0].body[0], ast.Raise)
+
+    installer = functions["install_schema"]
+    installer_body = (
+        installer.body[1:]
+        if ast.get_docstring(installer) is not None
+        else installer.body
+    )
+    digest_assignment, guard_call = installer_body[:2]
+    assert isinstance(digest_assignment, ast.Assign)
+    assert len(digest_assignment.targets) == 1
+    assert isinstance(digest_assignment.targets[0], ast.Name)
+    assert digest_assignment.targets[0].id == "actual_digest"
+    assert isinstance(digest_assignment.value, ast.Call)
+    assert isinstance(digest_assignment.value.func, ast.Name)
+    assert digest_assignment.value.func.id == "schema_ddl_digest"
+    assert isinstance(guard_call, ast.Expr)
+    assert isinstance(guard_call.value, ast.Call)
+    assert isinstance(guard_call.value.func, ast.Name)
+    assert guard_call.value.func.id == "_require_exact_approved_ddl_digest"
+    assert [
+        argument.id
+        for argument in guard_call.value.args
+        if isinstance(argument, ast.Name)
+    ] == ["approved_ddl_sha256", "actual_digest"]

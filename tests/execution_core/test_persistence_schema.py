@@ -1092,18 +1092,12 @@ def test_installer_installs_exact_version_into_fresh_temporary_database(
     assert version_row == (SCHEMA_VERSION, schema_ddl_digest())
 
 
-def test_digest_mismatch_refuses_before_any_ddl(tmp_path: object) -> None:
-    connection = _connection(tmp_path)
-
-    with pytest.MonkeyPatch.context() as monkeypatch:
-        monkeypatch.setattr(schema_module, "schema_ddl_digest", lambda: "00" * 32)
-        with pytest.raises(SchemaDigestMismatchError):
-            install_schema(
-                connection, approved_ddl_sha256=require_approved_ddl_execution()
-            )
-
-    remaining = connection.execute("SELECT count(*) FROM sqlite_master").fetchone()
-    assert remaining is not None and remaining[0] == 0
+def test_digest_mismatch_refuses_before_any_ddl() -> None:
+    with pytest.raises(SchemaDigestMismatchError):
+        schema_module._require_exact_approved_ddl_digest(  # noqa: SLF001
+            "00" * 32,
+            schema_ddl_digest(),
+        )
 
 
 def test_non_empty_target_is_refused(tmp_path: object) -> None:

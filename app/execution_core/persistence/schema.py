@@ -4748,6 +4748,19 @@ def _ddl_statements() -> tuple[str, ...]:
     return tuple(statements)
 
 
+def _require_exact_approved_ddl_digest(
+    approved_ddl_sha256: str,
+    actual_ddl_sha256: str,
+) -> None:
+    """Refuse a stale approval before a connection can be inspected or changed."""
+
+    if approved_ddl_sha256 != actual_ddl_sha256:
+        raise SchemaDigestMismatchError(
+            "approved_ddl_sha256 does not match the exact schema bytes; "
+            "returning to the human gate"
+        )
+
+
 def install_schema(
     connection: SQLiteConnectionProtocol,
     *,
@@ -4761,11 +4774,7 @@ def install_schema(
     """
 
     actual_digest = schema_ddl_digest()
-    if approved_ddl_sha256 != actual_digest:
-        raise SchemaDigestMismatchError(
-            "approved_ddl_sha256 does not match the exact schema bytes; "
-            "returning to the human gate"
-        )
+    _require_exact_approved_ddl_digest(approved_ddl_sha256, actual_digest)
     _verify_connection_pragmas(connection)
 
     connection.execute("BEGIN IMMEDIATE")
