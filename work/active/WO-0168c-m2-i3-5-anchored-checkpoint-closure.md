@@ -693,3 +693,13 @@ the replacement exact source target. The request must correct REV-0099's
 approval-file provenance statement. Changed-DDL execution, SQLite imports or
 connections, and all four held suites remain forbidden until REV-0100 records
 P0=0/P1=0 and Ameen separately approves the exact HUMAN-GATE packet.
+
+The replacement source target is
+`97f316b934114f0b70f9fd2975c276a6b37e272b`, tree
+`c5534f689a1571107b63f83f819c48763c15909d`. Its direct source commit changes
+only `test_persistence_write_capability.py` and `test_protection.py`. Held-safe
+evidence at that exact target is 761 pure/static tests on CPython 3.12.13 and
+33 capability tests on CPython 3.14.5, with mypy, import boundaries, Ruff, OS
+governance, cumulative scope, and whitespace checks green. The DDL digest,
+178755-byte count, catalog digest, R4 manifest, and locked `None` approval
+literal remain unchanged.
