@@ -68,6 +68,7 @@ allowed_paths:
   - work/review/REV-0098/**
   - work/review/REV-0099/**
   - work/review/REV-0100/**
+  - work/review/REV-0101/**
   - work/review/FINDING-preexisting-suite-floor-2026-08-24.md
   - work/review/FINDING-protection-stateful-replay-disposition.md
   - work/review/FINDING-schema-approval-gate-is-self-approving.md
@@ -703,3 +704,16 @@ evidence at that exact target is 761 pure/static tests on CPython 3.12.13 and
 governance, cumulative scope, and whitespace checks green. The DDL digest,
 178755-byte count, catalog digest, R4 manifest, and locked `None` approval
 literal remain unchanged.
+
+## Amendment — REV-0100 root disposition and REV-0101 (2026-08-25)
+
+REV-0100 returned `BLOCK` with P0=3, P1=2, and P2=0. The replacement must own
+derived governed attributes/maps and protected helper members/mutators; retain
+package-prefix and every known static-string alternative; route `global` and
+`nonlocal` bindings to Python's declared owner; and evaluate deferred parent
+state at statically provable call sites without retaining states no call can
+observe. The protection error oracle must use direct builtin-module identities.
+These are one provenance-and-time model, not filename or spelling waivers.
+
+`work/review/REV-0101/**` is released solely for the next fresh exact-source
+review. All DDL/SQLite holds and the separate Ameen HUMAN-GATE remain binding.
