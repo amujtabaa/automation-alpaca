@@ -66,6 +66,7 @@ allowed_paths:
   - work/review/REV-0096/**
   - work/review/REV-0097/**
   - work/review/REV-0098/**
+  - work/review/REV-0099/**
   - work/review/FINDING-preexisting-suite-floor-2026-08-24.md
   - work/review/FINDING-protection-stateful-replay-disposition.md
   - work/review/FINDING-schema-approval-gate-is-self-approving.md
@@ -631,3 +632,34 @@ review of that remediation. The changed-DDL gate remains closed: no SQLite
 execution, changed-DDL installation, migration, configured or in-memory
 database, credentials, network, broker, order, promotion, or merge authority
 is created by this amendment.
+
+## Amendment — REV-0098 disposition and REV-0099 finite-provenance review route (2026-08-25)
+
+REV-0098 independently reviewed
+`ec1fbf8f94a2e10f08a33ef5d3476f336d37ce13` and returned BLOCK with
+`P0=5`, `P1=2`, and `P2=0`. Its fresh-context seats reproduced governed-module
+value escapes, missing canonical helper-recovery forms, a non-recursive source
+inventory, a false whole-source GREEN claim, brittle diagnostic-count evidence,
+an approval module whose builtin dependencies could be rebound, and ordinary
+lexical false positives. REV-0098 and its result remain immutable evidence.
+
+The root remediation is frozen at
+`ce9c2b482605ff25144b193ab6783960530922c6`, tree
+`43e7ff04b10e6025ad7b53e1c2d5f82123a88b20`. The approval control now pins the
+complete executable module while preserving only the separately authorized
+future literal-token edit. The single-file grammar owns governed module values
+and every recognized builtins-map mutation. The repository topology uses one
+finite lexical model for local/package/relative imports, relay aliases,
+namespaces and mappings, canonical getter/importer primitives, module type
+reflection, and recursive source discovery; local shadows and custom methods
+remain ordinary. Controls prove each rejected and accepted route separately.
+
+The same commit makes one behavior-preserving checkpoint-code validation
+invariant explicit so mypy can prove the already-required closure evidence ID
+is non-null before its direct-key lookup. It adds no cast or bypass and changes
+no DDL, SQL, public export, runtime composition, or human-gate authority.
+
+`work/review/REV-0099/**` is added solely for a fresh independent exact-head
+review. SQLite execution and changed-DDL installation remain forbidden until
+that review records `P0=0`, `P1=0` and Ameen separately approves the exact
+candidate, tree, DDL identity, manifest, and fresh-file-only commands.
