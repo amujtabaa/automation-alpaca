@@ -53,6 +53,7 @@ allowed_paths:
   - work/review/REV-0083/**
   - work/review/REV-0084/**
   - work/review/REV-0085/**
+  - work/review/REV-0086/**
   - work/review/FINDING-preexisting-suite-floor-2026-08-24.md
   - work/review/FINDING-protection-stateful-replay-disposition.md
   - work/review/FINDING-schema-approval-gate-is-self-approving.md
@@ -287,6 +288,25 @@ arbitrary object's `import_module` method. Focused negative controls cover
 passing custom-client control proves ordinary client naming is not swept in.
 
 `work/review/REV-0085/**` is added solely for a fresh exact-head review of this
+root correction. The source and test paths were already released by this work
+order. This amendment creates no DDL change, SQLite execution authority,
+changed-DDL installation, or expansion of the human gate.
+
+## Amendment — REV-0086 exact alias-closure review route (2026-08-24)
+
+REV-0085 reviewed `c918d281357c76806ec9a74a1efe2629d1c29dc4` and returned
+`P0=0`, `P1=1`, `P2=0`. Its independently reproduced P1 route is remediated at
+`4f70d1a0446ac7b19fd542febe34e3b91945c542`, tree
+`0f7160ac5b22904a223a8db5087edce0e26ed57d`. The same bounded resolver now
+handles a simple alias of a namespace factory (`globals`/`vars`), a proven map
+lookup method (`.get`/`.__getitem__`), and an escaped bound recovered
+`.connect`/`.Connection` attribute. It still requires a proven dynamic map or
+known import route and retains explicit passing custom-client method controls.
+The new controls fail on aliased `globals`, `vars`, `sys.modules`, nested
+`__builtins__`, and bound connection references, rather than on an unrelated
+missing import.
+
+`work/review/REV-0086/**` is added solely for a fresh exact-head review of this
 root correction. The source and test paths were already released by this work
 order. This amendment creates no DDL change, SQLite execution authority,
 changed-DDL installation, or expansion of the human gate.
