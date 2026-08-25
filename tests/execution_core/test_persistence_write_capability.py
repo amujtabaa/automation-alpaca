@@ -1143,6 +1143,8 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
                 if imported.name.startswith("sqlite3."):
                     sqlite_nested_module_import_lines.append(node.lineno)
 
+    # The missing-gate grammar must also recognize direct local import aliases.
+    # It does not infer arbitrary object methods from their attribute spelling.
     for candidate in ast.walk(tree):
         if isinstance(candidate, ast.Import):
             for imported in candidate.names:
@@ -1227,9 +1229,10 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
         or sqlite_nested_module_import_lines
         or dynamic_sqlite_or_schema_lines
     )
-    # A canonical approval import marks a potential gate-bearing fixture.  It
-    # may not recover a hidden SQLite module through importlib or builtins just
-    # because the literal connection path has not yet been recognized.
+    # A canonical approval import marks a potential gate-bearing fixture.
+    # Missing-gate namespace recovery is checked separately at the exact
+    # ``connect``/``Connection`` expression, rather than broadening the
+    # provenance checks to any source that happens to mention ``sqlite3``.
     has_gate_surface = bool(
         has_sqlite_surface or installer_names or canonical_gate_imports
     )
@@ -1311,9 +1314,6 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
                 )
 
     parents = _parent_map(tree)
-    dynamic_namespace_names: set[str] = set()
-    dynamic_import_callable_names: set[str] = set()
-    dynamic_module_names: set[str] = set()
 
     def _expression_path(value: ast.expr) -> str | None:
         if isinstance(value, ast.Name):
@@ -1481,105 +1481,206 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
             )
         )
 
-    def _assignment_target_names(node: ast.Assign | ast.AnnAssign) -> tuple[str, ...]:
-        targets = node.targets if isinstance(node, ast.Assign) else (node.target,)
-        return tuple(target.id for target in targets if isinstance(target, ast.Name))
+    assignments: dict[tuple[ast.AST, str], list[tuple[int, ast.expr]]] = {}
+    for assignment in ast.walk(tree):
+        if isinstance(assignment, ast.Assign):
+            targets = assignment.targets
+            value = assignment.value
+        elif isinstance(assignment, ast.AnnAssign) and assignment.value is not None:
+            targets = (assignment.target,)
+            value = assignment.value
+        else:
+            continue
+        scope = _lexical_scope(assignment, parents)
+        for target in targets:
+            if isinstance(target, ast.Name):
+                assignments.setdefault((scope, target.id), []).append(
+                    (assignment.lineno, value)
+                )
 
-    def _is_dynamic_namespace_mapping(value: ast.expr) -> bool:
+    def _resolve_alias(
+        value: ast.expr,
+        seen: frozenset[int] = frozenset(),
+    ) -> ast.expr:
+        """Follow one unambiguous simple assignment in lexical scope only."""
+
+        if not isinstance(value, ast.Name) or id(value) in seen:
+            return value
+        scope = _lexical_scope(value, parents)
+        scopes = (scope,) if scope is tree else (scope, tree)
+        for candidate_scope in scopes:
+            bindings = assignments.get((candidate_scope, value.id), [])
+            if not bindings:
+                continue
+            prior = [candidate for line, candidate in bindings if line < value.lineno]
+            if len(bindings) == len(prior) == 1:
+                return _resolve_alias(prior[0], seen | {id(value)})
+            return value
+        return value
+
+    def _resolved_static_string(
+        value: ast.expr,
+        seen: frozenset[int] = frozenset(),
+    ) -> str | None:
+        value = _resolve_alias(value, seen)
+        if id(value) in seen:
+            return None
+        if isinstance(value, ast.Constant) and isinstance(value.value, str):
+            return value.value
+        if isinstance(value, ast.BinOp) and isinstance(value.op, ast.Add):
+            left = _resolved_static_string(value.left, seen | {id(value)})
+            right = _resolved_static_string(value.right, seen | {id(value)})
+            return left + right if left is not None and right is not None else None
+        return None
+
+    def _mapping_lookup(value: ast.expr) -> tuple[ast.expr, str] | None:
+        if isinstance(value, ast.Subscript):
+            key = _resolved_static_string(value.slice)
+            return (value.value, key) if key is not None else None
+        if (
+            isinstance(value, ast.Call)
+            and isinstance(value.func, ast.Attribute)
+            and value.func.attr in {"get", "__getitem__"}
+            and value.args
+        ):
+            key = _resolved_static_string(value.args[0])
+            return (value.func.value, key) if key is not None else None
+        return None
+
+    def _is_dynamic_namespace_mapping(
+        value: ast.expr,
+        seen: frozenset[int] = frozenset(),
+    ) -> bool:
+        value = _resolve_alias(value, seen)
+        if id(value) in seen:
+            return False
+        next_seen = seen | {id(value)}
+        if (
+            isinstance(value, ast.Call)
+            and isinstance(value.func, ast.Name)
+            and value.func.id in {"globals", "vars"}
+            and not value.args
+            and not value.keywords
+        ):
+            return True
+        if isinstance(value, ast.Attribute) and value.attr == "modules":
+            receiver = _resolve_alias(value.value, next_seen)
+            if isinstance(receiver, ast.Name) and receiver.id in sys_module_names:
+                return True
+        if isinstance(value, ast.Name) and value.id == "__builtins__":
+            return True
+        lookup = _mapping_lookup(value)
         return bool(
-            (
-                isinstance(value, ast.Call)
-                and isinstance(value.func, ast.Name)
-                and value.func.id in {"globals", "vars"}
-                and not value.args
-                and not value.keywords
-            )
-            or (
-                isinstance(value, ast.Attribute)
-                and value.attr == "modules"
-                and isinstance(value.value, ast.Name)
-                and value.value.id in sys_module_names
-            )
-            or (isinstance(value, ast.Name) and value.id == "__builtins__")
-            or (isinstance(value, ast.Name) and value.id in dynamic_namespace_names)
+            lookup is not None
+            and lookup[1] == "__builtins__"
+            and _is_dynamic_namespace_mapping(lookup[0], next_seen)
         )
 
-    def _is_dynamic_import_callable_expression(value: ast.expr) -> bool:
+    def _is_dynamic_import_callable(
+        value: ast.expr,
+        seen: frozenset[int] = frozenset(),
+    ) -> bool:
+        value = _resolve_alias(value, seen)
+        if id(value) in seen:
+            return False
+        next_seen = seen | {id(value)}
         if isinstance(value, ast.Name):
-            return value.id == "__import__" or value.id in dynamic_import_callable_names
+            return value.id in dynamic_import_names
         if isinstance(value, ast.Attribute):
-            return value.attr in {"__import__", "import_module"}
-        if isinstance(value, ast.Subscript):
-            return bool(
-                _is_dynamic_namespace_mapping(value.value)
-                and _static_string(value.slice) == "__import__"
+            receiver = _resolve_alias(value.value, next_seen)
+            is_importlib = bool(
+                isinstance(receiver, ast.Name)
+                and receiver.id in dynamic_import_module_names
             )
-        return bool(
+            is_builtins = bool(
+                isinstance(receiver, ast.Name) and receiver.id in builtins_module_names
+            )
+            return bool(
+                (value.attr == "import_module" and is_importlib)
+                or (
+                    value.attr == "__import__"
+                    and (
+                        is_builtins
+                        or _is_dynamic_namespace_mapping(receiver, next_seen)
+                    )
+                )
+            )
+        lookup = _mapping_lookup(value)
+        if (
+            lookup is not None
+            and lookup[1] == "__import__"
+            and _is_dynamic_namespace_mapping(lookup[0], next_seen)
+        ):
+            return True
+        if (
             isinstance(value, ast.Call)
             and _is_getattr_call(value)
             and len(value.args) >= 2
-            and _static_string(value.args[1]) in {"__import__", "import_module"}
-        )
-
-    def _is_dynamic_import_factory_call(value: ast.expr) -> bool:
-        if not isinstance(value, ast.Call):
-            return False
-        return bool(
-            _is_dynamic_import_call(value)
-            or _is_dynamic_import_callable_expression(value.func)
-        )
-
-    def _is_dynamic_namespace_module_expression(value: ast.expr) -> bool:
-        if isinstance(value, ast.Subscript):
-            return _is_dynamic_namespace_mapping(value.value)
-        if isinstance(value, ast.Attribute):
-            return _is_dynamic_namespace_module_expression(value.value)
-        return bool(isinstance(value, ast.Name) and value.id in dynamic_module_names)
-
-    def _is_dynamic_sqlite_acquisition_call(call: ast.Call) -> bool:
-        receiver = call.func.value if isinstance(call.func, ast.Attribute) else None
-        return bool(
-            isinstance(call.func, ast.Attribute)
-            and call.func.attr in {"connect", "Connection"}
-            and (
-                (
-                    isinstance(receiver, ast.Call)
-                    and _is_dynamic_import_factory_call(receiver)
-                )
+        ):
+            receiver = _resolve_alias(value.args[0], next_seen)
+            member = _resolved_static_string(value.args[1], next_seen)
+            is_importlib = bool(
+                isinstance(receiver, ast.Name)
+                and receiver.id in dynamic_import_module_names
+            )
+            is_builtins = bool(
+                isinstance(receiver, ast.Name) and receiver.id in builtins_module_names
+            )
+            return bool(
+                (member == "import_module" and is_importlib)
                 or (
-                    receiver is not None
-                    and _is_dynamic_namespace_module_expression(receiver)
+                    member == "__import__"
+                    and (
+                        is_builtins
+                        or _is_dynamic_namespace_mapping(receiver, next_seen)
+                    )
                 )
             )
+        return False
+
+    def _is_dynamic_import_factory_call(
+        value: ast.expr,
+        seen: frozenset[int] = frozenset(),
+    ) -> bool:
+        value = _resolve_alias(value, seen)
+        return bool(
+            isinstance(value, ast.Call)
+            and value.args
+            and (target := _resolved_static_string(value.args[0], seen)) is not None
+            and (target == "sqlite3" or target.startswith("sqlite3."))
+            and _is_dynamic_import_callable(value.func, seen | {id(value)})
         )
 
-    assignments = tuple(
-        node for node in ast.walk(tree) if isinstance(node, (ast.Assign, ast.AnnAssign))
-    )
-    for assignment in assignments:
-        value = assignment.value
-        if value is None:
-            continue
-        names = _assignment_target_names(assignment)
-        if _is_dynamic_namespace_mapping(value):
-            dynamic_namespace_names.update(names)
-        if _is_dynamic_import_callable_expression(value):
-            dynamic_import_callable_names.update(names)
-    for assignment in assignments:
-        value = assignment.value
-        if value is None:
-            continue
-        if _is_dynamic_import_factory_call(
-            value
-        ) or _is_dynamic_namespace_module_expression(value):
-            dynamic_module_names.update(_assignment_target_names(assignment))
-    has_gate_surface = bool(
-        has_gate_surface
-        or any(
-            isinstance(node, ast.Call) and _is_dynamic_sqlite_acquisition_call(node)
-            for node in ast.walk(tree)
+    def _is_dynamic_namespace_module_expression(
+        value: ast.expr,
+        seen: frozenset[int] = frozenset(),
+    ) -> bool:
+        value = _resolve_alias(value, seen)
+        if id(value) in seen:
+            return False
+        next_seen = seen | {id(value)}
+        lookup = _mapping_lookup(value)
+        if (
+            lookup is not None
+            and lookup[1] == "sqlite3"
+            and _is_dynamic_namespace_mapping(lookup[0], next_seen)
+        ):
+            return True
+        if isinstance(value, ast.Attribute):
+            return _is_dynamic_namespace_module_expression(value.value, next_seen)
+        return False
+
+    def _is_dynamic_sqlite_acquisition_call(call: ast.Call) -> bool:
+        if not isinstance(call.func, ast.Attribute) or call.func.attr not in {
+            "connect",
+            "Connection",
+        }:
+            return False
+        receiver = _resolve_alias(call.func.value)
+        return bool(
+            _is_dynamic_import_factory_call(receiver)
+            or _is_dynamic_namespace_module_expression(receiver)
         )
-    )
 
     def _is_installer_call(call: ast.Call) -> bool:
         if isinstance(call.func, ast.Name):
@@ -1591,6 +1692,11 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
         ) or (isinstance(call.func, ast.Call) and _dynamic_installer_getter(call.func))
 
     for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and _is_dynamic_sqlite_acquisition_call(node):
+            violations.append(
+                f"{label}:{node.lineno}: SQLite connection route is not direct"
+            )
+            continue
         if not has_gate_surface:
             continue
         if isinstance(node, ast.Name) and node.id == "__builtins__":
@@ -1674,9 +1780,6 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
             )
         ):
             violations.append(f"{label}:{node.lineno}: dynamic module attribute route")
-        if _is_dynamic_sqlite_acquisition_call(node):
-            violations.append(f"{label}:{node.lineno}: dynamic SQLite connection route")
-            continue
         if _is_sqlite_acquisition_call(node):
             if not _is_direct_sqlite_connect_call(node):
                 violations.append(
@@ -2269,7 +2372,7 @@ saved = DocumentInstaller().install_schema
 
 
 def test_rev0083_gate_audit_refuses_missing_gate_dynamic_acquisition() -> None:
-    """Dynamic SQLite acquisition is forbidden even without an approval import."""
+    """Only canonical ``sqlite3.connect`` may reach the held DDL gate."""
 
     rejected = (
         """
@@ -2311,12 +2414,57 @@ def open_connection(path):
 def open_connection(path):
     return __builtins__['__import__']('sqlite' + '3').connect(path)
 """,
+        """
+def open_connection(path):
+    return globals().get('sqlite3').connect(path)
+""",
+        """
+def open_connection(path):
+    return vars().get('sqlite3').Connection(path)
+""",
+        """
+import sys
+def open_connection(path):
+    return sys.modules.get('sqlite3').connect(path)
+""",
+        """
+def open_connection(path):
+    return globals().__getitem__('sqlite3').connect(path)
+""",
+        """
+def open_connection(path):
+    return globals()['__builtins__']['__import__']('sqlite3').connect(path)
+""",
+        """
+def open_connection(path):
+    namespace = globals()
+    builtins_namespace = namespace['__builtins__']
+    loader = builtins_namespace['__import__']
+    return loader('sqlite3').connect(path)
+""",
     )
     for ordinal, source in enumerate(rejected, 1):
         violations = _schema_installer_gate_violations(source, f"rev0083-{ordinal}.py")
         assert any(
-            "dynamic SQLite connection route" in violation for violation in violations
-        ), violations
+            "SQLite connection route is not direct" in violation
+            for violation in violations
+        ), f"mutant {ordinal}: {violations}"
+
+    ordinary_client = """
+SQLITE_DRIVER_LABEL = 'sqlite3'
+class Client:
+    def import_module(self, target):
+        return self
+    def connect(self, path):
+        return path
+def open_connection(path):
+    return Client().import_module('transport').connect(path)
+def open_with_getattr(path):
+    return getattr(Client(), 'import_module')('transport').connect(path)
+"""
+    assert (
+        _schema_installer_gate_violations(ordinary_client, "ordinary-client.py") == []
+    )
 
     exception_only = """
 import sqlite3
