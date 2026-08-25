@@ -57,6 +57,7 @@ allowed_paths:
   - work/review/REV-0087/**
   - work/review/REV-0088/**
   - work/review/REV-0089/**
+  - work/review/REV-0090/**
   - work/review/FINDING-preexisting-suite-floor-2026-08-24.md
   - work/review/FINDING-protection-stateful-replay-disposition.md
   - work/review/FINDING-schema-approval-gate-is-self-approving.md
@@ -390,3 +391,29 @@ public export, runtime composition, or human-gate authority.
 `work/review/REV-0089/**` is added solely for a new independent exact-head
 review. SQLite execution and changed-DDL installation remain forbidden until
 the separately required exact-head P0=0/P1=0 review and human gate.
+
+## Amendment — REV-0090 exact lexical-binding review route (2026-08-24)
+
+The `REV-0089` source candidate was not accepted. Fresh independent scrutiny
+reproduced three ownership errors in its static source grammar: keyword-form
+`import_module(name=...)` was not a known acquisition, shadowed `importlib` and
+`sqlite3` spellings could be treated as privileged, and a static non-SQLite
+import beside a canonical route could be refused by a broad source-level rule.
+The next remediation is frozen at
+`85648ce2a660f8077b07a6bb1029b33ed69d0010`, tree
+`63a045f881f98ac19bebcc7915019eb12d0fd817`.
+
+The static audit now resolves one finite lexical capability binding grammar for
+known modules/members, import targets (including the `name=` form), direct
+installer and approval provenance, current-global versus ordinary namespace
+reflection, and explicit dynamic installer/connection surfaces. Generic custom
+objects and locally shadowed spellings remain unknown. Its source-level controls
+prove both refusal and acceptance of these boundaries; mutation controls prove
+known-source detection, dynamic endpoint detection, lexical static-string
+resolution, and parameter shadow binding each matter. This changes no DDL byte,
+SQL, public export, runtime composition, or human-gate authority.
+
+`work/review/REV-0090/**` is added solely for a fresh exact-head review of this
+remediation. SQLite execution and changed-DDL installation remain forbidden
+until a new independent result records `P0=0/P1=0` and Ameen separately approves
+the exact candidate, tree, DDL identity, manifest, and fresh-file-only commands.
