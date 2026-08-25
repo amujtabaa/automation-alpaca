@@ -1494,6 +1494,7 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
         ("operator", "setitem"): "mapping-mutator-function",
         ("sys", "__dict__"): "module-map:sys",
         ("sys", "modules"): "module-registry",
+        ("sys", "path"): "sys-path",
         ("sys", "settrace"): "trace-setter",
     }
     _ORDINARY_GOVERNED_MODULE_MEMBERS = {
@@ -1693,6 +1694,17 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
                 captures.append((candidate.rest, None))
         return tuple(captures)
 
+    definite_match_case_ids = frozenset(
+        id(candidate.cases[0])
+        for candidate in ast.walk(tree)
+        if isinstance(candidate, ast.Match)
+        and candidate.cases
+        and candidate.cases[0].guard is None
+        and isinstance(candidate.cases[0].pattern, ast.MatchAs)
+        and candidate.cases[0].pattern.pattern is None
+        and candidate.cases[0].pattern.name is not None
+    )
+
     declared_names_by_scope: dict[ast.AST, set[str]] = {}
 
     def _declare_name(scope: ast.AST, name: str) -> None:
@@ -1785,15 +1797,11 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
             return None
         if owner == "module:approval" and member == "APPROVED_EXECUTION_DDL_SHA256":
             return "approval-token"
-        if member in _ORDINARY_GOVERNED_MODULE_MEMBERS.get(owner, frozenset()):
+        # A statically named member is ordinary unless the finite capability
+        # table above says otherwise.  Dynamic lookup remains conservative,
+        # and cross-file aliases are owned by the topology audit.
+        if owner is not None:
             return "ordinary"
-        if owner in {
-            "module:builtins",
-            "module:importlib",
-            "module:operator",
-            "module:sys",
-        }:
-            return f"governed-unknown:{owner}"
         return None
 
     Binding = tuple[str, ast.AST | None, tuple[int, int], bool, bool]
@@ -1817,6 +1825,45 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
             ),
         )
 
+    def _assignment_target_leaves(target: ast.expr) -> tuple[ast.expr, ...]:
+        if isinstance(target, ast.Starred):
+            return _assignment_target_leaves(target.value)
+        if isinstance(target, (ast.List, ast.Tuple)):
+            return tuple(
+                leaf
+                for element in target.elts
+                for leaf in _assignment_target_leaves(element)
+            )
+        return (target,)
+
+    assignment_target_read_positions: dict[int, tuple[int, float]] = {}
+    assignment_target_write_positions: dict[int, tuple[int, float]] = {}
+    for statement in ast.walk(tree):
+        if isinstance(statement, ast.Assign):
+            leaves = tuple(
+                leaf
+                for target in statement.targets
+                for leaf in _assignment_target_leaves(target)
+            )
+            value = statement.value
+        elif isinstance(statement, ast.AnnAssign) and statement.value is not None:
+            leaves = _assignment_target_leaves(statement.target)
+            value = statement.value
+        else:
+            continue
+        line, column = _post_source_position(value)
+        denominator = 2 * len(leaves) + 1
+        for ordinal, leaf in enumerate(leaves):
+            if isinstance(leaf, (ast.Attribute, ast.Subscript)):
+                assignment_target_read_positions[id(leaf)] = (
+                    line,
+                    column + (2 * ordinal + 1) / denominator,
+                )
+            assignment_target_write_positions[id(leaf)] = (
+                line,
+                column + (2 * ordinal + 2) / denominator,
+            )
+
     def _runtime_read_position(
         node: ast.AST,
         scope: ast.AST,
@@ -1826,6 +1873,9 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
         position = _source_position(node)
         current = node
         while current is not scope:
+            target_position = assignment_target_read_positions.get(id(current))
+            if target_position is not None:
+                position = max(position, target_position)
             parent = parents.get(current)
             if parent is None:
                 break
@@ -1859,7 +1909,9 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
                 if current is not parent.iter:
                     return True
             elif isinstance(parent, ast.Match):
-                if current is not parent.subject:
+                if current is not parent.subject and id(current) not in (
+                    definite_match_case_ids
+                ):
                     return True
             elif isinstance(parent, (ast.With, ast.AsyncWith)):
                 if current in parent.body:
@@ -1886,15 +1938,20 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
         source: ast.AST,
         *,
         always_available: bool = False,
+        binding_position: tuple[int, float] | None = None,
     ) -> None:
         target_scope = _binding_scope(scope, name)
         capability_bindings.setdefault((target_scope, name), []).append(
             (
                 kind,
                 value,
-                _source_position(source)
-                if always_available
-                else _post_source_position(source),
+                (
+                    _source_position(source)
+                    if always_available
+                    else _post_source_position(source)
+                )
+                if binding_position is None
+                else binding_position,
                 always_available,
                 target_scope is not scope or _is_conditional_binding(source, scope),
             )
@@ -1923,7 +1980,14 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
                 for name in _binding_target_names(target):
                     handled_assignment_target_ids.add(id(name))
                     _record_capability_binding(
-                        scope, name.id, "alias", candidate.value, candidate
+                        scope,
+                        name.id,
+                        "alias",
+                        candidate.value,
+                        candidate,
+                        binding_position=assignment_target_write_positions.get(
+                            id(name)
+                        ),
                     )
         elif isinstance(candidate, ast.AnnAssign):
             for name in _binding_target_names(candidate.target):
@@ -1934,6 +1998,7 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
                     "ordinary" if candidate.value is None else "alias",
                     candidate.value,
                     candidate,
+                    binding_position=assignment_target_write_positions.get(id(name)),
                 )
         elif isinstance(candidate, ast.NamedExpr):
             for name in _binding_target_names(candidate.target):
@@ -2045,7 +2110,10 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
             if candidate[3] or candidate[2] <= position
         ]
         if not available:
-            if isinstance(scope, (ast.ClassDef, ast.Module)):
+            if isinstance(scope, ast.Module):
+                fallback_kind = _BUILTIN_CAPABILITY_KINDS.get(name, "ordinary")
+                return ((fallback_kind, None, position, False, False),)
+            if isinstance(scope, ast.ClassDef):
                 return ()
             return (("ordinary", None, position, False, False),)
 
@@ -2067,42 +2135,7 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
             ),
         )
 
-    def _binding_is_callable_boundary(
-        binding: Binding,
-        boundary: ast.AST,
-        seen: frozenset[tuple[ast.AST, str, tuple[int, int]]] = frozenset(),
-    ) -> bool:
-        kind, payload, _, _, _ = binding
-        if kind == "function":
-            return payload is boundary
-        if kind != "alias" or not isinstance(payload, ast.expr):
-            return False
-        if payload is boundary and isinstance(boundary, ast.Lambda):
-            return True
-        if not isinstance(payload, ast.Name):
-            return False
-        scope = _binding_scope(_capability_scope(payload), payload.id)
-        payload_position = _runtime_read_position(payload, scope)
-        marker = (scope, payload.id, payload_position)
-        if marker in seen:
-            return False
-        return any(
-            _binding_is_callable_boundary(candidate, boundary, seen | {marker})
-            for candidate in _effective_binding_alternatives(
-                scope,
-                payload.id,
-                payload_position,
-            )
-        )
-
-    def _expression_is_callable_boundary(
-        value: ast.expr,
-        boundary: ast.AST,
-    ) -> bool:
-        if value is boundary and isinstance(boundary, ast.Lambda):
-            return True
-        if not isinstance(value, ast.Name):
-            return False
+    def _callable_name_bindings(value: ast.Name) -> tuple[Binding, ...]:
         scope: ast.AST | None = _capability_scope(value)
         while scope is not None:
             target_scope = _binding_scope(scope, value.id)
@@ -2112,12 +2145,251 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
                 _runtime_read_position(value, scope),
             )
             if selected:
-                return any(
-                    _binding_is_callable_boundary(binding, boundary)
-                    for binding in selected
-                )
+                return selected
             scope = _lexical_parent_scope(scope)
-        return False
+        builtin_kind = _BUILTIN_CAPABILITY_KINDS.get(value.id)
+        return (
+            ()
+            if builtin_kind is None
+            else ((builtin_kind, None, (-1, -1), True, False),)
+        )
+
+    def _simple_callable_kinds(
+        value: ast.expr,
+        seen_names: frozenset[tuple[ast.AST, str]] = frozenset(),
+    ) -> set[str]:
+        if isinstance(value, ast.Attribute):
+            return {
+                member_kind
+                for owner_kind in _simple_callable_kinds(value.value, seen_names)
+                for member_kind in (_capability_attribute_kind(owner_kind, value.attr),)
+                if member_kind is not None
+            }
+        if isinstance(value, ast.Call):
+            function_kinds = _simple_callable_kinds(value.func, seen_names)
+            if "attrgetter" in function_kinds:
+                member = _call_argument(value, "attr", 0)
+                member_name = (
+                    None
+                    if member is None
+                    else _resolve_static_string(member, seen_names)
+                )
+                return set() if member_name is None else {"attrgetter:" + member_name}
+            return set()
+        if not isinstance(value, ast.Name):
+            return set()
+        scope = _binding_scope(_capability_scope(value), value.id)
+        marker = (scope, value.id)
+        if marker in seen_names:
+            return set()
+        kinds: set[str] = set()
+        for kind, payload, _, _, _ in _callable_name_bindings(value):
+            if kind == "alias" and isinstance(payload, ast.expr):
+                kinds.update(_simple_callable_kinds(payload, seen_names | {marker}))
+            else:
+                kinds.add(kind)
+        return kinds
+
+    def _namespace_map_scopes(
+        value: ast.expr,
+        seen_names: frozenset[tuple[ast.AST, str]] = frozenset(),
+    ) -> set[ast.AST]:
+        if isinstance(value, ast.Call) and not value.args and not value.keywords:
+            kinds = _simple_callable_kinds(value.func, seen_names)
+            scopes: set[ast.AST] = set()
+            if "global-namespace-factory" in kinds:
+                scopes.add(tree)
+            if "namespace-factory" in kinds:
+                scopes.add(_capability_scope(value))
+            return scopes
+        if not isinstance(value, ast.Name):
+            return set()
+        scope = _binding_scope(_capability_scope(value), value.id)
+        marker = (scope, value.id)
+        if marker in seen_names:
+            return set()
+        return {
+            namespace_scope
+            for kind, payload, _, _, _ in _callable_name_bindings(value)
+            if kind == "alias" and isinstance(payload, ast.expr)
+            for namespace_scope in _namespace_map_scopes(
+                payload,
+                seen_names | {marker},
+            )
+        }
+
+    def _bound_namespace_getter_scopes(
+        value: ast.expr,
+        seen_names: frozenset[tuple[ast.AST, str]] = frozenset(),
+    ) -> set[ast.AST]:
+        if isinstance(value, ast.Attribute) and value.attr in {"get", "__getitem__"}:
+            return _namespace_map_scopes(value.value, seen_names)
+        if isinstance(value, ast.Call):
+            function_kinds = _simple_callable_kinds(value.func, seen_names)
+            if function_kinds & {"getter", "object-attribute-getter"}:
+                subject = _call_argument(value, "object", 0)
+                member = _call_argument(value, "name", 1)
+                member_name = (
+                    None
+                    if member is None
+                    else _resolve_static_string(member, seen_names)
+                )
+                if subject is not None and member_name in {"get", "__getitem__"}:
+                    return _namespace_map_scopes(subject, seen_names)
+            reflected_members = {
+                kind.removeprefix("attrgetter:")
+                for kind in function_kinds
+                if kind.startswith("attrgetter:")
+            }
+            if reflected_members & {"get", "__getitem__"}:
+                subject = _call_argument(value, "object", 0)
+                if subject is not None:
+                    return _namespace_map_scopes(subject, seen_names)
+        if not isinstance(value, ast.Name):
+            return set()
+        scope = _binding_scope(_capability_scope(value), value.id)
+        marker = (scope, value.id)
+        if marker in seen_names:
+            return set()
+        return {
+            namespace_scope
+            for kind, payload, _, _, _ in _callable_name_bindings(value)
+            if kind == "alias" and isinstance(payload, ast.expr)
+            for namespace_scope in _bound_namespace_getter_scopes(
+                payload,
+                seen_names | {marker},
+            )
+        }
+
+    CallableMarker = tuple[ast.AST, str, tuple[int, int]]
+    callable_identity_cache: dict[int, frozenset[ast.AST]] = {}
+    callable_identity_stack: set[int] = set()
+
+    def _binding_callable_boundaries(
+        binding: Binding,
+        seen: frozenset[CallableMarker],
+    ) -> frozenset[ast.AST]:
+        kind, payload, _, _, _ = binding
+        if kind == "function" and payload is not None:
+            return frozenset({payload})
+        if kind == "alias" and isinstance(payload, ast.expr):
+            return _expression_callable_boundaries(payload, seen)
+        return frozenset()
+
+    def _expression_callable_boundaries_uncached(
+        value: ast.expr,
+        seen: frozenset[CallableMarker],
+    ) -> frozenset[ast.AST]:
+        if isinstance(value, ast.Lambda):
+            return frozenset({value})
+        if isinstance(value, ast.Name):
+            scope: ast.AST | None = _capability_scope(value)
+            while scope is not None:
+                target_scope = _binding_scope(scope, value.id)
+                position = _runtime_read_position(value, scope)
+                marker = (target_scope, value.id, position)
+                if marker in seen:
+                    return frozenset()
+                selected = _effective_binding_alternatives(
+                    target_scope,
+                    value.id,
+                    position,
+                )
+                if selected:
+                    return frozenset(
+                        boundary
+                        for binding in selected
+                        for boundary in _binding_callable_boundaries(
+                            binding,
+                            seen | {marker},
+                        )
+                    )
+                scope = _lexical_parent_scope(scope)
+            return frozenset()
+
+        lookup_scopes: set[ast.AST] = set()
+        lookup_key: ast.expr | None = None
+        if isinstance(value, ast.Subscript):
+            lookup_scopes.update(_namespace_map_scopes(value.value))
+            lookup_key = value.slice
+        elif isinstance(value, ast.Call):
+            lookup_scopes.update(_bound_namespace_getter_scopes(value.func))
+            if lookup_scopes:
+                lookup_key = _call_argument(value, "key", 0)
+            elif "mapping-getter-function" in _simple_callable_kinds(value.func):
+                lookup_base = _call_argument(value, "object", 0)
+                if lookup_base is not None:
+                    lookup_scopes.update(_namespace_map_scopes(lookup_base))
+                lookup_key = _call_argument(value, "key", 1)
+        if not lookup_scopes:
+            return frozenset()
+
+        key = None if lookup_key is None else _resolve_static_string(lookup_key)
+        position = _runtime_read_position(value, _capability_scope(value))
+        selected_bindings: list[tuple[Binding, CallableMarker]] = []
+        for lookup_scope in lookup_scopes:
+            names = (
+                (key,)
+                if key is not None
+                else tuple(
+                    bound_name
+                    for binding_scope, bound_name in capability_bindings
+                    if binding_scope is lookup_scope
+                )
+            )
+            for bound_name in names:
+                target_scope = _binding_scope(lookup_scope, bound_name)
+                marker = (target_scope, bound_name, position)
+                if marker in seen:
+                    continue
+                selected_bindings.extend(
+                    (binding, marker)
+                    for binding in _effective_binding_alternatives(
+                        target_scope,
+                        bound_name,
+                        position,
+                    )
+                )
+        return frozenset(
+            boundary
+            for binding, marker in selected_bindings
+            for boundary in _binding_callable_boundaries(
+                binding,
+                seen | {marker},
+            )
+        )
+
+    def _expression_callable_boundaries(
+        value: ast.expr,
+        seen: frozenset[CallableMarker] = frozenset(),
+    ) -> frozenset[ast.AST]:
+        cache_key = id(value)
+        if not seen and cache_key in callable_identity_cache:
+            return callable_identity_cache[cache_key]
+        if cache_key in callable_identity_stack:
+            return frozenset()
+        callable_identity_stack.add(cache_key)
+        try:
+            result = _expression_callable_boundaries_uncached(value, seen)
+            if not seen:
+                callable_identity_cache[cache_key] = result
+            return result
+        finally:
+            callable_identity_stack.remove(cache_key)
+
+    def _binding_is_callable_boundary(
+        binding: Binding,
+        boundary: ast.AST,
+        seen: frozenset[CallableMarker] = frozenset(),
+    ) -> bool:
+        return boundary in _binding_callable_boundaries(binding, seen)
+
+    def _expression_is_callable_boundary(
+        value: ast.expr,
+        boundary: ast.AST,
+        seen: frozenset[CallableMarker] = frozenset(),
+    ) -> bool:
+        return boundary in _expression_callable_boundaries(value, seen)
 
     def _is_owned_callable_alias(
         value: ast.expr,
@@ -2147,12 +2419,90 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
             isinstance(operator, (ast.Is, ast.IsNot)) for operator in parent.ops
         )
 
-    def _deferred_observed_bindings(
+    # Deferred-scope analysis asks the same structural questions once per
+    # nested callable.  Index those syntax-only relationships once instead of
+    # walking the full module for every callable boundary.
+    direct_calls_by_scope: dict[ast.AST, list[ast.Call]] = {}
+    direct_loads_by_scope: dict[ast.AST, list[ast.Name]] = {}
+    contained_loads_by_scope: dict[ast.AST, list[ast.Name]] = {}
+    deferred_body_scopes: set[ast.AST] = set()
+    for indexed_node in ast.walk(tree):
+        indexed_scope = _capability_scope(indexed_node)
+        if isinstance(indexed_node, ast.Call):
+            direct_calls_by_scope.setdefault(indexed_scope, []).append(indexed_node)
+        elif isinstance(indexed_node, ast.Name) and isinstance(
+            indexed_node.ctx, ast.Load
+        ):
+            direct_loads_by_scope.setdefault(indexed_scope, []).append(indexed_node)
+            containing_scope: ast.AST | None = indexed_scope
+            while containing_scope is not None:
+                contained_loads_by_scope.setdefault(containing_scope, []).append(
+                    indexed_node
+                )
+                containing_scope = _lexical_parent_scope(containing_scope)
+        elif isinstance(indexed_node, (ast.Yield, ast.YieldFrom)):
+            deferred_body_scopes.add(indexed_scope)
+
+    def _deferred_object_activation_positions(
+        value: ast.expr,
+        target_scope: ast.AST,
+    ) -> set[tuple[int, int]]:
+        """Locate use/escape of a created generator or coroutine object."""
+
+        parent = parents.get(value)
+        if isinstance(parent, ast.Expr):
+            return set()
+        bound_names: tuple[str, ...] = ()
+        binding_position = _post_source_position(value)
+        if isinstance(parent, ast.Assign) and parent.value is value:
+            bound_names = tuple(
+                name.id
+                for target in parent.targets
+                for name in _binding_target_names(target)
+            )
+            binding_position = _post_source_position(parent)
+        elif isinstance(parent, ast.AnnAssign) and parent.value is value:
+            bound_names = tuple(
+                name.id for name in _binding_target_names(parent.target)
+            )
+            binding_position = _post_source_position(parent)
+        elif isinstance(parent, ast.NamedExpr) and parent.value is value:
+            bound_names = tuple(
+                name.id for name in _binding_target_names(parent.target)
+            )
+            binding_position = _post_source_position(parent)
+        if not bound_names:
+            return {_post_source_position(value)}
+
+        activations: set[tuple[int, int]] = set()
+        for candidate in contained_loads_by_scope.get(target_scope, ()):
+            if not (
+                candidate.id in bound_names
+                and _source_position(candidate) > binding_position
+            ):
+                continue
+            if _is_passive_callable_observation(candidate):
+                continue
+            activations.add(_source_position(candidate))
+        return activations
+
+    deferred_observation_cache: dict[tuple[int, int, str], tuple[Binding, ...]] = {}
+    DeferredProfile = tuple[
+        str,
+        bool,
+        frozenset[tuple[int, int]],
+        frozenset[tuple[int, int]],
+    ]
+    deferred_profile_cache: dict[tuple[int, int], DeferredProfile] = {}
+
+    def _deferred_observation_profile(
         origin_scope: ast.AST,
         target_scope: ast.AST,
-        name: str,
-    ) -> tuple[Binding, ...]:
-        """Return parent states observable at proven or conservative activation."""
+    ) -> DeferredProfile:
+        key = (id(origin_scope), id(target_scope))
+        cached = deferred_profile_cache.get(key)
+        if cached is not None:
+            return cached
 
         boundary = origin_scope
         current = origin_scope
@@ -2160,7 +2510,9 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
         while current is not target_scope:
             parent = parents.get(current)
             if parent is None:
-                return ()
+                result: DeferredProfile = ("missing", False, frozenset(), frozenset())
+                deferred_profile_cache[key] = result
+                return result
             if parent is not target_scope and isinstance(
                 parent,
                 (*_FUNCTION_SCOPE_TYPES, ast.ClassDef),
@@ -2169,34 +2521,30 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
                 crossed_boundary = True
             current = parent
         if not isinstance(boundary, _FUNCTION_SCOPE_TYPES):
-            return tuple(capability_bindings.get((target_scope, name), ()))
+            result = ("direct", False, frozenset(), frozenset())
+            deferred_profile_cache[key] = result
+            return result
 
-        def _body_is_deferred() -> bool:
-            if isinstance(boundary, ast.AsyncFunctionDef):
-                return True
-            return bool(
-                isinstance(boundary, ast.FunctionDef)
-                and any(
-                    isinstance(candidate, (ast.Yield, ast.YieldFrom))
-                    and _capability_scope(candidate) is boundary
-                    for candidate in ast.walk(boundary)
-                )
-            )
-
+        body_is_deferred = bool(
+            isinstance(boundary, ast.AsyncFunctionDef)
+            or isinstance(boundary, ast.FunctionDef)
+            and boundary in deferred_body_scopes
+        )
         call_positions: set[tuple[int, int]] = set()
         boundary_scope = _capability_scope(boundary)
         if boundary_scope is target_scope:
-            for candidate in ast.walk(target_scope):
-                if not (
-                    isinstance(candidate, ast.Call)
-                    and _capability_scope(candidate) is target_scope
-                    and _expression_is_callable_boundary(candidate.func, boundary)
-                ):
+            for candidate in direct_calls_by_scope.get(target_scope, ()):
+                if not _expression_is_callable_boundary(candidate.func, boundary):
                     continue
-                # Python evaluates positional and keyword arguments before
-                # entering a synchronous body.  The post-call source position
-                # includes same-line walrus bindings from those arguments.
-                call_positions.add(_post_source_position(candidate))
+                if body_is_deferred:
+                    call_positions.update(
+                        _deferred_object_activation_positions(
+                            candidate,
+                            target_scope,
+                        )
+                    )
+                else:
+                    call_positions.add(_post_source_position(candidate))
 
         module_final_available = False
         if target_scope is tree:
@@ -2213,24 +2561,22 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
                 ):
                     module_final_available = True
                     call_positions.add((10**9, 10**9))
+                    break
 
         escape_positions: set[tuple[int, int]] = set()
         if isinstance(boundary, (ast.FunctionDef, ast.AsyncFunctionDef)) and (
             boundary.decorator_list
         ):
-            # A decorator receives the newly created callable immediately and
-            # may invoke or retain it before the definition statement binds.
             escape_positions.add(_post_source_position(boundary))
         if boundary_scope is target_scope:
-            for candidate in ast.walk(target_scope):
-                if _capability_scope(candidate) is not target_scope:
-                    continue
-                if not (
-                    candidate is boundary
-                    and isinstance(boundary, ast.Lambda)
-                    or isinstance(candidate, ast.Name)
-                    and isinstance(candidate.ctx, ast.Load)
-                    and _expression_is_callable_boundary(candidate, boundary)
+            candidates: tuple[ast.expr, ...] = tuple(
+                direct_loads_by_scope.get(target_scope, ())
+            )
+            if isinstance(boundary, ast.Lambda):
+                candidates = (boundary, *candidates)
+            for candidate in candidates:
+                if candidate is not boundary and not _expression_is_callable_boundary(
+                    candidate, boundary
                 ):
                     continue
                 parent = parents.get(candidate)
@@ -2243,23 +2589,44 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
                 escape_positions.add(_source_position(candidate))
 
         nested_reference = any(
-            isinstance(candidate, ast.Name)
-            and isinstance(candidate.ctx, ast.Load)
-            and _capability_scope(candidate) not in {target_scope, boundary}
+            _capability_scope(candidate) not in {target_scope, boundary}
             and _expression_is_callable_boundary(candidate, boundary)
-            for candidate in ast.walk(target_scope)
+            for candidate in contained_loads_by_scope.get(target_scope, ())
         )
-
         observed_at_all = bool(
             call_positions
             or escape_positions
             or module_final_available
             or nested_reference
         )
+        result = (
+            "function",
+            crossed_boundary or body_is_deferred or nested_reference,
+            frozenset(call_positions),
+            frozenset(escape_positions),
+        )
         if not observed_at_all:
-            return (("unobserved", None, (10**9, 10**9), False, False),)
+            result = ("unobserved", False, frozenset(), frozenset())
+        deferred_profile_cache[key] = result
+        return result
 
-        if crossed_boundary or _body_is_deferred() or nested_reference:
+    def _deferred_observed_bindings_uncached(
+        origin_scope: ast.AST,
+        target_scope: ast.AST,
+        name: str,
+    ) -> tuple[Binding, ...]:
+        """Return parent states observable at proven or conservative activation."""
+
+        mode, conservative, call_positions, escape_positions = (
+            _deferred_observation_profile(origin_scope, target_scope)
+        )
+        if mode == "missing":
+            return ()
+        if mode == "direct":
+            return tuple(capability_bindings.get((target_scope, name), ()))
+        if mode == "unobserved":
+            return (("unobserved", None, (10**9, 10**9), False, False),)
+        if conservative:
             # Returned closures, methods, generators/coroutines, and calls
             # hidden behind another callable have no sound lexical timestamp.
             # Retain every parent state instead of borrowing factory/creation
@@ -2290,7 +2657,27 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
             observed.extend((*initial, *future))
         if observed:
             return tuple(observed)
-        return (("unobserved", None, (10**9, 10**9), False, False),)
+        # The callable is observed, but this lexical parent has no binding for
+        # the name.  Continue outward so normal builtin fallback still works.
+        # Only an actually unobserved callable may erase its unreachable body.
+        return ()
+
+    def _deferred_observed_bindings(
+        origin_scope: ast.AST,
+        target_scope: ast.AST,
+        name: str,
+    ) -> tuple[Binding, ...]:
+        key = (id(origin_scope), id(target_scope), name)
+        cached = deferred_observation_cache.get(key)
+        if cached is not None:
+            return cached
+        result = _deferred_observed_bindings_uncached(
+            origin_scope,
+            target_scope,
+            name,
+        )
+        deferred_observation_cache[key] = result
+        return result
 
     def _runtime_observed_bindings(
         origin_scope: ast.AST,
@@ -2320,6 +2707,14 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
                 enclosing = _lexical_parent_scope(enclosing)
 
             activation = _post_source_position(origin_scope)
+            if isinstance(origin_scope, ast.GeneratorExp):
+                activations = _deferred_object_activation_positions(
+                    origin_scope,
+                    target_scope,
+                )
+                if not activations:
+                    return (("unobserved", None, (10**9, 10**9), False, False),)
+                activation = min(activations)
             initial = _effective_binding_alternatives(
                 target_scope,
                 name,
@@ -2368,7 +2763,7 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
                 for kind, value, _, _, _ in observed:
                     if kind == "alias":
                         resolved = (
-                            "unknown-dynamic"
+                            "ordinary"
                             if not isinstance(value, ast.expr)
                             else _resolve_capability_expression(
                                 value,
@@ -2383,11 +2778,23 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
                         resolved = kind
                     if resolved == "namespace-factory" and current is not origin_scope:
                         resolved = _escaped_namespace_factory_kind(current)
-                    resolved_kinds.add(resolved or "unknown-dynamic")
+                    # No modeled capability provenance means an ordinary
+                    # value.  Conservatism belongs on explicit reflection,
+                    # namespace, and incomplete-import operations—not every
+                    # application object the finite grammar does not model.
+                    resolved_kinds.add(resolved or "ordinary")
                 if len(resolved_kinds) == 1:
                     return next(iter(resolved_kinds))
-                if any(kind != "ordinary" for kind in resolved_kinds):
+                governed_kinds = resolved_kinds - {"ordinary", "unknown-dynamic"}
+                if len(governed_kinds) == 1:
+                    # A capability remains possible on at least one runtime
+                    # path.  Preserve that exact identity so downstream call
+                    # and mutation rules can still prove the route.
+                    return next(iter(governed_kinds))
+                if governed_kinds:
                     return "governed-unknown:deferred-binding"
+                if "unknown-dynamic" in resolved_kinds:
+                    return "unknown-dynamic"
                 return "ordinary"
             current = _lexical_parent_scope(current)
         return _BUILTIN_CAPABILITY_KINDS.get(name)
@@ -2570,14 +2977,37 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
         return bool(
             kind == "global-namespace"
             or kind == "module-registry"
+            or kind == "sys-path"
             or (isinstance(kind, str) and kind.startswith("namespace:"))
             or (isinstance(kind, str) and kind.startswith("module-map:"))
         )
 
     _SENSITIVE_MAPPING_KINDS = frozenset({"module-map:sys", "module-registry"})
     _MUTATION_OWNED_MAPPING_KINDS = frozenset(
-        {*_SENSITIVE_MAPPING_KINDS, "module-map:builtins"}
+        {
+            *_SENSITIVE_MAPPING_KINDS,
+            "module-map:approval",
+            "module-map:builtins",
+            "module-map:incomplete-import",
+            "module-map:schema",
+            "sys-path",
+        }
     )
+
+    def _is_mutation_owned_mapping_kind(kind: str | None) -> bool:
+        return bool(
+            kind in _MUTATION_OWNED_MAPPING_KINDS
+            or isinstance(kind, str)
+            and kind.startswith("module-map:governed-unknown:")
+        )
+
+    def _is_governed_mapping_kind(kind: str | None) -> bool:
+        return bool(
+            kind in _GOVERNED_MAPPING_KINDS
+            or isinstance(kind, str)
+            and kind.startswith("module-map:governed-unknown:")
+        )
+
     _MAPPING_MUTATOR_NAMES = frozenset(
         {
             "__delitem__",
@@ -2589,6 +3019,22 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
             "popitem",
             "setdefault",
             "update",
+        }
+    )
+    _SEQUENCE_MUTATOR_NAMES = frozenset(
+        {
+            "__delitem__",
+            "__iadd__",
+            "__imul__",
+            "__setitem__",
+            "append",
+            "clear",
+            "extend",
+            "insert",
+            "pop",
+            "remove",
+            "reverse",
+            "sort",
         }
     )
     _MODULE_MAP_MEMBER_KINDS = {
@@ -2636,6 +3082,13 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
             "require_approved_ddl_execution": "approval-accessor",
             "APPROVED_EXECUTION_DDL_SHA256": "approval-token",
         },
+        "module-map:incomplete-import": {
+            "connect": "connection-reference",
+            "Connection": "connection-reference",
+            "install_schema": "dynamic-installer",
+            "require_approved_ddl_execution": "approval-accessor",
+            "APPROVED_EXECUTION_DDL_SHA256": "approval-token",
+        },
     }
     _NAMESPACE_FALLBACK_KINDS = {
         "__builtins__": "module-map:builtins",
@@ -2665,12 +3118,14 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
             return base
         if base == "unknown-dynamic":
             return "unknown-dynamic"
+        if base == "incomplete-import":
+            return "incomplete-import"
         if not _is_mapping_kind(base):
             return None
         if key is None:
             return (
                 f"governed-unknown:{base}"
-                if base in _GOVERNED_MAPPING_KINDS
+                if _is_governed_mapping_kind(base)
                 else "unknown-dynamic"
             )
         if base == "global-namespace":
@@ -2693,9 +3148,13 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
         result = _MODULE_MAP_MEMBER_KINDS.get(base, {}).get(key)
         if result is not None:
             return result
+        if base in _GOVERNED_MAPPING_KINDS:
+            # Exact, statically named members are ordinary unless the table
+            # identifies a capability.  Writes remain governed independently.
+            return "ordinary"
         return (
             f"governed-unknown:{base}"
-            if base in _GOVERNED_MAPPING_KINDS
+            if _is_governed_mapping_kind(base)
             else "unknown-dynamic"
         )
 
@@ -2710,7 +3169,7 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
             if member == "APPROVED_EXECUTION_DDL_SHA256":
                 return "approval-token"
             return base
-        if base == "unknown-dynamic":
+        if base in {"incomplete-import", "unknown-dynamic"}:
             if member in {"connect", "Connection"}:
                 return "connection-reference"
             if member == "install_schema":
@@ -2719,9 +3178,11 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
                 return "approval-accessor"
             if member == "APPROVED_EXECUTION_DDL_SHA256":
                 return "approval-token"
-            return "unknown-dynamic"
-        if base in _SENSITIVE_MAPPING_KINDS and member in _MAPPING_MUTATOR_NAMES:
+            return base
+        if _is_mutation_owned_mapping_kind(base) and member in _MAPPING_MUTATOR_NAMES:
             return f"mapping-mutator:{base}"
+        if base == "sys-path" and member in _SEQUENCE_MUTATOR_NAMES:
+            return "mapping-mutator:sys-path"
         if base == "builtin-dict":
             if member in _MAPPING_MUTATOR_NAMES:
                 return "mapping-mutator-function"
@@ -2747,6 +3208,8 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
             ("module:schema", "__setattr__"): "schema-bound-mutator",
             ("module:sqlite3", "__dict__"): "module-map:sqlite3",
             ("module:sqlite3", "__getattribute__"): "unknown-dynamic",
+            ("module:sqlite3", "connect"): "ordinary",
+            ("module:sqlite3", "Connection"): "ordinary",
             ("module:approval", "__dict__"): "module-map:approval",
             ("module:approval", "require_approved_ddl_execution"): "approval-accessor",
             (
@@ -2782,14 +3245,19 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
             ("module:sys", "__getattribute__"): "sys-namespace-route",
             ("module:sys", "__setattr__"): "sys-bound-mutator",
             ("module:sys", "modules"): "module-registry",
+            ("module:sys", "path"): "sys-path",
             ("module:sys", "settrace"): "trace-setter",
         }.get((base, member))
         if result is not None:
             return result
+        if base in _GOVERNED_MODULE_KINDS and member == "__builtins__":
+            return "module-map:builtins"
+        if base in _GOVERNED_MODULE_KINDS and member == "__loader__":
+            return f"governed-unknown:{base}"
         if member in _ORDINARY_GOVERNED_MODULE_MEMBERS.get(base or "", frozenset()):
             return "ordinary"
         if base in _GOVERNED_MODULE_KINDS:
-            return f"governed-unknown:{base}"
+            return "ordinary"
         return None
 
     def _static_capability_lookup_kind(
@@ -2830,6 +3298,8 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
             return _capability_attribute_kind(
                 _resolve_capability_expression(value.value, seen), value.attr
             )
+        if isinstance(value, ast.Constant):
+            return "ordinary"
         if not isinstance(value, ast.Call):
             return None
         static_lookup = _static_capability_lookup_kind(value, seen)
@@ -2852,7 +3322,9 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
                 if isinstance(module_kind, str) and module_kind.startswith(
                     "governed-unknown:"
                 ):
-                    return module_kind
+                    return f"module-map:{module_kind}"
+                if module_kind == "incomplete-import":
+                    return "module-map:incomplete-import"
                 return (
                     f"module-map:{module_kind.removeprefix('module:')}"
                     if isinstance(module_kind, str)
@@ -2869,7 +3341,7 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
         if function_kind == "importer":
             targets, targets_complete = _resolved_import_target_state(value)
             if not targets:
-                return "unknown-dynamic"
+                return "incomplete-import"
             target_kinds = {
                 _module_kind_for_target(target) or "ordinary" for target in targets
             }
@@ -2877,7 +3349,7 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
                 return (
                     "governed-unknown:import-target"
                     if any(kind != "ordinary" for kind in target_kinds)
-                    else "unknown-dynamic"
+                    else "incomplete-import"
                 )
             if len(target_kinds) == 1:
                 return next(iter(target_kinds))
@@ -2896,6 +3368,20 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
                 _resolve_capability_expression(value.args[0], seen),
                 _resolve_static_string(value.args[1], seen),
                 value,
+            )
+        if function_kind == "object-attribute-getter":
+            subject = _call_argument(value, "object", 0)
+            member = _call_argument(value, "name", 1)
+            if subject is None or member is None:
+                return "unknown-dynamic"
+            member_name = _resolve_static_string(member, seen)
+            return (
+                "unknown-dynamic"
+                if member_name is None
+                else _capability_attribute_kind(
+                    _resolve_capability_expression(subject, seen),
+                    member_name,
+                )
             )
         if function_kind == "schema-attribute-getter":
             member_value = _call_argument(value, "name", 0)
@@ -2922,8 +3408,8 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
                 _resolve_capability_expression(value.args[0], seen),
                 function_kind.removeprefix("attrgetter:"),
             )
-        if function_kind == "unknown-dynamic":
-            return "unknown-dynamic"
+        if function_kind in {"incomplete-import", "unknown-dynamic"}:
+            return function_kind
         if isinstance(function_kind, str) and function_kind.startswith(
             "governed-unknown:"
         ):
@@ -3026,6 +3512,12 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
             if member == "install_schema":
                 return "schema installer mutation route"
             return "governed unknown mutation route"
+        if subject_kind in {"incomplete-import", "unknown-dynamic"}:
+            if member == "APPROVED_EXECUTION_DDL_SHA256":
+                return "approval token mutation route"
+            if member == "install_schema":
+                return "schema installer mutation route"
+            return None
         if subject_kind == "module:approval":
             return _approval_mutation_message(member)
         if subject_kind == "module:schema":
@@ -3066,12 +3558,38 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
             return "operator module reflection route"
         return None
 
-    def _sensitive_mapping_mutation_message(kind: str) -> str:
+    def _sensitive_mapping_mutation_message(
+        kind: str,
+        member: str | None = None,
+    ) -> str:
         if kind == "module-registry":
             return "module registry mutation route"
         if kind == "module-map:builtins":
-            return "builtin module mutation route"
+            return (
+                "importer mutation route"
+                if member in {None, "__import__"}
+                else "builtin module mutation route"
+            )
+        if kind == "module-map:approval":
+            return "approval module mutation route"
+        if kind == "module-map:schema":
+            return "schema module mutation route"
+        if kind == "module-map:incomplete-import":
+            return "incomplete import mutation route"
         return "sys module namespace mutation route"
+
+    def _bound_mapping_mutation_member(call: ast.Call) -> str | None:
+        if not isinstance(call.func, ast.Attribute):
+            return None
+        if call.func.attr in {"__delitem__", "__setitem__", "pop", "setdefault"}:
+            key = _call_argument(call, "key", 0)
+            return None if key is None else _resolve_static_string(key)
+        if call.func.attr == "update" and len(call.args) == 1 and not call.keywords:
+            update = call.args[0]
+            if isinstance(update, ast.Dict) and len(update.keys) == 1:
+                key = update.keys[0]
+                return None if key is None else _resolve_static_string(key)
+        return None
 
     def _sensitive_mapping_mutation_call(call: ast.Call) -> str | None:
         if _resolve_capability_expression(call.func) != "mapping-mutator-function":
@@ -3080,7 +3598,7 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
         if subject is None:
             return None
         kind = _resolve_capability_expression(subject)
-        return kind if kind in _MUTATION_OWNED_MAPPING_KINDS else None
+        return kind if _is_mutation_owned_mapping_kind(kind) else None
 
     def _sensitive_mapping_dynamic_lookup_message(kind: str) -> str:
         return (
@@ -3146,6 +3664,69 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
             if isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef))
             else None
         )
+
+        def _callback_name_is_immutable() -> bool:
+            if callback_name is None:
+                return False
+            definition_scope = _binding_scope(
+                _capability_scope(function),
+                callback_name,
+            )
+            candidates = capability_bindings.get(
+                (definition_scope, callback_name),
+                (),
+            )
+            return bool(
+                len(candidates) == 1
+                and candidates[0][0] == "function"
+                and candidates[0][1] is function
+            )
+
+        def _safe_nonlocal_counter(name: str) -> bool:
+            owner_scope = _binding_scope(function, name)
+            observed = _effective_binding_alternatives(
+                owner_scope,
+                name,
+                _source_position(function),
+            )
+            if not observed or not all(
+                kind == "alias"
+                and isinstance(payload, ast.Constant)
+                and isinstance(payload.value, int)
+                and not isinstance(payload.value, bool)
+                for kind, payload, _, _, _ in observed
+            ):
+                return False
+            writes = [
+                candidate
+                for candidate in ast.walk(function)
+                if isinstance(candidate, ast.Name)
+                and candidate.id == name
+                and isinstance(candidate.ctx, (ast.Store, ast.Del))
+            ]
+            return bool(
+                writes
+                and all(
+                    isinstance((parent := parents.get(candidate)), ast.AugAssign)
+                    and parent.target is candidate
+                    and isinstance(parent.op, ast.Add)
+                    and isinstance(parent.value, ast.Constant)
+                    and isinstance(parent.value.value, int)
+                    and not isinstance(parent.value.value, bool)
+                    for candidate in writes
+                )
+            )
+
+        nonlocal_names = {
+            name
+            for candidate in ast.walk(function)
+            if isinstance(candidate, ast.Nonlocal)
+            for name in candidate.names
+        }
+        if callback_name in nonlocal_names or not all(
+            _safe_nonlocal_counter(name) for name in nonlocal_names
+        ):
+            return False
         dangerous_members = {
             "f_builtins",
             "f_globals",
@@ -3169,6 +3750,14 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
                 or callback_name is not None
                 and isinstance(candidate.value, ast.Name)
                 and candidate.value.id == callback_name
+                and _callback_name_is_immutable()
+            ):
+                return False
+            if (
+                callback_name is not None
+                and isinstance(candidate, ast.Name)
+                and candidate.id == callback_name
+                and isinstance(candidate.ctx, (ast.Store, ast.Del))
             ):
                 return False
             if (
@@ -3224,12 +3813,96 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
             )
         )
 
-    def _is_safe_trace_setter_call(call: ast.Call) -> bool:
-        return bool(
-            len(call.args) == 1
-            and not call.keywords
-            and _trace_argument_is_safe(call.args[0])
+    def _statement_sequence(statement: ast.stmt) -> tuple[ast.stmt, ...]:
+        parent = parents.get(statement)
+        if parent is None:
+            return ()
+        for _field, value in ast.iter_fields(parent):
+            if (
+                isinstance(value, list)
+                and statement in value
+                and all(isinstance(candidate, ast.stmt) for candidate in value)
+            ):
+                return tuple(value)
+        return ()
+
+    def _may_resolve_trace_setter(
+        value: ast.expr,
+        seen_names: frozenset[tuple[ast.AST, str]] = frozenset(),
+    ) -> bool:
+        if isinstance(value, ast.Attribute):
+            return value.attr == "settrace"
+        if not isinstance(value, ast.Name):
+            return False
+        scope = _binding_scope(_capability_scope(value), value.id)
+        marker = (scope, value.id)
+        if marker in seen_names:
+            return False
+        return any(
+            kind == "trace-setter"
+            or kind == "alias"
+            and isinstance(payload, ast.expr)
+            and _may_resolve_trace_setter(payload, seen_names | {marker})
+            for kind, payload, _, _, _ in _callable_name_bindings(value)
         )
+
+    def _trace_setter_call(value: ast.AST | None) -> ast.Call | None:
+        if not (
+            isinstance(value, ast.Call)
+            and _may_resolve_trace_setter(value.func)
+            and _resolve_capability_expression(value.func) == "trace-setter"
+            and len(value.args) == 1
+            and not value.keywords
+        ):
+            return None
+        return value
+
+    def _trace_lifecycle_call_ids() -> frozenset[int]:
+        safe_ids: set[int] = set()
+        for call in ast.walk(tree):
+            if not isinstance(call, ast.Call) or _trace_setter_call(call) is None:
+                continue
+            argument = call.args[0]
+            if isinstance(argument, ast.Constant) and argument.value is None:
+                safe_ids.add(id(call))
+                continue
+            if not _trace_argument_is_safe(argument):
+                continue
+            install_statement = parents.get(call)
+            if not (
+                isinstance(install_statement, ast.Expr)
+                and install_statement.value is call
+            ):
+                continue
+            sequence = _statement_sequence(install_statement)
+            if not sequence:
+                continue
+            index = sequence.index(install_statement)
+            if index == 0 or index + 1 >= len(sequence):
+                continue
+            capture = sequence[index - 1]
+            protected = sequence[index + 1]
+            if not (
+                isinstance(capture, ast.Assign)
+                and len(capture.targets) == 1
+                and isinstance(capture.targets[0], ast.Name)
+                and _is_direct_sys_gettrace_call(capture.value)
+                and isinstance(protected, ast.Try)
+                and len(protected.finalbody) == 1
+                and isinstance(protected.finalbody[0], ast.Expr)
+            ):
+                continue
+            captured_name = capture.targets[0].id
+            restore = _trace_setter_call(protected.finalbody[0].value)
+            if not (
+                restore is not None
+                and isinstance(restore.args[0], ast.Name)
+                and restore.args[0].id == captured_name
+                and _trace_argument_is_safe(restore.args[0])
+            ):
+                continue
+            safe_ids.update((id(call), id(restore)))
+        return frozenset(safe_ids)
 
     _GOVERNED_MODULE_KINDS = frozenset(
         {
@@ -3252,13 +3925,14 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
             "module-map:sqlite3",
             "module-map:sys",
             "module-registry",
+            "sys-path",
         }
     )
 
     def _is_governed_value_kind(kind: str | None) -> bool:
         return bool(
             kind in _GOVERNED_MODULE_KINDS
-            or kind in _GOVERNED_MAPPING_KINDS
+            or _is_governed_mapping_kind(kind)
             or (isinstance(kind, str) and kind.startswith("governed-unknown:"))
         )
 
@@ -3271,7 +3945,7 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
             isinstance(operator, (ast.Is, ast.IsNot)) for operator in parent.ops
         ):
             return True
-        if node_kind in _GOVERNED_MAPPING_KINDS:
+        if _is_governed_mapping_kind(node_kind):
             if (
                 isinstance(parent, ast.Subscript)
                 and parent.value is node
@@ -3327,17 +4001,21 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
             )
         return False
 
+    safe_trace_setter_call_ids = _trace_lifecycle_call_ids()
+
     for node in ast.walk(tree):
         if (
             isinstance(node, ast.Call)
+            and _may_resolve_trace_setter(node.func)
             and _resolve_capability_expression(node.func) == "trace-setter"
-            and not _is_safe_trace_setter_call(node)
+            and id(node) not in safe_trace_setter_call_ids
         ):
             violations.append(
                 f"{label}:{node.lineno}: interpreter trace mutation route"
             )
         if (
             isinstance(node, ast.expr)
+            and _may_resolve_trace_setter(node)
             and _resolve_capability_expression(node) == "trace-setter"
         ):
             parent = parents.get(node)
@@ -3347,16 +4025,19 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
                 )
         if isinstance(node, ast.Subscript):
             mapping_kind = _resolve_capability_expression(node.value)
-            if mapping_kind in _SENSITIVE_MAPPING_KINDS:
+            if _is_mutation_owned_mapping_kind(mapping_kind):
                 parent = parents.get(node)
                 if isinstance(node.ctx, (ast.Store, ast.Del)) or (
                     isinstance(parent, ast.AugAssign) and parent.target is node
                 ):
                     violations.append(
                         f"{label}:{node.lineno}: "
-                        f"{_sensitive_mapping_mutation_message(mapping_kind)}"
+                        f"{_sensitive_mapping_mutation_message(mapping_kind, _resolve_static_string(node.slice))}"
                     )
-                elif _resolve_static_string(node.slice) is None:
+                elif (
+                    mapping_kind in _SENSITIVE_MAPPING_KINDS
+                    and _resolve_static_string(node.slice) is None
+                ):
                     violations.append(
                         f"{label}:{node.lineno}: "
                         f"{_sensitive_mapping_dynamic_lookup_message(mapping_kind)}"
@@ -3379,6 +4060,7 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
                     )
         if (
             isinstance(node, ast.expr)
+            and not (isinstance(node, ast.Name) and not isinstance(node.ctx, ast.Load))
             and _is_governed_value_kind(_resolve_capability_expression(node))
             and not _is_supported_governed_module_use(node)
         ):
@@ -3518,11 +4200,18 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
                 violations.append(f"{label}:{node.lineno}: module alias")
         if isinstance(node, ast.Attribute):
             owner_kind = _resolve_capability_expression(node.value)
-            message = (
-                _governed_module_mutation_message(owner_kind, node.attr)
-                if isinstance(node.ctx, (ast.Store, ast.Del))
-                else None
-            )
+            attribute_kind = _resolve_capability_expression(node)
+            message = None
+            if isinstance(node.ctx, (ast.Store, ast.Del)):
+                if attribute_kind == "approval-token":
+                    message = "approval token mutation route"
+                elif attribute_kind == "dynamic-installer":
+                    message = "schema installer mutation route"
+                else:
+                    message = _governed_module_mutation_message(
+                        owner_kind,
+                        node.attr,
+                    )
             if message is not None:
                 violations.append(f"{label}:{node.lineno}: {message}")
             if owner_kind == "approval-accessor" and isinstance(
@@ -3635,7 +4324,7 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
         ):
             violations.append(
                 f"{label}:{node.lineno}: "
-                f"{_sensitive_mapping_mutation_message(mapping_kind)}"
+                f"{_sensitive_mapping_mutation_message(mapping_kind, None if len(node.args) < 2 else _resolve_static_string(node.args[1]))}"
             )
         if (
             isinstance(node, ast.Call)
@@ -3646,7 +4335,7 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
         ):
             violations.append(
                 f"{label}:{node.lineno}: "
-                f"{_sensitive_mapping_mutation_message(mutation_kind.removeprefix('mapping-mutator:'))}"
+                f"{_sensitive_mapping_mutation_message(mutation_kind.removeprefix('mapping-mutator:'), _bound_mapping_mutation_member(node))}"
             )
         if (
             isinstance(node, ast.Subscript)
@@ -3939,6 +4628,7 @@ def _repository_sensitive_reexport_violations(
         ("builtins", "delattr"): "object-mutator",
         ("builtins", "dict"): "dict-type",
         ("builtins", "getattr"): "getter",
+        ("builtins", "globals"): "global-namespace-factory",
         ("builtins", "object"): "object-type",
         ("builtins", "setattr"): "object-mutator",
         ("builtins", "type"): "type-factory",
@@ -3976,6 +4666,7 @@ def _repository_sensitive_reexport_violations(
         "delattr": "object-mutator",
         "dict": "dict-type",
         "getattr": "getter",
+        "globals": "global-namespace-factory",
         "object": "object-type",
         "setattr": "object-mutator",
         "type": "type-factory",
@@ -4111,34 +4802,52 @@ def _repository_sensitive_reexport_violations(
                     for descendant in ast.walk(candidate.generators[0].iter)
                 )
 
+    scope_for_cache: dict[tuple[str, int], ast.AST] = {}
+
     def _scope_for(label: str, node: ast.AST) -> ast.AST:
+        cache_key = (label, id(node))
+        cached = scope_for_cache.get(cache_key)
+        if cached is not None:
+            return cached
         original = node
         current = node
         parents = parents_by_label[label]
         while True:
             parent = parents.get(current)
             if parent is None:
-                return trees[label]
+                result = trees[label]
+                break
             if isinstance(parent, _FUNCTION_SCOPE_TYPES):
                 if id(original) in function_outer_ids[parent]:
                     current = parent
                     continue
-                return parent
+                result = parent
+                break
             if isinstance(parent, ast.ClassDef):
                 if id(original) in class_outer_ids[parent]:
                     current = parent
                     continue
-                return parent
+                result = parent
+                break
             if isinstance(parent, _COMPREHENSION_SCOPE_TYPES):
                 if id(original) in comprehension_outer_ids[parent]:
                     current = parent
                     continue
-                return parent
+                result = parent
+                break
             if isinstance(parent, ast.Module):
-                return parent
+                result = parent
+                break
             current = parent
+        scope_for_cache[cache_key] = result
+        return result
+
+    lexical_parent_cache: dict[tuple[str, int], ast.AST | None] = {}
 
     def _lexical_parent(label: str, scope: ast.AST) -> ast.AST | None:
+        cache_key = (label, id(scope))
+        if cache_key in lexical_parent_cache:
+            return lexical_parent_cache[cache_key]
         parents = parents_by_label[label]
         current = parents.get(scope)
         skip_class = isinstance(
@@ -4149,9 +4858,73 @@ def _repository_sensitive_reexport_violations(
                 current = parents.get(current)
                 continue
             if isinstance(current, (*_SCOPE_TYPES, ast.Module)):
+                lexical_parent_cache[cache_key] = current
                 return current
             current = parents.get(current)
+        lexical_parent_cache[cache_key] = None
         return None
+
+    walk_nodes_cache: dict[tuple[str, int], tuple[ast.AST, ...]] = {}
+    scope_nodes_cache: dict[tuple[str, int], tuple[ast.AST, ...]] = {}
+    scope_calls_cache: dict[tuple[str, int], tuple[ast.Call, ...]] = {}
+    scope_load_names_cache: dict[tuple[str, int], tuple[ast.Name, ...]] = {}
+    walk_load_names_cache: dict[tuple[str, int], tuple[ast.Name, ...]] = {}
+
+    def _walk_nodes(label: str, scope: ast.AST) -> tuple[ast.AST, ...]:
+        cache_key = (label, id(scope))
+        cached = walk_nodes_cache.get(cache_key)
+        if cached is None:
+            cached = tuple(ast.walk(scope))
+            walk_nodes_cache[cache_key] = cached
+        return cached
+
+    def _nodes_in_scope(label: str, scope: ast.AST) -> tuple[ast.AST, ...]:
+        cache_key = (label, id(scope))
+        cached = scope_nodes_cache.get(cache_key)
+        if cached is None:
+            cached = tuple(
+                node
+                for node in _walk_nodes(label, scope)
+                if _scope_for(label, node) is scope
+            )
+            scope_nodes_cache[cache_key] = cached
+        return cached
+
+    def _calls_in_scope(label: str, scope: ast.AST) -> tuple[ast.Call, ...]:
+        cache_key = (label, id(scope))
+        cached = scope_calls_cache.get(cache_key)
+        if cached is None:
+            cached = tuple(
+                node
+                for node in _nodes_in_scope(label, scope)
+                if isinstance(node, ast.Call)
+            )
+            scope_calls_cache[cache_key] = cached
+        return cached
+
+    def _load_names_in_scope(label: str, scope: ast.AST) -> tuple[ast.Name, ...]:
+        cache_key = (label, id(scope))
+        cached = scope_load_names_cache.get(cache_key)
+        if cached is None:
+            cached = tuple(
+                node
+                for node in _nodes_in_scope(label, scope)
+                if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
+            )
+            scope_load_names_cache[cache_key] = cached
+        return cached
+
+    def _load_names_in_walk(label: str, scope: ast.AST) -> tuple[ast.Name, ...]:
+        cache_key = (label, id(scope))
+        cached = walk_load_names_cache.get(cache_key)
+        if cached is None:
+            cached = tuple(
+                node
+                for node in _walk_nodes(label, scope)
+                if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
+            )
+            walk_load_names_cache[cache_key] = cached
+        return cached
 
     def _named_expression_scope(label: str, node: ast.NamedExpr) -> ast.AST:
         """Return the real owner of a walrus target, including comprehensions."""
@@ -4185,6 +4958,45 @@ def _repository_sensitive_reexport_violations(
             int(getattr(node, "col_offset", -1)),
         )
 
+    def _assignment_target_leaves(target: ast.expr) -> tuple[ast.expr, ...]:
+        if isinstance(target, ast.Starred):
+            return _assignment_target_leaves(target.value)
+        if isinstance(target, (ast.List, ast.Tuple)):
+            return tuple(
+                leaf
+                for element in target.elts
+                for leaf in _assignment_target_leaves(element)
+            )
+        return (target,)
+
+    assignment_target_read_positions: dict[int, tuple[int, float]] = {}
+    assignment_target_write_positions: dict[int, tuple[int, float]] = {}
+    for candidate_tree in trees.values():
+        for statement in ast.walk(candidate_tree):
+            if isinstance(statement, ast.Assign):
+                leaves = tuple(
+                    leaf
+                    for target in statement.targets
+                    for leaf in _assignment_target_leaves(target)
+                )
+                value = statement.value
+            elif isinstance(statement, ast.AnnAssign) and statement.value is not None:
+                leaves = _assignment_target_leaves(statement.target)
+                value = statement.value
+            else:
+                continue
+            line, column = _position(value, after=True)
+            denominator = 2 * len(leaves) + 1
+            for ordinal, leaf in enumerate(leaves):
+                assignment_target_read_positions[id(leaf)] = (
+                    line,
+                    column + (2 * ordinal + 1) / denominator,
+                )
+                assignment_target_write_positions[id(leaf)] = (
+                    line,
+                    column + (2 * ordinal + 2) / denominator,
+                )
+
     def _runtime_position(
         label: str,
         node: ast.AST,
@@ -4196,6 +5008,9 @@ def _repository_sensitive_reexport_violations(
         current = node
         parents = parents_by_label[label]
         while current is not scope:
+            target_position = assignment_target_read_positions.get(id(current))
+            if target_position is not None:
+                position = max(position, target_position)
             parent = parents.get(current)
             if parent is None:
                 break
@@ -4230,7 +5045,9 @@ def _repository_sensitive_reexport_violations(
                 if current is not parent.iter:
                     return True
             elif isinstance(parent, ast.Match):
-                if current is not parent.subject:
+                if current is not parent.subject and id(current) not in (
+                    definite_match_case_ids
+                ):
                     return True
             elif isinstance(parent, (ast.With, ast.AsyncWith)):
                 if current in parent.body:
@@ -4257,12 +5074,15 @@ def _repository_sensitive_reexport_violations(
         source: ast.AST,
         *,
         always_available: bool = False,
+        binding_position: tuple[int, float] | None = None,
     ) -> None:
         target_scope = _binding_scope(label, scope, name)
         bindings.setdefault((label, target_scope, name), []).append(
             (
                 spec,
-                (-1, -1) if always_available else _position(source, after=True),
+                ((-1, -1) if always_available else _position(source, after=True))
+                if binding_position is None
+                else binding_position,
                 False
                 if always_available
                 else target_scope is not scope
@@ -4294,6 +5114,18 @@ def _repository_sensitive_reexport_violations(
             elif isinstance(candidate, ast.MatchMapping) and candidate.rest is not None:
                 captures.append((candidate.rest, None))
         return tuple(captures)
+
+    definite_match_case_ids = frozenset(
+        id(candidate.cases[0])
+        for candidate_tree in trees.values()
+        for candidate in ast.walk(candidate_tree)
+        if isinstance(candidate, ast.Match)
+        and candidate.cases
+        and candidate.cases[0].guard is None
+        and isinstance(candidate.cases[0].pattern, ast.MatchAs)
+        and candidate.cases[0].pattern.pattern is None
+        and candidate.cases[0].pattern.name is not None
+    )
 
     declared_names: dict[tuple[str, ast.AST], set[str]] = {}
     global_names: dict[tuple[str, ast.AST], set[str]] = {}
@@ -4391,7 +5223,16 @@ def _repository_sensitive_reexport_violations(
                 for target in node.targets:
                     for name in _target_names(target):
                         handled_stores.add(id(name))
-                        _record(label, scope, name.id, ("expr", node.value), node)
+                        _record(
+                            label,
+                            scope,
+                            name.id,
+                            ("expr", node.value),
+                            node,
+                            binding_position=assignment_target_write_positions.get(
+                                id(name)
+                            ),
+                        )
             elif isinstance(node, ast.AnnAssign):
                 for name in _target_names(node.target):
                     handled_stores.add(id(name))
@@ -4403,6 +5244,9 @@ def _repository_sensitive_reexport_violations(
                         if node.value is None
                         else ("expr", node.value),
                         node,
+                        binding_position=assignment_target_write_positions.get(
+                            id(name)
+                        ),
                     )
             elif isinstance(node, ast.NamedExpr):
                 for name in _target_names(node.target):
@@ -4544,10 +5388,89 @@ def _repository_sensitive_reexport_violations(
                 )
 
     exports: dict[str, dict[str, set[str]]] = {label: {} for label in trees}
+    module_binding_keys_by_label: dict[
+        str,
+        frozenset[tuple[str, ast.AST, str]],
+    ] = {
+        label: frozenset(
+            key for key in bindings if key[0] == label and key[1] is trees[label]
+        )
+        for label in trees
+    }
+    scope_maps: dict[str, tuple[str, ast.AST]] = {}
+    callable_owners: dict[str, tuple[str, ast.AST]] = {}
+    callable_result_stack: set[str] = set()
+    callable_result_cache: dict[str, frozenset[str]] = {}
+    expression_kind_cache: dict[tuple[str, int], frozenset[str]] = {}
 
-    def _owner_has_protected(owner_label: str) -> bool:
+    def _callable_kind(label: str, boundary: ast.AST) -> str:
+        kind = f"callable:{label}:{id(boundary)}"
+        callable_owners[kind] = (label, boundary)
+        return kind
+
+    for (
+        binding_label,
+        _binding_scope_node,
+        _binding_name,
+    ), candidates in bindings.items():
+        for (category, payload), _binding_position, _conditional in candidates:
+            if category == "function" and isinstance(payload, ast.AST):
+                _callable_kind(binding_label, payload)
+
+    governed_carriers = frozenset(
+        {
+            "importer",
+            "module:builtins",
+            "module:importlib",
+            "module:operator",
+            "module:sys",
+            "module:types",
+            "module-map:builtins",
+            "module-map:importlib",
+            "module-map:operator",
+            "module-map:sys",
+            "module-registry",
+        }
+    )
+
+    def _scope_map_kind(label: str, scope: ast.AST) -> str:
+        kind = f"scope-map:{label}:{id(scope)}"
+        scope_maps[kind] = (label, scope)
+        return kind
+
+    def _kind_may_carry_protected(
+        kind: str,
+        seen_labels: frozenset[str] = frozenset(),
+    ) -> bool:
+        base = _base_kind(kind)
+        if base in protected or base in governed_carriers:
+            return True
+        if base in callable_owners:
+            return any(
+                _kind_may_carry_protected(result, seen_labels)
+                for result in _callable_result_kinds(base)
+            )
+        if base.startswith(("local:", "local-map:")):
+            owner_label = base.split(":", 1)[1]
+            return _owner_has_protected(owner_label, seen_labels)
+        if base.startswith(("module-prefix:", "module-prefix-map:")):
+            prefix = base.split(":", 1)[1]
+            return any(
+                (module == prefix or module.startswith(prefix + "."))
+                and _owner_has_protected(owner_label, seen_labels)
+                for module, owner_label in module_to_label.items()
+            )
+        return False
+
+    def _owner_has_protected(
+        owner_label: str,
+        seen_labels: frozenset[str] = frozenset(),
+    ) -> bool:
+        if owner_label in seen_labels:
+            return False
+        nested_seen = seen_labels | {owner_label}
         return any(
-            value in protected
+            _kind_may_carry_protected(value, nested_seen)
             for values in exports[owner_label].values()
             for value in values
         )
@@ -4589,14 +5512,14 @@ def _repository_sensitive_reexport_violations(
             owner_label = base.removeprefix("local:")
             values = exports[owner_label].get(member, set())
             return {
-                ("relayed:" + value if value in protected else value)
+                ("relayed:" + value if _kind_may_carry_protected(value) else value)
                 for value in values
             }
         if base.startswith("local-map:"):
             owner_label = base.removeprefix("local-map:")
             values = exports[owner_label].get(member, set())
             return {
-                ("relayed:" + value if value in protected else value)
+                ("relayed:" + value if _kind_may_carry_protected(value) else value)
                 for value in values
             }
         if base.startswith("module-prefix-map:"):
@@ -4648,6 +5571,7 @@ def _repository_sensitive_reexport_violations(
             and (
                 base.startswith("local-map:")
                 or base.startswith("module-map:")
+                or base.startswith("scope-map:")
                 or base == "module-registry"
             )
             and member in {"get", "__getitem__"}
@@ -4666,10 +5590,23 @@ def _repository_sensitive_reexport_violations(
         }
 
     def _map_lookup(base: str, key: str | None) -> set[str]:
+        if base.startswith("scope-map:"):
+            owner_label, owner_scope = scope_maps[base]
+            if key is None:
+                return {"dynamic-scope-map:" + base}
+            return _name_kinds(
+                owner_label,
+                owner_scope,
+                key,
+                frozenset(),
+                (10**9, 10**9),
+            )
         if base.startswith("module-prefix-map:"):
             prefix = base.removeprefix("module-prefix-map:")
             if key is None:
                 return {"module-prefix-risk:" + prefix}
+            if key in {"__doc__", "__file__", "__name__", "__package__"}:
+                return set()
             candidate = prefix + "." + key
             kind = _module_kind(candidate) or _module_prefix_kind(candidate)
             return {"governed-standard-member"} if kind is None else {kind}
@@ -4679,7 +5616,7 @@ def _repository_sensitive_reexport_violations(
                 return (
                     {"dynamic-relayed:" + owner_label}
                     if any(
-                        value in protected
+                        _kind_may_carry_protected(value)
                         for values in exports[owner_label].values()
                         for value in values
                     )
@@ -4712,6 +5649,368 @@ def _repository_sensitive_reexport_violations(
             return {"approval-accessor"}
         return set()
 
+    callable_value_nodes_cache: dict[int, tuple[ast.expr, ...]] = {}
+
+    def _callable_value_nodes(boundary: ast.AST) -> tuple[ast.expr, ...]:
+        cached = callable_value_nodes_cache.get(id(boundary))
+        if cached is not None:
+            return cached
+        if isinstance(boundary, ast.Lambda):
+            result = (boundary.body,)
+            callable_value_nodes_cache[id(boundary)] = result
+            return result
+        roots = tuple(getattr(boundary, "body", ()))
+        values: list[ast.expr] = []
+        stack: list[ast.AST] = list(reversed(roots))
+        while stack:
+            candidate = stack.pop()
+            if isinstance(candidate, (*_FUNCTION_SCOPE_TYPES, ast.ClassDef)):
+                continue
+            if isinstance(candidate, (ast.Return, ast.Yield, ast.YieldFrom)):
+                if candidate.value is not None:
+                    values.append(candidate.value)
+                continue
+            stack.extend(reversed(tuple(ast.iter_child_nodes(candidate))))
+        result = tuple(values)
+        callable_value_nodes_cache[id(boundary)] = result
+        return result
+
+    potential_binding_keys: set[tuple[str, ast.AST, str]] = set()
+    potential_callable_kinds: set[str] = set()
+
+    def _potential_kind(kind: str) -> bool:
+        base = _base_kind(kind)
+        if base == "ordinary":
+            return False
+        if base in callable_owners:
+            return base in potential_callable_kinds
+        if base.startswith(("local:", "local-map:")):
+            owner_label = base.split(":", 1)[1]
+            return any(
+                key in potential_binding_keys
+                for key in module_binding_keys_by_label[owner_label]
+            )
+        if base.startswith(("module-prefix:", "module-prefix-map:")):
+            prefix = base.split(":", 1)[1]
+            return any(
+                (module == prefix or module.startswith(prefix + "."))
+                and any(
+                    key in potential_binding_keys
+                    for key in module_binding_keys_by_label[owner_label]
+                )
+                for module, owner_label in module_to_label.items()
+            )
+        return base in protected or base in governed_carriers
+
+    def _potential_name_binding_key(
+        label: str,
+        value: ast.Name,
+    ) -> tuple[str, ast.AST, str] | None:
+        current: ast.AST | None = _scope_for(label, value)
+        while current is not None:
+            target_scope = _binding_scope(label, current, value.id)
+            if target_scope is not current:
+                current = target_scope
+            key = (label, current, value.id)
+            if key in bindings:
+                return key
+            current = _lexical_parent(label, current)
+        return None
+
+    def _potential_name(label: str, value: ast.Name) -> bool:
+        key = _potential_name_binding_key(label, value)
+        if key is not None:
+            return key in potential_binding_keys
+        builtin = builtin_members.get(value.id)
+        return builtin is not None and _potential_kind(builtin)
+
+    local_module_expression_cache: dict[tuple[str, int], frozenset[str]] = {}
+    local_module_expression_stack: set[tuple[str, int]] = set()
+
+    def _spec_local_module_labels(label: str, spec: Spec) -> set[str]:
+        category, payload = spec
+        if category == "kind" and isinstance(payload, str):
+            base = _base_kind(payload)
+            if base.startswith("local:"):
+                return {base.removeprefix("local:")}
+            if base.startswith("module-prefix:"):
+                prefix = base.removeprefix("module-prefix:")
+                return {
+                    owner_label
+                    for module, owner_label in module_to_label.items()
+                    if module == prefix or module.startswith(prefix + ".")
+                }
+        if category == "expr" and isinstance(payload, ast.expr):
+            return _expression_local_module_labels(label, payload)
+        return set()
+
+    def _expression_local_module_labels(
+        label: str,
+        value: ast.expr,
+    ) -> set[str]:
+        marker = (label, id(value))
+        cached = local_module_expression_cache.get(marker)
+        if cached is not None:
+            return set(cached)
+        if marker in local_module_expression_stack:
+            return set()
+        local_module_expression_stack.add(marker)
+        try:
+            result: set[str] = set()
+            if isinstance(value, ast.Name):
+                key = _potential_name_binding_key(label, value)
+                if key is not None:
+                    result.update(
+                        owner_label
+                        for spec, _, _ in bindings[key]
+                        for owner_label in _spec_local_module_labels(label, spec)
+                    )
+            elif isinstance(value, ast.NamedExpr):
+                result.update(_expression_local_module_labels(label, value.value))
+            elif isinstance(value, ast.Attribute):
+                for owner_label in _expression_local_module_labels(
+                    label,
+                    value.value,
+                ):
+                    member_key = (owner_label, trees[owner_label], value.attr)
+                    result.update(
+                        nested_label
+                        for spec, _, _ in bindings.get(member_key, ())
+                        for nested_label in _spec_local_module_labels(
+                            owner_label,
+                            spec,
+                        )
+                    )
+                    result.update(
+                        nested_label
+                        for module, nested_label in module_to_label.items()
+                        if module.endswith("." + value.attr)
+                        and module_to_label.get(module.rsplit(".", 1)[0]) == owner_label
+                    )
+            local_module_expression_cache[marker] = frozenset(result)
+            return result
+        finally:
+            local_module_expression_stack.remove(marker)
+
+    potential_expression_cache: dict[tuple[str, int], bool] = {}
+    potential_expression_stack: set[tuple[str, int]] = set()
+    potential_callable_expression_stack: set[tuple[str, int]] = set()
+
+    def _kind_call_may_produce_carrier(kind: str) -> bool:
+        base = _base_kind(kind)
+        if base in callable_owners:
+            return base in potential_callable_kinds
+        return bool(
+            base
+            in {
+                "attribute-getter-factory",
+                "dynamic-attribute-selector",
+                "dynamic-module-descriptor",
+                "getter",
+                "global-namespace-factory",
+                "importer",
+                "mapping-getter",
+                "namespace-factory",
+                "object-getter",
+                "object-mutator",
+                "type-factory",
+            }
+            or base.startswith(
+                (
+                    "attribute-getter:",
+                    "attribute-selector:",
+                    "map-getter:",
+                )
+            )
+        )
+
+    def _spec_call_may_produce_carrier(label: str, spec: Spec) -> bool:
+        category, payload = spec
+        if category == "kind" and isinstance(payload, str):
+            return _kind_call_may_produce_carrier(payload)
+        if category == "function" and isinstance(payload, ast.AST):
+            return _callable_kind(label, payload) in potential_callable_kinds
+        if category == "local-member" and isinstance(payload, tuple):
+            owner_label, member = (str(payload[0]), str(payload[1]))
+            return any(
+                _spec_call_may_produce_carrier(owner_label, nested_spec)
+                for nested_spec, _, _ in bindings.get(
+                    (owner_label, trees[owner_label], member),
+                    (),
+                )
+            )
+        if category == "expr" and isinstance(payload, ast.expr):
+            return _callable_expression_may_produce_carrier(label, payload)
+        return False
+
+    def _callable_expression_may_produce_carrier(
+        label: str,
+        value: ast.expr,
+    ) -> bool:
+        marker = (label, id(value))
+        if marker in potential_callable_expression_stack:
+            return False
+        potential_callable_expression_stack.add(marker)
+        try:
+            if isinstance(value, ast.Name):
+                key = _potential_name_binding_key(label, value)
+                if key is not None:
+                    return any(
+                        _spec_call_may_produce_carrier(label, spec)
+                        for spec, _, _ in bindings[key]
+                    )
+                builtin = builtin_members.get(value.id)
+                return bool(
+                    builtin is not None and _kind_call_may_produce_carrier(builtin)
+                )
+            if isinstance(value, ast.NamedExpr):
+                return _callable_expression_may_produce_carrier(
+                    label,
+                    value.value,
+                )
+            if isinstance(value, ast.Attribute):
+                local_owners = _expression_local_module_labels(label, value.value)
+                if local_owners:
+                    return any(
+                        _spec_call_may_produce_carrier(owner_label, spec)
+                        for owner_label in local_owners
+                        for spec, _, _ in bindings.get(
+                            (owner_label, trees[owner_label], value.attr),
+                            (),
+                        )
+                    )
+                return _expression_may_carry_protected(label, value.value)
+            if isinstance(value, (ast.Call, ast.Subscript)):
+                return _expression_may_carry_protected(label, value)
+            if isinstance(value, ast.Lambda):
+                return _expression_may_carry_protected(label, value.body)
+            return False
+        finally:
+            potential_callable_expression_stack.remove(marker)
+
+    def _expression_may_carry_protected(label: str, value: ast.expr) -> bool:
+        marker = (label, id(value))
+        cached = potential_expression_cache.get(marker)
+        if cached is not None:
+            return cached
+        if marker in potential_expression_stack:
+            return False
+        potential_expression_stack.add(marker)
+        try:
+            if isinstance(value, ast.Name):
+                result = _potential_name(label, value)
+            elif isinstance(value, ast.NamedExpr):
+                result = _expression_may_carry_protected(label, value.value)
+            elif isinstance(value, ast.Attribute):
+                local_owners = _expression_local_module_labels(label, value.value)
+                result = (
+                    any(
+                        (owner_label, trees[owner_label], value.attr)
+                        in potential_binding_keys
+                        for owner_label in local_owners
+                    )
+                    if local_owners
+                    else _expression_may_carry_protected(label, value.value)
+                )
+            elif isinstance(value, ast.Subscript):
+                result = _expression_may_carry_protected(label, value.value)
+            elif isinstance(value, ast.Call):
+                result = _callable_expression_may_produce_carrier(
+                    label,
+                    value.func,
+                )
+            elif isinstance(
+                value,
+                (
+                    ast.Await,
+                    ast.BoolOp,
+                    ast.Dict,
+                    ast.IfExp,
+                    ast.Lambda,
+                    ast.List,
+                    ast.ListComp,
+                    ast.Set,
+                    ast.SetComp,
+                    ast.Tuple,
+                ),
+            ):
+                result = any(
+                    _expression_may_carry_protected(label, child)
+                    for child in ast.iter_child_nodes(value)
+                    if isinstance(child, ast.expr)
+                )
+            else:
+                result = False
+            potential_expression_cache[marker] = result
+            return result
+        finally:
+            potential_expression_stack.remove(marker)
+
+    def _spec_may_carry_protected(label: str, spec: Spec) -> bool:
+        category, payload = spec
+        if category in {"ordinary", "unobserved"}:
+            return False
+        if category == "kind":
+            assert isinstance(payload, str)
+            return _potential_kind(payload)
+        if category == "local-member":
+            assert isinstance(payload, tuple)
+            owner_label, member = payload
+            return (
+                str(owner_label),
+                trees[str(owner_label)],
+                str(member),
+            ) in potential_binding_keys
+        if category == "function":
+            assert isinstance(payload, ast.AST)
+            return _callable_kind(label, payload) in potential_callable_kinds
+        assert category == "expr" and isinstance(payload, ast.expr)
+        return _expression_may_carry_protected(label, payload)
+
+    for _ in range(max(1, len(bindings) + len(callable_owners) + 1)):
+        potential_expression_cache.clear()
+        changed = False
+        for kind, (owner_label, boundary) in tuple(callable_owners.items()):
+            if kind in potential_callable_kinds:
+                continue
+            if any(
+                _expression_may_carry_protected(owner_label, value)
+                for value in _callable_value_nodes(boundary)
+            ):
+                potential_callable_kinds.add(kind)
+                changed = True
+        for key, candidates in bindings.items():
+            if key in potential_binding_keys:
+                continue
+            if any(
+                _spec_may_carry_protected(key[0], spec) for spec, _, _ in candidates
+            ):
+                potential_binding_keys.add(key)
+                changed = True
+        if not changed:
+            break
+
+    def _callable_result_kinds(kind: str) -> set[str]:
+        base = _base_kind(kind)
+        owner = callable_owners.get(base)
+        if owner is None or base in callable_result_stack:
+            return set()
+        cached = callable_result_cache.get(base)
+        if cached is not None:
+            return set(cached)
+        callable_result_stack.add(base)
+        try:
+            owner_label, boundary = owner
+            result = {
+                result
+                for value in _callable_value_nodes(boundary)
+                for result in _expression_kinds(owner_label, value)
+            }
+            callable_result_cache[base] = frozenset(result)
+            return result
+        finally:
+            callable_result_stack.remove(base)
+
     def _spec_kinds(
         label: str,
         spec: Spec,
@@ -4728,7 +6027,18 @@ def _repository_sensitive_reexport_violations(
             owner_label, member = payload
             return _member_kinds("local:" + str(owner_label), str(member))
         if category == "function":
-            return set()
+            assert isinstance(payload, ast.AST)
+            kind = _callable_kind(label, payload)
+            if kind not in potential_callable_kinds:
+                return set()
+            return (
+                {kind}
+                if any(
+                    _kind_may_carry_protected(result)
+                    for result in _callable_result_kinds(kind)
+                )
+                else set()
+            )
         if category == "unobserved":
             return set()
         assert category == "expr" and isinstance(payload, ast.expr)
@@ -4760,61 +6070,314 @@ def _repository_sensitive_reexport_violations(
             ),
         )
 
+    def _callable_lookup_name_bindings(
+        label: str,
+        value: ast.Name,
+    ) -> tuple[Binding, ...]:
+        """Resolve only the finite bindings needed for callable map lookup.
+
+        Callable-observation analysis must not invoke the broader protected-value
+        analysis: that analysis asks when the callable is observed, which would
+        create a recursive dependency.  Parent bindings are therefore retained
+        conservatively, while same-scope bindings still honor lexical order.
+        """
+
+        origin_scope = _scope_for(label, value)
+        current: ast.AST | None = origin_scope
+        while current is not None:
+            target_scope = _binding_scope(label, current, value.id)
+            if target_scope is not current:
+                current = target_scope
+            candidates = bindings.get((label, current, value.id))
+            if candidates is not None:
+                if current is origin_scope:
+                    return _effective_bindings(
+                        label,
+                        current,
+                        value.id,
+                        _runtime_position(label, value, origin_scope),
+                    )
+                return tuple(candidates)
+            current = _lexical_parent(label, current)
+        return ()
+
+    callable_lookup_resolution_stack: set[tuple[str, int]] = set()
+
+    def _callable_member_lookup_kinds(owner: str, member: str) -> set[str]:
+        if owner.startswith("scope-map:") and member in {"get", "__getitem__"}:
+            return {"map-getter:" + owner}
+        mapped = {
+            ("module:builtins", "dict"): "dict-type",
+            ("module:builtins", "getattr"): "getter",
+            ("module:builtins", "globals"): "global-namespace-factory",
+            ("module:builtins", "object"): "object-type",
+            ("module:builtins", "vars"): "namespace-factory",
+            ("module:operator", "attrgetter"): "attribute-getter-factory",
+            ("module:operator", "getitem"): "mapping-getter",
+            ("dict-type", "get"): "mapping-getter",
+            ("dict-type", "__getitem__"): "mapping-getter",
+            ("dict-type", "__getattribute__"): "object-getter",
+            ("object-type", "__getattribute__"): "object-getter",
+        }.get((owner, member))
+        return set() if mapped is None else {mapped}
+
+    def _callable_lookup_spec_kinds(
+        label: str,
+        spec: Spec,
+    ) -> set[str]:
+        category, payload = spec
+        if category == "kind" and isinstance(payload, str):
+            return {payload}
+        if category == "expr" and isinstance(payload, ast.expr):
+            return _callable_lookup_kinds(label, payload)
+        return set()
+
+    def _callable_lookup_kinds(
+        label: str,
+        value: ast.expr,
+    ) -> set[str]:
+        """Resolve namespace-map lookup primitives without protected provenance."""
+
+        marker = (label, id(value))
+        if marker in callable_lookup_resolution_stack:
+            return set()
+        callable_lookup_resolution_stack.add(marker)
+        try:
+            if isinstance(value, ast.Name):
+                selected = _callable_lookup_name_bindings(label, value)
+                if selected:
+                    return {
+                        kind
+                        for spec, _, _ in selected
+                        for kind in _callable_lookup_spec_kinds(label, spec)
+                    }
+                builtin = builtin_members.get(value.id)
+                return set() if builtin is None else {builtin}
+            if isinstance(value, ast.NamedExpr):
+                return _callable_lookup_kinds(label, value.value)
+            if isinstance(value, ast.Attribute):
+                owners = _callable_lookup_kinds(label, value.value)
+                result: set[str] = set()
+                for owner in owners:
+                    result.update(_callable_member_lookup_kinds(owner, value.attr))
+                return result
+            if not isinstance(value, ast.Call):
+                return set()
+            function_kinds = _callable_lookup_kinds(label, value.func)
+            if (
+                "global-namespace-factory" in function_kinds
+                and not value.args
+                and not value.keywords
+            ):
+                return {_scope_map_kind(label, trees[label])}
+            if (
+                "namespace-factory" in function_kinds
+                and not value.args
+                and not value.keywords
+            ):
+                return {_scope_map_kind(label, _scope_for(label, value))}
+            if function_kinds & {"getter", "object-getter"}:
+                subject = _call_argument(value, 0, "object")
+                member = _call_argument(value, 1, "name")
+                member_name = (
+                    None if member is None else _static_expression_text(label, member)
+                )
+                if subject is None or member_name is None:
+                    return set()
+                return {
+                    result
+                    for owner in _callable_lookup_kinds(label, subject)
+                    for result in _callable_member_lookup_kinds(owner, member_name)
+                }
+            if "attribute-getter-factory" in function_kinds:
+                member = _call_argument(value, 0, "attr")
+                member_name = (
+                    None if member is None else _static_expression_text(label, member)
+                )
+                return (
+                    set()
+                    if member_name is None
+                    else {"attribute-getter:" + member_name}
+                )
+            reflected_members = {
+                kind.removeprefix("attribute-getter:")
+                for kind in function_kinds
+                if kind.startswith("attribute-getter:")
+            }
+            if reflected_members:
+                subject = _call_argument(value, 0, "object")
+                if subject is None:
+                    return set()
+                return {
+                    result
+                    for owner in _callable_lookup_kinds(label, subject)
+                    for member_name in reflected_members
+                    for result in _callable_member_lookup_kinds(owner, member_name)
+                }
+            return set()
+        finally:
+            callable_lookup_resolution_stack.remove(marker)
+
+    CallableSeen = frozenset[tuple[str, int, str, tuple[int, int]]]
+    callable_boundaries_resolution_stack: set[tuple[str, int]] = set()
+    callable_boundaries_cache: dict[
+        tuple[str, int],
+        frozenset[ast.AST],
+    ] = {}
+
+    def _binding_callable_boundaries(
+        label: str,
+        binding: Binding,
+        seen: CallableSeen,
+    ) -> set[ast.AST]:
+        (category, payload), _, _ = binding
+        if category == "function" and isinstance(payload, ast.AST):
+            return {payload}
+        if category == "expr" and isinstance(payload, ast.expr):
+            return _expression_callable_boundaries(label, payload, seen)
+        return set()
+
+    def _expression_callable_boundaries_uncached(
+        label: str,
+        value: ast.expr,
+        seen: CallableSeen,
+    ) -> set[ast.AST]:
+        if isinstance(value, ast.Lambda):
+            return {value}
+        if isinstance(value, ast.NamedExpr):
+            return _expression_callable_boundaries(label, value.value, seen)
+        if isinstance(value, ast.Name):
+            scope: ast.AST | None = _scope_for(label, value)
+            while scope is not None:
+                target_scope = _binding_scope(label, scope, value.id)
+                position = _runtime_position(label, value, scope)
+                marker = (label, id(target_scope), value.id, position)
+                if marker in seen:
+                    return set()
+                selected = _effective_bindings(
+                    label,
+                    target_scope,
+                    value.id,
+                    position,
+                )
+                if selected:
+                    return {
+                        boundary
+                        for binding in selected
+                        for boundary in _binding_callable_boundaries(
+                            label,
+                            binding,
+                            seen | {marker},
+                        )
+                    }
+                scope = _lexical_parent(label, scope)
+            return set()
+
+        result: set[ast.AST] = set()
+        if isinstance(value, ast.Call):
+            for owner_boundary in _expression_callable_boundaries(
+                label,
+                value.func,
+                seen,
+            ):
+                result.update(
+                    returned_boundary
+                    for returned in _callable_value_nodes(owner_boundary)
+                    for returned_boundary in _expression_callable_boundaries(
+                        label,
+                        returned,
+                        seen,
+                    )
+                )
+
+        lookup_bases: set[str] = set()
+        lookup_key: ast.expr | None = None
+        if isinstance(value, ast.Subscript):
+            lookup_bases.update(_callable_lookup_kinds(label, value.value))
+            lookup_key = value.slice
+        elif isinstance(value, ast.Call):
+            function_kinds = _callable_lookup_kinds(label, value.func)
+            lookup_bases.update(
+                kind.removeprefix("map-getter:")
+                for kind in function_kinds
+                if kind.startswith("map-getter:")
+            )
+            lookup_key = _call_argument(value, 0, "key")
+            if "mapping-getter" in function_kinds:
+                subject = _call_argument(value, 0, "object")
+                lookup_key = _call_argument(value, 1, "key")
+                if subject is not None:
+                    lookup_bases.update(_callable_lookup_kinds(label, subject))
+        key = _static_expression_text(label, lookup_key)
+        for owner_label, lookup_scope in (
+            scope_maps[kind] for kind in lookup_bases if kind in scope_maps
+        ):
+            if owner_label != label:
+                continue
+            if key is None:
+                result.update(
+                    candidate
+                    for candidate in _nodes_in_scope(label, lookup_scope)
+                    if isinstance(candidate, _FUNCTION_SCOPE_TYPES)
+                )
+                continue
+            target_scope = _binding_scope(label, lookup_scope, key)
+            position = _runtime_position(label, value, _scope_for(label, value))
+            binding_marker = (label, id(target_scope), key, position)
+            if binding_marker in seen:
+                continue
+            result.update(
+                boundary
+                for binding in _effective_bindings(
+                    label,
+                    target_scope,
+                    key,
+                    position,
+                )
+                for boundary in _binding_callable_boundaries(
+                    label,
+                    binding,
+                    seen | {binding_marker},
+                )
+            )
+        return result
+
+    def _expression_callable_boundaries(
+        label: str,
+        value: ast.expr,
+        seen: CallableSeen = frozenset(),
+    ) -> set[ast.AST]:
+        marker = (label, id(value))
+        if not seen:
+            cached = callable_boundaries_cache.get(marker)
+            if cached is not None:
+                return set(cached)
+        if marker in callable_boundaries_resolution_stack:
+            return set()
+        callable_boundaries_resolution_stack.add(marker)
+        try:
+            result = _expression_callable_boundaries_uncached(label, value, seen)
+            if not seen:
+                callable_boundaries_cache[marker] = frozenset(result)
+            return result
+        finally:
+            callable_boundaries_resolution_stack.remove(marker)
+
     def _binding_is_callable_boundary(
         label: str,
         binding: Binding,
         boundary: ast.AST,
-        seen: frozenset[tuple[str, int, str, tuple[int, int]]] = frozenset(),
+        seen: CallableSeen = frozenset(),
     ) -> bool:
-        (category, payload), _, _ = binding
-        if category == "function":
-            return payload is boundary
-        if category != "expr" or not isinstance(payload, ast.expr):
-            return False
-        if payload is boundary and isinstance(boundary, ast.Lambda):
-            return True
-        if not isinstance(payload, ast.Name):
-            return False
-        scope = _binding_scope(label, _scope_for(label, payload), payload.id)
-        payload_position = _runtime_position(label, payload, scope)
-        marker = (label, id(scope), payload.id, payload_position)
-        if marker in seen:
-            return False
-        return any(
-            _binding_is_callable_boundary(label, candidate, boundary, seen | {marker})
-            for candidate in _effective_bindings(
-                label,
-                scope,
-                payload.id,
-                payload_position,
-            )
-        )
+        return boundary in _binding_callable_boundaries(label, binding, seen)
 
     def _expression_is_callable_boundary(
         label: str,
         value: ast.expr,
         boundary: ast.AST,
+        seen: CallableSeen = frozenset(),
     ) -> bool:
-        if value is boundary and isinstance(boundary, ast.Lambda):
-            return True
-        if not isinstance(value, ast.Name):
-            return False
-        scope: ast.AST | None = _scope_for(label, value)
-        while scope is not None:
-            target_scope = _binding_scope(label, scope, value.id)
-            selected = _effective_bindings(
-                label,
-                target_scope,
-                value.id,
-                _runtime_position(label, value, scope),
-            )
-            if selected:
-                return any(
-                    _binding_is_callable_boundary(label, binding, boundary)
-                    for binding in selected
-                )
-            scope = _lexical_parent(label, scope)
-        return False
+        return boundary in _expression_callable_boundaries(label, value, seen)
 
     def _is_owned_callable_alias(
         label: str,
@@ -4845,13 +6408,65 @@ def _repository_sensitive_reexport_violations(
             isinstance(operator, (ast.Is, ast.IsNot)) for operator in parent.ops
         )
 
-    def _deferred_parent_bindings(
+    def _deferred_object_activation_positions(
+        label: str,
+        value: ast.expr,
+        target_scope: ast.AST,
+    ) -> set[tuple[int, int]]:
+        """Locate use/escape of a created generator or coroutine object."""
+
+        parents = parents_by_label[label]
+        parent = parents.get(value)
+        if isinstance(parent, ast.Expr):
+            return set()
+        bound_names: tuple[str, ...] = ()
+        binding_position = _position(value, after=True)
+        if isinstance(parent, ast.Assign) and parent.value is value:
+            bound_names = tuple(
+                name.id for target in parent.targets for name in _target_names(target)
+            )
+            binding_position = _position(parent, after=True)
+        elif isinstance(parent, ast.AnnAssign) and parent.value is value:
+            bound_names = tuple(name.id for name in _target_names(parent.target))
+            binding_position = _position(parent, after=True)
+        elif isinstance(parent, ast.NamedExpr) and parent.value is value:
+            bound_names = tuple(name.id for name in _target_names(parent.target))
+            binding_position = _position(parent, after=True)
+        if not bound_names:
+            return {_position(value, after=True)}
+
+        activations: set[tuple[int, int]] = set()
+        for candidate in _load_names_in_walk(label, target_scope):
+            if not (
+                candidate.id in bound_names and _position(candidate) > binding_position
+            ):
+                continue
+            if _is_passive_callable_observation(label, candidate):
+                continue
+            activations.add(_position(candidate))
+        return activations
+
+    DeferredObservation = tuple[
+        str,
+        tuple[tuple[int, int], ...],
+        tuple[tuple[int, int], ...],
+    ]
+    deferred_observation_cache: dict[
+        tuple[str, int, int],
+        DeferredObservation,
+    ] = {}
+
+    def _deferred_observation(
         label: str,
         origin_scope: ast.AST,
         target_scope: ast.AST,
-        name: str,
-    ) -> tuple[Binding, ...]:
-        """Return parent states observable at proven or conservative activation."""
+    ) -> DeferredObservation:
+        """Index callable activation once, independently of each parent name."""
+
+        cache_key = (label, id(origin_scope), id(target_scope))
+        cached = deferred_observation_cache.get(cache_key)
+        if cached is not None:
+            return cached
 
         boundary = origin_scope
         current = origin_scope
@@ -4860,7 +6475,9 @@ def _repository_sensitive_reexport_violations(
         while current is not target_scope:
             parent = parents.get(current)
             if parent is None:
-                return ()
+                result: DeferredObservation = ("unobserved", (), ())
+                deferred_observation_cache[cache_key] = result
+                return result
             if parent is not target_scope and isinstance(
                 parent,
                 (*_FUNCTION_SCOPE_TYPES, ast.ClassDef),
@@ -4869,7 +6486,9 @@ def _repository_sensitive_reexport_violations(
                 crossed_boundary = True
             current = parent
         if not isinstance(boundary, _FUNCTION_SCOPE_TYPES):
-            return tuple(bindings.get((label, target_scope, name), ()))
+            result = ("all", (), ())
+            deferred_observation_cache[cache_key] = result
+            return result
 
         def _body_is_deferred() -> bool:
             if isinstance(boundary, ast.AsyncFunctionDef):
@@ -4878,32 +6497,36 @@ def _repository_sensitive_reexport_violations(
                 isinstance(boundary, ast.FunctionDef)
                 and any(
                     isinstance(candidate, (ast.Yield, ast.YieldFrom))
-                    and _scope_for(label, candidate) is boundary
-                    for candidate in ast.walk(boundary)
+                    for candidate in _nodes_in_scope(label, boundary)
                 )
             )
 
         call_positions: set[tuple[int, int]] = set()
         boundary_scope = _scope_for(label, boundary)
         if boundary_scope is target_scope:
-            for candidate in ast.walk(target_scope):
+            for candidate in _calls_in_scope(label, target_scope):
                 if not (
-                    isinstance(candidate, ast.Call)
-                    and _scope_for(label, candidate) is target_scope
-                    and _expression_is_callable_boundary(
+                    _expression_is_callable_boundary(
                         label,
                         candidate.func,
                         boundary,
                     )
                 ):
                     continue
-                call_positions.add(_position(candidate, after=True))
+                if _body_is_deferred():
+                    call_positions.update(
+                        _deferred_object_activation_positions(
+                            label,
+                            candidate,
+                            target_scope,
+                        )
+                    )
+                else:
+                    call_positions.add(_position(candidate, after=True))
 
         module_final_available = False
         if target_scope is trees[label]:
-            for binding_label, binding_scope, bound_name in bindings:
-                if binding_label != label or binding_scope is not target_scope:
-                    continue
+            for _, binding_scope, bound_name in module_binding_keys_by_label[label]:
                 if any(
                     _binding_is_callable_boundary(label, binding, boundary)
                     for binding in _effective_bindings(
@@ -4922,15 +6545,15 @@ def _repository_sensitive_reexport_violations(
         ):
             escape_positions.add(_position(boundary, after=True))
         if boundary_scope is target_scope:
-            for candidate in ast.walk(target_scope):
-                if _scope_for(label, candidate) is not target_scope:
-                    continue
-                if not (
-                    candidate is boundary
-                    and isinstance(boundary, ast.Lambda)
-                    or isinstance(candidate, ast.Name)
-                    and isinstance(candidate.ctx, ast.Load)
-                    and _expression_is_callable_boundary(label, candidate, boundary)
+            escape_candidates: tuple[ast.expr, ...] = (
+                *((boundary,) if isinstance(boundary, ast.Lambda) else ()),
+                *_load_names_in_scope(label, target_scope),
+            )
+            for candidate in escape_candidates:
+                if candidate is not boundary and not _expression_is_callable_boundary(
+                    label,
+                    candidate,
+                    boundary,
                 ):
                     continue
                 parent = parents.get(candidate)
@@ -4943,11 +6566,9 @@ def _repository_sensitive_reexport_violations(
                 escape_positions.add(_position(candidate))
 
         nested_reference = any(
-            isinstance(candidate, ast.Name)
-            and isinstance(candidate.ctx, ast.Load)
-            and _scope_for(label, candidate) not in {target_scope, boundary}
+            _scope_for(label, candidate) not in {target_scope, boundary}
             and _expression_is_callable_boundary(label, candidate, boundary)
-            for candidate in ast.walk(target_scope)
+            for candidate in _load_names_in_walk(label, target_scope)
         )
 
         observed_at_all = bool(
@@ -4957,14 +6578,44 @@ def _repository_sensitive_reexport_violations(
             or nested_reference
         )
         if not observed_at_all:
-            return ((("unobserved", None), (10**9, 10**9), False),)
+            result = ("unobserved", (), ())
+            deferred_observation_cache[cache_key] = result
+            return result
 
         if crossed_boundary or _body_is_deferred() or nested_reference:
+            result = ("all", (), ())
+            deferred_observation_cache[cache_key] = result
+            return result
+
+        result = (
+            "positions",
+            tuple(sorted(call_positions)),
+            tuple(sorted(escape_positions)),
+        )
+        deferred_observation_cache[cache_key] = result
+        return result
+
+    def _deferred_parent_bindings_uncached(
+        label: str,
+        origin_scope: ast.AST,
+        target_scope: ast.AST,
+        name: str,
+    ) -> tuple[Binding, ...]:
+        """Return parent states observable at proven or conservative activation."""
+
+        mode, call_positions, escape_positions = _deferred_observation(
+            label,
+            origin_scope,
+            target_scope,
+        )
+        if mode == "unobserved":
+            return ((("unobserved", None), (10**9, 10**9), False),)
+        if mode == "all":
             return tuple(bindings.get((label, target_scope, name), ()))
 
         observed: list[Binding] = [
             binding
-            for position in sorted(call_positions)
+            for position in call_positions
             for binding in _effective_bindings(
                 label,
                 target_scope,
@@ -4973,7 +6624,7 @@ def _repository_sensitive_reexport_violations(
             )
         ]
         if escape_positions:
-            activation = min(escape_positions)
+            activation = escape_positions[0]
             initial = _effective_bindings(
                 label,
                 target_scope,
@@ -4988,7 +6639,44 @@ def _repository_sensitive_reexport_violations(
             observed.extend((*initial, *future))
         if observed:
             return tuple(observed)
-        return ((("unobserved", None), (10**9, 10**9), False),)
+        # This callable is observed, but the intermediate lexical scope has no
+        # binding for the name.  Continue to the next parent scope; reserve the
+        # unobserved sentinel for a callable that truly never activates.
+        return ()
+
+    deferred_parent_resolution_stack: set[tuple[str, int, int, str]] = set()
+    deferred_parent_cache: dict[
+        tuple[str, int, int, str],
+        tuple[Binding, ...],
+    ] = {}
+
+    def _deferred_parent_bindings(
+        label: str,
+        origin_scope: ast.AST,
+        target_scope: ast.AST,
+        name: str,
+    ) -> tuple[Binding, ...]:
+        marker = (label, id(origin_scope), id(target_scope), name)
+        cached = deferred_parent_cache.get(marker)
+        if cached is not None:
+            return cached
+        if marker in deferred_parent_resolution_stack:
+            # A callable/alias cycle has no unique lexical timestamp.  Retain
+            # every state from the target scope instead of recursing or
+            # silently declaring the route ordinary.
+            return tuple(bindings.get((label, target_scope, name), ()))
+        deferred_parent_resolution_stack.add(marker)
+        try:
+            result = _deferred_parent_bindings_uncached(
+                label,
+                origin_scope,
+                target_scope,
+                name,
+            )
+            deferred_parent_cache[marker] = result
+            return result
+        finally:
+            deferred_parent_resolution_stack.remove(marker)
 
     def _runtime_parent_bindings(
         label: str,
@@ -5026,6 +6714,15 @@ def _repository_sensitive_reexport_violations(
                 enclosing = _lexical_parent(label, enclosing)
 
             activation = _position(origin_scope, after=True)
+            if isinstance(origin_scope, ast.GeneratorExp):
+                activations = _deferred_object_activation_positions(
+                    label,
+                    origin_scope,
+                    target_scope,
+                )
+                if not activations:
+                    return ((("unobserved", None), (10**9, 10**9), False),)
+                activation = min(activations)
             initial = _effective_bindings(
                 label,
                 target_scope,
@@ -5063,6 +6760,9 @@ def _repository_sensitive_reexport_violations(
             target_scope = _binding_scope(label, current, name)
             if target_scope is not current:
                 current = target_scope
+            if (label, current, name) not in bindings:
+                current = _lexical_parent(label, current)
+                continue
             selected = _runtime_parent_bindings(
                 label,
                 origin_scope,
@@ -5199,13 +6899,13 @@ def _repository_sensitive_reexport_violations(
         kinds = {
             kind
             for target in resolved_targets
-            if (kind := _module_kind(target)) is not None
+            if (kind := _module_kind(target) or _module_prefix_kind(target)) is not None
         }
         if not targets_complete or not targets:
             kinds.add("dynamic-import")
         return kinds
 
-    def _expression_kinds(
+    def _expression_kinds_uncached(
         label: str,
         value: ast.expr,
         seen: frozenset[tuple[str, int, str]] = frozenset(),
@@ -5244,11 +6944,18 @@ def _repository_sensitive_reexport_violations(
         function_kinds = _expression_kinds(label, value.func, seen)
         results: set[str] = set()
         for function_kind in function_kinds:
-            if function_kind == "importer":
+            if _base_kind(function_kind) in callable_owners:
+                results.update(_callable_result_kinds(function_kind))
+            elif function_kind == "importer":
                 results.update(_module_from_importer(label, value))
+            elif function_kind == "global-namespace-factory":
+                if not value.args and not value.keywords:
+                    results.add(_scope_map_kind(label, trees[label]))
             elif function_kind == "namespace-factory":
                 subject = _call_argument(value, 0, "object")
                 if subject is None:
+                    if not value.args and not value.keywords:
+                        results.add(_scope_map_kind(label, _scope_for(label, value)))
                     continue
                 for owner in _expression_kinds(label, subject, seen):
                     base = _base_kind(owner)
@@ -5280,12 +6987,8 @@ def _repository_sensitive_reexport_violations(
                         "dynamic-relayed:" + _base_kind(owner).removeprefix("local:")
                         for owner in owners
                         if _base_kind(owner).startswith("local:")
-                        and any(
-                            kind in protected
-                            for kinds in exports[
-                                _base_kind(owner).removeprefix("local:")
-                            ].values()
-                            for kind in kinds
+                        and _owner_has_protected(
+                            _base_kind(owner).removeprefix("local:")
                         )
                     )
                     if "module-type" in {_base_kind(owner) for owner in owners}:
@@ -5341,12 +7044,8 @@ def _repository_sensitive_reexport_violations(
                         "dynamic-relayed:" + _base_kind(owner).removeprefix("local:")
                         for owner in owners
                         if _base_kind(owner).startswith("local:")
-                        and any(
-                            kind in protected
-                            for kinds in exports[
-                                _base_kind(owner).removeprefix("local:")
-                            ].values()
-                            for kind in kinds
+                        and _owner_has_protected(
+                            _base_kind(owner).removeprefix("local:")
                         )
                     )
                     if "module-type" in {_base_kind(owner) for owner in owners}:
@@ -5394,12 +7093,8 @@ def _repository_sensitive_reexport_violations(
                         "dynamic-relayed:" + _base_kind(owner).removeprefix("local:")
                         for owner in owners
                         if _base_kind(owner).startswith("local:")
-                        and any(
-                            kind in protected
-                            for kinds in exports[
-                                _base_kind(owner).removeprefix("local:")
-                            ].values()
-                            for kind in kinds
+                        and _owner_has_protected(
+                            _base_kind(owner).removeprefix("local:")
                         )
                     )
                     if "module-type" in {_base_kind(owner) for owner in owners}:
@@ -5418,12 +7113,8 @@ def _repository_sensitive_reexport_violations(
                         "mutation-relayed:" + _base_kind(owner).removeprefix("local:")
                         for owner in owners
                         if _base_kind(owner).startswith("local:")
-                        and any(
-                            kind in protected
-                            for kinds in exports[
-                                _base_kind(owner).removeprefix("local:")
-                            ].values()
-                            for kind in kinds
+                        and _owner_has_protected(
+                            _base_kind(owner).removeprefix("local:")
                         )
                     )
                     results.update(
@@ -5439,12 +7130,8 @@ def _repository_sensitive_reexport_violations(
                         "dynamic-relayed:" + _base_kind(owner).removeprefix("local:")
                         for owner in _expression_kinds(label, subject, seen)
                         if _base_kind(owner).startswith("local:")
-                        and any(
-                            kind in protected
-                            for kinds in exports[
-                                _base_kind(owner).removeprefix("local:")
-                            ].values()
-                            for kind in kinds
+                        and _owner_has_protected(
+                            _base_kind(owner).removeprefix("local:")
                         )
                     )
             elif function_kind.startswith("attribute-getter:"):
@@ -5457,12 +7144,8 @@ def _repository_sensitive_reexport_violations(
                             "module-prefix-risk:"
                             + _base_kind(owner).removeprefix("module-prefix:")
                         )
-                    if _base_kind(owner).startswith("local:") and any(
-                        kind in protected
-                        for kinds in exports[
-                            _base_kind(owner).removeprefix("local:")
-                        ].values()
-                        for kind in kinds
+                    if _base_kind(owner).startswith("local:") and _owner_has_protected(
+                        _base_kind(owner).removeprefix("local:")
                     ):
                         results.add(
                             "dynamic-relayed:"
@@ -5477,10 +7160,75 @@ def _repository_sensitive_reexport_violations(
                     )
         return results
 
-    module_names = {
+    def _expression_kinds(
+        label: str,
+        value: ast.expr,
+        seen: frozenset[tuple[str, int, str]] = frozenset(),
+    ) -> set[str]:
+        key = (label, id(value))
+        if not seen:
+            cached = expression_kind_cache.get(key)
+            if cached is not None:
+                return set(cached)
+        result = _expression_kinds_uncached(label, value, seen)
+        if not seen:
+            expression_kind_cache[key] = frozenset(result)
+        return result
+
+    all_module_names = {
         (label, name) for label, scope, name in bindings if scope is trees[label]
     }
+    for label, name in all_module_names:
+        exports[label].setdefault(name, set())
+    demanded_members = {
+        (str(payload[0]), str(payload[1]))
+        for candidates in bindings.values()
+        for (category, payload), _, _ in candidates
+        if category == "local-member" and isinstance(payload, tuple)
+    }
+    fully_demanded_labels: set[str] = set()
+    for consumer_label, tree in trees.items():
+        parents = parents_by_label[consumer_label]
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.expr):
+                continue
+            owner_labels = _expression_local_module_labels(consumer_label, node)
+            if not owner_labels:
+                continue
+            parent = parents.get(node)
+            if isinstance(parent, ast.Attribute) and parent.value is node:
+                demanded_members.update(
+                    (owner_label, parent.attr) for owner_label in owner_labels
+                )
+                continue
+            if (
+                isinstance(parent, ast.Assign)
+                and parent.value is node
+                and all(isinstance(target, ast.Name) for target in parent.targets)
+                or isinstance(parent, ast.AnnAssign)
+                and parent.value is node
+                and isinstance(parent.target, ast.Name)
+                or isinstance(parent, ast.NamedExpr)
+                and parent.value is node
+                and isinstance(parent.target, ast.Name)
+            ):
+                continue
+            fully_demanded_labels.update(owner_labels)
+    module_names = {
+        (label, name)
+        for label, scope, name in potential_binding_keys
+        if scope is trees[label]
+        and (
+            label in fully_demanded_labels
+            or (label, name) in demanded_members
+            or any(
+                spec[0] != "function" for spec, _, _ in bindings[(label, scope, name)]
+            )
+        )
+    }
     for _ in range(max(1, len(module_names) + 1)):
+        callable_result_cache.clear()
+        expression_kind_cache.clear()
         changed = False
         for label, name in module_names:
             kinds = {
@@ -5502,10 +7250,10 @@ def _repository_sensitive_reexport_violations(
 
     def _local_module_carries_protected(kind: str) -> bool:
         base = _base_kind(kind)
-        if not base.startswith(("local:", "local-map:")):
-            return False
-        owner_label = base.split(":", 1)[1]
-        return _owner_has_protected(owner_label)
+        return bool(
+            base.startswith(("local:", "local-map:"))
+            and _kind_may_carry_protected(base)
+        )
 
     def _module_prefix_may_carry_protected(prefix: str) -> bool:
         return any(
@@ -5523,8 +7271,13 @@ def _repository_sensitive_reexport_violations(
         base = _base_kind(kind)
         if base.startswith("local-map:"):
             return False
+        if _is_simple_tracked_alias(label, node):
+            return True
         if isinstance(parent, ast.Attribute) and parent.value is node:
-            return bool(_member_kinds(base, parent.attr))
+            owner_label = base.removeprefix("local:")
+            return bool(
+                _member_kinds(base, parent.attr) or parent.attr in exports[owner_label]
+            )
         if not (
             isinstance(parent, ast.Call)
             and any(argument is node for argument in parent.args)
@@ -5619,7 +7372,7 @@ def _repository_sensitive_reexport_violations(
                     for imported in node.names:
                         if imported.name == "*":
                             if any(
-                                kind in protected
+                                _kind_may_carry_protected(kind)
                                 for kinds in exports[local_label].values()
                                 for kind in kinds
                             ):
@@ -5631,17 +7384,22 @@ def _repository_sensitive_reexport_violations(
                             continue
                         imported_kinds = exports[local_label].get(imported.name, set())
                         for kind in imported_kinds:
-                            if kind in protected:
+                            if _kind_may_carry_protected(kind):
                                 violations.append(
                                     "%s:%s: %s is re-exported through %s"
                                     % (
                                         label,
                                         node.lineno,
-                                        _describe(kind),
+                                        _describe(kind)
+                                        if kind in protected
+                                        else "governed capability carrier",
                                         module,
                                     )
                                 )
-                        if _owner_has_protected(local_label) and not imported_kinds:
+                        if (
+                            _owner_has_protected(local_label)
+                            and imported.name not in exports[local_label]
+                        ):
                             violations.append(
                                 "%s:%s: unmodeled member is imported from a helper "
                                 "carrying a governed capability" % (label, node.lineno)
@@ -5651,10 +7409,16 @@ def _repository_sensitive_reexport_violations(
             for kind in _expression_kinds(label, node):
                 if kind.startswith("relayed:"):
                     base = kind.removeprefix("relayed:")
-                    if base in protected:
+                    if _kind_may_carry_protected(base):
                         violations.append(
                             "%s:%s: %s is recovered through a re-exported module"
-                            % (label, node.lineno, _describe(base))
+                            % (
+                                label,
+                                node.lineno,
+                                _describe(base)
+                                if base in protected
+                                else "governed capability carrier",
+                            )
                         )
                 elif kind.startswith("dynamic-relayed:"):
                     violations.append(
@@ -7002,6 +8766,7 @@ def outer():
         module = globals()['sqlite3']
     def open_connection(path):
         return module.connect(path)
+    recover()
     return open_connection
 """,
     )
@@ -8457,8 +10222,8 @@ operator.setitem(vars(builtins), 'len', object())
 
     unrelated = """
 import builtins
-def resolve_builtin(name):
-    return vars(builtins)[name]
+def resolve_length():
+    return vars(builtins)['len']
 """
     assert (
         _schema_installer_gate_violations(unrelated, "ordinary-introspection.py") == []
@@ -9150,7 +10915,7 @@ def trace(frame, event, argument):
 previous = sys.gettrace()
 sys.settrace(trace)
 try:
-    observed = event
+    observed = previous
 finally:
     sys.settrace(previous)
 """,
@@ -9355,3 +11120,412 @@ from app.execution_core.persistence.schema import install_schema
             )
             == []
         ), ordinal
+
+
+def test_rev0104_gate_audit_closes_order_namespace_and_trace_bypasses() -> None:
+    """Runtime order, incomplete imports, and trace lifecycle fail independently."""
+
+    rejected = (
+        (
+            """
+from importlib import import_module
+TARGET = 'json'
+import_module(TARGET).APPROVED_EXECUTION_DDL_SHA256 = (
+    TARGET := 'approved_schema_digest'
+)
+""",
+            "approval token mutation route",
+        ),
+        (
+            """
+from importlib import import_module
+TARGET = 'sqlite3'
+def probe():
+    return import_module(TARGET).connect('blocked.db')
+globals()['probe']()
+TARGET = 'json'
+""",
+            "literal dynamic SQLite/schema import",
+        ),
+        (
+            """
+from importlib import import_module
+TARGET = 'sqlite3'
+def probe():
+    return import_module(TARGET).connect('blocked.db')
+lookup = vars()
+lookup.get('probe')()
+TARGET = 'json'
+""",
+            "literal dynamic SQLite/schema import",
+        ),
+        (
+            """
+from builtins import getattr
+from importlib import import_module
+TARGET = 'sqlite3'
+def probe():
+    return import_module(TARGET).connect('blocked.db')
+getattr(globals(), 'get')('probe')()
+TARGET = 'json'
+""",
+            "literal dynamic SQLite/schema import",
+        ),
+        (
+            """
+from builtins import object
+from importlib import import_module
+TARGET = 'sqlite3'
+def probe():
+    return import_module(TARGET).connect('blocked.db')
+object.__getattribute__(globals(), '__getitem__')('probe')()
+TARGET = 'json'
+""",
+            "literal dynamic SQLite/schema import",
+        ),
+        (
+            """
+from importlib import import_module
+from operator import attrgetter
+TARGET = 'sqlite3'
+def probe():
+    return import_module(TARGET).connect('blocked.db')
+lookup = attrgetter('get')(globals())
+lookup('probe')()
+TARGET = 'json'
+""",
+            "literal dynamic SQLite/schema import",
+        ),
+        (
+            """
+from importlib import import_module
+TARGET = choose_target()
+import_module(TARGET).APPROVED_EXECUTION_DDL_SHA256 = 'forged'
+""",
+            "approval token mutation route",
+        ),
+        (
+            """
+from builtins import vars
+from importlib import import_module
+TARGET = choose_target()
+vars(import_module(TARGET))['APPROVED_EXECUTION_DDL_SHA256'] = 'forged'
+""",
+            "incomplete import mutation route",
+        ),
+        (
+            """
+from builtins import setattr
+from importlib import import_module
+TARGET = choose_target()
+setattr(import_module(TARGET), 'APPROVED_EXECUTION_DDL_SHA256', 'forged')
+""",
+            "approval token mutation route",
+        ),
+        (
+            """
+from importlib import import_module
+TARGET = choose_target() or 'approved_schema_digest'
+import_module(TARGET).APPROVED_EXECUTION_DDL_SHA256 = 'forged'
+""",
+            "approval token mutation route",
+        ),
+        (
+            """
+from importlib import import_module
+TARGET = 'approved_schema_digest' if condition else choose_target()
+import_module(TARGET).APPROVED_EXECUTION_DDL_SHA256 = 'forged'
+""",
+            "approval token mutation route",
+        ),
+        (
+            """
+import sys
+def outer():
+    def mutate(frame, event, argument):
+        return mutate
+    def trace(frame, event, argument):
+        nonlocal trace
+        trace = mutate
+        return trace
+    previous = sys.gettrace()
+    sys.settrace(trace)
+    try:
+        pass
+    finally:
+        sys.settrace(previous)
+outer()
+""",
+            "interpreter trace mutation route",
+        ),
+        (
+            """
+import sys
+def trace(frame, event, argument):
+    import approved_schema_digest
+    return trace
+previous = sys.gettrace()
+sys.settrace(trace)
+try:
+    pass
+finally:
+    sys.settrace(previous)
+""",
+            "interpreter trace mutation route",
+        ),
+        (
+            """
+import sys
+def trace(frame, event, argument):
+    observe(event)
+    return trace
+previous = sys.gettrace()
+sys.settrace(trace)
+try:
+    pass
+finally:
+    sys.settrace(previous)
+""",
+            "interpreter trace mutation route",
+        ),
+        (
+            """
+import sys
+def trace(frame, event, argument):
+    return trace
+sys.settrace(trace)
+""",
+            "interpreter trace mutation route",
+        ),
+        (
+            """
+import sys
+def trace(frame, event, argument):
+    return trace
+previous = sys.gettrace()
+sys.settrace(trace)
+try:
+    pass
+finally:
+    sys.settrace(None)
+""",
+            "interpreter trace mutation route",
+        ),
+    )
+    for ordinal, (source, expected) in enumerate(rejected, 1):
+        violations = _schema_installer_gate_violations(
+            source,
+            f"rev0104-{ordinal}.py",
+        )
+        assert any(expected in violation for violation in violations), violations
+
+    accepted = (
+        """
+from importlib import import_module
+TARGET = 'sqlite3'
+match 'json':
+    case TARGET:
+        pass
+import_module(TARGET).loads('{}')
+""",
+        """
+from importlib import import_module
+def outer():
+    TARGET = 'json'
+    def pending():
+        yield import_module(TARGET).connect('unused.db')
+    pending()
+    TARGET = 'sqlite3'
+outer()
+""",
+        """
+from importlib import import_module
+async def outer():
+    TARGET = 'json'
+    async def pending():
+        return import_module(TARGET).connect('unused.db')
+    pending()
+    TARGET = 'sqlite3'
+""",
+        """
+from importlib import import_module
+def outer():
+    TARGET = 'json'
+    (import_module(TARGET).connect('unused.db') for _ in (0,))
+    TARGET = 'sqlite3'
+outer()
+""",
+        """
+import sys
+def outer():
+    line_events = 0
+    def count_lines(frame, event, argument):
+        nonlocal line_events
+        if event == 'line':
+            line_events += 1
+        return count_lines
+    previous = sys.gettrace()
+    sys.settrace(count_lines)
+    try:
+        observed = line_events
+    finally:
+        sys.settrace(previous)
+outer()
+""",
+    )
+    for ordinal, source in enumerate(accepted, 1):
+        assert (
+            _schema_installer_gate_violations(
+                source,
+                f"rev0104-good-{ordinal}.py",
+            )
+            == []
+        ), ordinal
+
+
+def test_rev0104_topology_closes_transitive_carriers_and_namespace_calls() -> None:
+    """Cross-file carriers remain governed through children, prefixes, and maps."""
+
+    installer = "from app.execution_core.persistence.schema import install_schema\n"
+    rejected = (
+        {
+            "tests/execution_core/helper.py": installer,
+            "tests/execution_core/consumer.py": """
+from importlib import import_module
+TARGET = 'json'
+import_module(TARGET).install_schema = (TARGET := 'helper')
+""",
+        },
+        {
+            "tests/execution_core/helper.py": installer,
+            "tests/execution_core/consumer.py": """
+from importlib import import_module
+TARGET = 'helper'
+def probe():
+    return import_module(TARGET).install_schema
+globals()['probe']()
+TARGET = 'json'
+""",
+        },
+        {
+            "tests/execution_core/helper.py": installer,
+            "tests/execution_core/consumer.py": """
+from builtins import getattr
+from importlib import import_module
+TARGET = 'helper'
+def probe():
+    return import_module(TARGET).install_schema
+getattr(globals(), 'get')('probe')()
+TARGET = 'json'
+""",
+        },
+        {
+            "tests/execution_core/helper.py": installer,
+            "tests/execution_core/consumer.py": """
+from importlib import import_module
+from operator import attrgetter
+TARGET = 'helper'
+def probe():
+    return import_module(TARGET).install_schema
+lookup = attrgetter('__getitem__')(globals())
+lookup('probe')()
+TARGET = 'json'
+""",
+        },
+        {
+            "tests/execution_core/child.py": installer,
+            "tests/execution_core/relay.py": """
+from tests.execution_core import child
+""",
+            "tests/execution_core/consumer.py": """
+from tests.execution_core import relay
+relay.child.install_schema
+""",
+        },
+        {
+            "tests/execution_core/helper.py": "import builtins\n",
+            "tests/execution_core/consumer.py": """
+from helper import builtins
+builtins.__import__('approved_schema_digest')
+""",
+        },
+        {
+            "tests/execution_core/helper.py": "import importlib\n",
+            "tests/execution_core/consumer.py": """
+from helper import importlib
+importlib.import_module('approved_schema_digest')
+""",
+        },
+        {
+            "tests/execution_core/helper.py": "import sys\n",
+            "tests/execution_core/consumer.py": """
+from helper import sys
+sys.settrace(callback)
+""",
+        },
+        {
+            "tests/execution_core/helper.py": installer,
+            "tests/execution_core/consumer.py": """
+from importlib import import_module
+import_module('tests.execution_core').helper.install_schema
+""",
+        },
+        {
+            "tests/execution_core/helper.py": installer,
+            "tests/execution_core/consumer.py": """
+from importlib import import_module
+TARGET = choose_target() or 'helper'
+import_module(TARGET).install_schema
+""",
+        },
+        {
+            "tests/execution_core/helper.py": installer,
+            "tests/execution_core/consumer.py": """
+from importlib import import_module
+TARGET = 'helper' if condition else choose_target()
+import_module(TARGET).install_schema
+""",
+        },
+    )
+    for ordinal, sources in enumerate(rejected, 1):
+        assert _repository_sensitive_reexport_violations(sources), ordinal
+
+    accepted = (
+        {
+            "tests/execution_core/helper.py": installer,
+            "tests/execution_core/relay.py": """
+from tests import execution_core as package
+PACKAGE_NAME = package.__dict__['__name__']
+""",
+            "tests/execution_core/consumer.py": """
+from tests.execution_core.relay import PACKAGE_NAME
+assert PACKAGE_NAME == 'tests.execution_core'
+""",
+        },
+        {
+            "tests/execution_core/helper.py": installer,
+            "tests/execution_core/consumer.py": """
+from importlib import import_module
+def outer():
+    TARGET = 'ordinary'
+    def pending():
+        yield import_module(TARGET).install_schema
+    pending()
+    TARGET = 'helper'
+outer()
+""",
+        },
+        {
+            "tests/execution_core/helper.py": installer,
+            "tests/execution_core/consumer.py": """
+from importlib import import_module
+TARGET = 'helper'
+match 'ordinary':
+    case TARGET:
+        pass
+import_module(TARGET)
+""",
+        },
+    )
+    for ordinal, sources in enumerate(accepted, 1):
+        assert _repository_sensitive_reexport_violations(sources) == [], ordinal
