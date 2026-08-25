@@ -63,6 +63,7 @@ allowed_paths:
   - work/review/REV-0093/**
   - work/review/REV-0094/**
   - work/review/REV-0095/**
+  - work/review/REV-0096/**
   - work/review/FINDING-preexisting-suite-floor-2026-08-24.md
   - work/review/FINDING-protection-stateful-replay-disposition.md
   - work/review/FINDING-schema-approval-gate-is-self-approving.md
@@ -562,3 +563,40 @@ runtime composition, database activity, or human-gate authority changed.
 review. SQLite execution and changed-DDL installation remain forbidden until
 that review records P0=0, P1=0 and Ameen separately approves the exact
 candidate, tree, DDL identity, manifest, and fresh-file-only commands.
+
+## Amendment — REV-0096 exact sensitive-value ownership review route (2026-08-24)
+
+REV-0095 independently reviewed
+`4dd24b5e3235cfff160923c31eee5922c6ed95fe` and returned BLOCK with three
+distinct P0 findings, two P1 findings, and one P2 documentation finding. The
+P0s proved that registry and sys-namespace-map mutations were owned by too few
+surface spellings and that the canonical approval accessor could be rewritten
+in place. The P1s proved a shadowed local `dict` was treated as the builtin and
+that an ordinary direct registry read was rejected while its imported
+equivalent passed. The P2 correctly noted that the REV-0095 request described
+a multi-commit range as if it were a one-file source diff. REV-0095 remains
+immutable evidence; its result records the independent reviewers' complete
+findings.
+
+The root remediation is frozen at
+`d00903f9321b124723f6dad3d74f68b3214eb240`, tree
+`be49d44033451513949ac338e7f502fa9ac2f135`. It makes mutation ownership
+value-centered: the finite grammar distinguishes the sensitive module registry
+and sys namespace map; follows known builtin-dict and operator mutator
+functions through lexical aliases; owns stores, deletes, and augmented writes;
+and allows only tracked map reads to preserve downstream provenance. The
+approval accessor is now an unescapable capability except as its direct
+canonical call, with explicit direct, known-mutator, reflection, and arbitrary
+object-mutation controls. Map lookup now requires a lexically resolved builtin
+`dict`, leaving a local shadow ordinary. Direct registry reads are no longer
+rejected by spelling alone; their resulting proven module values remain governed.
+
+The successor's review request names the exact one-file code range
+`4dd24b5..d00903f`, separately from its documentation commits, resolving the
+P2 without rewriting REV-0095. This remains test-side static audit only: no
+DDL byte, SQL, public export, runtime composition, database activity, or
+human-gate authority changed. `work/review/REV-0096/**` is added solely for a
+new independent exact-head review. SQLite execution and changed-DDL
+installation remain forbidden until that review records P0=0, P1=0 and Ameen
+separately approves the exact candidate, tree, DDL identity, manifest, and
+fresh-file-only commands.
