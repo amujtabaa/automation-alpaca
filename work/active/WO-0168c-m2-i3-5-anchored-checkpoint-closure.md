@@ -51,6 +51,7 @@ allowed_paths:
   - work/review/REV-0081/**
   - work/review/REV-0082/**
   - work/review/REV-0083/**
+  - work/review/REV-0084/**
   - work/review/FINDING-preexisting-suite-floor-2026-08-24.md
   - work/review/FINDING-protection-stateful-replay-disposition.md
   - work/review/FINDING-schema-approval-gate-is-self-approving.md
@@ -247,3 +248,24 @@ than being credited without a failure-capable test.
 review of these controls. The source and test paths were already released by this
 work order. This amendment creates no DDL change, SQLite execution authority,
 changed-DDL installation, or expansion of the human gate.
+
+## Amendment — REV-0084 exact dynamic-acquisition review route (2026-08-24)
+
+REV-0083 reviewed `546471c86647637a277237a53cf949b66a6a955a` and returned
+`P0=0`, `P1=1`, `P2=0`: without a canonical approval import, direct dynamic or
+namespace recovery could remain outside the SQLite-surface classifier. Its root
+remediation is frozen at `4c98e4058d76cefc92d7b8aecf43d2b426722713`, tree
+`db7135490b98666aa95ca1de18407787a7f6f501`. The source grammar now treats
+direct dynamic-import factory results and direct namespace-map/module-registry
+results as disallowed connection receivers even if no approval import is present;
+it follows simple aliases of those values and folds literal string concatenation
+for import targets. It does not claim to decide arbitrary metaprogramming. The
+new controls prove constructed import targets, `globals`, `sys.modules`, simple
+aliases, local import aliases, and `__builtins__` acquisition paths fail, while a
+SQLite exception-construction-only source remains accepted.
+
+`work/review/REV-0084/**` is added solely for a fresh, independent exact-head
+review of this bounded grammar remediation. The source and test paths were
+already released by this work order. This amendment creates no DDL change,
+SQLite execution authority, changed-DDL installation, or expansion of the human
+gate.
