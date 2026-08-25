@@ -1310,7 +1310,8 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
         ("builtins", "exec"): "dynamic-code",
         ("builtins", "getattr"): "getter",
         ("builtins", "globals"): "global-namespace-factory",
-        ("builtins", "setattr"): "setter",
+        ("builtins", "delattr"): "attribute-mutator",
+        ("builtins", "setattr"): "attribute-mutator",
         ("builtins", "vars"): "namespace-factory",
         ("importlib", "import_module"): "importer",
         ("operator", "attrgetter"): "attrgetter",
@@ -1323,7 +1324,8 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
         "exec": "dynamic-code",
         "getattr": "getter",
         "globals": "global-namespace-factory",
-        "setattr": "setter",
+        "delattr": "attribute-mutator",
+        "setattr": "attribute-mutator",
         "vars": "namespace-factory",
     }
 
@@ -1885,11 +1887,15 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
             "exec": "dynamic-code",
             "getattr": "getter",
             "globals": "global-namespace-factory",
-            "setattr": "setter",
+            "delattr": "attribute-mutator",
+            "setattr": "attribute-mutator",
             "vars": "namespace-factory",
         },
         "module-map:importlib": {"import_module": "importer"},
-        "module-map:sys": {"modules": "module-map:sys"},
+        "module-map:sys": {
+            "approved_schema_digest": "module:approval",
+            "modules": "module-map:sys",
+        },
         "module-map:schema": {"install_schema": "dynamic-installer"},
         "module-map:sqlite3": {
             "connect": "connection-reference",
@@ -1909,7 +1915,8 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
         "getattr": "getter",
         "globals": "global-namespace-factory",
         "importlib": "module:importlib",
-        "setattr": "setter",
+        "delattr": "attribute-mutator",
+        "setattr": "attribute-mutator",
         "sqlite3": "module:sqlite3",
         "sys": "module:sys",
         "vars": "namespace-factory",
@@ -1965,13 +1972,16 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
                 "module:approval",
                 "APPROVED_EXECUTION_DDL_SHA256",
             ): "approval-token",
+            ("module:approval", "__delattr__"): "approval-bound-mutator",
+            ("module:approval", "__setattr__"): "approval-bound-mutator",
             ("module:builtins", "__dict__"): "module-map:builtins",
             ("module:builtins", "__import__"): "importer",
+            ("module:builtins", "delattr"): "attribute-mutator",
             ("module:builtins", "eval"): "dynamic-code",
             ("module:builtins", "exec"): "dynamic-code",
             ("module:builtins", "getattr"): "getter",
             ("module:builtins", "globals"): "global-namespace-factory",
-            ("module:builtins", "setattr"): "setter",
+            ("module:builtins", "setattr"): "attribute-mutator",
             ("module:builtins", "vars"): "namespace-factory",
             ("module:importlib", "__dict__"): "module-map:importlib",
             ("module:importlib", "import_module"): "importer",
@@ -2230,34 +2240,49 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
                 violations.append(
                     f"{label}:{node.lineno}: approval token mutation route"
                 )
-            if owner_kind == "module:approval" and node.attr == "__dict__":
-                violations.append(
-                    f"{label}:{node.lineno}: approval module namespace route"
-                )
             if owner_kind == "module:schema" and node.attr == "__dict__":
                 violations.append(
                     f"{label}:{node.lineno}: schema module namespace route"
                 )
+        if isinstance(node, ast.Call):
+            mutation_kind = _resolve_capability_expression(node.func)
+            if mutation_kind == "attribute-mutator":
+                subject = _call_argument(node, "object", 0)
+                member = _call_argument(node, "name", 1)
+                if (
+                    subject is not None
+                    and member is not None
+                    and _resolve_capability_expression(subject) == "module:approval"
+                    and _resolve_static_string(member)
+                    == "APPROVED_EXECUTION_DDL_SHA256"
+                ):
+                    violations.append(
+                        f"{label}:{node.lineno}: approval token mutation route"
+                    )
+            elif mutation_kind == "approval-bound-mutator":
+                member = _call_argument(node, "name", 0)
+                if (
+                    member is not None
+                    and _resolve_static_string(member)
+                    == "APPROVED_EXECUTION_DDL_SHA256"
+                ):
+                    violations.append(
+                        f"{label}:{node.lineno}: approval token mutation route"
+                    )
         if (
-            isinstance(node, ast.Call)
-            and _resolve_capability_expression(node.func) == "setter"
+            isinstance(node, ast.expr)
+            and _resolve_capability_expression(node) == "module-map:approval"
         ):
-            subject = _call_argument(node, "object", 0)
-            member = _call_argument(node, "name", 1)
-            if (
-                subject is not None
-                and member is not None
-                and _resolve_capability_expression(subject) == "module:approval"
-                and _resolve_static_string(member) == "APPROVED_EXECUTION_DDL_SHA256"
-            ):
+            violations.append(f"{label}:{node.lineno}: approval module namespace route")
+        if (
+            isinstance(node, ast.expr)
+            and _resolve_capability_expression(node) == "approval-bound-mutator"
+        ):
+            parent = parents.get(node)
+            if not (isinstance(parent, ast.Call) and parent.func is node):
                 violations.append(
                     f"{label}:{node.lineno}: approval token mutation route"
                 )
-        if (
-            isinstance(node, ast.Subscript)
-            and _resolve_capability_expression(node.value) == "module-map:approval"
-        ):
-            violations.append(f"{label}:{node.lineno}: approval module namespace route")
         if not has_gate_surface:
             continue
         if (
@@ -3771,6 +3796,75 @@ def forge_gate():
 def open_connection(path):
     require_approved_ddl_execution()
     return sqlite3.connect(path)
+""",
+            "approval token mutation route",
+        ),
+        (
+            """
+import sqlite3
+from approved_schema_digest import require_approved_ddl_execution
+def forge_gate():
+    import approved_schema_digest as gate
+    vars(gate).update(
+        {
+            'APPROVED_EXECUTION_DDL_SHA256': (
+                '2636c72793515a46c893d93084750b45ea2f151c58055480d5c601eb8c0faac5'
+            ),
+        }
+    )
+def open_connection(path):
+    require_approved_ddl_execution()
+    return sqlite3.connect(path)
+""",
+            "approval module namespace route",
+        ),
+        (
+            """
+import sys
+def forge_gate():
+    setattr(
+        sys.modules['approved_schema_digest'],
+        'APPROVED_EXECUTION_DDL_SHA256',
+        '2636c72793515a46c893d93084750b45ea2f151c58055480d5c601eb8c0faac5',
+    )
+""",
+            "approval token mutation route",
+        ),
+        (
+            """
+def forge_gate():
+    import approved_schema_digest as gate
+    delattr(gate, 'APPROVED_EXECUTION_DDL_SHA256')
+""",
+            "approval token mutation route",
+        ),
+        (
+            """
+def forge_gate():
+    import approved_schema_digest as gate
+    gate.__setattr__(
+        'APPROVED_EXECUTION_DDL_SHA256',
+        '2636c72793515a46c893d93084750b45ea2f151c58055480d5c601eb8c0faac5',
+    )
+""",
+            "approval token mutation route",
+        ),
+        (
+            """
+def forge_gate():
+    import approved_schema_digest as gate
+    getattr(gate, '__setattr__')(
+        'APPROVED_EXECUTION_DDL_SHA256',
+        '2636c72793515a46c893d93084750b45ea2f151c58055480d5c601eb8c0faac5',
+    )
+""",
+            "approval token mutation route",
+        ),
+        (
+            """
+def forge_gate():
+    import approved_schema_digest as gate
+    return gate.__setattr__
 """,
             "approval token mutation route",
         ),
