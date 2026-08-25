@@ -2306,7 +2306,19 @@ def test_rev0081_invalidated_effect_requires_selected_contradiction_evidence() -
         identity.AccountId("account"),
         identity.OrderId("owner-order-1"),
     )
+    second_leg_key = identity.VenueLegKey(
+        identity.BrokerId("paper"),
+        identity.EnvironmentId("paper"),
+        identity.AccountId("account"),
+        identity.OrderId("owner-order-2"),
+    )
     book = _book_with_owner_leg(state.venue, leg_key, current.effect.scope)
+    book = _book_with_owner_leg(
+        book,
+        second_leg_key,
+        current.effect.scope,
+        observation_id="observation-2",
+    )
     selection = _owner_selection(_venue_claim_selection(), "owner-order-1")
     effect = deepcopy(selection.effects[0])
     object.__setattr__(effect, "disposition", "INVALIDATED")
@@ -2319,6 +2331,32 @@ def test_rev0081_invalidated_effect_requires_selected_contradiction_evidence() -
         selection,
         "acceptance_sets",
         (records.AcceptanceSetRecord(11, effect.effect_id),),
+    )
+    object.__setattr__(
+        selection,
+        "owners",
+        (
+            records.VenueIdentityOwnerRecord(
+                1,
+                _EXECUTION_PROFILE,
+                identity.OrderId("owner-order-1"),
+                identity.VenueObservationId("observation-1"),
+                effect.effect_id,
+                None,
+                identity.AcquisitionGenerationId("ab" * 32),
+                False,
+            ),
+            records.VenueIdentityOwnerRecord(
+                1,
+                _EXECUTION_PROFILE,
+                identity.OrderId("owner-order-2"),
+                identity.VenueObservationId("observation-2"),
+                effect.effect_id,
+                None,
+                identity.AcquisitionGenerationId("ab" * 32),
+                False,
+            ),
+        ),
     )
     object.__setattr__(
         selection,
@@ -2346,6 +2384,17 @@ def test_rev0081_invalidated_effect_requires_selected_contradiction_evidence() -
                 identity.OrderId("owner-order-1"),
                 identity.VenueObservationId("observation-1"),
             ),
+            records.AcceptanceEvidenceRecord(
+                9,
+                11,
+                effect.effect_id,
+                "INVALIDATION",
+                None,
+                "09" * 32,
+                3,
+                identity.OrderId("owner-order-2"),
+                identity.VenueObservationId("observation-2"),
+            ),
         ),
     )
     claim_occurrence_id = current.effect.claim_occurrence_id
@@ -2364,23 +2413,47 @@ def test_rev0081_invalidated_effect_requires_selected_contradiction_evidence() -
             evidence_digest=b"\x07" * 32,
         ),
     )
-    contradiction = venue.AcceptanceContradiction(
+    first_contradiction = venue.AcceptanceContradiction(
         leg_key, identity.VenueObservationId("observation-1")
     )
-    object.__setattr__(current.effect, "contradiction_evidence", (contradiction,))
+    second_contradiction = venue.AcceptanceContradiction(
+        second_leg_key, identity.VenueObservationId("observation-2")
+    )
+    object.__setattr__(
+        current.effect,
+        "contradiction_evidence",
+        (first_contradiction, second_contradiction),
+    )
 
     rows = checkpoint_codec._encode_runtime_checkpoint_venue_effect_rows(
         book, selection
     )
+    assert len(rows[2][0][7][2]) == 2
     assert rows[2][0][7][2][0] == [
         "m2.venue.AcceptanceContradiction/v1",
         0,
         _operations._encode_m2_m1_atom(leg_key),
         _operations._encode_m2_m1_atom(identity.VenueObservationId("observation-1")),
     ]
+    assert rows[2][0][7][2][1] == [
+        "m2.venue.AcceptanceContradiction/v1",
+        1,
+        _operations._encode_m2_m1_atom(second_leg_key),
+        _operations._encode_m2_m1_atom(identity.VenueObservationId("observation-2")),
+    ]
 
     object.__setattr__(
-        current.effect, "contradiction_evidence", (contradiction, contradiction)
+        current.effect,
+        "contradiction_evidence",
+        (second_contradiction, first_contradiction),
+    )
+    with pytest.raises(ValueError, match="selected invalidation evidence"):
+        checkpoint_codec._encode_runtime_checkpoint_venue_effect_rows(book, selection)
+
+    object.__setattr__(
+        current.effect,
+        "contradiction_evidence",
+        (first_contradiction, first_contradiction),
     )
     with pytest.raises(ValueError, match="selected invalidation evidence"):
         checkpoint_codec._encode_runtime_checkpoint_venue_effect_rows(book, selection)
@@ -2457,6 +2530,70 @@ def test_rev0081_never_dispatched_requires_selected_cancellation_lifecycle() -> 
     with pytest.raises(
         ValueError, match="never-dispatched closure requires cancellation"
     ):
+        checkpoint_codec._encode_runtime_checkpoint_venue_effect_rows(
+            state.venue, selection
+        )
+
+
+def test_rev0082_never_dispatched_refuses_a_selected_claim() -> None:
+    """Cancellation state cannot turn a selected claim into NEVER_DISPATCHED."""
+
+    state, _ = _authority_state_with_effects()
+    selection = _venue_claim_selection()
+    effect = deepcopy(selection.effects[0])
+    object.__setattr__(effect, "lifecycle_state", "CANCELED_BEFORE_DISPATCH")
+    object.__setattr__(effect, "disposition", "CLOSED")
+    object.__setattr__(effect, "closure_proof_kind", "NEVER_DISPATCHED")
+    object.__setattr__(effect, "closure_proof_digest", "07" * 32)
+    object.__setattr__(effect, "closure_proof_evidence_id", 7)
+    object.__setattr__(effect, "closure_proof_claim_id", None)
+    object.__setattr__(selection, "effects", (effect,))
+    object.__setattr__(
+        selection,
+        "acceptance_sets",
+        (records.AcceptanceSetRecord(11, effect.effect_id),),
+    )
+    object.__setattr__(
+        selection,
+        "evidence",
+        (
+            records.AcceptanceEvidenceRecord(
+                7,
+                11,
+                effect.effect_id,
+                "CLOSURE_PROOF",
+                "NEVER_DISPATCHED",
+                "07" * 32,
+                1,
+                None,
+                None,
+            ),
+        ),
+    )
+    current = state.venue._effect_by_id.get(
+        venue._effect_index_key(identity.EffectId("effect-1"))
+    )
+    assert current is not None
+    assert current.effect.claim_occurrence_id == selection.claims[0].claim_occurrence_id
+    object.__setattr__(
+        current.effect, "state", venue.BrokerEffectState.CANCELED_BEFORE_DISPATCH
+    )
+    object.__setattr__(
+        current.effect, "acceptance_set_state", venue.AcceptanceSetState.CLOSED
+    )
+    object.__setattr__(
+        current.effect,
+        "acceptance_proof",
+        venue.AcceptanceProof(
+            kind=venue.AcceptanceProofKind.NEVER_DISPATCHED,
+            effect_scope=current.effect.scope,
+            claim_occurrence_id=None,
+            evidence_reference=identity.EvidenceReference("never-dispatched"),
+            evidence_digest=b"\x07" * 32,
+        ),
+    )
+
+    with pytest.raises(ValueError, match="never-dispatched closure has a claim"):
         checkpoint_codec._encode_runtime_checkpoint_venue_effect_rows(
             state.venue, selection
         )
@@ -2832,12 +2969,12 @@ def _book_with_owner_leg(
     effect_scope: venue.VenueEffectScope,
     *,
     with_attempt: bool = True,
+    observation_id: str = "observation-1",
 ) -> venue.VenueRecoveryBook:
     """Populate the owner and leg-current indexes for one leg."""
 
-    owner = venue.VenueIdentityOwner(
-        leg_key, effect_scope, identity.VenueObservationId("observation-1")
-    )
+    observation = identity.VenueObservationId(observation_id)
+    owner = venue.VenueIdentityOwner(leg_key, effect_scope, observation)
     forged = copy(book)
     object.__setattr__(
         forged,
@@ -2852,7 +2989,7 @@ def _book_with_owner_leg(
             venue.VenueAttemptState.WORKING,
             None,
             values.Quantity(2),
-            identity.VenueObservationId("observation-1"),
+            observation,
         )
         current = venue._LegCurrent(attempt)
         object.__setattr__(
