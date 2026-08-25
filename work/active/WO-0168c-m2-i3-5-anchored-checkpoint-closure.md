@@ -59,6 +59,7 @@ allowed_paths:
   - work/review/REV-0089/**
   - work/review/REV-0090/**
   - work/review/REV-0091/**
+  - work/review/REV-0092/**
   - work/review/FINDING-preexisting-suite-floor-2026-08-24.md
   - work/review/FINDING-protection-stateful-replay-disposition.md
   - work/review/FINDING-schema-approval-gate-is-self-approving.md
@@ -443,3 +444,30 @@ work/review/REV-0091/** is added solely for a new fresh exact-head review.
 SQLite execution and changed-DDL installation remain forbidden until that
 review records P0=0, P1=0 and Ameen separately approves the exact candidate,
 tree, DDL identity, manifest, and fresh-file-only commands.
+
+## Amendment — REV-0092 exact static-boundary review route (2026-08-24)
+
+Before an independent REV-0091 result was treated as an acceptance input, the
+implementation seat's own disproof pass reproduced four adjacent static-guard
+routes at `0cf88d1`: schema module `__dict__` recovery, a `vars(schema)`
+installer escape, an `operator.attrgetter` installer escape, and a lexical
+built-in `setattr` mutation of a function-local approval-module import. These
+are one bounded provenance issue: expressions or capability calls that resolve
+to a governed value must be rejected at their real lexical owner, not only when
+they have one of the previously enumerated AST shapes.
+
+The root correction is frozen at
+`4ca754d20ca330753a135378ce7138651fe1b81b`, tree
+`e655bf165d3edbf07040f51b224b9a92b5d5e33b`. It adds the finite known built-in
+`setattr` capability, refuses direct schema module namespace recovery, and
+checks every expression resolved as an installer/dynamic-installer for a
+non-direct escape. The new controls and three killed mutation controls prove
+these rules individually. This changes test-side static audit code only; it
+does not change DDL, SQL, public exports, runtime composition, or human-gate
+authority.
+
+`work/review/REV-0092/**` is added solely for a fresh review of that exact
+candidate. REV-0091 remains immutable historical evidence and is not an
+acceptance verdict for the new source head. SQLite execution and changed-DDL
+installation remain forbidden until an independent exact-head result records
+P0=0, P1=0 and Ameen separately approves the DDL gate packet.
