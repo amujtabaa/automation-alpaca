@@ -56,6 +56,7 @@ allowed_paths:
   - work/review/REV-0086/**
   - work/review/REV-0087/**
   - work/review/REV-0088/**
+  - work/review/REV-0089/**
   - work/review/FINDING-preexisting-suite-floor-2026-08-24.md
   - work/review/FINDING-protection-stateful-replay-disposition.md
   - work/review/FINDING-schema-approval-gate-is-self-approving.md
@@ -362,3 +363,30 @@ review of this root correction. The source and test paths were already released
 by this work order. SQLite execution and changed-DDL installation remain
 forbidden until the separately required exact-head P0=0/P1=0 review and human
 gate.
+
+## Amendment — REV-0089 capability-escalation review route (2026-08-24)
+
+REV-0088 reviewed `9a3b3367e032be92e5235e07d65b74b3c92d2c93` and returned
+`P0=0`, `P1=5`, `P2=0`. The result exposes a material design limit in the
+lexical-region rule: it is neither complete for statically recovered capability
+members and escape paths nor precise for shadowed names and unrelated client
+calls. No fourth local extension of the region predicate is authorized by this
+work order's circuit breaker.
+
+The next remediation must replace that predicate with one cohesive
+capability-escalation grammar. It must resolve only lexically proven canonical
+capability bindings; distinguish a complete one-shot static non-privileged
+namespace lookup from a dynamic capability source; and escalate a real or
+potential SQLite acquisition through the relevant enclosing ownership boundary
+when it can escape. Connection endpoints must be recognized only as explicit
+members or lexically proven member-lookup primitives, never merely because an
+arbitrary call has a string argument. Generic custom objects and a shadowed
+module spelling remain unknown, not SQLite. This is still a finite static
+grammar, not arbitrary Python evaluation.
+
+This amendment authorizes only a test-side source-guard redesign and focused
+pure controls inside already released paths. It changes no DDL byte, SQL,
+public export, runtime composition, or human-gate authority.
+`work/review/REV-0089/**` is added solely for a new independent exact-head
+review. SQLite execution and changed-DDL installation remain forbidden until
+the separately required exact-head P0=0/P1=0 review and human gate.
