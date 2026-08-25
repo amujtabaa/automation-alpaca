@@ -54,6 +54,7 @@ allowed_paths:
   - work/review/REV-0084/**
   - work/review/REV-0085/**
   - work/review/REV-0086/**
+  - work/review/REV-0087/**
   - work/review/FINDING-preexisting-suite-floor-2026-08-24.md
   - work/review/FINDING-protection-stateful-replay-disposition.md
   - work/review/FINDING-schema-approval-gate-is-self-approving.md
@@ -307,6 +308,26 @@ The new controls fail on aliased `globals`, `vars`, `sys.modules`, nested
 missing import.
 
 `work/review/REV-0086/**` is added solely for a fresh exact-head review of this
+root correction. The source and test paths were already released by this work
+order. This amendment creates no DDL change, SQLite execution authority,
+changed-DDL installation, or expansion of the human gate.
+
+## Amendment — REV-0087 exact provenance-grammar review route (2026-08-24)
+
+REV-0086 reviewed `4f70d1a0446ac7b19fd542febe34e3b91945c542` and returned
+`P0=0`, `P1=2`, `P2=0`. Its independently reproduced alias/data-flow findings
+are remediated at `d9296eec74027e54c619a8d2186ea7761cd4317f`, tree
+`d31f84547a15b88ab8c42121bc30c413726a42c7`. The prior receiver-specific
+heuristics are replaced by one finite provenance grammar. It tracks lexical
+captures, all prior simple rebindings in the nearest lexical scope, assignment
+expressions, known `importlib`/`builtins` imports, direct namespace maps,
+`dict.get`/`dict.__getitem__`, and statically named `getattr` access only when
+the receiver is already a proven namespace map or recovered SQLite module.
+Unknown or custom objects carry no SQLite provenance. The grammar is expressly
+not an evaluator for arbitrary metaprogramming; its governed mechanisms and
+their positive/negative controls are complete in the source test.
+
+`work/review/REV-0087/**` is added solely for a fresh exact-head review of this
 root correction. The source and test paths were already released by this work
 order. This amendment creates no DDL change, SQLite execution authority,
 changed-DDL installation, or expansion of the human gate.
