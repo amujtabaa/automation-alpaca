@@ -62,6 +62,7 @@ allowed_paths:
   - work/review/REV-0092/**
   - work/review/REV-0093/**
   - work/review/REV-0094/**
+  - work/review/REV-0095/**
   - work/review/FINDING-preexisting-suite-floor-2026-08-24.md
   - work/review/FINDING-protection-stateful-replay-disposition.md
   - work/review/FINDING-schema-approval-gate-is-self-approving.md
@@ -532,3 +533,32 @@ candidate. All prior review packets remain immutable historical evidence.
 SQLite execution and changed-DDL installation remain forbidden until an
 independent exact-head P0=0/P1=0 result and Ameen's separate exact DDL gate
 approval.
+
+## Amendment — REV-0095 exact registry-ownership review route (2026-08-24)
+
+REV-0094 was superseded before a reviewer-owned verdict issued. Fresh advisory
+disproof of its source candidate found that direct `sys.modules[...]` stores
+and deletes were not refused; it also found three ownership/precision gaps:
+direct `sys`/`builtins` namespace imports lost provenance, escaped
+`sys.modules` mutator references were unclassified, and a shadowed local
+`dict` spelling could be mistaken for the builtin mapping primitive.
+
+The root remediation is frozen at
+`4dd24b5e3235cfff160923c31eee5922c6ed95fe`, tree
+`6311752ec66cea80a0331ceb6918a0dc1172c584`. The finite model now distinguishes
+the `sys.modules` registry from the `sys.__dict__` namespace: direct registry
+stores/deletes and every recognized registry mutator are refused, while an
+attempt to recover `modules` through the sys namespace is itself refused as a
+separate dynamic namespace route. Direct `ImportFrom` provenance for
+`sys.__dict__` and `builtins.__dict__` is preserved, and only a lexically
+proven builtin `dict` can supply a static registry mutator. This keeps ordinary
+sys attributes and locally shadowed `dict` values outside the privileged model.
+Focused RED/GREEN controls and five independently killed mutations prove these
+rules without broadening into an evaluator for arbitrary Python.
+
+This remains test-side static audit only: no DDL byte, SQL, public export,
+runtime composition, database activity, or human-gate authority changed.
+`work/review/REV-0095/**` is added solely for a new exact-head independent
+review. SQLite execution and changed-DDL installation remain forbidden until
+that review records P0=0, P1=0 and Ameen separately approves the exact
+candidate, tree, DDL identity, manifest, and fresh-file-only commands.
