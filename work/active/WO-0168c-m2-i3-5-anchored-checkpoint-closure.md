@@ -67,6 +67,7 @@ allowed_paths:
   - work/review/REV-0097/**
   - work/review/REV-0098/**
   - work/review/REV-0099/**
+  - work/review/REV-0100/**
   - work/review/FINDING-preexisting-suite-floor-2026-08-24.md
   - work/review/FINDING-protection-stateful-replay-disposition.md
   - work/review/FINDING-schema-approval-gate-is-self-approving.md
@@ -86,6 +87,7 @@ allowed_paths:
   - tests/execution_core/test_persistence_directness.py
   - tests/execution_core/test_persistence_repository.py
   - tests/execution_core/test_persistence_write_capability.py
+  - tests/execution_core/test_protection.py
   - tests/execution_core/test_venue_checkpoint_hardening.py
   - work/queue/M2-EXECUTION-2026-08-21/35-WO-0168C-HUMAN-GATE-DDL.md
   - work/queue/M2-EXECUTION-2026-08-21/36-R16-MANUAL-RULE-RATIFICATION.md
@@ -663,3 +665,31 @@ no DDL, SQL, public export, runtime composition, or human-gate authority.
 review. SQLite execution and changed-DDL installation remain forbidden until
 that review records `P0=0`, `P1=0` and Ameen separately approves the exact
 candidate, tree, DDL identity, manifest, and fresh-file-only commands.
+
+## Amendment — bounded protection-test path extension (2026-08-25)
+
+REV-0099's value-ownership disproof showed that three pure protection-test
+helpers pass the global `builtins` module through an ordinary mapping call or
+dynamic getter. Keeping those helpers while exempting their filename would
+weaken the same root rule under review. `tests/execution_core/test_protection.py`
+is therefore released only to replace those dynamic module escapes with direct
+read-only comparisons and a finite error-type mapping. No production path,
+DDL, SQL, runtime composition, database authority, or public behavior is added.
+
+## Amendment — REV-0099 root disposition and REV-0100 (2026-08-25)
+
+REV-0099 returned `BLOCK` with P0=4, P1=1, and P2=1. The owning defects are
+value provenance independent of local gate syntax, incomplete package/relative
+identity, unowned helper-module and module-descriptor relays, lost provenance
+after dynamic governed lookup, and flow-insensitive rebinding. The correction
+must therefore remain one finite lexical model: package-aware identities,
+governed-unknown propagation, explicit helper/module-type ownership, ordered
+definite bindings with conservative conditional unions, and every parent
+binding observable after a deferred function becomes callable. Filename
+waivers and route-specific source exemptions remain forbidden.
+
+`work/review/REV-0100/**` is released solely for a fresh independent review of
+the replacement exact source target. The request must correct REV-0099's
+approval-file provenance statement. Changed-DDL execution, SQLite imports or
+connections, and all four held suites remain forbidden until REV-0100 records
+P0=0/P1=0 and Ameen separately approves the exact HUMAN-GATE packet.
