@@ -1533,18 +1533,22 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
             return left + right if left is not None and right is not None else None
         return None
 
-    def _mapping_lookup(value: ast.expr) -> tuple[ast.expr, str] | None:
+    def _mapping_lookup(
+        value: ast.expr,
+        seen: frozenset[int] = frozenset(),
+    ) -> tuple[ast.expr, str] | None:
         if isinstance(value, ast.Subscript):
             key = _resolved_static_string(value.slice)
             return (value.value, key) if key is not None else None
-        if (
-            isinstance(value, ast.Call)
-            and isinstance(value.func, ast.Attribute)
-            and value.func.attr in {"get", "__getitem__"}
-            and value.args
-        ):
+        if isinstance(value, ast.Call) and value.args:
+            lookup = _resolve_alias(value.func, seen)
+            if not (
+                isinstance(lookup, ast.Attribute)
+                and lookup.attr in {"get", "__getitem__"}
+            ):
+                return None
             key = _resolved_static_string(value.args[0])
-            return (value.func.value, key) if key is not None else None
+            return (lookup.value, key) if key is not None else None
         return None
 
     def _is_dynamic_namespace_mapping(
@@ -1555,14 +1559,13 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
         if id(value) in seen:
             return False
         next_seen = seen | {id(value)}
-        if (
-            isinstance(value, ast.Call)
-            and isinstance(value.func, ast.Name)
-            and value.func.id in {"globals", "vars"}
-            and not value.args
-            and not value.keywords
-        ):
-            return True
+        if isinstance(value, ast.Call) and not value.args and not value.keywords:
+            namespace_callable = _resolve_alias(value.func, next_seen)
+            if isinstance(namespace_callable, ast.Name) and namespace_callable.id in {
+                "globals",
+                "vars",
+            }:
+                return True
         if isinstance(value, ast.Attribute) and value.attr == "modules":
             receiver = _resolve_alias(value.value, next_seen)
             if isinstance(receiver, ast.Name) and receiver.id in sys_module_names:
@@ -1676,7 +1679,10 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
             "Connection",
         }:
             return False
-        receiver = _resolve_alias(call.func.value)
+        return _is_dynamic_sqlite_connection_receiver(call.func.value)
+
+    def _is_dynamic_sqlite_connection_receiver(value: ast.expr) -> bool:
+        receiver = _resolve_alias(value)
         return bool(
             _is_dynamic_import_factory_call(receiver)
             or _is_dynamic_namespace_module_expression(receiver)
@@ -1692,6 +1698,16 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
         ) or (isinstance(call.func, ast.Call) and _dynamic_installer_getter(call.func))
 
     for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Attribute)
+            and node.attr in {"connect", "Connection"}
+            and _is_dynamic_sqlite_connection_receiver(node.value)
+        ):
+            parent = parents.get(node)
+            if not (isinstance(parent, ast.Call) and parent.func is node):
+                violations.append(
+                    f"{label}:{node.lineno}: SQLite connection reference escapes direct call"
+                )
         if isinstance(node, ast.Call) and _is_dynamic_sqlite_acquisition_call(node):
             violations.append(
                 f"{label}:{node.lineno}: SQLite connection route is not direct"
@@ -2442,6 +2458,37 @@ def open_connection(path):
     loader = builtins_namespace['__import__']
     return loader('sqlite3').connect(path)
 """,
+        """
+def open_connection(path):
+    factory = globals
+    return factory()['sqlite3'].connect(path)
+""",
+        """
+def open_connection(path):
+    getter = globals().get
+    return getter('sqlite3').connect(path)
+""",
+        """
+def open_connection(path):
+    factory = vars
+    getter = factory().__getitem__
+    return getter('sqlite3').Connection(path)
+""",
+        """
+import sys
+def open_connection(path):
+    getter = sys.modules.get
+    return getter('sqlite3').Connection(path)
+""",
+        """
+def open_connection(path):
+    namespace = globals()
+    builtins_getter = namespace.get
+    builtins_namespace = builtins_getter('__builtins__')
+    loader_getter = builtins_namespace.get
+    loader = loader_getter('__import__')
+    return loader('sqlite3').connect(path)
+""",
     )
     for ordinal, source in enumerate(rejected, 1):
         violations = _schema_installer_gate_violations(source, f"rev0083-{ordinal}.py")
@@ -2450,10 +2497,33 @@ def open_connection(path):
             for violation in violations
         ), f"mutant {ordinal}: {violations}"
 
+    escaped_references = (
+        """
+def open_connection(path):
+    operation = globals()['sqlite3'].connect
+    return operation(path)
+""",
+        """
+def open_connection(path):
+    operation = globals().get('sqlite3').Connection
+    return operation(path)
+""",
+    )
+    for ordinal, source in enumerate(escaped_references, 1):
+        violations = _schema_installer_gate_violations(source, f"escaped-{ordinal}.py")
+        assert any(
+            "SQLite connection reference escapes direct call" in violation
+            for violation in violations
+        ), f"escaped mutant {ordinal}: {violations}"
+
     ordinary_client = """
 SQLITE_DRIVER_LABEL = 'sqlite3'
 class Client:
     def import_module(self, target):
+        return self
+    def get(self, target):
+        return self
+    def __getitem__(self, target):
         return self
     def connect(self, path):
         return path
@@ -2461,6 +2531,12 @@ def open_connection(path):
     return Client().import_module('transport').connect(path)
 def open_with_getattr(path):
     return getattr(Client(), 'import_module')('transport').connect(path)
+def open_with_lookup_alias(path):
+    getter = Client().get
+    return getter('sqlite3').connect(path)
+def open_with_item_alias(path):
+    getter = Client().__getitem__
+    return getter('sqlite3').Connection(path)
 """
     assert (
         _schema_installer_gate_violations(ordinary_client, "ordinary-client.py") == []
