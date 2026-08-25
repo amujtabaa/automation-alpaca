@@ -1025,7 +1025,7 @@ def _apply_mutator(connection, operation, *arguments):
 
 
 def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
-    """Return every way a source can bypass the sole DDL execution accessor.
+    """Return disallowed spellings under the sole DDL execution grammar.
 
     This is deliberately provenance-oriented rather than a denylist for
     ``schema_ddl_digest``.  Every call to the installer must use the exact
@@ -1143,6 +1143,39 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
                 if imported.name.startswith("sqlite3."):
                     sqlite_nested_module_import_lines.append(node.lineno)
 
+    for candidate in ast.walk(tree):
+        if isinstance(candidate, ast.Import):
+            for imported in candidate.names:
+                if imported.name == "sys":
+                    sys_module_names.add(imported.asname or "sys")
+                if imported.name == "importlib":
+                    dynamic_import_module_names.add(imported.asname or "importlib")
+                if imported.name == "builtins":
+                    builtins_module_names.add(imported.asname or "builtins")
+        elif isinstance(candidate, ast.ImportFrom):
+            if candidate.module == "importlib":
+                dynamic_import_names.update(
+                    imported.asname or "import_module"
+                    for imported in candidate.names
+                    if imported.name == "import_module"
+                )
+            if candidate.module == "builtins":
+                dynamic_import_names.update(
+                    imported.asname or "__import__"
+                    for imported in candidate.names
+                    if imported.name == "__import__"
+                )
+
+    def _static_string(value: ast.expr) -> str | None:
+        if isinstance(value, ast.Constant) and isinstance(value.value, str):
+            return value.value
+        if isinstance(value, ast.BinOp) and isinstance(value.op, ast.Add):
+            left = _static_string(value.left)
+            right = _static_string(value.right)
+            if left is not None and right is not None:
+                return left + right
+        return None
+
     def _literal_dynamic_import_target(call: ast.Call) -> str | None:
         is_dynamic_import = bool(
             (isinstance(call.func, ast.Name) and call.func.id in dynamic_import_names)
@@ -1162,14 +1195,9 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
                 )
             )
         )
-        if (
-            not is_dynamic_import
-            or not call.args
-            or not isinstance(call.args[0], ast.Constant)
-            or not isinstance(call.args[0].value, str)
-        ):
+        if not is_dynamic_import or not call.args:
             return None
-        return call.args[0].value
+        return _static_string(call.args[0])
 
     dynamic_sqlite_or_schema_lines = [
         node.lineno
@@ -1283,6 +1311,9 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
                 )
 
     parents = _parent_map(tree)
+    dynamic_namespace_names: set[str] = set()
+    dynamic_import_callable_names: set[str] = set()
+    dynamic_module_names: set[str] = set()
 
     def _expression_path(value: ast.expr) -> str | None:
         if isinstance(value, ast.Name):
@@ -1450,6 +1481,106 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
             )
         )
 
+    def _assignment_target_names(node: ast.Assign | ast.AnnAssign) -> tuple[str, ...]:
+        targets = node.targets if isinstance(node, ast.Assign) else (node.target,)
+        return tuple(target.id for target in targets if isinstance(target, ast.Name))
+
+    def _is_dynamic_namespace_mapping(value: ast.expr) -> bool:
+        return bool(
+            (
+                isinstance(value, ast.Call)
+                and isinstance(value.func, ast.Name)
+                and value.func.id in {"globals", "vars"}
+                and not value.args
+                and not value.keywords
+            )
+            or (
+                isinstance(value, ast.Attribute)
+                and value.attr == "modules"
+                and isinstance(value.value, ast.Name)
+                and value.value.id in sys_module_names
+            )
+            or (isinstance(value, ast.Name) and value.id == "__builtins__")
+            or (isinstance(value, ast.Name) and value.id in dynamic_namespace_names)
+        )
+
+    def _is_dynamic_import_callable_expression(value: ast.expr) -> bool:
+        if isinstance(value, ast.Name):
+            return value.id == "__import__" or value.id in dynamic_import_callable_names
+        if isinstance(value, ast.Attribute):
+            return value.attr in {"__import__", "import_module"}
+        if isinstance(value, ast.Subscript):
+            return bool(
+                _is_dynamic_namespace_mapping(value.value)
+                and _static_string(value.slice) == "__import__"
+            )
+        return bool(
+            isinstance(value, ast.Call)
+            and _is_getattr_call(value)
+            and len(value.args) >= 2
+            and _static_string(value.args[1]) in {"__import__", "import_module"}
+        )
+
+    def _is_dynamic_import_factory_call(value: ast.expr) -> bool:
+        if not isinstance(value, ast.Call):
+            return False
+        return bool(
+            _is_dynamic_import_call(value)
+            or _is_dynamic_import_callable_expression(value.func)
+        )
+
+    def _is_dynamic_namespace_module_expression(value: ast.expr) -> bool:
+        if isinstance(value, ast.Subscript):
+            return _is_dynamic_namespace_mapping(value.value)
+        if isinstance(value, ast.Attribute):
+            return _is_dynamic_namespace_module_expression(value.value)
+        return bool(isinstance(value, ast.Name) and value.id in dynamic_module_names)
+
+    def _is_dynamic_sqlite_acquisition_call(call: ast.Call) -> bool:
+        receiver = call.func.value if isinstance(call.func, ast.Attribute) else None
+        return bool(
+            isinstance(call.func, ast.Attribute)
+            and call.func.attr in {"connect", "Connection"}
+            and (
+                (
+                    isinstance(receiver, ast.Call)
+                    and _is_dynamic_import_factory_call(receiver)
+                )
+                or (
+                    receiver is not None
+                    and _is_dynamic_namespace_module_expression(receiver)
+                )
+            )
+        )
+
+    assignments = tuple(
+        node for node in ast.walk(tree) if isinstance(node, (ast.Assign, ast.AnnAssign))
+    )
+    for assignment in assignments:
+        value = assignment.value
+        if value is None:
+            continue
+        names = _assignment_target_names(assignment)
+        if _is_dynamic_namespace_mapping(value):
+            dynamic_namespace_names.update(names)
+        if _is_dynamic_import_callable_expression(value):
+            dynamic_import_callable_names.update(names)
+    for assignment in assignments:
+        value = assignment.value
+        if value is None:
+            continue
+        if _is_dynamic_import_factory_call(
+            value
+        ) or _is_dynamic_namespace_module_expression(value):
+            dynamic_module_names.update(_assignment_target_names(assignment))
+    has_gate_surface = bool(
+        has_gate_surface
+        or any(
+            isinstance(node, ast.Call) and _is_dynamic_sqlite_acquisition_call(node)
+            for node in ast.walk(tree)
+        )
+    )
+
     def _is_installer_call(call: ast.Call) -> bool:
         if isinstance(call.func, ast.Name):
             return call.func.id in installer_names
@@ -1543,6 +1674,9 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
             )
         ):
             violations.append(f"{label}:{node.lineno}: dynamic module attribute route")
+        if _is_dynamic_sqlite_acquisition_call(node):
+            violations.append(f"{label}:{node.lineno}: dynamic SQLite connection route")
+            continue
         if _is_sqlite_acquisition_call(node):
             if not _is_direct_sqlite_connect_call(node):
                 violations.append(
@@ -2132,3 +2266,61 @@ class DocumentInstaller:
 saved = DocumentInstaller().install_schema
 """
     assert _schema_installer_gate_violations(unrelated, "bound-unrelated.py") == []
+
+
+def test_rev0083_gate_audit_refuses_missing_gate_dynamic_acquisition() -> None:
+    """Dynamic SQLite acquisition is forbidden even without an approval import."""
+
+    rejected = (
+        """
+def open_connection(path):
+    return __import__('sqlite' + '3').connect(path)
+""",
+        """
+def open_connection(path):
+    return globals()['sqlite3'].connect(path)
+""",
+        """
+import sys
+def open_connection(path):
+    return sys.modules['sqlite3'].connect(path)
+""",
+        """
+def open_connection(path):
+    module_name = 'sqlite3'
+    module = __import__(module_name)
+    return module.connect(path)
+""",
+        """
+def open_connection(path):
+    namespace = globals()
+    module = namespace['sqlite3']
+    return module.connect(path)
+""",
+        """
+def open_connection(path):
+    from importlib import import_module as loader
+    return loader('sqlite' + '3').connect(path)
+""",
+        """
+def open_connection(path):
+    from builtins import __import__ as loader
+    return loader('sqlite' + '3').connect(path)
+""",
+        """
+def open_connection(path):
+    return __builtins__['__import__']('sqlite' + '3').connect(path)
+""",
+    )
+    for ordinal, source in enumerate(rejected, 1):
+        violations = _schema_installer_gate_violations(source, f"rev0083-{ordinal}.py")
+        assert any(
+            "dynamic SQLite connection route" in violation for violation in violations
+        ), violations
+
+    exception_only = """
+import sqlite3
+def injected_error():
+    return sqlite3.DatabaseError('test-only')
+"""
+    assert _schema_installer_gate_violations(exception_only, "exception-only.py") == []
