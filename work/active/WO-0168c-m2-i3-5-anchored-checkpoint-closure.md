@@ -52,6 +52,7 @@ allowed_paths:
   - work/review/REV-0082/**
   - work/review/REV-0083/**
   - work/review/REV-0084/**
+  - work/review/REV-0085/**
   - work/review/FINDING-preexisting-suite-floor-2026-08-24.md
   - work/review/FINDING-protection-stateful-replay-disposition.md
   - work/review/FINDING-schema-approval-gate-is-self-approving.md
@@ -269,3 +270,23 @@ review of this bounded grammar remediation. The source and test paths were
 already released by this work order. This amendment creates no DDL change,
 SQLite execution authority, changed-DDL installation, or expansion of the human
 gate.
+
+## Amendment — REV-0085 exact root-grammar review route (2026-08-24)
+
+REV-0084 reviewed `4c98e4058d76cefc92d7b8aecf43d2b426722713` and returned
+`P0=0`, `P1=2`, `P2=0`. Its two P1 findings are remediated at
+`c918d281357c76806ec9a74a1efe2629d1c29dc4`, tree
+`6aa7d7eecbd8f546010969fa8832013338f0200f`. The source-level DDL audit now
+uses one bounded acquisition grammar: it follows only a unique direct
+assignment in the current or module scope, recognizes known `importlib`/
+`builtins` import routes and direct `globals`, `vars`, `sys.modules`, and
+`__builtins__` map retrieval, then refuses a recovered SQLite module's
+`.connect` or `.Connection` call. It does not infer SQLite provenance from an
+arbitrary object's `import_module` method. Focused negative controls cover
+`.get`, `.__getitem__`, nested builtins recovery, and simple aliases; the
+passing custom-client control proves ordinary client naming is not swept in.
+
+`work/review/REV-0085/**` is added solely for a fresh exact-head review of this
+root correction. The source and test paths were already released by this work
+order. This amendment creates no DDL change, SQLite execution authority,
+changed-DDL installation, or expansion of the human gate.
