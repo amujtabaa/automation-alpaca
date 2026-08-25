@@ -71,6 +71,7 @@ allowed_paths:
   - work/review/REV-0101/**
   - work/review/REV-0102/**
   - work/review/REV-0103/**
+  - work/review/REV-0104/**
   - work/review/FINDING-preexisting-suite-floor-2026-08-24.md
   - work/review/FINDING-protection-stateful-replay-disposition.md
   - work/review/FINDING-schema-approval-gate-is-self-approving.md
@@ -901,3 +902,25 @@ REV-0103 must independently review the exact source commit above and return
 `P0=0/P1=0` before the changed-DDL HUMAN-GATE may be presented. This amendment
 creates no SQLite import/connection, held-suite execution, database activity,
 DDL installation, or authority expansion.
+
+## Amendment — REV-0103 disposition and REV-0104 root-remediation route (2026-08-25)
+
+Two fresh Max seats independently reviewed
+`6dd9396093a58f8e6025521146aa99534a74f01c` and returned `BLOCK`. After
+deduplication by owning defect, REV-0103 records P0=6, P1=6, P2=0. The six P0
+roots are assignment target/RHS phase order; local callable activation through
+finite namespace maps; transitive helper provenance for child and governed
+modules; callback self-replacement through owner-routed writes; literal dynamic
+namespace-package import identity; and incomplete-import mutation ownership.
+
+The precision/control roots are deferred objects created but never activated;
+unguarded irrefutable whole-subject captures; an incomplete trace installation
+and restoration lifecycle; ordinary namespace metadata losing precision;
+independent trace import/call/escape/restoration mutation proof; and independent
+Boolean/incomplete-target mutation proof. These must be corrected in the shared
+execution/provenance model, not by filename waivers or route-specific ignores.
+
+`work/review/REV-0104/**` is released solely for a fresh exact-source review of
+that successor. The changed-DDL HUMAN-GATE remains closed. No SQLite import,
+connection, held-suite execution, database activity, DDL installation, or
+authority expansion is created by this amendment.
