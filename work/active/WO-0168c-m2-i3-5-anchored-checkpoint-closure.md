@@ -60,6 +60,7 @@ allowed_paths:
   - work/review/REV-0090/**
   - work/review/REV-0091/**
   - work/review/REV-0092/**
+  - work/review/REV-0093/**
   - work/review/FINDING-preexisting-suite-floor-2026-08-24.md
   - work/review/FINDING-protection-stateful-replay-disposition.md
   - work/review/FINDING-schema-approval-gate-is-self-approving.md
@@ -471,3 +472,31 @@ candidate. REV-0091 remains immutable historical evidence and is not an
 acceptance verdict for the new source head. SQLite execution and changed-DDL
 installation remain forbidden until an independent exact-head result records
 P0=0, P1=0 and Ameen separately approves the DDL gate packet.
+
+## Amendment — REV-0093 approval-namespace ownership review route (2026-08-24)
+
+REV-0092 was superseded before an independent verdict issued. A further
+implementation-seat RED control reproduced the remaining root gap: the audit
+recognized a direct approval module and a direct `setattr`, but did not own the
+approval module's recoverable namespace or every ordinary attribute-mutator
+form. In particular, `vars(gate).update(...)`, a literal
+`sys.modules['approved_schema_digest']` route, `delattr`, and direct or
+getter-recovered `__setattr__` could reach the approval token.
+
+The root correction is frozen at
+`fe88d0538ce2253a72cb09903e258488888b4a1d`, tree
+`403fb99171f630c5a043857dab14257a1237afe1`. One finite provenance rule now
+refuses every expression resolved as the approval module's namespace map. The
+existing known-builtins grammar owns `setattr` and `delattr` as attribute
+mutators; direct and static-getter-recovered bound module mutators are a
+separate known capability that either mutates the exact token or cannot escape.
+Literal approval lookup from the already modeled `sys.modules` map resolves to
+the approval module before the same rule runs. No arbitrary Python evaluation,
+generic module mutation ban, DDL, SQL, public export, runtime composition, or
+human-gate authority was added.
+
+`work/review/REV-0093/**` is added solely for a fresh review of that exact
+candidate. REV-0092 remains immutable historical evidence, not an acceptance
+verdict for this successor. SQLite execution and changed-DDL installation remain
+forbidden until an independent exact-head P0=0/P1=0 result and Ameen's separate
+exact DDL gate approval.
