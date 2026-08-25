@@ -50,6 +50,7 @@ allowed_paths:
   - work/review/REV-0080/**
   - work/review/REV-0081/**
   - work/review/REV-0082/**
+  - work/review/REV-0083/**
   - work/review/FINDING-preexisting-suite-floor-2026-08-24.md
   - work/review/FINDING-protection-stateful-replay-disposition.md
   - work/review/FINDING-schema-approval-gate-is-self-approving.md
@@ -225,3 +226,24 @@ unrelated-source control.
 review of this remediation. The source and test paths were already released by
 this work order. This amendment creates no DDL change, SQLite execution
 authority, changed-DDL installation, or expansion of the human gate.
+
+## Amendment — REV-0083 exact control review route (2026-08-24)
+
+REV-0082 reviewed `7b240744a7399eb55b1d8e4bf0b41c1f11a0c95d` and returned
+`P0=0`, `P1=5`, `P2=2`. Its test/provenance remediations are frozen at
+`546471c86647637a277237a53cf949b66a6a955a`, tree
+`f0aedb729b83136a021ce324dc2744ec8ad1325c`: selected INVALIDATION evidence
+now has a two-owner/two-observation positive ordering witness and a swapped-order
+failure; a selected claim cannot be re-described as NEVER_DISPATCHED after a
+forged cancellation lifecycle; and the static DDL source grammar rejects nested
+SQLite imports, `Connection` constructors, SQLite namespace recovery,
+function-local dynamic imports, wildcard or module-based approval mutation, and
+direct approval accessor namespace mutation. The retained unrelated bound
+`.install_schema` source remains an explicit passing control. The existing
+constructed-target `__import__` detector is now covered by its own control rather
+than being credited without a failure-capable test.
+
+`work/review/REV-0083/**` is added solely for a fresh, independent exact-head
+review of these controls. The source and test paths were already released by this
+work order. This amendment creates no DDL change, SQLite execution authority,
+changed-DDL installation, or expansion of the human gate.
