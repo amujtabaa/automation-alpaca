@@ -2703,9 +2703,30 @@ def _resolved_exact_global(function: Callable[..., object], name: str) -> object
     absent = object()
     retained_builtins = globals_map.get("__builtins__", absent)
     if retained_builtins is absent or retained_builtins is builtins:
-        return vars(builtins)[name]
+        candidate = _known_exact_builtin(name)
+        if candidate is None:
+            raise KeyError(name)
+        return candidate
     assert type(retained_builtins) is dict, "function builtins source changed"
     return retained_builtins[name]
+
+
+def _known_exact_builtin(name: str) -> object | None:
+    """Resolve only the finite builtin identities used by passive proofs."""
+
+    return {
+        "AssertionError": builtins.AssertionError,
+        "TypeError": builtins.TypeError,
+        "ValueError": builtins.ValueError,
+        "bool": builtins.bool,
+        "bytes": builtins.bytes,
+        "int": builtins.int,
+        "isinstance": builtins.isinstance,
+        "len": builtins.len,
+        "object": builtins.object,
+        "str": builtins.str,
+        "type": builtins.type,
+    }.get(name)
 
 
 def _assert_exact_function_dependency_closure(
@@ -3088,7 +3109,7 @@ def _resolve_lifecycle_name(lifecycle: Callable[..., object], name: str) -> obje
     absent = object()
     retained_builtins = lifecycle.__globals__.get("__builtins__", absent)
     if retained_builtins is absent or retained_builtins is builtins:
-        return vars(builtins).get(name)
+        return _known_exact_builtin(name)
     assert type(retained_builtins) is dict, "lifecycle builtins source changed"
     return retained_builtins.get(name)
 
@@ -3393,7 +3414,10 @@ def _assert_lifecycle_raise(
         "lifecycle raises a nonlocal value"
     )
     assert node.exc.func.id in error_names
-    expected = {"TypeError": TypeError, "ValueError": ValueError}[node.exc.func.id]
+    expected = {
+        "TypeError": builtins.TypeError,
+        "ValueError": builtins.ValueError,
+    }[node.exc.func.id]
     _assert_lifecycle_builtin(lifecycle, node.exc.func.id, expected)
     assert (
         len(node.exc.args) == 1
@@ -6161,6 +6185,25 @@ def test_passive_lifecycle_rejects_capability_and_metadata_mutants() -> None:
         _assert_passive_lifecycle(_AnnotationMutant, owner_module)
     with pytest.raises(AssertionError):
         _assert_passive_lifecycle(_FunctionAttributeMutant, owner_module)
+
+
+def test_lifecycle_raise_pins_builtin_identity_when_test_global_is_shadowed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The oracle must not share a forged exception binding with the lifecycle."""
+
+    class _FakeTypeError(Exception):
+        pass
+
+    def lifecycle() -> None:
+        return None
+
+    statement = ast.parse("raise TypeError('mutant')").body[0]
+    assert isinstance(statement, ast.Raise)
+    monkeypatch.setitem(lifecycle.__globals__, "TypeError", _FakeTypeError)
+
+    with pytest.raises(AssertionError, match="shadowed lifecycle builtin"):
+        _assert_lifecycle_raise(statement, lifecycle=lifecycle)
 
 
 def test_passive_lifecycle_rejects_source_and_bytecode_provenance_split() -> None:
