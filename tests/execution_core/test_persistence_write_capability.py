@@ -1310,6 +1310,7 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
         ("builtins", "exec"): "dynamic-code",
         ("builtins", "getattr"): "getter",
         ("builtins", "globals"): "global-namespace-factory",
+        ("builtins", "setattr"): "setter",
         ("builtins", "vars"): "namespace-factory",
         ("importlib", "import_module"): "importer",
         ("operator", "attrgetter"): "attrgetter",
@@ -1322,6 +1323,7 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
         "exec": "dynamic-code",
         "getattr": "getter",
         "globals": "global-namespace-factory",
+        "setattr": "setter",
         "vars": "namespace-factory",
     }
 
@@ -1883,6 +1885,7 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
             "exec": "dynamic-code",
             "getattr": "getter",
             "globals": "global-namespace-factory",
+            "setattr": "setter",
             "vars": "namespace-factory",
         },
         "module-map:importlib": {"import_module": "importer"},
@@ -1906,6 +1909,7 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
         "getattr": "getter",
         "globals": "global-namespace-factory",
         "importlib": "module:importlib",
+        "setattr": "setter",
         "sqlite3": "module:sqlite3",
         "sys": "module:sys",
         "vars": "namespace-factory",
@@ -1967,6 +1971,7 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
             ("module:builtins", "exec"): "dynamic-code",
             ("module:builtins", "getattr"): "getter",
             ("module:builtins", "globals"): "global-namespace-factory",
+            ("module:builtins", "setattr"): "setter",
             ("module:builtins", "vars"): "namespace-factory",
             ("module:importlib", "__dict__"): "module-map:importlib",
             ("module:importlib", "import_module"): "importer",
@@ -2229,6 +2234,25 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
                 violations.append(
                     f"{label}:{node.lineno}: approval module namespace route"
                 )
+            if owner_kind == "module:schema" and node.attr == "__dict__":
+                violations.append(
+                    f"{label}:{node.lineno}: schema module namespace route"
+                )
+        if (
+            isinstance(node, ast.Call)
+            and _resolve_capability_expression(node.func) == "setter"
+        ):
+            subject = _call_argument(node, "object", 0)
+            member = _call_argument(node, "name", 1)
+            if (
+                subject is not None
+                and member is not None
+                and _resolve_capability_expression(subject) == "module:approval"
+                and _resolve_static_string(member) == "APPROVED_EXECUTION_DDL_SHA256"
+            ):
+                violations.append(
+                    f"{label}:{node.lineno}: approval token mutation route"
+                )
         if (
             isinstance(node, ast.Subscript)
             and _resolve_capability_expression(node.value) == "module-map:approval"
@@ -2340,32 +2364,19 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
                 )
 
     for node in ast.walk(tree):
-        if isinstance(node, ast.Name) and _resolve_capability_expression(node) in {
+        if isinstance(node, ast.expr) and _resolve_capability_expression(node) in {
             "dynamic-installer",
             "installer",
         }:
             parent = parents.get(node)
             if not (isinstance(parent, ast.Call) and parent.func is node):
-                violations.append(
-                    f"{label}:{node.lineno}: installer reference escapes direct call"
-                )
-        elif isinstance(node, ast.Attribute) and _resolve_capability_expression(
-            node
-        ) in {"dynamic-installer", "installer"}:
-            parent = parents.get(node)
-            if not (isinstance(parent, ast.Call) and parent.func is node):
-                violations.append(
-                    f"{label}:{node.lineno}: installer attribute escapes direct call"
-                )
-        elif (
-            isinstance(node, ast.Call)
-            and _resolve_capability_expression(node) == "dynamic-installer"
-        ):
-            parent = parents.get(node)
-            if not (isinstance(parent, ast.Call) and parent.func is node):
-                violations.append(
-                    f"{label}:{node.lineno}: dynamic installer reference escapes direct call"
-                )
+                if isinstance(node, ast.Name):
+                    message = "installer reference escapes direct call"
+                elif isinstance(node, ast.Attribute):
+                    message = "installer attribute escapes direct call"
+                else:
+                    message = "dynamic installer reference escapes direct call"
+                violations.append(f"{label}:{node.lineno}: {message}")
         elif isinstance(node, ast.Call) and _dynamic_installer_getter(node):
             violations.append(f"{label}:{node.lineno}: dynamic installer lookup")
         if not isinstance(node, ast.Call) or not _is_installer_call(node):
@@ -3708,6 +3719,31 @@ def installer_factory(module_name):
         ),
         (
             """
+from app.execution_core.persistence import schema
+def installer_factory():
+    return vars(schema)['install_schema']
+""",
+            "dynamic installer reference escapes direct call",
+        ),
+        (
+            """
+from app.execution_core.persistence import schema
+def installer_factory():
+    return schema.__dict__['install_schema']
+""",
+            "schema module namespace route",
+        ),
+        (
+            """
+import operator
+from app.execution_core.persistence import schema
+def installer_factory():
+    return operator.attrgetter('install_schema')(schema)
+""",
+            "dynamic installer reference escapes direct call",
+        ),
+        (
+            """
 import importlib
 import sqlite3
 from approved_schema_digest import require_approved_ddl_execution
@@ -3715,6 +3751,23 @@ gate = importlib.import_module('approved_schema_digest')
 gate.APPROVED_EXECUTION_DDL_SHA256 = (
     '2636c72793515a46c893d93084750b45ea2f151c58055480d5c601eb8c0faac5'
 )
+def open_connection(path):
+    require_approved_ddl_execution()
+    return sqlite3.connect(path)
+""",
+            "approval token mutation route",
+        ),
+        (
+            """
+import sqlite3
+from approved_schema_digest import require_approved_ddl_execution
+def forge_gate():
+    import approved_schema_digest as gate
+    setattr(
+        gate,
+        'APPROVED_EXECUTION_DDL_SHA256',
+        '2636c72793515a46c893d93084750b45ea2f151c58055480d5c601eb8c0faac5',
+    )
 def open_connection(path):
     require_approved_ddl_execution()
     return sqlite3.connect(path)
