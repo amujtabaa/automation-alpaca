@@ -924,3 +924,56 @@ execution/provenance model, not by filename waivers or route-specific ignores.
 that successor. The changed-DDL HUMAN-GATE remains closed. No SQLite import,
 connection, held-suite execution, database activity, DDL installation, or
 authority expansion is created by this amendment.
+
+## Amendment — REV-0104 exact root-remediation source candidate (2026-08-25)
+
+The replacement source candidate is commit
+`cdf17715839d7d109dbf555cb4064488ae0beefe`, tree
+`d6304912ca316552272d6379936cc6a1d661ade8`, parent
+`e992136333573f2490ab5ac821c16402b8896176`. Its sole changed path is
+`tests/execution_core/test_persistence_write_capability.py`, blob
+`5b1367e08e723a9edac5b02f9b7e799b7d68602f`. The source comparison baseline
+remains REV-0103 commit `6dd9396093a58f8e6025521146aa99534a74f01c`.
+
+The candidate repairs all twelve REV-0103 roots in the shared finite execution
+and provenance models. Assignment reads and writes now follow RHS-before-target
+runtime phases; callable identity survives finite scope-map lookup and returned
+factories; deferred creation is distinct from activation; irrefutable first-case
+captures are definite; trace callbacks and exact restoration are immutable and
+bounded; incomplete and prefix import provenance survives mutation; and
+cross-file protected-carrier reachability is cycle-safe and transitive.
+
+The implementation-seat disproof pass additionally found that statically
+reflected `globals()`/`vars()` getters could activate a local callback without
+retaining callable identity. The root correction recognizes direct and aliased
+`getattr`, `object.__getattribute__`, and `operator.attrgetter` map-getter forms
+in both source gates. Failure-capable controls pin those routes; no spelling or
+filename waiver was added.
+
+Exact-source static evidence at `cdf1771` is: 27/27 source-only controls pass;
+the primary and topology scanners each cover 49 recursive execution-core Python
+files with zero violations; the primary scan completes in 121.581 seconds and
+the topology scan in 30.132 seconds; Ruff check/format pass; import-free AST
+parsing passes for the module and 433 embedded snippets; mypy succeeds on 95
+app files with `--no-incremental --no-sqlite-cache`; all six import-linter
+contracts pass; AI Project OS install/version/ledger/PKL/disposition, cumulative
+scope, and whitespace gates pass.
+
+One initial mypy command inherited its configured SQLite cache and failed before
+opening it with `sqlite3.OperationalError: unable to open database file`. The
+successful rerun explicitly disabled that cache. No cache database was opened
+or created, no project module or held test was imported, and no DDL was
+installed or executed.
+
+Source-only recomputation leaves `SCHEMA_DDL` at SHA-256
+`2636c72793515a46c893d93084750b45ea2f151c58055480d5c601eb8c0faac5`
+and 178755 UTF-8 bytes, `_SCHEMA_CATALOG_SHA256` at
+`c717f6a6c84b37cb13773416c90b50d14f377e39928d7f9c626e769296e632d2`,
+the R4 manifest at
+`99aab5f40d43ea5dacce78e77ea47cad250cb9618223d9036a071d8a2704ed39`,
+and `APPROVED_EXECUTION_DDL_SHA256` at `None`.
+
+REV-0104 must independently review this exact source identity and return
+`P0=0/P1=0` before the changed-DDL HUMAN-GATE may be presented. Pytest, all four
+held suites, SQLite import/connection, database activity, changed-DDL execution,
+and DDL installation remain `NOT_RUN` and unauthorized.
