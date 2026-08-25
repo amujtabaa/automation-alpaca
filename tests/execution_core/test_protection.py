@@ -2700,8 +2700,9 @@ def _resolved_exact_global(function: Callable[..., object], name: str) -> object
     globals_map = function.__globals__
     if name in globals_map:
         return globals_map[name]
-    retained_builtins = globals_map.get("__builtins__", builtins)
-    if retained_builtins is builtins:
+    absent = object()
+    retained_builtins = globals_map.get("__builtins__", absent)
+    if retained_builtins is absent or retained_builtins is builtins:
         return vars(builtins)[name]
     assert type(retained_builtins) is dict, "function builtins source changed"
     return retained_builtins[name]
@@ -3084,9 +3085,10 @@ def _lifecycle_value_path(
 def _resolve_lifecycle_name(lifecycle: Callable[..., object], name: str) -> object:
     if name in lifecycle.__globals__:
         return lifecycle.__globals__[name]
-    retained_builtins = lifecycle.__globals__.get("__builtins__", builtins)
-    if retained_builtins is builtins:
-        return getattr(builtins, name, None)
+    absent = object()
+    retained_builtins = lifecycle.__globals__.get("__builtins__", absent)
+    if retained_builtins is absent or retained_builtins is builtins:
+        return vars(builtins).get(name)
     assert type(retained_builtins) is dict, "lifecycle builtins source changed"
     return retained_builtins.get(name)
 
@@ -3391,7 +3393,7 @@ def _assert_lifecycle_raise(
         "lifecycle raises a nonlocal value"
     )
     assert node.exc.func.id in error_names
-    expected = getattr(builtins, node.exc.func.id)
+    expected = {"TypeError": TypeError, "ValueError": ValueError}[node.exc.func.id]
     _assert_lifecycle_builtin(lifecycle, node.exc.func.id, expected)
     assert (
         len(node.exc.args) == 1
