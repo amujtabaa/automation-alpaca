@@ -58,6 +58,7 @@ allowed_paths:
   - work/review/REV-0088/**
   - work/review/REV-0089/**
   - work/review/REV-0090/**
+  - work/review/REV-0091/**
   - work/review/FINDING-preexisting-suite-floor-2026-08-24.md
   - work/review/FINDING-protection-stateful-replay-disposition.md
   - work/review/FINDING-schema-approval-gate-is-self-approving.md
@@ -417,3 +418,28 @@ SQL, public export, runtime composition, or human-gate authority.
 remediation. SQLite execution and changed-DDL installation remain forbidden
 until a new independent result records `P0=0/P1=0` and Ameen separately approves
 the exact candidate, tree, DDL identity, manifest, and fresh-file-only commands.
+
+## Amendment — REV-0091 source-ownership review route (2026-08-24)
+
+REV-0090 was not accepted: two fresh independent reviews reproduced
+scope-ownership, module-map, relative-import, dynamic-code, installer-escape,
+and approval-module gaps in its static audit. The root remediation is frozen at
+0cf88d1a3831ae487140a7f8f75cad75bc57bf3f, tree
+c75b1270dd0123fd2bf1019365c5a057b17e4cbe.
+
+The audit now has one position-aware, finite lexical binding model. It owns
+defaults/decorators in their enclosing scope, comprehension targets in their
+implicit scope, class namespaces separately from method free-name lookup, and
+declared global/nonlocal hand-offs at their actual owner. It preserves
+module-map provenance for importlib, sys, builtins, schema, SQLite, and the
+approval module; resolves static relative import_module targets; and rejects
+known dynamic code, installer escapes, approval-token mutation, and schema
+member recovery. Ordinary local shadows, local vars(), custom methods, and
+same-scope ordinary rebindings remain ordinary.
+
+This is a test-side source-guard correction only. It changes no DDL byte, SQL,
+public export, runtime composition, or human-gate authority.
+work/review/REV-0091/** is added solely for a new fresh exact-head review.
+SQLite execution and changed-DDL installation remain forbidden until that
+review records P0=0, P1=0 and Ameen separately approves the exact candidate,
+tree, DDL identity, manifest, and fresh-file-only commands.
