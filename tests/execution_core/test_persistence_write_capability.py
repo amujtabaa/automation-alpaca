@@ -170,38 +170,49 @@ def _approval_accessor_binding_is_exact(tree: ast.Module) -> bool:
     """Prove the public gate reads only its one locked human-controlled token."""
 
     accessor = _exact_function(tree, "require_approved_ddl_execution")
-    validator = _exact_function(tree, "_validate_approved_ddl_execution_token")
     if (
         accessor is None
-        or validator is None
         or accessor.decorator_list
-        or validator.decorator_list
         or _name_is_rebound(
             tree,
             "require_approved_ddl_execution",
             permitted_function=accessor,
         )
-        or _name_is_rebound(
-            tree,
-            "_validate_approved_ddl_execution_token",
-            permitted_function=validator,
-        )
         or not _exact_arguments(accessor.args, positional=(), vararg=None)
-        or not _exact_arguments(validator.args, positional=("approved",), vararg=None)
     ):
         return False
-    body = _body_without_docstring(accessor)
-    if len(body) != 1 or not isinstance(body[0], ast.Return):
+    expected = ast.parse(
+        """
+def require_approved_ddl_execution() -> str:
+    approved = APPROVED_EXECUTION_DDL_SHA256
+    if approved is None:
+        raise RuntimeError(
+            "HUMAN-GATE pending: changed DDL remains static-only until Ameen "
+            "approves the exact candidate identity and fresh-file test plan"
+        )
+    if (
+        type(approved) is not str
+        or len(approved) != 64
+        or any(character not in "0123456789abcdef" for character in approved)
+    ):
+        raise RuntimeError("HUMAN-GATE invalid: approval token must be SHA-256 text")
+    return approved
+"""
+    ).body[0]
+    assert isinstance(expected, ast.FunctionDef)
+    if accessor.returns is None or expected.returns is None:
         return False
-    call = body[0].value
     return bool(
-        isinstance(call, ast.Call)
-        and isinstance(call.func, ast.Name)
-        and call.func.id == "_validate_approved_ddl_execution_token"
-        and len(call.args) == 1
-        and isinstance(call.args[0], ast.Name)
-        and call.args[0].id == "APPROVED_EXECUTION_DDL_SHA256"
-        and not call.keywords
+        ast.dump(accessor.returns, include_attributes=False)
+        == ast.dump(expected.returns, include_attributes=False)
+        and [
+            ast.dump(statement, include_attributes=False)
+            for statement in _body_without_docstring(accessor)
+        ]
+        == [
+            ast.dump(statement, include_attributes=False)
+            for statement in _body_without_docstring(expected)
+        ]
     )
 
 
@@ -1344,10 +1355,6 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
             "approved_schema_digest",
             "require_approved_ddl_execution",
         ): "approval-accessor",
-        (
-            "approved_schema_digest",
-            "_validate_approved_ddl_execution_token",
-        ): "approval-validator",
         ("approved_schema_digest", "__dict__"): "module-map:approval",
         ("approved_schema_digest", "__delattr__"): "approval-bound-mutator",
         ("approved_schema_digest", "__getattribute__"): "approval-namespace-route",
@@ -1360,6 +1367,7 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
         ("builtins", "getattr"): "getter",
         ("builtins", "globals"): "global-namespace-factory",
         ("builtins", "delattr"): "attribute-mutator",
+        ("builtins", "object"): "object-type",
         ("builtins", "setattr"): "attribute-mutator",
         ("builtins", "vars"): "namespace-factory",
         ("importlib", "import_module"): "importer",
@@ -1371,6 +1379,14 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
         ("sys", "__dict__"): "module-map:sys",
         ("sys", "modules"): "module-registry",
     }
+    _FUTURE_GOVERNED_BINDING_KINDS = frozenset(
+        kind
+        for kind in (
+            *_CAPABILITY_MODULE_KINDS.values(),
+            *_DIRECT_CAPABILITY_IMPORT_KINDS.values(),
+        )
+        if kind != "ordinary"
+    )
     _BUILTIN_CAPABILITY_KINDS = {
         "__builtins__": "module-map:builtins",
         "__import__": "importer",
@@ -1379,6 +1395,7 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
         "exec": "dynamic-code",
         "getattr": "getter",
         "globals": "global-namespace-factory",
+        "object": "object-type",
         "delattr": "attribute-mutator",
         "setattr": "attribute-mutator",
         "vars": "namespace-factory",
@@ -1750,6 +1767,8 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
         scope: ast.AST,
         name: str,
         position: tuple[int, int],
+        *,
+        allow_future_governed: bool = False,
     ) -> Binding | None:
         candidates = capability_bindings.get((scope, name), [])
         if not candidates:
@@ -1759,6 +1778,28 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
             for candidate in candidates
             if candidate[3] or candidate[2] <= position
         ]
+        future_governed = (
+            [
+                candidate
+                for candidate in candidates
+                if candidate[2] > position
+                and candidate[0] in _FUTURE_GOVERNED_BINDING_KINDS
+            ]
+            if allow_future_governed
+            else []
+        )
+        # A function's module-global lookup happens when the function runs,
+        # not where its body is written. A governed rebinding after the body
+        # therefore remains relevant even when an earlier ordinary binding is
+        # syntactically available. Treat that as the governed capability (or
+        # an unknown dynamic conflict) rather than laundering it through the
+        # body position.
+        if future_governed:
+            kinds = {candidate[0] for candidate in future_governed}
+            if len(kinds) == 1:
+                return max(future_governed, key=lambda candidate: candidate[2])
+            latest_position = max(candidate[2] for candidate in future_governed)
+            return ("unknown-dynamic", None, latest_position, False, True)
         if not available:
             if isinstance(scope, (ast.ClassDef, ast.Module)):
                 return None
@@ -1787,6 +1828,9 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
                 current,
                 name,
                 position,
+                allow_future_governed=(
+                    current is tree and isinstance(origin_scope, _FUNCTION_SCOPE_TYPES)
+                ),
             )
             if binding is not None:
                 marker = (current, name)
@@ -1931,6 +1975,7 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
             "exec": "dynamic-code",
             "getattr": "getter",
             "globals": "global-namespace-factory",
+            "object": "object-type",
             "delattr": "attribute-mutator",
             "setattr": "attribute-mutator",
             "vars": "namespace-factory",
@@ -1965,7 +2010,6 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
         },
         "module-map:approval": {
             "require_approved_ddl_execution": "approval-accessor",
-            "_validate_approved_ddl_execution_token": "approval-validator",
             "APPROVED_EXECUTION_DDL_SHA256": "approval-token",
         },
     }
@@ -1978,6 +2022,7 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
         "exec": "dynamic-code",
         "getattr": "getter",
         "globals": "global-namespace-factory",
+        "object": "object-type",
         "importlib": "module:importlib",
         "delattr": "attribute-mutator",
         "setattr": "attribute-mutator",
@@ -2031,6 +2076,11 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
                 return "mapping-mutator-function"
             if member in {"get", "__getitem__"}:
                 return "mapping-getter-function"
+        if base == "object-type":
+            if member in {"__delattr__", "__setattr__"}:
+                return "object-attribute-mutator"
+            if member == "__getattribute__":
+                return "object-attribute-getter"
         if base == "approval-accessor":
             if member in {"__delattr__", "__setattr__"}:
                 return "approval-accessor-mutator"
@@ -2041,15 +2091,13 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
         return {
             ("module:schema", "install_schema"): "installer",
             ("module:schema", "__dict__"): "module-map:schema",
+            ("module:schema", "__delattr__"): "schema-bound-mutator",
             ("module:schema", "__getattribute__"): "schema-attribute-getter",
+            ("module:schema", "__setattr__"): "schema-bound-mutator",
             ("module:sqlite3", "__dict__"): "module-map:sqlite3",
             ("module:sqlite3", "__getattribute__"): "unknown-dynamic",
             ("module:approval", "__dict__"): "module-map:approval",
             ("module:approval", "require_approved_ddl_execution"): "approval-accessor",
-            (
-                "module:approval",
-                "_validate_approved_ddl_execution_token",
-            ): "approval-validator",
             (
                 "module:approval",
                 "APPROVED_EXECUTION_DDL_SHA256",
@@ -2059,12 +2107,16 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
             ("module:approval", "__setattr__"): "approval-bound-mutator",
             ("module:builtins", "__dict__"): "module-map:builtins",
             ("module:builtins", "__import__"): "importer",
+            ("module:builtins", "__delattr__"): "builtin-bound-mutator",
+            ("module:builtins", "__getattribute__"): "builtin-namespace-route",
+            ("module:builtins", "__setattr__"): "builtin-bound-mutator",
             ("module:builtins", "delattr"): "attribute-mutator",
             ("module:builtins", "dict"): "builtin-dict",
             ("module:builtins", "eval"): "dynamic-code",
             ("module:builtins", "exec"): "dynamic-code",
             ("module:builtins", "getattr"): "getter",
             ("module:builtins", "globals"): "global-namespace-factory",
+            ("module:builtins", "object"): "object-type",
             ("module:builtins", "setattr"): "attribute-mutator",
             ("module:builtins", "vars"): "namespace-factory",
             ("module:importlib", "__dict__"): "module-map:importlib",
@@ -2075,6 +2127,9 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
             ("module:operator", "ior"): "mapping-mutator-function",
             ("module:operator", "setitem"): "mapping-mutator-function",
             ("module:sys", "__dict__"): "module-map:sys",
+            ("module:sys", "__delattr__"): "sys-bound-mutator",
+            ("module:sys", "__getattribute__"): "sys-namespace-route",
+            ("module:sys", "__setattr__"): "sys-bound-mutator",
             ("module:sys", "modules"): "module-registry",
         }.get((base, member))
 
@@ -2263,6 +2318,52 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
             else "approval module mutation route"
         )
 
+    def _schema_mutation_message(member: str | None) -> str:
+        return (
+            "schema installer mutation route"
+            if member in {None, "install_schema"}
+            else "schema module mutation route"
+        )
+
+    def _sys_mutation_message(member: str | None) -> str:
+        return (
+            "module registry mutation route"
+            if member in {None, "modules"}
+            else "sys module namespace mutation route"
+        )
+
+    def _governed_module_mutation_message(
+        subject_kind: str | None,
+        member: str | None,
+    ) -> str | None:
+        if subject_kind == "module:approval":
+            return _approval_mutation_message(member)
+        if subject_kind == "module:schema":
+            return _schema_mutation_message(member)
+        if subject_kind == "module:sys":
+            return _sys_mutation_message(member)
+        if subject_kind == "module:builtins":
+            return (
+                "importer mutation route"
+                if member in {None, "__import__"}
+                else "builtin module mutation route"
+            )
+        return None
+
+    def _governed_module_reflection_message(
+        subject_kind: str | None,
+        member: str | None,
+    ) -> str | None:
+        if subject_kind == "module:approval":
+            return "approval module namespace route"
+        if subject_kind == "module:schema":
+            return "schema module reflection route"
+        if subject_kind == "module:sys" and member in {None, "modules", "__dict__"}:
+            return "sys module reflection route"
+        if subject_kind == "module:builtins":
+            return "importer namespace route"
+        return None
+
     def _sensitive_mapping_mutation_message(kind: str) -> str:
         return (
             "module registry mutation route"
@@ -2354,6 +2455,18 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
                         f"{label}:{node.lineno}: "
                         f"{_sensitive_mapping_dynamic_lookup_message(mapping_kind)}"
                     )
+            elif mapping_kind == "module-map:builtins":
+                member = _resolve_static_string(node.slice)
+                parent = parents.get(node)
+                if (
+                    isinstance(node.ctx, (ast.Store, ast.Del))
+                    or (isinstance(parent, ast.AugAssign) and parent.target is node)
+                ) and member in {None, "__import__"}:
+                    violations.append(f"{label}:{node.lineno}: importer mutation route")
+                elif member is None:
+                    violations.append(
+                        f"{label}:{node.lineno}: importer namespace route"
+                    )
         if (
             isinstance(node, ast.expr)
             and _resolve_capability_expression(node) == "mapping-mutator-function"
@@ -2375,22 +2488,42 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
             violations.append(
                 f"{label}:{node.lineno}: approval module escapes canonical import"
             )
-        if isinstance(node, ast.expr) and (
-            callable_kind := _resolve_capability_expression(node)
-        ) in {"approval-accessor", "approval-validator"}:
+        if (
+            isinstance(node, ast.expr)
+            and _resolve_capability_expression(node) == "approval-accessor"
+        ):
             if not (
                 isinstance(node, ast.Name)
                 and isinstance(parents.get(node), ast.Call)
                 and parents[node].func is node
             ):
-                callable_name = (
-                    "approval accessor"
-                    if callable_kind == "approval-accessor"
-                    else "approval validator"
-                )
                 violations.append(
-                    f"{label}:{node.lineno}: {callable_name} escapes canonical call"
+                    f"{label}:{node.lineno}: approval accessor escapes canonical call"
                 )
+        if (
+            isinstance(node, ast.expr)
+            and _resolve_capability_expression(node) == "importer"
+        ):
+            parent = parents.get(node)
+            if not (isinstance(parent, ast.Call) and parent.func is node):
+                violations.append(
+                    f"{label}:{node.lineno}: importer escapes direct call"
+                )
+        if (
+            isinstance(node, ast.expr)
+            and _resolve_capability_expression(node) == "schema-attribute-getter"
+        ):
+            violations.append(f"{label}:{node.lineno}: schema module reflection route")
+        if (
+            isinstance(node, ast.expr)
+            and _resolve_capability_expression(node) == "sys-namespace-route"
+        ):
+            violations.append(f"{label}:{node.lineno}: sys module reflection route")
+        if (
+            isinstance(node, ast.expr)
+            and _resolve_capability_expression(node) == "builtin-namespace-route"
+        ):
+            violations.append(f"{label}:{node.lineno}: importer namespace route")
         if isinstance(node, ast.expr):
             sensitive_mapping_kind = _resolve_capability_expression(node)
             if (
@@ -2470,12 +2603,13 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
                 violations.append(f"{label}:{node.lineno}: module alias")
         if isinstance(node, ast.Attribute):
             owner_kind = _resolve_capability_expression(node.value)
-            if owner_kind == "module:approval" and isinstance(
-                node.ctx, (ast.Store, ast.Del)
-            ):
-                violations.append(
-                    f"{label}:{node.lineno}: {_approval_mutation_message(node.attr)}"
-                )
+            message = (
+                _governed_module_mutation_message(owner_kind, node.attr)
+                if isinstance(node.ctx, (ast.Store, ast.Del))
+                else None
+            )
+            if message is not None:
+                violations.append(f"{label}:{node.lineno}: {message}")
             if owner_kind == "approval-accessor" and isinstance(
                 node.ctx, (ast.Store, ast.Del)
             ):
@@ -2494,14 +2628,6 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
                 violations.append(
                     f"{label}:{node.lineno}: approval module namespace route"
                 )
-            if (
-                owner_kind == "module:sys"
-                and node.attr == "modules"
-                and isinstance(node.ctx, (ast.Store, ast.Del))
-            ):
-                violations.append(
-                    f"{label}:{node.lineno}: module registry mutation route"
-                )
             if owner_kind == "module:schema" and node.attr == "__dict__":
                 violations.append(
                     f"{label}:{node.lineno}: schema module namespace route"
@@ -2511,14 +2637,16 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
             if mutation_kind == "attribute-mutator":
                 subject = _call_argument(node, "object", 0)
                 member = _call_argument(node, "name", 1)
-                if (
-                    subject is not None
-                    and _resolve_capability_expression(subject) == "module:approval"
-                ):
-                    violations.append(
-                        f"{label}:{node.lineno}: "
-                        f"{_approval_mutation_message(None if member is None else _resolve_static_string(member))}"
+                message = (
+                    None
+                    if subject is None
+                    else _governed_module_mutation_message(
+                        _resolve_capability_expression(subject),
+                        None if member is None else _resolve_static_string(member),
                     )
+                )
+                if message is not None:
+                    violations.append(f"{label}:{node.lineno}: {message}")
                 elif (
                     subject is not None
                     and _resolve_capability_expression(subject) == "approval-accessor"
@@ -2536,6 +2664,56 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
                 violations.append(
                     f"{label}:{node.lineno}: approval accessor mutation route"
                 )
+            elif mutation_kind in {
+                "schema-bound-mutator",
+                "sys-bound-mutator",
+                "builtin-bound-mutator",
+            }:
+                member = _call_argument(node, "name", 0)
+                subject_kind = {
+                    "schema-bound-mutator": "module:schema",
+                    "sys-bound-mutator": "module:sys",
+                    "builtin-bound-mutator": "module:builtins",
+                }[mutation_kind]
+                message = _governed_module_mutation_message(
+                    subject_kind,
+                    None if member is None else _resolve_static_string(member),
+                )
+                assert message is not None
+                violations.append(f"{label}:{node.lineno}: {message}")
+            elif mutation_kind == "object-attribute-mutator":
+                subject = _call_argument(node, "object", 0)
+                member = _call_argument(node, "name", 1)
+                message = (
+                    None
+                    if subject is None
+                    else _governed_module_mutation_message(
+                        _resolve_capability_expression(subject),
+                        None if member is None else _resolve_static_string(member),
+                    )
+                )
+                if message is not None:
+                    violations.append(f"{label}:{node.lineno}: {message}")
+            elif mutation_kind == "object-attribute-getter":
+                subject = _call_argument(node, "object", 0)
+                member = _call_argument(node, "name", 1)
+                message = (
+                    None
+                    if subject is None
+                    else _governed_module_reflection_message(
+                        _resolve_capability_expression(subject),
+                        None if member is None else _resolve_static_string(member),
+                    )
+                )
+                if message is not None:
+                    violations.append(f"{label}:{node.lineno}: {message}")
+            if (
+                isinstance(node.func, ast.Attribute)
+                and node.func.attr in _MAPPING_MUTATOR_NAMES
+                and _resolve_capability_expression(node.func.value)
+                == "module-map:builtins"
+            ):
+                violations.append(f"{label}:{node.lineno}: importer mutation route")
         if (
             isinstance(node, ast.Call)
             and (mapping_kind := _sensitive_mapping_mutation_call(node)) is not None
@@ -2785,6 +2963,438 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
     return violations
 
 
+def _repository_sensitive_reexport_violations(
+    sources: dict[str, str],
+) -> list[str]:
+    """Reject sensitive installer/gate capabilities re-exported through helpers.
+
+    The single-file grammar proves the direct spelling in one source file. This
+    companion topology pass proves that an otherwise ordinary local module
+    cannot relay the installer, approval accessor, or their owning modules to
+    another file. It intentionally tracks only the finite governed surface;
+    ordinary fixture imports remain outside this proof.
+    """
+
+    trees = {
+        label: ast.parse(source, filename=label) for label, source in sources.items()
+    }
+    module_to_label: dict[str, str] = {}
+    package_by_label: dict[str, str] = {}
+    for label in trees:
+        parts = label.replace("\\", "/").split("/")
+        stem = parts[-1].removesuffix(".py")
+        module_parts = parts[:-1] if stem == "__init__" else [*parts[:-1], stem]
+        module_name = ".".join(module_parts)
+        if module_name:
+            module_to_label[module_name] = label
+        package_by_label[label] = ".".join(
+            module_parts if stem == "__init__" else module_parts[:-1]
+        )
+        if parts[:2] == ["tests", "execution_core"] and stem != "__init__":
+            module_to_label[stem] = label
+
+    direct_members = {
+        (
+            "app.execution_core.persistence.schema",
+            "install_schema",
+        ): "installer",
+        (
+            "approved_schema_digest",
+            "require_approved_ddl_execution",
+        ): "approval-accessor",
+        ("app.execution_core.persistence", "schema"): "module:schema",
+    }
+    direct_modules = {
+        "app.execution_core.persistence.schema": "module:schema",
+        "approved_schema_digest": "module:approval",
+        "builtins": "module:builtins",
+        "importlib": "module:importlib",
+        "sys": "module:sys",
+    }
+    protected = frozenset(
+        {
+            "installer",
+            "approval-accessor",
+            "module:schema",
+            "module:approval",
+        }
+    )
+
+    def _absolute_module(label: str, node: ast.ImportFrom) -> str | None:
+        if node.level == 0:
+            return node.module
+        package = package_by_label[label]
+        package_parts = package.split(".") if package else []
+        parent_count = node.level - 1
+        if parent_count > len(package_parts):
+            return None
+        prefix = package_parts[: len(package_parts) - parent_count]
+        suffix = node.module.split(".") if node.module else []
+        return ".".join([*prefix, *suffix]) or None
+
+    def _module_provenance(module: str) -> str | None:
+        if module in direct_modules:
+            return direct_modules[module]
+        label = module_to_label.get(module)
+        return None if label is None else f"local:{label}"
+
+    def _member_provenance(
+        module: str,
+        member: str,
+        exports: dict[str, dict[str, str]],
+    ) -> str | None:
+        direct = direct_members.get((module, member))
+        if direct is not None:
+            return direct
+        label = module_to_label.get(module)
+        return None if label is None else exports[label].get(member)
+
+    exports: dict[str, dict[str, str]] = {label: {} for label in trees}
+    changed = True
+    while changed:
+        changed = False
+        for label, tree in trees.items():
+            for node in tree.body:
+                if isinstance(node, ast.ImportFrom):
+                    module = _absolute_module(label, node)
+                    if module is None:
+                        continue
+                    for imported in node.names:
+                        if imported.name == "*":
+                            continue
+                        provenance = _member_provenance(module, imported.name, exports)
+                        if provenance is None:
+                            continue
+                        bound = imported.asname or imported.name
+                        if exports[label].get(bound) != provenance:
+                            exports[label][bound] = provenance
+                            changed = True
+                elif isinstance(node, ast.Import):
+                    for imported in node.names:
+                        provenance = _module_provenance(imported.name)
+                        if provenance is None:
+                            continue
+                        bound = imported.asname or imported.name.split(".", 1)[0]
+                        if exports[label].get(bound) != provenance:
+                            exports[label][bound] = provenance
+                            changed = True
+
+    def _member_from_provenance(provenance: str, member: str) -> str | None:
+        if provenance == "canonical:module:schema" and member == "install_schema":
+            return "canonical:installer"
+        if (
+            provenance == "canonical:module:approval"
+            and member == "require_approved_ddl_execution"
+        ):
+            return "canonical:approval-accessor"
+        if provenance == "reexport:module:schema" and member == "install_schema":
+            return "reexport:installer"
+        if (
+            provenance == "reexport:module:approval"
+            and member == "require_approved_ddl_execution"
+        ):
+            return "reexport:approval-accessor"
+        if provenance == "canonical:module:sys" and member == "modules":
+            return "module-registry"
+        if provenance in {"canonical:module:sys", "canonical:module:builtins"} and (
+            member == "__dict__"
+        ):
+            return f"module-map:{provenance.removeprefix('canonical:module:')}"
+        if provenance.startswith(("local:", "local-map:")):
+            label = provenance.split(":", 1)[1]
+            exported = exports[label].get(member)
+            return (
+                None
+                if exported is None
+                else (f"reexport:{exported}" if exported in protected else exported)
+            )
+        return None
+
+    def _module_reference_provenance(module: str) -> str | None:
+        provenance = _module_provenance(module)
+        return (
+            None
+            if provenance is None
+            else (f"canonical:{provenance}" if module in direct_modules else provenance)
+        )
+
+    def _call_argument(
+        call: ast.Call,
+        index: int,
+        *names: str,
+    ) -> ast.expr | None:
+        for keyword in call.keywords:
+            if keyword.arg in names:
+                return keyword.value
+        return call.args[index] if len(call.args) > index else None
+
+    def _static_text(value: ast.expr | None) -> str | None:
+        return (
+            value.value
+            if isinstance(value, ast.Constant) and isinstance(value.value, str)
+            else None
+        )
+
+    def _describe(provenance: str) -> str:
+        return {
+            "installer": "schema installer",
+            "approval-accessor": "approval accessor",
+            "module:schema": "schema module",
+            "module:approval": "approval module",
+        }[provenance]
+
+    violations: list[str] = []
+    for label, tree in trees.items():
+        bindings: dict[str, set[str]] = {}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                module = _absolute_module(label, node)
+                if module is None:
+                    continue
+                local_origin = module_to_label.get(module)
+                for imported in node.names:
+                    if imported.name == "*":
+                        if local_origin is not None and any(
+                            provenance in protected
+                            for provenance in exports[local_origin].values()
+                        ):
+                            violations.append(
+                                f"{label}:{node.lineno}: wildcard import may recover "
+                                "a re-exported governed capability"
+                            )
+                        continue
+                    provenance = _member_provenance(module, imported.name, exports)
+                    if provenance is None:
+                        continue
+                    bound = imported.asname or imported.name
+                    direct_origin = (module, imported.name) in direct_members
+                    bound_provenance = (
+                        f"canonical:{provenance}"
+                        if direct_origin
+                        else (
+                            f"reexport:{provenance}"
+                            if local_origin is not None and provenance in protected
+                            else provenance
+                        )
+                    )
+                    bindings.setdefault(bound, set()).add(bound_provenance)
+                    if (
+                        local_origin is not None
+                        and not direct_origin
+                        and provenance in protected
+                    ):
+                        violations.append(
+                            f"{label}:{node.lineno}: {_describe(provenance)} is "
+                            f"re-exported through {module}"
+                        )
+            elif isinstance(node, ast.Import):
+                for imported in node.names:
+                    provenance = _module_provenance(imported.name)
+                    if provenance is None:
+                        continue
+                    bound = imported.asname or imported.name.split(".", 1)[0]
+                    bindings.setdefault(bound, set()).add(
+                        (
+                            f"canonical:{provenance}"
+                            if imported.name in direct_modules
+                            else provenance
+                        )
+                    )
+
+        def _expression_provenance(value: ast.expr) -> set[str]:
+            if isinstance(value, ast.Name):
+                return bindings.get(value.id, set())
+            if isinstance(value, ast.Attribute):
+                attribute_provenances: set[str] = set()
+                for owner_provenance in _expression_provenance(value.value):
+                    if (
+                        owner_provenance.startswith("local:")
+                        and value.attr == "__dict__"
+                    ):
+                        attribute_provenances.add(
+                            f"local-map:{owner_provenance.removeprefix('local:')}"
+                        )
+                        continue
+                    member_provenance = _member_from_provenance(
+                        owner_provenance, value.attr
+                    )
+                    if member_provenance is not None:
+                        attribute_provenances.add(member_provenance)
+                return attribute_provenances
+            if isinstance(value, ast.Subscript):
+                subscript_member = _static_text(value.slice)
+                subscript_provenances: set[str] = set()
+                for owner_provenance in _expression_provenance(value.value):
+                    if (
+                        owner_provenance == "module-registry"
+                        and subscript_member is not None
+                    ):
+                        module_provenance = _module_reference_provenance(
+                            subscript_member
+                        )
+                        if module_provenance is not None:
+                            subscript_provenances.add(module_provenance)
+                    elif (
+                        owner_provenance == "module-map:sys"
+                        and subscript_member == "modules"
+                    ):
+                        subscript_provenances.add("module-registry")
+                    elif subscript_member is not None:
+                        member_provenance = _member_from_provenance(
+                            owner_provenance, subscript_member
+                        )
+                        if member_provenance is not None:
+                            subscript_provenances.add(member_provenance)
+                return subscript_provenances
+            if isinstance(value, ast.Call):
+                function = value.func
+                requested_member: str | None = None
+                owners: set[str] = set()
+                if isinstance(function, ast.Name):
+                    if function.id == "vars" and value.args:
+                        return {
+                            f"local-map:{provenance.removeprefix('local:')}"
+                            for provenance in _expression_provenance(value.args[0])
+                            if provenance.startswith("local:")
+                        }
+                    if function.id == "__import__":
+                        target = _static_text(_call_argument(value, 0, "name"))
+                        return (
+                            set()
+                            if target is None
+                            else {
+                                provenance
+                                for provenance in (
+                                    _module_reference_provenance(target),
+                                )
+                                if provenance is not None
+                            }
+                        )
+                    if function.id == "getattr":
+                        owners = _expression_provenance(
+                            _call_argument(value, 0, "object")
+                            or ast.Constant(value=None)
+                        )
+                        requested_member = _static_text(
+                            _call_argument(value, 1, "name")
+                        )
+                elif isinstance(function, ast.Attribute):
+                    if function.attr == "import_module":
+                        target = _static_text(_call_argument(value, 0, "name"))
+                        return (
+                            set()
+                            if target is None
+                            else {
+                                provenance
+                                for provenance in (
+                                    _module_reference_provenance(target),
+                                )
+                                if provenance is not None
+                            }
+                        )
+                    if function.attr == "__import__":
+                        target = _static_text(_call_argument(value, 0, "name"))
+                        return (
+                            set()
+                            if target is None
+                            else {
+                                provenance
+                                for provenance in (
+                                    _module_reference_provenance(target),
+                                )
+                                if provenance is not None
+                            }
+                        )
+                    if function.attr == "__getattribute__":
+                        if (
+                            isinstance(function.value, ast.Name)
+                            and function.value.id == "object"
+                        ):
+                            subject = _call_argument(value, 0, "object")
+                            member_value = _call_argument(value, 1, "name")
+                        else:
+                            subject = function.value
+                            member_value = _call_argument(value, 0, "name")
+                        owners = (
+                            set()
+                            if subject is None
+                            else _expression_provenance(subject)
+                        )
+                        requested_member = _static_text(member_value)
+                    elif function.attr in {"get", "__getitem__"}:
+                        owners = _expression_provenance(function.value)
+                        requested_member = _static_text(_call_argument(value, 0, "key"))
+                return {
+                    member_provenance
+                    for owner_provenance in owners
+                    if requested_member is not None
+                    and (
+                        member_provenance := _member_from_provenance(
+                            owner_provenance, requested_member
+                        )
+                    )
+                    is not None
+                }
+            return set()
+
+        def _record_reexported_provenances(
+            node: ast.expr,
+            provenances: set[str],
+        ) -> None:
+            for provenance in provenances:
+                if provenance.startswith("reexport:"):
+                    violations.append(
+                        f"{label}:{node.lineno}: "
+                        f"{_describe(provenance.removeprefix('reexport:'))} is "
+                        "recovered through a re-exported module"
+                    )
+
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.Attribute, ast.Call, ast.Subscript)):
+                _record_reexported_provenances(
+                    node,
+                    _expression_provenance(node),
+                )
+            if isinstance(node, ast.Subscript) and _static_text(node.slice) is None:
+                if any(
+                    provenance.startswith("local-map:")
+                    and any(
+                        exported in protected
+                        for exported in exports[
+                            provenance.removeprefix("local-map:")
+                        ].values()
+                    )
+                    for provenance in _expression_provenance(node.value)
+                ):
+                    violations.append(
+                        f"{label}:{node.lineno}: dynamic lookup may recover a "
+                        "re-exported governed capability"
+                    )
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "getattr"
+                and _static_text(_call_argument(node, 1, "name")) is None
+                and any(
+                    provenance.startswith("local:")
+                    and any(
+                        exported in protected
+                        for exported in exports[
+                            provenance.removeprefix("local:")
+                        ].values()
+                    )
+                    for provenance in _expression_provenance(
+                        _call_argument(node, 0, "object") or ast.Constant(value=None)
+                    )
+                )
+            ):
+                violations.append(
+                    f"{label}:{node.lineno}: dynamic lookup may recover a "
+                    "re-exported governed capability"
+                )
+    return violations
+
+
 def test_changed_ddl_installers_have_one_fail_closed_human_gate() -> None:
     """REV-0078 P0-1: every installer has exactly one approval provenance.
 
@@ -2803,33 +3413,100 @@ def test_changed_ddl_installers_have_one_fail_closed_human_gate() -> None:
         ),
         key=lambda candidate: candidate.as_posix(),
     )
+    sources = {
+        path.relative_to(repository_root).as_posix(): path.read_text(encoding="utf-8")
+        for path in paths
+    }
     violations = [
         violation
-        for path in paths
+        for label, source in sources.items()
         for violation in _schema_installer_gate_violations(
-            path.read_text(encoding="utf-8"),
-            path.relative_to(repository_root).as_posix(),
+            source,
+            label,
         )
     ]
+    violations.extend(_repository_sensitive_reexport_violations(sources))
     assert violations == [], violations
+
+
+def test_changed_ddl_gate_audit_refuses_sensitive_helper_reexports() -> None:
+    """A local helper cannot make the governed imports look ordinary elsewhere."""
+
+    direct = {
+        "tests/execution_core/consumer.py": """
+from app.execution_core.persistence.schema import install_schema
+from approved_schema_digest import require_approved_ddl_execution
+install_schema(connection, approved_ddl_sha256=require_approved_ddl_execution())
+""",
+    }
+    assert _repository_sensitive_reexport_violations(direct) == []
+
+    relayed = {
+        "tests/execution_core/helper.py": """
+from app.execution_core.persistence.schema import install_schema
+from approved_schema_digest import require_approved_ddl_execution
+""",
+        "tests/execution_core/consumer.py": """
+from helper import install_schema, require_approved_ddl_execution
+install_schema(connection, approved_ddl_sha256=require_approved_ddl_execution())
+""",
+        "tests/execution_core/module_helper.py": """
+from app.execution_core.persistence import schema
+""",
+        "tests/execution_core/module_consumer.py": """
+import module_helper
+module_helper.schema.install_schema(connection, approved_ddl_sha256=object())
+getattr(module_helper.schema, 'install_schema')
+""",
+        "tests/execution_core/wildcard_consumer.py": """
+from helper import *
+""",
+        "tests/execution_core/namespace_consumer.py": """
+import helper
+helper.__dict__["install_schema"]
+vars(helper)["require_approved_ddl_execution"]
+helper.__getattribute__("install_schema")
+object.__getattribute__(helper, "require_approved_ddl_execution")
+member = "install_schema"
+helper.__dict__[member]
+getattr(helper, member)
+""",
+        "tests/execution_core/dynamic_import_consumer.py": """
+import importlib
+import sys
+importlib.import_module("helper").install_schema
+sys.modules["helper"].require_approved_ddl_execution
+""",
+    }
+    violations = _repository_sensitive_reexport_violations(relayed)
+    assert any(
+        "schema installer is re-exported through helper" in item for item in violations
+    )
+    assert any(
+        "approval accessor is re-exported through helper" in item for item in violations
+    )
+    assert (
+        sum(
+            "schema installer is recovered through a re-exported module" in item
+            for item in violations
+        )
+        == 2
+    )
+    assert any("wildcard import may recover" in item for item in violations)
+    assert (
+        sum("recovered through a re-exported module" in item for item in violations)
+        >= 6
+    )
+    assert sum("dynamic lookup may recover" in item for item in violations) == 2
 
 
 def test_changed_ddl_execution_gate_refuses_without_a_valid_human_token() -> None:
     """The approval accessor stays fail-closed before any fixture can connect."""
 
-    from approved_schema_digest import (
-        _validate_approved_ddl_execution_token,
-        require_approved_ddl_execution,
-    )
+    from approved_schema_digest import require_approved_ddl_execution
 
     with pytest.raises(RuntimeError, match="HUMAN-GATE pending"):
         require_approved_ddl_execution()
-    for malformed in ("", "AB" * 32, 1):
-        with pytest.raises(RuntimeError, match="HUMAN-GATE invalid"):
-            _validate_approved_ddl_execution_token(malformed)
-
-    approved = "ab" * 32
-    assert _validate_approved_ddl_execution_token(approved) == approved
 
 
 def test_changed_ddl_execution_gate_uses_one_exact_locked_binding() -> None:
@@ -2846,19 +3523,18 @@ def test_changed_ddl_execution_gate_uses_one_exact_locked_binding() -> None:
             1,
         ),
         source.replace(
-            "_validate_approved_ddl_execution_token(APPROVED_EXECUTION_DDL_SHA256)",
-            "_validate_approved_ddl_execution_token('ab' * 32)",
+            "approved = APPROVED_EXECUTION_DDL_SHA256",
+            "approved = 'ab' * 32",
             1,
         ),
         source.replace(
-            "return _validate_approved_ddl_execution_token(APPROVED_EXECUTION_DDL_SHA256)",
-            "return APPROVED_EXECUTION_DDL_SHA256",
+            "or len(approved) != 64",
+            "or False",
             1,
         ),
         source.replace(
-            "return _validate_approved_ddl_execution_token(APPROVED_EXECUTION_DDL_SHA256)",
-            "return _validate_approved_ddl_execution_token(APPROVED_EXECUTION_DDL_SHA256)\n"
-            "    return _validate_approved_ddl_execution_token(APPROVED_EXECUTION_DDL_SHA256)",
+            "return approved",
+            "return 'ab' * 32",
             1,
         ),
     )
@@ -4825,43 +5501,6 @@ monkeypatch.setattr(gate, 'APPROVED_EXECUTION_DDL_SHA256', 'forged')
 """,
             "approval module escapes canonical import",
         ),
-        (
-            """
-from approved_schema_digest import _validate_approved_ddl_execution_token
-alias = _validate_approved_ddl_execution_token
-""",
-            "approval validator escapes canonical call",
-        ),
-        (
-            """
-from approved_schema_digest import _validate_approved_ddl_execution_token
-object.__setattr__(
-    _validate_approved_ddl_execution_token,
-    '__code__',
-    object(),
-)
-""",
-            "approval validator escapes canonical call",
-        ),
-        (
-            """
-import sys
-sys.modules['approved_schema_digest']._validate_approved_ddl_execution_token
-""",
-            "approval validator escapes canonical call",
-        ),
-        (
-            """
-from app.execution_core.persistence.schema import install_schema
-from approved_schema_digest import _validate_approved_ddl_execution_token
-def install(connection):
-    return install_schema(
-        connection,
-        approved_ddl_sha256=_validate_approved_ddl_execution_token('ab' * 32),
-    )
-""",
-            "installer lacks exact approval accessor",
-        ),
     )
     for ordinal, (source, expected) in enumerate(rejected, 1):
         violations = _schema_installer_gate_violations(source, f"rev0096-{ordinal}.py")
@@ -4971,3 +5610,116 @@ def inspect(dict):
             _schema_installer_gate_violations(source, f"rev0097-good-{ordinal}.py")
             == []
         )
+
+
+def test_rev0098_gate_audit_refuses_reflected_capability_roots() -> None:
+    """Reflection cannot recover or replace governed modules and import machinery."""
+
+    rejected = (
+        (
+            """
+import sys
+sys.__getattribute__('modules')['approved_schema_digest'] = object()
+""",
+            "sys module reflection route",
+        ),
+        (
+            """
+import sys
+object.__getattribute__(sys, 'modules')['approved_schema_digest'] = object()
+""",
+            "sys module reflection route",
+        ),
+        (
+            """
+from app.execution_core.persistence import schema
+setattr(schema, 'install_schema', object())
+""",
+            "schema installer mutation route",
+        ),
+        (
+            """
+from app.execution_core.persistence import schema
+schema.__setattr__('install_schema', object())
+""",
+            "schema installer mutation route",
+        ),
+        (
+            """
+from app.execution_core.persistence import schema
+object.__setattr__(schema, 'install_schema', object())
+""",
+            "schema installer mutation route",
+        ),
+        (
+            """
+import builtins
+builtins.__import__ = object()
+""",
+            "importer mutation route",
+        ),
+        (
+            """
+import builtins
+vars(builtins)['__import__'] = object()
+""",
+            "importer mutation route",
+        ),
+        (
+            """
+import builtins
+builtins.__dict__.update({'__import__': object()})
+""",
+            "importer mutation route",
+        ),
+        (
+            """
+import builtins
+alias = builtins.__import__
+""",
+            "importer escapes direct call",
+        ),
+    )
+    for ordinal, (source, expected) in enumerate(rejected, 1):
+        violations = _schema_installer_gate_violations(source, f"rev0098-{ordinal}.py")
+        assert any(expected in violation for violation in violations), violations
+
+
+def test_rev0098_gate_audit_models_deferred_function_global_bindings() -> None:
+    """Function globals may be established after definition but before invocation."""
+
+    rejected = (
+        (
+            """
+sqlite3 = object()
+def open_connection(path):
+    return sqlite3.connect(path)
+import sqlite3
+open_connection('ordinary-path')
+""",
+            "approval gate does not dominate SQLite connect",
+        ),
+        (
+            """
+def mutate():
+    sys.modules['approved_schema_digest'] = object()
+import sys
+mutate()
+""",
+            "module registry mutation route",
+        ),
+        (
+            """
+def mutate():
+    return require_approved_ddl_execution.__globals__
+from approved_schema_digest import require_approved_ddl_execution
+mutate()
+""",
+            "approval accessor namespace route",
+        ),
+    )
+    for ordinal, (source, expected) in enumerate(rejected, 1):
+        violations = _schema_installer_gate_violations(
+            source, f"rev0098-late-{ordinal}.py"
+        )
+        assert any(expected in violation for violation in violations), violations
