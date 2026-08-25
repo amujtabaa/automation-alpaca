@@ -69,6 +69,7 @@ allowed_paths:
   - work/review/REV-0099/**
   - work/review/REV-0100/**
   - work/review/REV-0101/**
+  - work/review/REV-0102/**
   - work/review/FINDING-preexisting-suite-floor-2026-08-24.md
   - work/review/FINDING-protection-stateful-replay-disposition.md
   - work/review/FINDING-schema-approval-gate-is-self-approving.md
@@ -755,3 +756,29 @@ review. No SQLite import/connection, held suite, DDL install, migration, or
 database activity is authorized. The changed-DDL HUMAN-GATE remains closed
 until a fresh exact-head result records `P0=0` and `P1=0`, after which Ameen must
 separately approve the exact DDL packet and named fresh-file commands.
+
+## Amendment — REV-0101 disposition and REV-0102 callable-flow review route (2026-08-25)
+
+REV-0101 independently reviewed
+`2189d0fe6cf5428188b83255a5ef7725fac61174` and returned `BLOCK` with
+P0=5, P1=1, and P2=0 after deduplication. The owning defects are expression-
+level conditional execution, lambda/callable-alias observation time,
+`ImportFrom` namespace-package prefixes, a mutable `sys.path` value incorrectly
+classified as ordinary, and a conditional-target control that could remain
+green after its intended alternative-propagation rule was removed. Passive
+identity observations and simple local aliases were both symptoms of the one
+callable-flow precision defect.
+
+The successor must correct those roots in both finite source gates: model
+short-circuit and conditional-expression execution; resolve named functions,
+lambdas, and simple local callable aliases at proven call or real escape
+positions; distinguish passive observations from value-flow escape; apply
+module-prefix identity to imported namespace-package members; permit only exact
+ordinary standard-module reads, never mutable import machinery; and assert a
+provenance-specific diagnostic for the conditional-alternative mutation. No
+filename waiver, broad dynamic evaluator, or route-specific exemption is
+authorized.
+
+`work/review/REV-0102/**` is released solely for the fresh exact-source review
+of that root correction. All DDL/SQLite holds and Ameen's separate HUMAN-GATE
+remain binding.
