@@ -1481,10 +1481,6 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
             )
         )
 
-    _DYNAMIC_CAPABILITY_NAMES = frozenset(
-        {"globals", "vars", "__builtins__", "__import__"}
-    )
-
     def _lexical_parent_scope(scope: ast.AST) -> ast.AST | None:
         current = parents.get(scope)
         while current is not None and not isinstance(
@@ -1493,106 +1489,341 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
             current = parents.get(current)
         return current
 
-    def _lexical_scope_chain(value: ast.AST) -> tuple[ast.AST, ...]:
-        scopes: list[ast.AST] = []
-        current = _lexical_scope(value, parents)
-        while current not in scopes:
-            scopes.append(current)
-            parent = _lexical_parent_scope(current)
-            if parent is None:
-                break
-            current = parent
-        return tuple(scopes)
+    _CAPABILITY_MODULE_KINDS = {
+        "builtins": "module:builtins",
+        "importlib": "module:importlib",
+        "operator": "module:operator",
+        "sys": "module:sys",
+    }
+    _DIRECT_CAPABILITY_IMPORT_KINDS = {
+        ("builtins", "__import__"): "importer",
+        ("builtins", "getattr"): "getter",
+        ("builtins", "globals"): "namespace",
+        ("builtins", "vars"): "namespace",
+        ("importlib", "import_module"): "importer",
+        ("operator", "attrgetter"): "attrgetter",
+        ("sys", "modules"): "module-map",
+    }
+    _BUILTIN_CAPABILITY_KINDS = {
+        "__builtins__": "module-map",
+        "__import__": "importer",
+        "getattr": "getter",
+        "globals": "namespace",
+        "vars": "namespace",
+    }
+    _DYNAMIC_SQLITE_KINDS = frozenset({"sqlite-module", "unknown-dynamic"})
 
-    def _scope_declares_nonlocal_or_global(scope: ast.AST) -> bool:
-        return any(
-            isinstance(candidate, (ast.Global, ast.Nonlocal))
-            and _lexical_scope(candidate, parents) is scope
-            for candidate in ast.walk(scope)
-        )
+    Binding = str | tuple[str, ast.expr]
+    capability_bindings: dict[tuple[ast.AST, str], list[Binding]] = {}
+    global_names_by_scope: dict[ast.AST, set[str]] = {}
+    nonlocal_names_by_scope: dict[ast.AST, set[str]] = {}
 
-    def _is_dynamic_capability_declaration(candidate: ast.AST) -> bool:
-        if isinstance(candidate, ast.Name):
-            return bool(
-                isinstance(candidate.ctx, ast.Load)
-                and (
-                    candidate.id in _DYNAMIC_CAPABILITY_NAMES
-                    or candidate.id in dynamic_import_names
-                )
-            )
-        if isinstance(candidate, ast.Attribute) and isinstance(
-            candidate.value, ast.Name
-        ):
-            return bool(
-                candidate.attr == "modules"
-                and candidate.value.id in sys_module_names
-                or candidate.attr == "import_module"
-                and candidate.value.id in dynamic_import_module_names
-                or candidate.attr in {"globals", "vars", "__import__", "__dict__"}
-                and candidate.value.id in builtins_module_names
-            )
-        if isinstance(candidate, (ast.Assign, ast.AnnAssign, ast.NamedExpr)):
-            value = candidate.value
-            return bool(
-                isinstance(value, ast.Name)
-                and value.id
-                in {
-                    *sys_module_names,
-                    *dynamic_import_module_names,
-                    *builtins_module_names,
-                }
-            )
-        if not isinstance(candidate, ast.ImportFrom):
-            return False
-        return bool(
-            candidate.module == "builtins"
-            and any(
-                imported.name in {"globals", "vars", "__import__"}
-                for imported in candidate.names
-            )
-            or candidate.module == "importlib"
-            and any(imported.name == "import_module" for imported in candidate.names)
-            or candidate.module == "sys"
-            and any(imported.name == "modules" for imported in candidate.names)
-        )
-
-    dynamic_capability_scopes: set[ast.AST] = set()
     for candidate in ast.walk(tree):
-        if not _is_dynamic_capability_declaration(candidate):
+        if not isinstance(candidate, (ast.Global, ast.Nonlocal)):
             continue
         scope = _lexical_scope(candidate, parents)
-        dynamic_capability_scopes.add(scope)
-        if isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)) and (
-            _scope_declares_nonlocal_or_global(scope)
+        target = (
+            global_names_by_scope
+            if isinstance(candidate, ast.Global)
+            else nonlocal_names_by_scope
+        )
+        target.setdefault(scope, set()).update(candidate.names)
+
+    def _binding_scope(scope: ast.AST, name: str) -> ast.AST:
+        current: ast.AST | None = scope
+        while current is not None and (
+            name in global_names_by_scope.get(current, set())
+            or name in nonlocal_names_by_scope.get(current, set())
         ):
-            parent_scope = _lexical_parent_scope(scope)
-            if parent_scope is not None:
-                dynamic_capability_scopes.update(_lexical_scope_chain(parent_scope))
+            current = _lexical_parent_scope(current)
+        return tree if current is None else current
 
-    def _is_dynamic_connection_surface(node: ast.AST) -> bool:
-        """Reject a noncanonical endpoint in a dynamic-capability lexical region.
+    def _record_capability_binding(
+        scope: ast.AST,
+        name: str,
+        binding: Binding,
+    ) -> None:
+        capability_bindings.setdefault((_binding_scope(scope, name), name), []).append(
+            binding
+        )
 
-        This is a source grammar, not a Python value-flow evaluator.  Direct
-        canonical ``sqlite3.connect`` remains subject to the ordinary gate
-        checks below.  Any other connection member or static member lookup is
-        refused when its lexical scope (or an enclosing scope) declares a
-        namespace/import capability.  That makes aliasing, later rebinding,
-        captures, and declared global/nonlocal hand-off irrelevant to the
-        safety decision while leaving unrelated client methods outside such a
-        region alone.
-        """
-
-        if not dynamic_capability_scopes.intersection(_lexical_scope_chain(node)):
-            return False
-        if isinstance(node, ast.Attribute):
-            return bool(
-                node.attr in {"connect", "Connection"}
-                and not _is_sqlite_module_expression(node.value)
+    def _assignment_target_names(target: ast.expr) -> tuple[ast.Name, ...]:
+        if isinstance(target, ast.Name):
+            return (target,)
+        if isinstance(target, ast.Starred):
+            return _assignment_target_names(target.value)
+        if isinstance(target, (ast.List, ast.Tuple)):
+            return tuple(
+                name
+                for element in target.elts
+                for name in _assignment_target_names(element)
             )
+        return ()
+
+    handled_assignment_targets: set[int] = set()
+    for candidate in ast.walk(tree):
+        scope = _lexical_scope(candidate, parents)
+        if isinstance(candidate, ast.Assign):
+            for target in candidate.targets:
+                for name in _assignment_target_names(target):
+                    handled_assignment_targets.add(id(name))
+                    _record_capability_binding(
+                        scope, name.id, ("alias", candidate.value)
+                    )
+        elif isinstance(candidate, ast.AnnAssign):
+            for name in _assignment_target_names(candidate.target):
+                handled_assignment_targets.add(id(name))
+                _record_capability_binding(
+                    scope,
+                    name.id,
+                    "other" if candidate.value is None else ("alias", candidate.value),
+                )
+        elif isinstance(candidate, ast.NamedExpr):
+            for name in _assignment_target_names(candidate.target):
+                handled_assignment_targets.add(id(name))
+                _record_capability_binding(scope, name.id, ("alias", candidate.value))
+        elif isinstance(candidate, ast.Import):
+            for imported in candidate.names:
+                name = imported.asname or imported.name.split(".", 1)[0]
+                _record_capability_binding(
+                    scope, name, _CAPABILITY_MODULE_KINDS.get(imported.name, "other")
+                )
+        elif isinstance(candidate, ast.ImportFrom):
+            for imported in candidate.names:
+                name = imported.asname or imported.name
+                _record_capability_binding(
+                    scope,
+                    name,
+                    _DIRECT_CAPABILITY_IMPORT_KINDS.get(
+                        (candidate.module or "", imported.name), "other"
+                    ),
+                )
+        elif isinstance(candidate, ast.arg):
+            _record_capability_binding(scope, candidate.arg, "other")
+        elif isinstance(
+            candidate, (ast.AsyncFunctionDef, ast.ClassDef, ast.FunctionDef)
+        ):
+            owner = parents.get(candidate)
+            if owner is not None:
+                _record_capability_binding(
+                    _lexical_scope(owner, parents), candidate.name, "other"
+                )
+
+    for candidate in ast.walk(tree):
+        if not (
+            isinstance(candidate, ast.Name)
+            and isinstance(candidate.ctx, (ast.Del, ast.Store))
+            and id(candidate) not in handled_assignment_targets
+        ):
+            continue
+        _record_capability_binding(
+            _lexical_scope(candidate, parents), candidate.id, "other"
+        )
+
+    def _map_lookup_kind(base: str | None, key: str | None) -> str | None:
+        if base not in {"namespace", "module-map"}:
+            return None
+        if key is None:
+            return "unknown-dynamic"
+        if key == "sqlite3" or key.startswith("sqlite3."):
+            return "sqlite-module"
+        return {
+            "__builtins__": "module-map",
+            "__import__": "importer",
+            "getattr": "getter",
+            "globals": "namespace",
+            "vars": "namespace",
+        }.get(key)
+
+    def _capability_attribute_kind(base: str | None, member: str) -> str | None:
+        if base in {"namespace", "module-map"} and member in {"get", "__getitem__"}:
+            return f"{base}-getter"
+        if base in _DYNAMIC_SQLITE_KINDS and member in {"connect", "Connection"}:
+            return "connection-reference"
+        return {
+            ("module:builtins", "__dict__"): "module-map",
+            ("module:builtins", "__import__"): "importer",
+            ("module:builtins", "getattr"): "getter",
+            ("module:builtins", "globals"): "namespace",
+            ("module:builtins", "vars"): "namespace",
+            ("module:importlib", "__dict__"): "module-map",
+            ("module:importlib", "import_module"): "importer",
+            ("module:operator", "attrgetter"): "attrgetter",
+            ("module:sys", "__dict__"): "module-map",
+            ("module:sys", "modules"): "module-map",
+        }.get((base, member))
+
+    def _import_target_kind(value: ast.Call) -> str | None:
+        if not value.args:
+            return "unknown-dynamic"
+        target = _resolve_static_string(value.args[0])
+        if target is None:
+            return "unknown-dynamic"
+        if target == "sqlite3" or target.startswith("sqlite3."):
+            return "sqlite-module"
+        return None
+
+    def _resolve_capability_name(
+        value: ast.Name,
+        seen: frozenset[tuple[ast.AST, str]] = frozenset(),
+    ) -> str | None:
+        scope: ast.AST | None = _lexical_scope(value, parents)
+        while scope is not None:
+            if value.id in global_names_by_scope.get(
+                scope, set()
+            ) or value.id in nonlocal_names_by_scope.get(scope, set()):
+                scope = _lexical_parent_scope(scope)
+                continue
+            bindings = capability_bindings.get((scope, value.id), [])
+            if bindings:
+                marker = (scope, value.id)
+                if marker in seen:
+                    return None
+                resolved = tuple(
+                    _resolve_capability_expression(binding[1], seen | {marker})
+                    if isinstance(binding, tuple)
+                    else binding
+                    for binding in bindings
+                )
+                concrete = tuple(
+                    kind for kind in resolved if kind not in {None, "other"}
+                )
+                if concrete and all(kind == concrete[0] for kind in concrete):
+                    return concrete[0]
+                return "unknown-dynamic" if concrete else None
+            scope = _lexical_parent_scope(scope)
+        return _BUILTIN_CAPABILITY_KINDS.get(value.id)
+
+    def _resolve_static_string(
+        value: ast.expr,
+        seen: frozenset[tuple[ast.AST, str]] = frozenset(),
+    ) -> str | None:
+        direct = _static_string(value)
+        if direct is not None or not isinstance(value, ast.Name):
+            return direct
+        scope: ast.AST | None = _lexical_scope(value, parents)
+        while scope is not None:
+            if value.id in global_names_by_scope.get(
+                scope, set()
+            ) or value.id in nonlocal_names_by_scope.get(scope, set()):
+                scope = _lexical_parent_scope(scope)
+                continue
+            bindings = capability_bindings.get((scope, value.id), [])
+            if not bindings:
+                scope = _lexical_parent_scope(scope)
+                continue
+            marker = (scope, value.id)
+            if marker in seen or any(
+                not isinstance(binding, tuple) for binding in bindings
+            ):
+                return None
+            resolved = tuple(
+                _resolve_static_string(binding[1], seen | {marker})
+                for binding in bindings
+            )
+            return (
+                resolved[0]
+                if resolved
+                and resolved[0] is not None
+                and all(item == resolved[0] for item in resolved)
+                else None
+            )
+        return None
+
+    def _static_capability_lookup_kind(
+        value: ast.Call,
+        seen: frozenset[tuple[ast.AST, str]] = frozenset(),
+    ) -> str | None:
+        if len(value.args) < 2:
+            return None
+        if _resolve_capability_expression(value.func, seen) != "getter":
+            return None
+        base = _resolve_capability_expression(value.args[0], seen)
+        member = _resolve_static_string(value.args[1])
+        if base in {"namespace", "module-map"} and member in {"get", "__getitem__"}:
+            return f"{base}-getter"
+        if base in _DYNAMIC_SQLITE_KINDS and member in {"connect", "Connection"}:
+            return "connection-reference"
+        return _capability_attribute_kind(base, member or "")
+
+    def _resolve_capability_expression(
+        value: ast.expr,
+        seen: frozenset[tuple[ast.AST, str]] = frozenset(),
+    ) -> str | None:
+        if isinstance(value, ast.Name):
+            return _resolve_capability_name(value, seen)
+        if isinstance(value, ast.NamedExpr):
+            return _resolve_capability_expression(value.value, seen)
+        if isinstance(value, ast.Subscript):
+            return _map_lookup_kind(
+                _resolve_capability_expression(value.value, seen),
+                _resolve_static_string(value.slice),
+            )
+        if isinstance(value, ast.Attribute):
+            return _capability_attribute_kind(
+                _resolve_capability_expression(value.value, seen), value.attr
+            )
+        if not isinstance(value, ast.Call):
+            return None
+        static_lookup = _static_capability_lookup_kind(value, seen)
+        if static_lookup is not None:
+            return static_lookup
+        function_kind = _resolve_capability_expression(value.func, seen)
+        if function_kind == "namespace" and not value.args and not value.keywords:
+            return "namespace"
+        if function_kind == "importer":
+            return _import_target_kind(value)
+        if function_kind in {"namespace-getter", "module-map-getter"} and value.args:
+            return _map_lookup_kind(
+                function_kind.removesuffix("-getter"),
+                _resolve_static_string(value.args[0]),
+            )
+        if function_kind == "attrgetter" and value.args:
+            member = _resolve_static_string(value.args[0])
+            return None if member is None else f"attrgetter:{member}"
+        if (
+            isinstance(function_kind, str)
+            and function_kind.startswith("attrgetter:")
+            and value.args
+        ):
+            member = function_kind.removeprefix("attrgetter:")
+            base = _resolve_capability_expression(value.args[0], seen)
+            if base in {"namespace", "module-map"} and member in {"get", "__getitem__"}:
+                return f"{base}-getter"
+            if base in _DYNAMIC_SQLITE_KINDS and member in {"connect", "Connection"}:
+                return "connection-reference"
+            return None
+        if not isinstance(value.func, ast.Attribute):
+            return None
+        if (
+            isinstance(value.func.value, ast.Name)
+            and value.func.value.id == "dict"
+            and value.func.attr in {"get", "__getitem__"}
+            and len(value.args) >= 2
+        ):
+            return _map_lookup_kind(
+                _resolve_capability_expression(value.args[0], seen),
+                _resolve_static_string(value.args[1]),
+            )
+        if value.func.attr in {"get", "__getitem__"}:
+            base = _resolve_capability_expression(value.func.value, seen)
+            key = _resolve_static_string(value.args[0]) if value.args else None
+            return _map_lookup_kind(base, key)
+        return None
+
+    def _is_dynamic_sqlite_acquisition(value: ast.AST) -> bool:
         return bool(
-            isinstance(node, ast.Call)
-            and len(node.args) >= 2
-            and _static_string(node.args[1]) in {"connect", "Connection"}
+            isinstance(value, ast.expr)
+            and not (
+                isinstance(value, ast.Name) and not isinstance(value.ctx, ast.Load)
+            )
+            and _resolve_capability_expression(value) == "sqlite-module"
+        )
+
+    def _is_dynamic_connection_reference(value: ast.AST) -> bool:
+        return bool(
+            isinstance(value, ast.expr)
+            and _resolve_capability_expression(value) == "connection-reference"
         )
 
     def _is_installer_call(call: ast.Call) -> bool:
@@ -1605,7 +1836,11 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
         ) or (isinstance(call.func, ast.Call) and _dynamic_installer_getter(call.func))
 
     for node in ast.walk(tree):
-        if _is_dynamic_connection_surface(node):
+        if _is_dynamic_sqlite_acquisition(node):
+            violations.append(
+                f"{label}:{node.lineno}: SQLite connection route is not direct"
+            )
+        if _is_dynamic_connection_reference(node):
             parent = parents.get(node)
             if isinstance(parent, ast.Call) and parent.func is node:
                 violations.append(
@@ -2646,3 +2881,145 @@ def open_connection(path):
         )
         == []
     )
+
+
+def test_rev0089_gate_audit_recognizes_dynamic_acquisition_precisely() -> None:
+    """Reject dynamic SQLite acquisition or endpoints without tainting nearby code."""
+
+    rejected = (
+        # Static access to a known capability module is a real dynamic source.
+        """
+import builtins
+def open_connection(path):
+    return getattr(builtins, 'globals')()['sqlite3'].connect(path)
+""",
+        """
+import importlib
+def open_connection(path):
+    return getattr(importlib, 'import_module')('sqlite3').Connection(path)
+""",
+        """
+import sys
+def open_connection(path):
+    return getattr(sys, 'modules')['sqlite3'].connect(path)
+""",
+        # A known SQLite acquisition is rejected at its source, even if it is
+        # returned or supplied to a callback rather than opened locally.
+        """
+def recover_module():
+    return globals()['sqlite3']
+def open_connection(path):
+    return recover_module().connect(path)
+""",
+        """
+def recover_module(callback):
+    return callback(globals()['sqlite3'])
+def open_connection(path):
+    return recover_module(lambda module: module.connect(path))
+""",
+        # A lexically proven getter alias is still a dynamic endpoint lookup.
+        """
+def open_connection(path):
+    module = globals()['sqlite3']
+    member = getattr
+    return member(module, 'connect')(path)
+""",
+        # Unknown dynamic values are only disallowed when they reach the
+        # connection surface; ordinary reflection remains outside this grammar.
+        """
+def open_connection(module_name, path):
+    return globals()[module_name].connect(path)
+""",
+        """
+import importlib
+def open_connection(module_name, path):
+    return importlib.import_module(module_name).Connection(path)
+""",
+        """
+import importlib
+sqlite_module_name = 'sqlite3'
+def recover_module():
+    return importlib.import_module(sqlite_module_name)
+""",
+    )
+    for ordinal, source in enumerate(rejected, 1):
+        violations = _schema_installer_gate_violations(source, f"rev0089-{ordinal}.py")
+        assert any(
+            "SQLite connection route is not direct" in violation
+            for violation in violations
+        ), f"rev0089 mutant {ordinal}: {violations}"
+
+    accepted = (
+        # A local alias and a static non-privileged map lookup do not turn an
+        # unrelated client endpoint into SQLite.
+        """
+def register_document_fixture():
+    namespace = globals
+    return namespace()['document_fixture']
+class Client:
+    def get(self, target):
+        return self
+    def connect(self, path):
+        return path
+def open_connection(path):
+    return Client().get('sqlite3').connect(path)
+""",
+        """
+def direct_control(test_name):
+    return globals()[test_name]
+""",
+        # A string argument alone does not make an arbitrary call a lookup.
+        """
+def open_connection(client, path):
+    globals()['document_fixture']
+    emit(client, 'connect')
+    return client.get('sqlite3').connect(path)
+""",
+        # A parameter shadows an imported capability module name.
+        """
+import importlib
+def open_connection(importlib, path):
+    return importlib.import_module('transport').connect(path)
+""",
+        # An imported builtin getter may still inspect an ordinary client.
+        """
+from builtins import getattr as member
+class Client:
+    def get(self, target):
+        return self
+    def connect(self, path):
+        return path
+def open_connection(path):
+    return member(Client(), 'get')('sqlite3').connect(path)
+""",
+        # A static non-SQLite import target stays outside the SQLite grammar.
+        """
+import importlib
+def open_connection(path):
+    return importlib.import_module('transport').connect(path)
+""",
+        """
+import importlib
+transport_module_name = 'transport'
+def open_connection(path):
+    return importlib.import_module(transport_module_name).connect(path)
+""",
+        # A namespace alias keeps a fully static non-privileged lookup local.
+        """
+from builtins import globals as namespace
+def register_document_fixture():
+    return namespace()['document_fixture']
+class Client:
+    def get(self, target):
+        return self
+    def connect(self, path):
+        return path
+def open_connection(path):
+    return Client().get('sqlite3').connect(path)
+""",
+    )
+    for ordinal, source in enumerate(accepted, 1):
+        assert (
+            _schema_installer_gate_violations(source, f"rev0089-good-{ordinal}.py")
+            == []
+        )
