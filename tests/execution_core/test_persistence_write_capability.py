@@ -1481,308 +1481,119 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
             )
         )
 
-    _NAMESPACE_FACTORY = "namespace-factory"
-    _NAMESPACE_MAP = "namespace-map"
-    _SQLITE_MODULE = "sqlite-module"
-    _IMPORT_CALLABLE = "import-callable"
-    _IMPORTLIB_MODULE = "importlib-module"
-    _BUILTINS_MODULE = "builtins-module"
-    _SYS_MODULE = "sys-module"
-    _DICT_TYPE = "dict-type"
-    _MAP_ACCESSOR = "map-accessor"
-    _DICT_ACCESSOR = "dict-accessor"
-    _GETATTR_CALLABLE = "getattr-callable"
-    _CONNECTION_CALLABLE = "connection-callable"
+    _DYNAMIC_CAPABILITY_NAMES = frozenset(
+        {"globals", "vars", "__builtins__", "__import__"}
+    )
 
-    Binding = ast.expr | frozenset[str]
-    bindings: dict[tuple[ast.AST, str], list[tuple[int, Binding]]] = {}
-
-    def _record_binding(
-        scope: ast.AST,
-        name: str,
-        line: int,
-        value: Binding,
-    ) -> None:
-        bindings.setdefault((scope, name), []).append((line, value))
-
-    for candidate in ast.walk(tree):
-        scope = _lexical_scope(candidate, parents)
-        if isinstance(candidate, ast.Assign):
-            for target in candidate.targets:
-                if isinstance(target, ast.Name):
-                    _record_binding(scope, target.id, candidate.lineno, candidate.value)
-        elif isinstance(candidate, ast.AnnAssign):
-            if isinstance(candidate.target, ast.Name):
-                _record_binding(
-                    scope,
-                    candidate.target.id,
-                    candidate.lineno,
-                    candidate.value if candidate.value is not None else frozenset(),
-                )
-        elif isinstance(candidate, ast.NamedExpr) and isinstance(
-            candidate.target, ast.Name
+    def _lexical_parent_scope(scope: ast.AST) -> ast.AST | None:
+        current = parents.get(scope)
+        while current is not None and not isinstance(
+            current, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.Module)
         ):
-            _record_binding(
-                scope, candidate.target.id, candidate.lineno, candidate.value
-            )
-        elif isinstance(candidate, ast.Import):
-            for imported in candidate.names:
-                name = imported.asname or imported.name.split(".", 1)[0]
-                tags = {
-                    "sys": _SYS_MODULE,
-                    "importlib": _IMPORTLIB_MODULE,
-                    "builtins": _BUILTINS_MODULE,
-                }.get(imported.name)
-                _record_binding(
-                    scope,
-                    name,
-                    candidate.lineno,
-                    frozenset() if tags is None else frozenset({tags}),
-                )
-        elif isinstance(candidate, ast.ImportFrom):
-            for imported in candidate.names:
-                name = imported.asname or imported.name
-                tags = (
-                    _IMPORT_CALLABLE
-                    if (
-                        candidate.module == "importlib"
-                        and imported.name == "import_module"
-                    )
-                    or (
-                        candidate.module == "builtins" and imported.name == "__import__"
-                    )
-                    else None
-                )
-                _record_binding(
-                    scope,
-                    name,
-                    candidate.lineno,
-                    frozenset() if tags is None else frozenset({tags}),
-                )
-        elif isinstance(
-            candidate, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
-        ):
-            owner = parents.get(candidate)
-            if owner is not None:
-                _record_binding(
-                    _lexical_scope(owner, parents),
-                    candidate.name,
-                    candidate.lineno,
-                    frozenset(),
-                )
-        elif isinstance(candidate, ast.arg):
-            _record_binding(scope, candidate.arg, candidate.lineno, frozenset())
+            current = parents.get(current)
+        return current
 
-    def _scope_chain(value: ast.AST) -> tuple[ast.AST, ...]:
+    def _lexical_scope_chain(value: ast.AST) -> tuple[ast.AST, ...]:
         scopes: list[ast.AST] = []
         current = _lexical_scope(value, parents)
         while current not in scopes:
             scopes.append(current)
-            if current is tree:
-                break
-            parent = parents.get(current)
-            while parent is not None and not isinstance(
-                parent,
-                (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.Module),
-            ):
-                parent = parents.get(parent)
+            parent = _lexical_parent_scope(current)
             if parent is None:
                 break
             current = parent
         return tuple(scopes)
 
-    def _reaching_bindings(value: ast.Name) -> tuple[Binding, ...] | None:
-        """Return all prior simple bindings from the nearest lexical scope.
-
-        This is deliberately conservative: if a prior branch or rebind can
-        carry dynamic provenance, the static gate refuses rather than guessing
-        which runtime path will be taken.  It is a bounded provenance analysis,
-        not a Python evaluator.
-        """
-
-        for scope in _scope_chain(value):
-            candidates = bindings.get((scope, value.id), [])
-            if not candidates:
-                continue
-            prior = tuple(
-                candidate for line, candidate in candidates if line < value.lineno
-            )
-            return prior
-        return None
-
-    def _static_strings(
-        value: ast.expr,
-        seen: frozenset[int] = frozenset(),
-    ) -> frozenset[str]:
-        if id(value) in seen:
-            return frozenset()
-        next_seen = seen | {id(value)}
-        if isinstance(value, ast.Constant) and isinstance(value.value, str):
-            return frozenset({value.value})
-        if isinstance(value, ast.BinOp) and isinstance(value.op, ast.Add):
-            return frozenset(
-                left + right
-                for left in _static_strings(value.left, next_seen)
-                for right in _static_strings(value.right, next_seen)
-            )
-        if isinstance(value, ast.NamedExpr):
-            return _static_strings(value.value, next_seen)
-        if isinstance(value, ast.Name):
-            reaches = _reaching_bindings(value)
-            if reaches is not None:
-                return frozenset(
-                    text
-                    for binding in reaches
-                    if isinstance(binding, ast.expr)
-                    for text in _static_strings(binding, next_seen)
-                )
-        return frozenset()
-
-    def _provenance(
-        value: ast.expr,
-        seen: frozenset[int] = frozenset(),
-    ) -> frozenset[str]:
-        """Classify only the finite dynamic routes governed by this audit."""
-
-        if id(value) in seen:
-            return frozenset()
-        next_seen = seen | {id(value)}
-        if isinstance(value, ast.NamedExpr):
-            return _provenance(value.value, next_seen)
-        if isinstance(value, ast.Name):
-            reaches = _reaching_bindings(value)
-            if reaches is not None:
-                return frozenset(
-                    tag
-                    for binding in reaches
-                    for tag in (
-                        binding
-                        if isinstance(binding, frozenset)
-                        else _provenance(binding, next_seen)
-                    )
-                )
-            tags: set[str] = set()
-            if value.id in {"globals", "vars"}:
-                tags.add(_NAMESPACE_FACTORY)
-            if value.id == "__builtins__":
-                tags.add(_NAMESPACE_MAP)
-            if value.id == "dict":
-                tags.add(_DICT_TYPE)
-            if value.id == "getattr":
-                tags.add(_GETATTR_CALLABLE)
-            if value.id in sys_module_names:
-                tags.add(_SYS_MODULE)
-            if value.id in dynamic_import_module_names:
-                tags.add(_IMPORTLIB_MODULE)
-            if value.id in builtins_module_names:
-                tags.add(_BUILTINS_MODULE)
-            if value.id in dynamic_import_names:
-                tags.add(_IMPORT_CALLABLE)
-            return frozenset(tags)
-        if isinstance(value, ast.Attribute):
-            base = _provenance(value.value, next_seen)
-            tags: set[str] = set()
-            if value.attr == "modules" and _SYS_MODULE in base:
-                tags.add(_NAMESPACE_MAP)
-            if value.attr == "import_module" and _IMPORTLIB_MODULE in base:
-                tags.add(_IMPORT_CALLABLE)
-            if value.attr == "__import__" and (
-                _BUILTINS_MODULE in base or _NAMESPACE_MAP in base
-            ):
-                tags.add(_IMPORT_CALLABLE)
-            if value.attr in {"get", "__getitem__"} and _NAMESPACE_MAP in base:
-                tags.add(_MAP_ACCESSOR)
-            if value.attr in {"get", "__getitem__"} and _DICT_TYPE in base:
-                tags.add(_DICT_ACCESSOR)
-            if value.attr in {"connect", "Connection"} and _SQLITE_MODULE in base:
-                tags.add(_CONNECTION_CALLABLE)
-            if _SQLITE_MODULE in base:
-                tags.add(_SQLITE_MODULE)
-            return frozenset(tags)
-        if isinstance(value, ast.Subscript):
-            base = _provenance(value.value, next_seen)
-            keys = _static_strings(value.slice, next_seen)
-            return _map_lookup_provenance(base, keys)
-        if isinstance(value, ast.Call):
-            callable_tags = _provenance(value.func, next_seen)
-            tags: set[str] = set()
-            if (
-                _NAMESPACE_FACTORY in callable_tags
-                and not value.args
-                and not value.keywords
-            ):
-                tags.add(_NAMESPACE_MAP)
-            if value.args:
-                targets = _static_strings(value.args[0], next_seen)
-                if _IMPORT_CALLABLE in callable_tags:
-                    tags.update(_import_target_provenance(targets))
-                if _MAP_ACCESSOR in callable_tags:
-                    tags.update(_map_lookup_provenance({_NAMESPACE_MAP}, targets))
-            if _DICT_ACCESSOR in callable_tags and len(value.args) >= 2:
-                tags.update(
-                    _map_lookup_provenance(
-                        _provenance(value.args[0], next_seen),
-                        _static_strings(value.args[1], next_seen),
-                    )
-                )
-            if _GETATTR_CALLABLE in callable_tags and len(value.args) >= 2:
-                tags.update(
-                    _getattr_provenance(
-                        _provenance(value.args[0], next_seen),
-                        _static_strings(value.args[1], next_seen),
-                    )
-                )
-            return frozenset(tags)
-        return frozenset()
-
-    def _import_target_provenance(targets: frozenset[str]) -> frozenset[str]:
-        return frozenset(
-            {_SQLITE_MODULE}
-            if any(
-                target == "sqlite3" or target.startswith("sqlite3.")
-                for target in targets
-            )
-            else set()
+    def _scope_declares_nonlocal_or_global(scope: ast.AST) -> bool:
+        return any(
+            isinstance(candidate, (ast.Global, ast.Nonlocal))
+            and _lexical_scope(candidate, parents) is scope
+            for candidate in ast.walk(scope)
         )
 
-    def _map_lookup_provenance(
-        base: frozenset[str] | set[str],
-        keys: frozenset[str],
-    ) -> frozenset[str]:
-        if _NAMESPACE_MAP not in base:
-            return frozenset()
-        tags: set[str] = set()
-        if "sqlite3" in keys:
-            tags.add(_SQLITE_MODULE)
-        if "__builtins__" in keys:
-            tags.add(_NAMESPACE_MAP)
-        if "__import__" in keys:
-            tags.add(_IMPORT_CALLABLE)
-        return frozenset(tags)
+    def _is_dynamic_capability_declaration(candidate: ast.AST) -> bool:
+        if isinstance(candidate, ast.Name):
+            return bool(
+                isinstance(candidate.ctx, ast.Load)
+                and (
+                    candidate.id in _DYNAMIC_CAPABILITY_NAMES
+                    or candidate.id in dynamic_import_names
+                )
+            )
+        if isinstance(candidate, ast.Attribute) and isinstance(
+            candidate.value, ast.Name
+        ):
+            return bool(
+                candidate.attr == "modules"
+                and candidate.value.id in sys_module_names
+                or candidate.attr == "import_module"
+                and candidate.value.id in dynamic_import_module_names
+                or candidate.attr in {"globals", "vars", "__import__", "__dict__"}
+                and candidate.value.id in builtins_module_names
+            )
+        if isinstance(candidate, (ast.Assign, ast.AnnAssign, ast.NamedExpr)):
+            value = candidate.value
+            return bool(
+                isinstance(value, ast.Name)
+                and value.id
+                in {
+                    *sys_module_names,
+                    *dynamic_import_module_names,
+                    *builtins_module_names,
+                }
+            )
+        if not isinstance(candidate, ast.ImportFrom):
+            return False
+        return bool(
+            candidate.module == "builtins"
+            and any(
+                imported.name in {"globals", "vars", "__import__"}
+                for imported in candidate.names
+            )
+            or candidate.module == "importlib"
+            and any(imported.name == "import_module" for imported in candidate.names)
+            or candidate.module == "sys"
+            and any(imported.name == "modules" for imported in candidate.names)
+        )
 
-    def _getattr_provenance(
-        base: frozenset[str],
-        members: frozenset[str],
-    ) -> frozenset[str]:
-        tags: set[str] = set()
-        if _NAMESPACE_MAP in base:
-            if members & {"get", "__getitem__"}:
-                tags.add(_MAP_ACCESSOR)
-            if "__import__" in members:
-                tags.add(_IMPORT_CALLABLE)
-        if _SQLITE_MODULE in base:
-            if members & {"connect", "Connection"}:
-                tags.add(_CONNECTION_CALLABLE)
-            else:
-                tags.add(_SQLITE_MODULE)
-        if _IMPORTLIB_MODULE in base and "import_module" in members:
-            tags.add(_IMPORT_CALLABLE)
-        if _BUILTINS_MODULE in base and "__import__" in members:
-            tags.add(_IMPORT_CALLABLE)
-        return frozenset(tags)
+    dynamic_capability_scopes: set[ast.AST] = set()
+    for candidate in ast.walk(tree):
+        if not _is_dynamic_capability_declaration(candidate):
+            continue
+        scope = _lexical_scope(candidate, parents)
+        dynamic_capability_scopes.add(scope)
+        if isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)) and (
+            _scope_declares_nonlocal_or_global(scope)
+        ):
+            parent_scope = _lexical_parent_scope(scope)
+            if parent_scope is not None:
+                dynamic_capability_scopes.update(_lexical_scope_chain(parent_scope))
 
-    def _is_dynamic_sqlite_acquisition_call(call: ast.Call) -> bool:
-        return _CONNECTION_CALLABLE in _provenance(call.func)
+    def _is_dynamic_connection_surface(node: ast.AST) -> bool:
+        """Reject a noncanonical endpoint in a dynamic-capability lexical region.
+
+        This is a source grammar, not a Python value-flow evaluator.  Direct
+        canonical ``sqlite3.connect`` remains subject to the ordinary gate
+        checks below.  Any other connection member or static member lookup is
+        refused when its lexical scope (or an enclosing scope) declares a
+        namespace/import capability.  That makes aliasing, later rebinding,
+        captures, and declared global/nonlocal hand-off irrelevant to the
+        safety decision while leaving unrelated client methods outside such a
+        region alone.
+        """
+
+        if not dynamic_capability_scopes.intersection(_lexical_scope_chain(node)):
+            return False
+        if isinstance(node, ast.Attribute):
+            return bool(
+                node.attr in {"connect", "Connection"}
+                and not _is_sqlite_module_expression(node.value)
+            )
+        return bool(
+            isinstance(node, ast.Call)
+            and len(node.args) >= 2
+            and _static_string(node.args[1]) in {"connect", "Connection"}
+        )
 
     def _is_installer_call(call: ast.Call) -> bool:
         if isinstance(call.func, ast.Name):
@@ -1794,21 +1605,18 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
         ) or (isinstance(call.func, ast.Call) and _dynamic_installer_getter(call.func))
 
     for node in ast.walk(tree):
-        if (
-            isinstance(node, ast.Attribute)
-            and node.attr in {"connect", "Connection"}
-            and _CONNECTION_CALLABLE in _provenance(node)
-        ):
+        if _is_dynamic_connection_surface(node):
             parent = parents.get(node)
-            if not (isinstance(parent, ast.Call) and parent.func is node):
+            if isinstance(parent, ast.Call) and parent.func is node:
+                violations.append(
+                    f"{label}:{node.lineno}: SQLite connection route is not direct"
+                )
+            else:
                 violations.append(
                     f"{label}:{node.lineno}: SQLite connection reference escapes direct call"
                 )
-        if isinstance(node, ast.Call) and _is_dynamic_sqlite_acquisition_call(node):
-            violations.append(
-                f"{label}:{node.lineno}: SQLite connection route is not direct"
-            )
-            continue
+            if isinstance(node, ast.Call):
+                continue
         if not has_gate_surface:
             continue
         if isinstance(node, ast.Name) and node.id == "__builtins__":
@@ -2647,7 +2455,7 @@ def injected_error():
 
 
 def test_rev0086_gate_audit_tracks_bounded_dynamic_provenance() -> None:
-    """The grammar follows declared aliases/accessors, not generic method names."""
+    """Historical alias/accessor routes remain rejected without client-name guesses."""
 
     rejected = (
         (
@@ -2714,7 +2522,7 @@ def open_connection(path):
     operation = getattr(globals()['sqlite3'], 'Connection')
     return operation(path)
 """,
-            "SQLite connection route is not direct",
+            "SQLite connection reference escapes direct call",
         ),
     )
     for ordinal, (source, expected) in enumerate(rejected, 1):
@@ -2752,3 +2560,89 @@ def open_with_dict_get(path):
     return Client().get('sqlite3').Connection(path)
 """
     assert _schema_installer_gate_violations(ordinary_client, "rev0086-client.py") == []
+
+
+def test_rev0087_gate_audit_refuses_dynamic_capability_cross_scope_routes() -> None:
+    """A capability region is fail-closed without emulating Python bindings."""
+
+    rejected = (
+        # A later outer binding still governs the nested connection endpoint.
+        """
+def outer():
+    def open_connection(path):
+        return module.connect(path)
+    module = globals()['sqlite3']
+    return open_connection
+""",
+        # Explicit aliases of the privileged namespace/import roots are no safer.
+        """
+from builtins import globals as namespace_factory
+def open_connection(path):
+    return namespace_factory()['sqlite3'].connect(path)
+""",
+        """
+import builtins as runtime_builtins
+def open_connection(path):
+    return runtime_builtins.globals()['sqlite3'].connect(path)
+""",
+        """
+import sys as runtime_sys
+def open_connection(path):
+    return runtime_sys.modules['sqlite3'].Connection(path)
+""",
+        # A generic accessor becomes a connection route only inside that region.
+        """
+def outer():
+    module = globals()['sqlite3']
+    def open_connection(path):
+        member = getattr
+        return member(module, 'connect')(path)
+    return open_connection
+""",
+        # A global hand-off crosses sibling functions through the module scope.
+        """
+module = None
+def recover():
+    global module
+    module = globals()['sqlite3']
+def open_connection(path):
+    return module.connect(path)
+""",
+        # A nonlocal hand-off crosses sibling functions through the outer scope.
+        """
+def outer():
+    module = None
+    def recover():
+        nonlocal module
+        module = globals()['sqlite3']
+    def open_connection(path):
+        return module.connect(path)
+    return open_connection
+""",
+    )
+    for ordinal, source in enumerate(rejected, 1):
+        violations = _schema_installer_gate_violations(source, f"rev0087-{ordinal}.py")
+        assert any(
+            "SQLite connection route is not direct" in violation
+            for violation in violations
+        ), f"rev0087 mutant {ordinal}: {violations}"
+
+    unrelated_fixture_delegation = """
+import builtins
+import sys
+def registered_fixture():
+    return globals()['document_fixture']
+class Client:
+    def get(self, target):
+        return self
+    def connect(self, path):
+        return path
+def open_connection(path):
+    return Client().get('sqlite3').connect(path)
+"""
+    assert (
+        _schema_installer_gate_violations(
+            unrelated_fixture_delegation, "unrelated-fixture-client.py"
+        )
+        == []
+    )
