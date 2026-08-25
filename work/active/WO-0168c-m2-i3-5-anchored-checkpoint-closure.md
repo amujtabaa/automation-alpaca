@@ -850,3 +850,54 @@ remain for passive local aliases and genuinely unobservable local bodies.
 `work/review/REV-0103/**` is released solely for a fresh exact-source review of
 that replacement. All DDL/SQLite holds and Ameen's separate HUMAN-GATE remain
 binding.
+
+## Amendment — REV-0103 runtime-provenance source candidate (2026-08-25)
+
+The REV-0102 owning defects are replaced at
+`6dd9396093a58f8e6025521146aa99534a74f01c`, tree
+`ce749e17c1a31b141a871783136f53e803b2a62c`. Its direct parent is
+`d4fca13bb68a470dd1b0b34fa151cad487e9e681`, tree
+`a9b43fcaf32e4e5298e34d01fb424fcaeeff6131`. The source commit changes only
+`tests/execution_core/test_persistence_write_capability.py`, blob
+`11fe7ae71318c8da712ae42568a023f72513e036`.
+
+Both finite source gates now use explicit runtime observation rather than
+borrowing lexical source positions across execution boundaries. Conditional
+bindings include match captures, comparison phases, with-item phases,
+comprehensions, and exact `IfExp`/Boolean alternatives. Reads account for
+test-before-branch conditional-expression order and augmented-assignment
+write-after-read order. Proven direct synchronous calls observe state after
+argument evaluation; owner-routed writes remain alternatives; returned or
+nested callables, methods, generators, coroutines, and generator expressions
+remain conservative when their activation time is not proven. A genuinely
+unobserved local callable has an explicit non-executing state, while passive
+local assignment and bare-walrus aliases remain precise.
+
+Governed `ImportFrom` members retain fail-closed provenance; exact ordinary
+standard-module reads remain allowed. Interpreter trace installation is limited
+to a stable local callback whose finite body cannot import, call, mutate frame
+namespaces, return another callback, or otherwise escape the modeled read-only
+shape; the existing line-count callback and exact `gettrace` restoration remain
+accepted. Namespace-package prefixes now preserve exact child, map,
+reflection, mutation, and escape provenance, while packages with no protected
+descendant remain ordinary. REV-0103 controls cover the cited findings plus
+adjacent conditional-expression, augmented-assignment, generator-expression,
+trace-return, prefix-map, prefix-mutation, and prefix-escape mutants.
+
+Exact-source static evidence passes: Ruff check/format; import-free AST parsing
+of the module and all 43 REV-0103 embedded snippets; mypy over 95 app files;
+all six import-linter contracts; AI Project OS install, version, ledger, PKL,
+disposition, cumulative scope, and whitespace gates. Pytest remains
+`NOT_RUN`: the import-based suite was not routed around the execution guard.
+Source-only recomputation leaves `SCHEMA_DDL` at SHA-256
+`2636c72793515a46c893d93084750b45ea2f151c58055480d5c601eb8c0faac5`
+and 178755 UTF-8 bytes, `_SCHEMA_CATALOG_SHA256` at
+`c717f6a6c84b37cb13773416c90b50d14f377e39928d7f9c626e769296e632d2`,
+the R4 manifest at
+`99aab5f40d43ea5dacce78e77ea47cad250cb9618223d9036a071d8a2704ed39`,
+and `APPROVED_EXECUTION_DDL_SHA256` at `None`.
+
+REV-0103 must independently review the exact source commit above and return
+`P0=0/P1=0` before the changed-DDL HUMAN-GATE may be presented. This amendment
+creates no SQLite import/connection, held-suite execution, database activity,
+DDL installation, or authority expansion.
