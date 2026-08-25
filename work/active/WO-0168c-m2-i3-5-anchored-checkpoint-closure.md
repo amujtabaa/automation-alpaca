@@ -61,6 +61,7 @@ allowed_paths:
   - work/review/REV-0091/**
   - work/review/REV-0092/**
   - work/review/REV-0093/**
+  - work/review/REV-0094/**
   - work/review/FINDING-preexisting-suite-floor-2026-08-24.md
   - work/review/FINDING-protection-stateful-replay-disposition.md
   - work/review/FINDING-schema-approval-gate-is-self-approving.md
@@ -500,3 +501,34 @@ candidate. REV-0092 remains immutable historical evidence, not an acceptance
 verdict for this successor. SQLite execution and changed-DDL installation remain
 forbidden until an independent exact-head P0=0/P1=0 result and Ameen's separate
 exact DDL gate approval.
+
+## Amendment — REV-0094 exact approval-provenance review route (2026-08-24)
+
+REV-0093 was superseded before an independent verdict issued. Its fresh
+reviewers supplied reproducible advisory routes, all reconciled through one
+finite capability model rather than one-off denylists: direct `ImportFrom`
+recovery of approval namespaces or bound mutators; approval
+`__getattribute__`; `sys.modules` registry mutation/recovery via `setdefault`;
+and `sys.modules['builtins']` recovery of a known mutator. The review also
+identified a precision defect: the prior model treated `sys.modules` and
+`sys.__dict__` as the same map, potentially classifying an unrelated sys
+attribute as the approval module.
+
+The root correction is frozen at
+`970bf5113a33ac3e8b64d51e93c1a434cb24287f`, tree
+`606f70edd5e3961b33a18b5f90dab86d132fb667`. It treats the approval module as
+non-mutable through every recognized direct member, known mutator, bound
+mutator, or recovered namespace route. It introduces one explicit
+`module-registry` kind for `sys.modules`; ordinary `sys.__dict__` remains a
+separate map. The registry owns a finite list of security-relevant module
+identities and refuses non-read-only direct map operations. New RED/GREEN and
+mutation controls prove the new direct-import, attribute, registry, and
+builtins routes as well as the ordinary-sys false-positive boundary.
+
+This remains test-side static audit only: no DDL byte, SQL, public export,
+runtime composition, database activity, or human-gate authority changed.
+`work/review/REV-0094/**` is added solely for a fresh review of that exact
+candidate. All prior review packets remain immutable historical evidence.
+SQLite execution and changed-DDL installation remain forbidden until an
+independent exact-head P0=0/P1=0 result and Ameen's separate exact DDL gate
+approval.
