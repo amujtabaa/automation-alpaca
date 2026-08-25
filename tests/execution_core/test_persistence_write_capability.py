@@ -1622,6 +1622,17 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
             current = parents.get(current)
         return None
 
+    def _named_expression_scope(node: ast.NamedExpr) -> ast.AST:
+        """Return the real owner of a walrus target, including comprehensions."""
+
+        scope = _capability_scope(node)
+        while isinstance(scope, _COMPREHENSION_SCOPE_TYPES):
+            parent = _lexical_parent_scope(scope)
+            if parent is None:
+                return tree
+            scope = parent
+        return scope
+
     def _binding_target_names(target: ast.expr) -> tuple[ast.Name, ...]:
         if isinstance(target, ast.Name):
             return (target,)
@@ -1650,7 +1661,7 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
                 _declare_name(_capability_scope(candidate), name.id)
         elif isinstance(candidate, ast.NamedExpr):
             for name in _binding_target_names(candidate.target):
-                _declare_name(_capability_scope(candidate), name.id)
+                _declare_name(_named_expression_scope(candidate), name.id)
         elif isinstance(candidate, (ast.Import, ast.ImportFrom)):
             for imported in candidate.names:
                 _declare_name(
@@ -1737,17 +1748,28 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
             parent = parents.get(current)
             if parent is None:
                 return True
-            if isinstance(
-                parent,
-                (
-                    ast.If,
-                    ast.For,
-                    ast.AsyncFor,
-                    ast.While,
-                    ast.Try,
-                    ast.Match,
-                ),
-            ):
+            if isinstance(parent, ast.BoolOp):
+                if current is not parent.values[0]:
+                    return True
+            elif isinstance(parent, ast.IfExp):
+                if current is not parent.test:
+                    return True
+            elif isinstance(parent, (ast.If, ast.While)):
+                if current is not parent.test:
+                    return True
+            elif isinstance(parent, (ast.For, ast.AsyncFor)):
+                if current is not parent.iter:
+                    return True
+            elif isinstance(parent, ast.Match):
+                if current is not parent.subject:
+                    return True
+            elif isinstance(parent, (ast.With, ast.AsyncWith)):
+                if current in parent.body:
+                    return True
+            elif isinstance(parent, _COMPREHENSION_SCOPE_TYPES):
+                if id(node) not in comprehension_first_iter_nodes[parent]:
+                    return True
+            elif isinstance(parent, (ast.Try, ast.TryStar)):
                 return True
             current = parent
         return False
@@ -1798,7 +1820,11 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
             for name in _binding_target_names(candidate.target):
                 handled_assignment_target_ids.add(id(name))
                 _record_capability_binding(
-                    scope, name.id, "alias", candidate.value, candidate
+                    _named_expression_scope(candidate),
+                    name.id,
+                    "alias",
+                    candidate.value,
+                    candidate,
                 )
         elif isinstance(candidate, ast.Import):
             for imported in candidate.names:
@@ -1918,6 +1944,74 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
             ),
         )
 
+    def _binding_is_callable_boundary(
+        binding: Binding,
+        boundary: ast.AST,
+        seen: frozenset[tuple[ast.AST, str, tuple[int, int]]] = frozenset(),
+    ) -> bool:
+        kind, payload, _, _, _ = binding
+        if kind == "function":
+            return payload is boundary
+        if kind != "alias" or not isinstance(payload, ast.expr):
+            return False
+        if payload is boundary and isinstance(boundary, ast.Lambda):
+            return True
+        if not isinstance(payload, ast.Name):
+            return False
+        scope = _binding_scope(_capability_scope(payload), payload.id)
+        marker = (scope, payload.id, _source_position(payload))
+        if marker in seen:
+            return False
+        return any(
+            _binding_is_callable_boundary(candidate, boundary, seen | {marker})
+            for candidate in _effective_binding_alternatives(
+                scope,
+                payload.id,
+                _source_position(payload),
+            )
+        )
+
+    def _expression_is_callable_boundary(
+        value: ast.expr,
+        boundary: ast.AST,
+    ) -> bool:
+        if value is boundary and isinstance(boundary, ast.Lambda):
+            return True
+        if not isinstance(value, ast.Name):
+            return False
+        scope = _binding_scope(_capability_scope(value), value.id)
+        return any(
+            _binding_is_callable_boundary(binding, boundary)
+            for binding in _effective_binding_alternatives(
+                scope,
+                value.id,
+                _source_position(value),
+            )
+        )
+
+    def _is_owned_callable_alias(
+        value: ast.expr,
+        target_scope: ast.AST,
+    ) -> bool:
+        parent = parents.get(value)
+        if _capability_scope(parent or value) is not target_scope:
+            return False
+        if isinstance(parent, ast.Assign) and parent.value is value:
+            return bool(parent.targets) and all(
+                isinstance(target, ast.Name) for target in parent.targets
+            )
+        if isinstance(parent, ast.AnnAssign) and parent.value is value:
+            return isinstance(parent.target, ast.Name)
+        return False
+
+    def _is_passive_callable_observation(value: ast.expr) -> bool:
+        parent = parents.get(value)
+        if isinstance(parent, ast.Expr):
+            return True
+        return isinstance(parent, ast.Compare) and all(
+            isinstance(operator, (ast.Is, ast.IsNot)) for operator in parent.ops
+        )
+
     def _deferred_observed_bindings(
         origin_scope: ast.AST,
         target_scope: ast.AST,
@@ -1937,7 +2031,7 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
             ):
                 boundary = parent
             current = parent
-        if not isinstance(boundary, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        if not isinstance(boundary, _FUNCTION_SCOPE_TYPES):
             final = _effective_binding_alternatives(
                 target_scope,
                 name,
@@ -1951,60 +2045,65 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
             for candidate in ast.walk(target_scope):
                 if not (
                     isinstance(candidate, ast.Call)
-                    and isinstance(candidate.func, ast.Name)
-                    and candidate.func.id == boundary.name
                     and _capability_scope(candidate) is target_scope
+                    and _expression_is_callable_boundary(candidate.func, boundary)
                 ):
                     continue
-                selected = _effective_binding_alternatives(
-                    target_scope,
-                    boundary.name,
-                    _source_position(candidate.func),
-                )
+                call_positions.add(_source_position(candidate))
+
+        if target_scope is tree:
+            for binding_scope, bound_name in capability_bindings:
+                if binding_scope is not target_scope:
+                    continue
                 if any(
-                    binding[0] == "function" and binding[1] is boundary
-                    for binding in selected
+                    _binding_is_callable_boundary(binding, boundary)
+                    for binding in _effective_binding_alternatives(
+                        target_scope,
+                        bound_name,
+                        (10**9, 10**9),
+                    )
                 ):
-                    call_positions.add(_source_position(candidate))
+                    call_positions.add((10**9, 10**9))
 
-        final_boundary = _effective_binding_alternatives(
-            target_scope,
-            boundary.name,
-            (10**9, 10**9),
-        )
-        if target_scope is tree and any(
-            binding[0] == "function" and binding[1] is boundary
-            for binding in final_boundary
+        escape_positions: set[tuple[int, int]] = set()
+        if isinstance(boundary, (ast.FunctionDef, ast.AsyncFunctionDef)) and (
+            boundary.decorator_list
         ):
-            call_positions.add((10**9, 10**9))
-
-        escaped = False
+            # A decorator receives the newly created callable immediately and
+            # may invoke or retain it before the definition statement binds.
+            escape_positions.add(_post_source_position(boundary))
         if boundary_scope is target_scope:
             for candidate in ast.walk(target_scope):
+                if _capability_scope(candidate) is not target_scope:
+                    continue
                 if not (
-                    isinstance(candidate, ast.Name)
+                    candidate is boundary
+                    and isinstance(boundary, ast.Lambda)
+                    or isinstance(candidate, ast.Name)
                     and isinstance(candidate.ctx, ast.Load)
-                    and candidate.id == boundary.name
-                    and _capability_scope(candidate) is target_scope
+                    and _expression_is_callable_boundary(candidate, boundary)
                 ):
                     continue
                 parent = parents.get(candidate)
                 if isinstance(parent, ast.Call) and parent.func is candidate:
                     continue
-                selected = _effective_binding_alternatives(
-                    target_scope,
-                    boundary.name,
-                    _source_position(candidate),
-                )
-                if any(
-                    binding[0] == "function" and binding[1] is boundary
-                    for binding in selected
-                ):
-                    escaped = True
-                    break
+                if _is_owned_callable_alias(candidate, target_scope):
+                    continue
+                if _is_passive_callable_observation(candidate):
+                    continue
+                escape_positions.add(_source_position(candidate))
 
-        if escaped:
-            activation = _post_source_position(boundary)
+        observed: list[Binding] = [
+            binding
+            for position in sorted(call_positions)
+            for binding in _effective_binding_alternatives(
+                target_scope,
+                name,
+                position,
+            )
+        ]
+        if escape_positions:
+            activation = min(escape_positions)
             initial = _effective_binding_alternatives(
                 target_scope,
                 name,
@@ -2015,17 +2114,9 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
                 for binding in capability_bindings.get((target_scope, name), [])
                 if binding[2] > activation
             )
-            return (*initial, *future)
-        if call_positions:
-            return tuple(
-                binding
-                for position in sorted(call_positions)
-                for binding in _effective_binding_alternatives(
-                    target_scope,
-                    name,
-                    position,
-                )
-            )
+            observed.extend((*initial, *future))
+        if observed:
+            return tuple(observed)
         return _effective_binding_alternatives(
             target_scope,
             name,
@@ -2337,12 +2428,9 @@ def _schema_installer_gate_violations(source: str, label: str) -> list[str]:
         "module:operator": frozenset(),
         "module:sys": frozenset(
             {
-                "addaudithook",
                 "executable",
                 "gettrace",
-                "path",
                 "settrace",
-                "stdout",
                 "stdlib_module_names",
             }
         ),
@@ -3704,6 +3792,17 @@ def _repository_sensitive_reexport_violations(
             current = parents.get(current)
         return None
 
+    def _named_expression_scope(label: str, node: ast.NamedExpr) -> ast.AST:
+        """Return the real owner of a walrus target, including comprehensions."""
+
+        scope = _scope_for(label, node)
+        while isinstance(scope, _COMPREHENSION_SCOPE_TYPES):
+            parent = _lexical_parent(label, scope)
+            if parent is None:
+                return trees[label]
+            scope = parent
+        return scope
+
     Spec = tuple[str, object | None]
     Binding = tuple[Spec, tuple[int, int], bool]
     bindings: dict[tuple[str, ast.AST, str], list[Binding]] = {}
@@ -3732,10 +3831,28 @@ def _repository_sensitive_reexport_violations(
             parent = parents.get(current)
             if parent is None:
                 return True
-            if isinstance(
-                parent,
-                (ast.If, ast.For, ast.AsyncFor, ast.While, ast.Try, ast.Match),
-            ):
+            if isinstance(parent, ast.BoolOp):
+                if current is not parent.values[0]:
+                    return True
+            elif isinstance(parent, ast.IfExp):
+                if current is not parent.test:
+                    return True
+            elif isinstance(parent, (ast.If, ast.While)):
+                if current is not parent.test:
+                    return True
+            elif isinstance(parent, (ast.For, ast.AsyncFor)):
+                if current is not parent.iter:
+                    return True
+            elif isinstance(parent, ast.Match):
+                if current is not parent.subject:
+                    return True
+            elif isinstance(parent, (ast.With, ast.AsyncWith)):
+                if current in parent.body:
+                    return True
+            elif isinstance(parent, _COMPREHENSION_SCOPE_TYPES):
+                if id(node) not in comprehension_outer_ids[parent]:
+                    return True
+            elif isinstance(parent, (ast.Try, ast.TryStar)):
                 return True
             current = parent
         return False
@@ -3784,6 +3901,7 @@ def _repository_sensitive_reexport_violations(
                 declarations = tuple(name.id for name in _target_names(node.target))
             elif isinstance(node, ast.NamedExpr):
                 declarations = tuple(name.id for name in _target_names(node.target))
+                scope = _named_expression_scope(label, node)
             elif isinstance(node, (ast.Import, ast.ImportFrom)):
                 declarations = tuple(
                     imported.asname
@@ -3860,7 +3978,13 @@ def _repository_sensitive_reexport_violations(
             elif isinstance(node, ast.NamedExpr):
                 for name in _target_names(node.target):
                     handled_stores.add(id(name))
-                    _record(label, scope, name.id, ("expr", node.value), node)
+                    _record(
+                        label,
+                        _named_expression_scope(label, node),
+                        name.id,
+                        ("expr", node.value),
+                        node,
+                    )
             elif isinstance(node, ast.Import):
                 for imported in node.names:
                     bound = imported.asname or imported.name.split(".", 1)[0]
@@ -3897,6 +4021,7 @@ def _repository_sensitive_reexport_violations(
                         None
                         if module is None
                         else _module_kind(module + "." + imported.name)
+                        or _module_prefix_kind(module + "." + imported.name)
                     )
                     if direct is not None:
                         _record(label, scope, bound, ("kind", direct), node)
@@ -4146,6 +4271,79 @@ def _repository_sensitive_reexport_violations(
             ),
         )
 
+    def _binding_is_callable_boundary(
+        label: str,
+        binding: Binding,
+        boundary: ast.AST,
+        seen: frozenset[tuple[str, int, str, tuple[int, int]]] = frozenset(),
+    ) -> bool:
+        (category, payload), _, _ = binding
+        if category == "function":
+            return payload is boundary
+        if category != "expr" or not isinstance(payload, ast.expr):
+            return False
+        if payload is boundary and isinstance(boundary, ast.Lambda):
+            return True
+        if not isinstance(payload, ast.Name):
+            return False
+        scope = _binding_scope(label, _scope_for(label, payload), payload.id)
+        marker = (label, id(scope), payload.id, _position(payload))
+        if marker in seen:
+            return False
+        return any(
+            _binding_is_callable_boundary(label, candidate, boundary, seen | {marker})
+            for candidate in _effective_bindings(
+                label,
+                scope,
+                payload.id,
+                _position(payload),
+            )
+        )
+
+    def _expression_is_callable_boundary(
+        label: str,
+        value: ast.expr,
+        boundary: ast.AST,
+    ) -> bool:
+        if value is boundary and isinstance(boundary, ast.Lambda):
+            return True
+        if not isinstance(value, ast.Name):
+            return False
+        scope = _binding_scope(label, _scope_for(label, value), value.id)
+        return any(
+            _binding_is_callable_boundary(label, binding, boundary)
+            for binding in _effective_bindings(
+                label,
+                scope,
+                value.id,
+                _position(value),
+            )
+        )
+
+    def _is_owned_callable_alias(
+        label: str,
+        value: ast.expr,
+        target_scope: ast.AST,
+    ) -> bool:
+        parent = parents_by_label[label].get(value)
+        if _scope_for(label, parent or value) is not target_scope:
+            return False
+        if isinstance(parent, ast.Assign) and parent.value is value:
+            return bool(parent.targets) and all(
+                isinstance(target, ast.Name) for target in parent.targets
+            )
+        if isinstance(parent, ast.AnnAssign) and parent.value is value:
+            return isinstance(parent.target, ast.Name)
+        return False
+
+    def _is_passive_callable_observation(label: str, value: ast.expr) -> bool:
+        parent = parents_by_label[label].get(value)
+        if isinstance(parent, ast.Expr):
+            return True
+        return isinstance(parent, ast.Compare) and all(
+            isinstance(operator, (ast.Is, ast.IsNot)) for operator in parent.ops
+        )
+
     def _deferred_parent_bindings(
         label: str,
         origin_scope: ast.AST,
@@ -4167,8 +4365,7 @@ def _repository_sensitive_reexport_violations(
             ):
                 boundary = parent
             current = parent
-        activation = _position(boundary, after=True)
-        if not isinstance(boundary, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        if not isinstance(boundary, _FUNCTION_SCOPE_TYPES):
             return _effective_bindings(
                 label,
                 target_scope,
@@ -4182,62 +4379,69 @@ def _repository_sensitive_reexport_violations(
             for candidate in ast.walk(target_scope):
                 if not (
                     isinstance(candidate, ast.Call)
-                    and isinstance(candidate.func, ast.Name)
-                    and candidate.func.id == boundary.name
                     and _scope_for(label, candidate) is target_scope
+                    and _expression_is_callable_boundary(
+                        label,
+                        candidate.func,
+                        boundary,
+                    )
                 ):
                     continue
-                selected = _effective_bindings(
-                    label,
-                    target_scope,
-                    boundary.name,
-                    _position(candidate.func),
-                )
+                call_positions.add(_position(candidate))
+
+        if target_scope is trees[label]:
+            for binding_label, binding_scope, bound_name in bindings:
+                if binding_label != label or binding_scope is not target_scope:
+                    continue
                 if any(
-                    spec[0] == "function" and spec[1] is boundary
-                    for spec, _, _ in selected
+                    _binding_is_callable_boundary(label, binding, boundary)
+                    for binding in _effective_bindings(
+                        label,
+                        target_scope,
+                        bound_name,
+                        (10**9, 10**9),
+                    )
                 ):
-                    call_positions.add(_position(candidate))
+                    call_positions.add((10**9, 10**9))
 
-        final_boundary = _effective_bindings(
-            label,
-            target_scope,
-            boundary.name,
-            (10**9, 10**9),
-        )
-        if target_scope is trees[label] and any(
-            spec[0] == "function" and spec[1] is boundary
-            for spec, _, _ in final_boundary
+        escape_positions: set[tuple[int, int]] = set()
+        if isinstance(boundary, (ast.FunctionDef, ast.AsyncFunctionDef)) and (
+            boundary.decorator_list
         ):
-            call_positions.add((10**9, 10**9))
-
-        escaped = False
+            escape_positions.add(_position(boundary, after=True))
         if boundary_scope is target_scope:
             for candidate in ast.walk(target_scope):
+                if _scope_for(label, candidate) is not target_scope:
+                    continue
                 if not (
-                    isinstance(candidate, ast.Name)
+                    candidate is boundary
+                    and isinstance(boundary, ast.Lambda)
+                    or isinstance(candidate, ast.Name)
                     and isinstance(candidate.ctx, ast.Load)
-                    and candidate.id == boundary.name
-                    and _scope_for(label, candidate) is target_scope
+                    and _expression_is_callable_boundary(label, candidate, boundary)
                 ):
                     continue
                 parent = parents.get(candidate)
                 if isinstance(parent, ast.Call) and parent.func is candidate:
                     continue
-                selected = _effective_bindings(
-                    label,
-                    target_scope,
-                    boundary.name,
-                    _position(candidate),
-                )
-                if any(
-                    spec[0] == "function" and spec[1] is boundary
-                    for spec, _, _ in selected
-                ):
-                    escaped = True
-                    break
+                if _is_owned_callable_alias(label, candidate, target_scope):
+                    continue
+                if _is_passive_callable_observation(label, candidate):
+                    continue
+                escape_positions.add(_position(candidate))
 
-        if escaped:
+        observed: list[Binding] = [
+            binding
+            for position in sorted(call_positions)
+            for binding in _effective_bindings(
+                label,
+                target_scope,
+                name,
+                position,
+            )
+        ]
+        if escape_positions:
+            activation = min(escape_positions)
             initial = _effective_bindings(
                 label,
                 target_scope,
@@ -4249,18 +4453,9 @@ def _repository_sensitive_reexport_violations(
                 for binding in bindings.get((label, target_scope, name), [])
                 if binding[1] > activation
             )
-            return (*initial, *future)
-        if call_positions:
-            return tuple(
-                binding
-                for position in sorted(call_positions)
-                for binding in _effective_bindings(
-                    label,
-                    target_scope,
-                    name,
-                    position,
-                )
-            )
+            observed.extend((*initial, *future))
+        if observed:
+            return tuple(observed)
         return _effective_bindings(
             label,
             target_scope,
@@ -7715,6 +7910,292 @@ connect('ordinary.resource')
             _schema_installer_gate_violations(
                 source,
                 f"rev0101-good-{ordinal}.py",
+            )
+            == []
+        ), ordinal
+
+
+def test_rev0102_gate_audit_models_expression_and_callable_observation_time() -> None:
+    """Conditional writes and deferred callables retain only observable states."""
+
+    rejected = (
+        (
+            """
+from importlib import import_module
+TARGET = 'sqlite3'
+True or (TARGET := 'ordinary_transport')
+import_module(TARGET).connect('blocked.db')
+""",
+            "literal dynamic SQLite/schema import",
+        ),
+        (
+            """
+from contextlib import suppress
+from importlib import import_module
+TARGET = 'sqlite3'
+with suppress(Exception):
+    TARGET = resolve_target()
+import_module(TARGET).connect('blocked.db')
+""",
+            "literal dynamic SQLite/schema import",
+        ),
+        (
+            """
+from importlib import import_module
+TARGET = 'ordinary_transport'
+[(TARGET := 'sqlite3') for item in values]
+import_module(TARGET).connect('blocked.db')
+""",
+            "literal dynamic SQLite/schema import",
+        ),
+        (
+            """
+from importlib import import_module
+TARGET = 'sqlite3'
+run = lambda: import_module(TARGET).connect('blocked.db')
+run()
+TARGET = 'ordinary_transport'
+""",
+            "literal dynamic SQLite/schema import",
+        ),
+        (
+            """
+from importlib import import_module
+TARGET = 'sqlite3'
+def probe():
+    return import_module(TARGET).connect('blocked.db')
+escaped = [probe]
+TARGET = 'ordinary_transport'
+""",
+            "literal dynamic SQLite/schema import",
+        ),
+        (
+            """
+from importlib import import_module
+TARGET = 'sqlite3'
+def probe():
+    return import_module(TARGET).connect('blocked.db')
+probe == receiver
+TARGET = 'ordinary_transport'
+""",
+            "literal dynamic SQLite/schema import",
+        ),
+        (
+            """
+from importlib import import_module
+TARGET = 'sqlite3'
+def probe():
+    return import_module(TARGET).connect('blocked.db')
+consume(alias := probe)
+TARGET = 'ordinary_transport'
+""",
+            "literal dynamic SQLite/schema import",
+        ),
+        (
+            """
+from importlib import import_module
+TARGET = 'sqlite3'
+def invoke(function):
+    function()
+    return function
+@invoke
+def run():
+    return import_module(TARGET).connect('blocked.db')
+TARGET = 'ordinary_transport'
+""",
+            "literal dynamic SQLite/schema import",
+        ),
+        (
+            """
+from app.execution_core.persistence.schema import install_schema
+import sys
+sys.path.insert(0, 'attacker')
+from approved_schema_digest import require_approved_ddl_execution
+def setup(connection):
+    return install_schema(
+        connection,
+        approved_ddl_sha256=require_approved_ddl_execution(),
+    )
+""",
+            "governed module escapes direct operation",
+        ),
+    )
+    for ordinal, (source, expected) in enumerate(rejected, 1):
+        violations = _schema_installer_gate_violations(
+            source,
+            f"rev0102-{ordinal}.py",
+        )
+        assert any(expected in violation for violation in violations), violations
+
+    conditional_target = """
+from importlib import import_module
+TARGET = 'approved_schema_digest'
+if condition:
+    TARGET = 'json'
+import_module(TARGET).APPROVED_EXECUTION_DDL_SHA256 = 'ab' * 32
+"""
+    violations = _schema_installer_gate_violations(
+        conditional_target,
+        "rev0102-conditional-target.py",
+    )
+    assert any(
+        "literal dynamic approval module import" in violation
+        for violation in violations
+    ), violations
+
+    accepted = (
+        """
+from importlib import import_module
+TARGET = 'sqlite3'
+def probe():
+    return import_module(TARGET).connect('unused.db')
+probe is probe
+TARGET = 'ordinary_transport'
+probe()
+""",
+        """
+from importlib import import_module
+TARGET = 'sqlite3'
+def probe():
+    return import_module(TARGET).connect('unused.db')
+alias = probe
+TARGET = 'ordinary_transport'
+alias()
+""",
+        """
+from importlib import import_module
+TARGET = 'sqlite3'
+run = lambda: import_module(TARGET).connect('unused.db')
+TARGET = 'ordinary_transport'
+run()
+""",
+        """
+from importlib import import_module
+TARGET = 'sqlite3'
+def probe():
+    return import_module(TARGET).connect('unused.db')
+TARGET = 'ordinary_transport'
+escaped = [probe]
+""",
+    )
+    for ordinal, source in enumerate(accepted, 1):
+        assert (
+            _schema_installer_gate_violations(
+                source,
+                f"rev0102-good-{ordinal}.py",
+            )
+            == []
+        ), ordinal
+
+
+def test_rev0102_topology_models_namespace_packages_and_callable_aliases() -> None:
+    """Package prefixes and callable observation time survive cross-file analysis."""
+
+    helper = """
+from app.execution_core.persistence.schema import install_schema
+from approved_schema_digest import require_approved_ddl_execution
+"""
+    rejected = (
+        """
+from tests import execution_core as package
+package.helper.require_approved_ddl_execution
+""",
+        """
+from importlib import import_module
+TARGET = 'helper'
+run = lambda: import_module(TARGET).install_schema
+run()
+TARGET = 'ordinary'
+""",
+        """
+from importlib import import_module
+TARGET = 'helper'
+def recover():
+    return import_module(TARGET).install_schema
+escaped = [recover]
+TARGET = 'ordinary'
+""",
+        """
+from importlib import import_module
+TARGET = 'helper'
+def recover():
+    return import_module(TARGET).install_schema
+recover == receiver
+TARGET = 'ordinary'
+""",
+        """
+from importlib import import_module
+TARGET = 'helper'
+def recover():
+    return import_module(TARGET).install_schema
+consume(alias := recover)
+TARGET = 'ordinary'
+""",
+        """
+from contextlib import suppress
+from importlib import import_module
+TARGET = 'helper'
+with suppress(Exception):
+    TARGET = resolve_target()
+import_module(TARGET).install_schema
+""",
+        """
+from importlib import import_module
+TARGET = 'ordinary'
+[(TARGET := 'helper') for item in values]
+import_module(TARGET).install_schema
+""",
+    )
+    for ordinal, consumer in enumerate(rejected, 1):
+        assert _repository_sensitive_reexport_violations(
+            {
+                "tests/execution_core/helper.py": helper,
+                "tests/execution_core/consumer.py": consumer,
+            }
+        ), ordinal
+
+    accepted = (
+        """
+from importlib import import_module
+TARGET = 'helper'
+def recover():
+    return import_module(TARGET).install_schema
+recover is recover
+TARGET = 'ordinary'
+recover()
+""",
+        """
+from importlib import import_module
+TARGET = 'helper'
+def recover():
+    return import_module(TARGET).install_schema
+alias = recover
+TARGET = 'ordinary'
+alias()
+""",
+        """
+from importlib import import_module
+TARGET = 'helper'
+run = lambda: import_module(TARGET).install_schema
+TARGET = 'ordinary'
+run()
+""",
+        """
+from importlib import import_module
+TARGET = 'helper'
+def recover():
+    return import_module(TARGET).install_schema
+TARGET = 'ordinary'
+escaped = [recover]
+""",
+    )
+    for ordinal, consumer in enumerate(accepted, 1):
+        assert (
+            _repository_sensitive_reexport_violations(
+                {
+                    "tests/execution_core/helper.py": helper,
+                    "tests/execution_core/consumer.py": consumer,
+                }
             )
             == []
         ), ordinal
