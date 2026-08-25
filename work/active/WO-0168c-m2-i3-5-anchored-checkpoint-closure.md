@@ -782,3 +782,41 @@ authorized.
 `work/review/REV-0102/**` is released solely for the fresh exact-source review
 of that root correction. All DDL/SQLite holds and Ameen's separate HUMAN-GATE
 remain binding.
+
+## Amendment — REV-0102 exact conditional/callable provenance candidate (2026-08-25)
+
+The REV-0101 owning findings are remediated at
+`501a86425c32ab8b099f897f23334cbbc0df5b36`, tree
+`df69b207a0b4c060187deaf7e270ef334c0984aa`. The direct source commit changes
+only `tests/execution_core/test_persistence_write_capability.py`.
+
+Both finite source gates now distinguish definitely evaluated tests/first
+operands from conditional Boolean, conditional-expression, statement,
+context-managed-body, comprehension, match, and exception paths. Walrus targets
+inside comprehensions are assigned to Python's real enclosing owner. Callable
+observation follows named functions, lambdas, and simple assignment aliases at
+proven direct calls; identity-only observations remain passive, while equality,
+membership, argument/container storage, attribute/subscript flow, decorators,
+and other real escapes conservatively retain the state observable from escape
+onward. A walrus expression that itself flows outward is an escape, not a local
+alias exemption. Namespace-package `ImportFrom` aliases retain package-prefix
+identity, and mutable `sys.path` is no longer classified as an ordinary read.
+The conditional-alternative controls assert the exact protected-provenance
+diagnostic rather than accepting an unrelated violation.
+
+Exact-candidate static evidence is clean: Ruff check/format, AST parsing, mypy
+over 95 app files, all six import-linter contracts, AI Project OS install,
+version, ledger, PKL, disposition, cumulative scope, and whitespace gates pass.
+Pytest remains `NOT_RUN`: the execution guard refused the import-based pure
+suite and was not routed around. Source-only recomputation leaves `SCHEMA_DDL`
+at SHA-256 `2636c72793515a46c893d93084750b45ea2f151c58055480d5c601eb8c0faac5`
+and 178755 UTF-8 bytes, `_SCHEMA_CATALOG_SHA256` at
+`c717f6a6c84b37cb13773416c90b50d14f377e39928d7f9c626e769296e632d2`,
+the R4 manifest at
+`99aab5f40d43ea5dacce78e77ea47cad250cb9618223d9036a071d8a2704ed39`,
+and the approval literal at `None`.
+
+REV-0102 must independently review this exact source identity and return
+`P0=0/P1=0` before the changed-DDL HUMAN-GATE may be presented. No SQLite
+import/connection, held suite, changed-DDL execution, database activity, or
+authority expansion is created by this amendment.
