@@ -134,3 +134,20 @@ Return concrete findings with severity, location, requirement, evidence tag,
 impact, and smallest complete root resolution. End with verdict, P0/P1/P2
 counts, and unverified items. The independent reviewer may create only
 `work/review/REV-0098/result.md`.
+
+## Author correction — range attribution (2026-08-24)
+
+The candidate's direct parent is
+`51207c0d3e6dc6fcdd01c4d3dac5739af7a5002e`. The broader expression
+`b870911..ec1fbf8` intentionally identifies the source baseline but also
+contains the intervening documentation-only commits `8dc84f7` and `51207c0`.
+It is therefore not a two-path whole-commit range. The code review target is
+the path-limited diff between those identities for exactly:
+
+    tests/execution_core/approved_schema_digest.py
+    tests/execution_core/test_persistence_write_capability.py
+
+That path-limited diff contains only the two named source/test paths. The
+intervening documentation commits are already-authorized review/governance
+evidence and are outside the implementation finding scope. This correction
+does not change the frozen candidate, tree, DDL identity, or authority.
