@@ -91,6 +91,9 @@ repo/
 - Treating discoverable uncertainty, a failed test, or a third patch attempt as automatic human
   escalation.
 - Requiring a named-model escalation ladder instead of choosing the needed capability directly.
+- Building assurance machinery larger than the surface it guards, or accepting an unbounded
+  assurance claim ("nothing can possibly X by any route") for review — see
+  `20_ASSURANCE_PROPORTIONALITY.md`.
 
 
 ## Prompt Architecture in the runtime flow

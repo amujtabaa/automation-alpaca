@@ -30,6 +30,15 @@ Consider these perspectives if relevant:
 - Maintainability
 - ADR / PKL Consistency
 
+## Threat Model and Stop Rule (Required — doc 20, adopted 2026-08-26)
+- In scope: <who/what this change must withstand, e.g. accidents and non-evasive agent mistakes>
+- Out of scope: <threat classes that become proposals for the human, never blocks>
+- A P0/P1 requires a reproducible counterexample inside the threat model above, or proof that a
+  named control cannot fail. Out-of-model concerns: record as threat-class proposals.
+- Round cap: two per packet; round two re-examines round-one remediations only. Safety-invariant
+  findings in product code are never capped.
+
 ## How to Respond
 Create `result.md` in this folder using the result template.
 Use verdicts: ACCEPT | ACCEPT-WITH-CHANGES | BLOCK
+State everything you could not verify.

@@ -53,6 +53,11 @@ disproved, return to the Fable gate, reconsider the model and boundary, obtain a
 independent review when useful, and choose a materially different root-level approach. Escalate to
 the human only if that re-gate exposes a real human decision or requires new authority.
 
+"Materially different" means a change of solution class — a different assurance claim, trust
+boundary, or enforcement layer — not a larger mechanism of the same kind; a richer grammar or a
+more complete model of the same design does not satisfy a fired circuit breaker (doc 20 R6,
+adopted 2026-08-26).
+
 Never relabel “hard,” “slow,” “uncertain,” “CI still running,” or “a reviewer found another in-scope
 defect” as `BLOCKED`. Continue monitoring or remediation until a terminal condition is satisfied.
 
@@ -86,6 +91,12 @@ Classify a surprise before stopping:
 Discovering that the initially named file list was incomplete does not itself make the root fix
 unauthorized. The deciding question is whether the added change is necessary to the same outcome
 and remains inside the standing safety and architecture boundaries.
+
+Prohibitions bind by their exact verbs. An agent may temporarily narrow its own conduct, but any
+agent-side WIDENING of a human prohibition (forbidding adjacent activities the human did not name)
+is a decision gap requiring ratification — and a safety rule whose observance disables the test
+suite or other verification is self-defeating and escalates immediately (doc 20 R7, adopted
+2026-08-26).
 
 ## Model selection
 
