@@ -389,3 +389,35 @@ remediation candidate. It must receive an independent exact-head result with
 tree, DDL digest, byte count, catalog digest, SQL-manifest identity, and
 fresh-file-only commands. Until all of those conditions hold, the SQLite gate
 remains **NOT_RUN**.
+
+---
+
+# Amendment 7 — ratified root simplification; governing document is now WO-0168d
+
+Date: 2026-08-26 · Recorded by: Claude planning seat · Ratified by: Ameen Mujtabaa
+
+The REV-0082…REV-0105 static-scanner escalation recorded in the WO-0168c amendment chain did not
+converge (REV-0105: BLOCK, P0=7/P1=5). On 2026-08-26, after a blinded two-model architecture
+consultation (`work/review/CONSULT-0001-wo0168c-architecture/`), Ameen ratified the hybrid
+replacement: "Ratified: hybrid points 1–10; scanner deletion approved; prohibition re-scoped per
+point 5."
+
+Effects on this gate record:
+
+1. **Governing document.** Current gate truth lives in
+   `work/active/WO-0168d-m2-i3-5-hybrid-gate-simplification.md` (then its successor packets).
+   The per-review "next possible executable packet" pointer chain in Amendments 3–6 ends here.
+2. **Gate lifecycle change (no authority change).** `APPROVED_EXECUTION_DDL_SHA256` is renamed
+   `EXPECTED_EXECUTION_DDL_SHA256` and set to the locked candidate digest
+   `2636c72793515a46c893d93084750b45ea2f151c58055480d5c601eb8c0faac5` as an identity assertion
+   only. Execution authorization becomes a separate `DDL_EXECUTION_AUTHORIZED_BY_AMEEN` flag,
+   `False` until Ameen personally flips it in his own one-line unlock commit naming the approved
+   commands and attempt count. A matching digest alone can never execute changed DDL. This
+   removes the prior circularity in which the post-approval unlock commit changed the tree that
+   the approval had named.
+3. **Prohibition re-scope.** Module imports and repo-wide pytest (excluding the relocated
+   `tests_gated/` suites) are again permitted; changed-DDL install, held-suite execution, and any
+   database creation in this lane remain forbidden until the unlock.
+4. **The gate remains CLOSED.** Nothing in this amendment installs schema, runs a held suite, or
+   authorizes execution. The unlock still requires: REV-0106 ACCEPT/ACCEPT-WITH-CHANGES on the
+   WO-0168d implementation, Ameen's DDL intent review, then Ameen's flag commit.

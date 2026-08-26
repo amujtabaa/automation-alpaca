@@ -1,12 +1,12 @@
 ---
 type: Work Order
 title: M2-I3.5 anchored non-serving checkpoint closure
-status: ACTIVE
+status: SUPERSEDED
 work_order_id: WO-0168c
 wave: M2-I3.5-R13-C
 model_tier: strong
 risk: critical
-disposition: []
+disposition: [SUPERSEDED, RESULT_SUMMARY_KEPT, ARCHIVED]
 owner: Codex orchestrator and implementation seat; fresh-context reviewers required
 created: 2026-08-23
 predecessor: WO-0168h superseded after REV-0076 R5 BLOCK
@@ -101,6 +101,20 @@ forbidden_paths: []
 ---
 
 # Work Order: WO-0168c — anchored checkpoint closure
+
+> **Superseded 2026-08-26.** Twenty-seven review packets (REV-0079…REV-0105) failed to converge
+> on the static write-capability scanner; REV-0105 returned BLOCK with P0=7/P1=5 against the
+> scanner's own semantics, and P0 counts rose across the last three rounds. A blinded two-model
+> architecture consultation (Claude Fable first-pass memo and ChatGPT ADEG-1.1 memo, recorded in
+> `work/review/CONSULT-0001-wo0168c-architecture/`) independently reached the same root cause:
+> the scanner's assurance claim — sound static verification of arbitrary Python — is unbounded
+> and cannot converge. Ameen ratified the hybrid replacement on 2026-08-26:
+> "Ratified: hybrid points 1–10; scanner deletion approved; prohibition re-scoped per point 5."
+> **WO-0168d** (`work/active/WO-0168d-m2-i3-5-hybrid-gate-simplification.md`) succeeds this work
+> order. The uncommitted scanner WIP (SHA-256 `2978d800…`) is abandoned, not finished. All product
+> code accepted under this work order (checkpoint codec, records, repository, schema, held suites)
+> remains valid. The changed-DDL HUMAN-GATE remains closed; its lifecycle is redefined by WO-0168d.
+> The amendment chain below is preserved unchanged as treadmill evidence.
 
 `[FABLE • FULL • spec-first/TDD • one provenance boundary • no external I/O]`
 
