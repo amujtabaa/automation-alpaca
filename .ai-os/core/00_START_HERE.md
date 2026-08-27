@@ -52,9 +52,9 @@ AI Project Operating System
 11. If using MCP, treat `14_MCP_CONTROL_PLANE.md` and `mcp/` as the optional access/control layer; the repo-installed OS remains canonical.
 12. Apply `19_AUTONOMY_AND_ESCALATION.md` so agents reuse recorded authority, investigate before
     `NEEDS-INPUT`, and keep solving until a real human boundary is reached.
-13. Apply `20_ASSURANCE_PROPORTIONALITY.md` whenever building or reviewing an assurance mechanism
-    (guard, scanner, proof harness, review contract) so evidence burden stays proportional to
-    blast radius and review loops terminate instead of treadmilling.
+13. Apply `20_ASSURANCE_PROPORTIONALITY.md` when a work order or adapter invokes it for an
+    assurance mechanism (guard, scanner, proof harness, review contract), so evidence burden
+    stays proportional without suppressing evidence-backed correctness or safety findings.
 
 ## Definitions
 

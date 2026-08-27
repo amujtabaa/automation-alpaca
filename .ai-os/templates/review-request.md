@@ -33,10 +33,14 @@ Consider these perspectives if relevant:
 ## Threat Model and Stop Rule (Required — doc 20, adopted 2026-08-26)
 - In scope: <who/what this change must withstand, e.g. accidents and non-evasive agent mistakes>
 - Out of scope: <threat classes that become proposals for the human, never blocks>
-- A P0/P1 requires a reproducible counterexample inside the threat model above, or proof that a
-  named control cannot fail. Out-of-model concerns: record as threat-class proposals.
-- Round cap: two per packet; round two re-examines round-one remediations only. Safety-invariant
-  findings in product code are never capped.
+- Acceptance criteria and invariants: <closed list or exact governing references>
+- Permitted evidence: reproducible runtime evidence, source/contract proof, mutation evidence, or
+  another failure-capable form appropriate to the claim.
+- A P0/P1 may show an acceptance/scope violation, in-model counterexample, non-failing control,
+  remediation regression, or product safety/data-integrity defect. Truly out-of-model concerns
+  are threat-class proposals.
+- Round cap: two per packet; round two examines round-one remediations and regressions they
+  introduce. The cap never forces acceptance; `ACCEPT-WITH-CHANGES` requires zero open P0/P1.
 
 ## How to Respond
 Create `result.md` in this folder using the result template.

@@ -94,9 +94,10 @@ and remains inside the standing safety and architecture boundaries.
 
 Prohibitions bind by their exact verbs. An agent may temporarily narrow its own conduct, but any
 agent-side WIDENING of a human prohibition (forbidding adjacent activities the human did not name)
-is a decision gap requiring ratification — and a safety rule whose observance disables the test
-suite or other verification is self-defeating and escalates immediately (doc 20 R7, adopted
-2026-08-26).
+is a decision gap requiring ratification. An explicit human gate may forbid an unsafe test or
+execution path; never weaken it to obtain green evidence. Preserve safe verification through
+pure/source checks or an approved isolated environment, and escalate only when no adequate safe
+evidence path exists (doc 20 R7, adopted 2026-08-26; clarified 2026-08-27).
 
 ## Model selection
 

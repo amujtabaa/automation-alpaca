@@ -10,7 +10,7 @@ disposition: []
 owner: Codex implementation seat; one fresh-context reviewer (REV-0106)
 created: 2026-08-26
 predecessor: WO-0168c superseded 2026-08-26 after REV-0105 BLOCK and ratified root simplification
-branch: codex/m2-wo0168c-remediation-r1
+branch: codex/m2-wo0168d-hybrid-r1
 implementation_review_id: REV-0106
 execution_authority: >
   Ameen Mujtabaa, 2026-08-26, in session, verbatim: "Ratified: hybrid points 1-10; scanner
@@ -23,6 +23,9 @@ execution_authority: >
   NOT authorize changed-DDL execution, running the relocated held suites, database creation in
   this lane, in-memory databases, migration, runtime composition, credentials, network, broker
   calls, orders, promotion, or merge to master.
+  On 2026-08-27 Ameen additionally approved the four Codex handoff corrections: broaden the
+  evidence-capable review contract, bind the unlock commit exactly, scope and independently
+  review Core 20, and continue on a fresh branch in the main repository checkout.
 allowed_paths:
   - work/active/WO-0168d-m2-i3-5-hybrid-gate-simplification.md
   - work/completed/keep/WO-0168d-m2-i3-5-hybrid-gate-simplification.md
@@ -43,6 +46,12 @@ allowed_paths:
   - .github/CODEOWNERS
   - docs/LIVE_READINESS.md
   - docs/adr/ADR-023-interim-ddl-gate-threat-model.md
+  - .ai-os/core/00_START_HERE.md
+  - .ai-os/core/03_IN_USE_STRUCTURE.md
+  - .ai-os/core/15_CROSS_MODEL_REVIEW.md
+  - .ai-os/core/19_AUTONOMY_AND_ESCALATION.md
+  - .ai-os/core/20_ASSURANCE_PROPORTIONALITY.md
+  - .ai-os/templates/review-request.md
 forbidden_paths:
   - app/**
 ---
@@ -78,8 +87,10 @@ composition, credentials, network, broker calls, orders, promotion, merge to mas
    direction controls, the no-I/O `_Connection` stand-in, and the REV-0078 anti-self-approval AST
    control (`approved_ddl_sha256=schema_ddl_digest()` spelling refused). Delete both 49-file
    scanners, the provenance/topology/binding-state models, all `sys.settrace` machinery, and the
-   embedded snippet corpus. Discard the uncommitted WIP (do not finish or commit it). Git history
-   plus the frozen review commits remain the evidence record.
+   embedded snippet corpus. The uncommitted successor WIP remains preserved, untouched, in the
+   old `automation-alpaca-worktrees/codex-m2-wo0168c` checkout; this fresh branch starts from the
+   committed scanner baseline and must not reset or modify that old worktree. Git history, frozen
+   review commits, and the preserved old checkout remain the evidence record.
 2. **Held-suite quarantine by relocation.** `git mv` the four held suites
    (`test_persistence_schema.py`, `test_persistence_repository.py`, `test_persistence_directness.py`,
    `test_persistence_runtime_checkpoint_sqlite.py`) to `tests_gated/execution_core/` — outside
@@ -104,33 +115,47 @@ composition, credentials, network, broker calls, orders, promotion, merge to mas
    reviewed with this candidate, NOT approval). Add
    `DDL_EXECUTION_AUTHORIZED_BY_AMEEN: Final[bool] = False`. The accessor returns the expected
    digest only when the flag is True and refuses otherwise. Docstring states the unlock protocol:
-   ONLY Ameen may flip the flag, in his own one-line commit whose message names the approved
-   commands and attempt count; agents never edit this file's two constants. `install_schema`'s
-   own exact-digest comparison stays unchanged (`app/**` is forbidden to this work order).
+   ONLY Ameen may authorize flipping the flag. The unlock commit must have the exact
+   REV-0106-accepted head as its parent; its only source diff is the authorization flag changing
+   `False` to `True`; and its message names the approved commands and attempt count. Before any
+   execution, record the resulting unlock commit/tree and verify a clean worktree, local equals
+   origin, and unchanged DDL digest, byte count, schema blob, and SQL-manifest identity. Agents
+   never infer authorization from the expected digest or alter either constant without Ameen's
+   explicit gate-day instruction. `install_schema`'s own exact-digest comparison stays unchanged
+   (`app/**` is forbidden to this work order).
 5. **CODEOWNERS.** Create `.github/CODEOWNERS` assigning `@amujtabaa` to:
    `tests/execution_core/approved_schema_digest.py`, `tests/execution_core/test_sqlite_boundary.py`,
    `tests_gated/`, `app/execution_core/persistence/schema.py`, `.github/workflows/`, `.github/CODEOWNERS`.
-6. **ADR-023** (`docs/adr/ADR-023-interim-ddl-gate-threat-model.md`, ≤2 pages, ships in the same
+6. **ADR-023 and scoped Core 20 governance** (`docs/adr/ADR-023-interim-ddl-gate-threat-model.md`,
+   ≤2 pages, ships in the same
    commit): interim threat model (accidents and non-evasive agent mistakes in scope; deliberate
    evasion and host owner out of scope — such concerns are threat-class proposals routed to
    Ameen), the review stop rule below, the two-tier quality standard (live-grade invariants/data
    model now, paper-grade proof burden elsewhere, promotion via docs/LIVE_READINESS.md), and the
-   meta-code tripwire. As an ADR it clears through this work order's REV-0106 packet.
+   meta-code tripwire. Narrow Core 20 and its routing text so it governs proportionate assurance
+   design without suppressing evidence-backed contract, scope, regression, safety, or data-
+   integrity findings. REV-0106 includes a separate governance lens for these `.ai-os` changes;
+   Core 20 does not constrain findings about its own text. The ADR and project policy clear
+   through the same packet, avoiding a second review bureaucracy.
 7. **Verification.** Green: ruff, mypy, lint-imports, conformance oracle, and repo-wide pytest
    (which now excludes `tests_gated/` structurally) with the boundary suite passing, on this
    branch, evidence pasted. The four relocated suites are collected by nothing and run by nothing.
 
 ## Review contract (REV-0106) and stop rule
 
-One fresh-context reviewer seat. Scope: the diff of this work order only, judged against ADR-023's
-threat model. A P0/P1 may block ONLY with a reproducible in-model counterexample: non-evasive code
-(spells the tokens, uses public APIs normally) that executes changed DDL, creates a database, or
-runs a relocated suite through a governed path — or a demonstration that a named control cannot
-fail (mutation evidence). Concerns requiring deliberate evasion (dynamic name construction,
-reflection to capability, editing guard files) are recorded as threat-class proposals for Ameen
-and never block. Maximum two rounds; round 2 re-examines round-1 remediations only. Absent an
-in-model counterexample the verdict is ACCEPT or ACCEPT-WITH-CHANGES with residual notes.
-Product-code safety-invariant findings (CLAUDE.md INV list) are never capped by this rule.
+One fresh-context reviewer seat. Scope: the complete diff of this work order. The implementation
+is judged against ADR-023's threat model; the Core 20/routing changes are judged independently
+under `AGENTS.md` and doc 15, without using Core 20 to limit findings about itself. A P0/P1 may
+block with reproducible evidence of any of: an unmet work-order acceptance criterion; scope or
+authority violation; in-model boundary counterexample; a named control that cannot fail;
+regression introduced by implementation or remediation; or product safety/data-integrity defect.
+Concerns that require deliberate evasion outside ADR-023's threat model are recorded as threat-
+class proposals for Ameen and do not block this interim gate. Maximum two rounds; round 2 examines
+round-1 remediations and regressions caused by them. A round cap never forces acceptance: any
+unresolved P0/P1 returns as an exact blocker and triggers re-diagnosis or human disposition.
+`ACCEPT-WITH-CHANGES` may close this work order only when no P0/P1 remains; residual notes are P2
+or explicitly accepted out-of-model risks. Product-code safety-invariant findings are never
+capped by this rule.
 
 ## Budgets and tripwire
 
@@ -141,8 +166,9 @@ built. Exceeding a budget is a P1, not a reason to silently raise the budget.
 
 ## Done-when
 
-1. Scope items 1–7 implemented with pasted evidence; uncommitted scanner WIP discarded.
-2. REV-0106 dispositioned ACCEPT or ACCEPT-WITH-CHANGES under the stop rule.
+1. Scope items 1–7 implemented with pasted evidence; old scanner WIP preserved in its prior
+   worktree and absent from this fresh branch.
+2. REV-0106 dispositioned ACCEPT or ACCEPT-WITH-CHANGES with zero unresolved P0/P1 findings.
 3. Close-out ratchet in the finishing commit: status flip, disposition, ledger line, file move to
    `work/completed/keep/`, and gate-doc pointer refresh (35-WO-0168C-HUMAN-GATE-DDL.md).
 4. Branch pushed; CI status reported honestly (known-red steps, if any, named with cause).

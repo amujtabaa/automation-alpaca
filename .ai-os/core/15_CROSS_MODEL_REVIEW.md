@@ -63,15 +63,15 @@ See `work/review/README.md` and the templates in `.ai-os/templates/` for concret
 ## Threat model and stop rule are part of the request (doc 20, adopted 2026-08-26)
 
 A review request without a stated threat model and finite stop condition is malformed. Every
-`request.md` declares: who/what is in and out of scope, the invariants under review, and when the
-review must stop. A P0/P1 may block only with a reproducible counterexample inside the stated
-threat model, or proof that a named control cannot fail; out-of-model concerns are recorded as
-threat-class proposals for the human, never blocks. Default cap: two rounds per packet, round two
-limited to round-one remediations. Non-decreasing P0+P1 across three consecutive rounds on the
-same artifact is a mandatory stop-and-rediagnose of the assurance claim, not a fourth round.
-Safety-invariant findings in product code are never capped. Reviewers who keep finding defects in
-an unbounded claim are performing correctly — convergence is fixed in the request template, not
-in reviewer behavior. Full rules: `20_ASSURANCE_PROPORTIONALITY.md` (R4, R5); origin case:
+`request.md` declares: who/what is in and out of scope, acceptance criteria, invariants, permitted
+evidence forms, and when the review must stop. P0/P1 may rely on reproducible runtime evidence,
+source/contract proof, mutation evidence, or another failure-capable form showing an acceptance/
+scope violation, in-model counterexample, non-failing control, remediation regression, or safety/
+data-integrity defect. Truly out-of-model concerns become threat-class proposals for the human.
+Default cap: two rounds; round two examines round-one remediations and regressions they introduce.
+A cap never forces acceptance, and `ACCEPT-WITH-CHANGES` requires zero open P0/P1. Non-decreasing
+P0+P1 across three rounds triggers re-diagnosis of the assurance claim, not suppression of valid
+findings. Full rules: `20_ASSURANCE_PROPORTIONALITY.md` (R4, R5); origin case:
 `work/review/CONSULT-0001-wo0168c-architecture/`.
 
 ## New-invariant probe obligation (PROC-0001 #3, accepted 2026-07-12)

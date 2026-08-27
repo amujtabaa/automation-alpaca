@@ -421,3 +421,29 @@ Effects on this gate record:
 4. **The gate remains CLOSED.** Nothing in this amendment installs schema, runs a held suite, or
    authorizes execution. The unlock still requires: REV-0106 ACCEPT/ACCEPT-WITH-CHANGES on the
    WO-0168d implementation, Ameen's DDL intent review, then Ameen's flag commit.
+
+---
+
+# Amendment 8 — exact unlock binding and fresh WO-0168d branch
+
+Date: 2026-08-27 · Recorded by: Codex implementation seat · Approved by: Ameen Mujtabaa
+
+Ameen approved the Codex handoff corrections and a fresh implementation branch in the main
+repository checkout. WO-0168d now runs on `codex/m2-wo0168d-hybrid-r1`, created from exact pushed
+planning head `81c65a09fbdd3d67a4a46ccd1d22f3c9b395353a`, tree
+`7dfed0cb0dd68add1ca36704766ccfd7a65bff61`. The dirty prior WO-0168c worktree is preserved and is
+not an execution source.
+
+The gate remains CLOSED. A future source-recorded unlock is valid only when all of these hold:
+
+1. REV-0106 has accepted the exact parent candidate with zero unresolved P0/P1 findings.
+2. Ameen has completed the separate DDL intent review and explicitly authorized the exact fresh-
+   file commands and bounded attempt count.
+3. The unlock commit's parent is that exact accepted candidate and its only source change is
+   `DDL_EXECUTION_AUTHORIZED_BY_AMEEN: Final[bool] = False` to `True`.
+4. Before execution, the resulting unlock commit/tree is recorded; the worktree is clean and
+   local equals origin; and the DDL digest, byte count, schema blob, catalog digest, and SQL-
+   manifest identity are re-verified unchanged.
+
+The human act supplies authorization; the post-unlock identity supplies auditability. A digest
+match, review verdict, or agent-authored record alone never authorizes execution.
