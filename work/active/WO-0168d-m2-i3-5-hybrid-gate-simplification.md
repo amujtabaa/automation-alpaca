@@ -26,7 +26,14 @@ execution_authority: >
   On 2026-08-27 Ameen additionally approved the four Codex handoff corrections: broaden the
   evidence-capable review contract, bind the unlock commit exactly, scope and independently
   review Core 20, and continue on a fresh branch in the main repository checkout.
+  On 2026-08-27 Ameen further authorized, verbatim: "I authorize the bounded REV-0106-F1
+  remediation of the application-side schema installer and supporting gate tests/governance
+  records. The human authorization flag must be enforced before connection access. No DDL-byte
+  change, held-suite execution, database creation, migration, or later work-order implementation
+  is authorized. Obtain fresh exact-head review with zero open P0/P1 before proceeding to the
+  separate DDL execution gate."
 allowed_paths:
+  - app/execution_core/persistence/schema.py
   - work/active/WO-0168d-m2-i3-5-hybrid-gate-simplification.md
   - work/completed/keep/WO-0168d-m2-i3-5-hybrid-gate-simplification.md
   - work/completed/keep/WO-0168c-m2-i3-5-anchored-checkpoint-closure.md
@@ -55,8 +62,6 @@ allowed_paths:
   - .ai-os/core/19_AUTONOMY_AND_ESCALATION.md
   - .ai-os/core/20_ASSURANCE_PROPORTIONALITY.md
   - .ai-os/templates/review-request.md
-forbidden_paths:
-  - app/**
 ---
 
 # Work Order: WO-0168d — hybrid gate simplification and suite restoration
@@ -69,10 +74,10 @@ REV-0079…REV-0105 (27 packets, ~2 days) tried to prove, by static analysis, th
 files could reach SQLite by any route. That claim is unbounded (arbitrary-Python semantics) and
 review correctly kept refuting it — P0 counts rose 6→5→7 while pytest itself became NOT_RUN. Two
 independent blinded consultations agreed on the root cause and on replacement. The load-bearing
-protection was always the tiny runtime pair: the fail-closed human gate in
-`tests/execution_core/approved_schema_digest.py` called by every installing fixture BEFORE any
-`sqlite3.connect`, and `install_schema`'s digest refusal before executing anything. This work
-order keeps that pair, deletes the scanner, restores the test suite, and makes review terminate.
+protection was always the tiny runtime pair: a fail-closed pre-open fixture gate and an installer
+that refuses before connection access. REV-0106 proved the installer checked only digest identity,
+not authorization; Ameen authorized moving that same flag to the sensitive application boundary.
+This order keeps the bounded pair, deletes the scanner, restores pytest, and makes review terminate.
 
 ## Ratified prohibition re-scope (point 5) — the interim rule from now on
 
@@ -108,26 +113,24 @@ composition, credentials, network, broker calls, orders, promotion, merge to mas
    (a) Lexical rule: outside an explicit justified allowlist, no file under `app/execution_core/`,
    `tests/execution_core/`, or `tests_gated/` may contain the tokens `sqlite3`, `app.store`, or
    `SqliteStateStore`. (b) AST pins: each `tests_gated` helper or fixture that directly opens a
-   connection calls the gate accessor first; `install_schema`'s first non-docstring action derives
-   the digest and calls
-   `_require_exact_approved_ddl_digest` (source-text/AST check — do not import `schema`
-   just to prove this). (c) Canaries: a synthetic disallowed-token source is flagged; a synthetic
-   ungated fixture is flagged; the gate accessor with authorization False raises; a digest one
-   hex character off is refused via the `_Connection` stand-in with no SQLite involved.
-4. **Gate lifecycle (ADEG §7.5 adaptation) in `approved_schema_digest.py`.** Rename
+   connection calls the gate accessor first; `install_schema` derives the digest, checks the
+   application-owned human flag/expected identity, then checks the caller digest before connection
+   access (source/AST proof only). (c) Canaries: disallowed tokens, ordinary aliases, added allowed-
+   path occurrences, ungated fixtures, a closed application gate given the known digest, and a
+   one-character digest mismatch all fail using no-I/O stand-ins.
+4. **Gate lifecycle (ADEG §7.5 adaptation) at the installer boundary.** Rename
    `APPROVED_EXECUTION_DDL_SHA256` → `EXPECTED_EXECUTION_DDL_SHA256` and set it now to
    `2636c72793515a46c893d93084750b45ea2f151c58055480d5c601eb8c0faac5` (the identity assertion —
-   reviewed with this candidate, NOT approval). Add
-   `DDL_EXECUTION_AUTHORIZED_BY_AMEEN: Final[bool] = False`. The accessor returns the expected
-   digest only when the flag is True and refuses otherwise. Docstring states the unlock protocol:
+   reviewed with this candidate, NOT approval). `schema.py` owns that identity and
+   `DDL_EXECUTION_AUTHORIZED_BY_AMEEN: Final[bool] = False`; `install_schema` enforces both before
+   connection access. The pre-open test accessor reads the same facts and refuses while False.
    ONLY Ameen may authorize flipping the flag. The unlock commit must have the exact
    REV-0106-accepted head as its parent; its only source diff is the authorization flag changing
    `False` to `True`; and its message names the approved commands and attempt count. Before any
    execution, record the resulting unlock commit/tree and verify a clean worktree, local equals
    origin, and unchanged DDL digest, byte count, schema blob, and SQL-manifest identity. Agents
    never infer authorization from the expected digest or alter either constant without Ameen's
-   explicit gate-day instruction. `install_schema`'s own exact-digest comparison stays unchanged
-   (`app/**` is forbidden to this work order).
+   explicit gate-day instruction. The DDL literal and caller-digest comparison stay unchanged.
 5. **CODEOWNERS.** Create `.github/CODEOWNERS` assigning `@amujtabaa` to:
    `tests/execution_core/approved_schema_digest.py`, `tests/execution_core/test_sqlite_boundary.py`,
    `tests_gated/`, `app/execution_core/persistence/schema.py`, `.github/workflows/`, `.github/CODEOWNERS`.

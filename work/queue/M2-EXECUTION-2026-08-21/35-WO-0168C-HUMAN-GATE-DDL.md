@@ -447,3 +447,26 @@ The gate remains CLOSED. A future source-recorded unlock is valid only when all 
 
 The human act supplies authorization; the post-unlock identity supplies auditability. A digest
 match, review verdict, or agent-authored record alone never authorizes execution.
+
+---
+
+# Amendment 9 — application-boundary enforcement authorized
+
+Date: 2026-08-27 · Recorded by: Codex implementation seat · Approved by: Ameen Mujtabaa
+
+REV-0106 round one reproduced a P0: the fixture-side pre-open accessor was closed, but a direct
+public `install_schema` call with the known matching digest could inspect its supplied connection
+without consulting the human flag. Ameen authorized the bounded root remediation verbatim in
+WO-0168d: enforce the human authorization flag inside the application-side installer before any
+connection access, with supporting gate tests and governance records.
+
+The expected digest and still-False flag therefore move to `schema.py`; the fixture accessor reads
+those same facts, while `install_schema` independently enforces authorization, expected identity,
+and caller digest before connection access. The installer signature and `SCHEMA_DDL` literal remain
+unchanged. No held suite, DDL, database, or migration may execute. The remediation must preserve the
+178,755-byte DDL and SHA-256 `2636c72793515a46c893d93084750b45ea2f151c58055480d5c601eb8c0faac5`,
+then receive fresh exact-head REV-0106 round-two review with zero open P0/P1.
+
+After acceptance, the separate DDL intent and unlock gate still applies. Its future one-line source
+change is the installer-owned `DDL_EXECUTION_AUTHORIZED_BY_AMEEN: Final[bool] = False` to `True` from
+the exact accepted parent; this amendment does not perform or authorize that unlock.

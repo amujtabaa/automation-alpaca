@@ -40,13 +40,15 @@ decision may move enforcement to an external process or OS boundary.
 
 1. The four SQLite-bearing suites live under `tests_gated/execution_core/`,
    outside ordinary pytest `testpaths`.
-2. Every direct connection-opening fixture or helper calls
-   `require_approved_ddl_execution()` before any other call.
-3. `EXPECTED_EXECUTION_DDL_SHA256` asserts reviewed identity but grants no
-   authority. `DDL_EXECUTION_AUTHORIZED_BY_AMEEN` remains `False` until Ameen's
-   separately bounded gate-day act.
-4. `install_schema` computes the actual digest and refuses a mismatch before it
-   inspects or changes the supplied connection.
+2. Every direct connection-opening fixture or helper calls the pre-open
+   `require_approved_ddl_execution()` guard before any other call.
+3. The application-side installer owns `EXPECTED_EXECUTION_DDL_SHA256` and
+   `DDL_EXECUTION_AUTHORIZED_BY_AMEEN`. Expected identity grants no authority;
+   the flag remains `False` until Ameen's separately bounded gate-day act.
+4. `install_schema` computes the actual digest, requires that application-owned
+   authorization and expected identity, then checks the caller digest, all before
+   it inspects or changes the supplied connection. The fixture guard reads the
+   same facts; it is an earlier convenience refusal, not the load-bearing boundary.
 5. A finite lexical allowlist and bounded AST pins detect ordinary boundary
    drift. Failure canaries prove each detector can fail.
 6. CODEOWNERS marks the gate, gated suites, schema, workflows, and ownership
@@ -61,7 +63,7 @@ The DDL candidate is frozen and independently reviewed while the authorization
 flag is `False`. A valid source-recorded unlock must:
 
 1. have the exact REV-0106-accepted candidate as its parent;
-2. change only the authorization flag from `False` to `True`;
+2. change only the installer-owned authorization flag from `False` to `True`;
 3. record Ameen's approved commands and bounded attempt count;
 4. record the resulting commit and tree before execution; and
 5. re-verify a clean, published checkout plus unchanged DDL digest, byte count,

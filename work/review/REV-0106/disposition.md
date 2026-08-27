@@ -58,6 +58,15 @@ changes. If authorized, the bounded added paths are:
   only if the installer signature changes,
 - WO-0168d, ADR-026, the DDL gate record, ledger, and REV-0106 disposition/request addendum.
 
+## Scope expansion authorized
+
+On 2026-08-27 Ameen supplied the exact requested authority: "I authorize the bounded REV-0106-F1
+remediation of the application-side schema installer and supporting gate tests/governance records.
+The human authorization flag must be enforced before connection access. No DDL-byte change, held-
+suite execution, database creation, migration, or later work-order implementation is authorized.
+Obtain fresh exact-head review with zero open P0/P1 before proceeding to the separate DDL execution
+gate." The authority is recorded in WO-0168d and Amendment 9 of the governing DDL gate.
+
 The revised candidate must receive one fresh exact-head REV-0106 round-two review with zero open
 P0/P1. The changed-DDL gate remains closed throughout; no held suite, DDL, or database execution is
 authorized by this disposition.
