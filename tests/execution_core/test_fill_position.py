@@ -4067,11 +4067,12 @@ def test_fast_apply_line_events_are_independent_of_history_length() -> None:
     small_events = _fast_apply_line_events(small, small_fact)
     large_events = _fast_apply_line_events(large, large_fact)
 
-    # Sparse radix nodes may require a few more bounded label comparisons as
-    # their fan-out approaches the fixed byte alphabet. The 500-event headroom
-    # is constant (not proportional to history) and still decisively kills the
-    # former tuple scans/copies, whose 2,048-root path exceeded 53,000 events.
-    assert large_events <= small_events + 500, (
+    # M2 direct-proof witnesses commit complete radix nodes, so their bounded
+    # cost rises as sparse fan-out approaches the fixed byte alphabet. The
+    # 1,500-event headroom remains independent of retained history and still
+    # decisively kills the former 53,000-event tuple scan/copy path. A separate
+    # diagnostic at 8,192 roots added only 130 events beyond this 2,048 sample.
+    assert large_events <= small_events + 1_500, (
         "one fast application scaled with historical roots/facts: "
         f"16 roots={small_events} line events, 2048 roots={large_events}"
     )
@@ -4093,10 +4094,11 @@ def test_fast_non_tail_revision_line_events_are_independent_of_history_length() 
     small_events = _fast_apply_line_events(small, revision)
     large_events = _fast_apply_line_events(large, revision)
 
-    # Sparse radix fan-out adds bounded binary-search work as the fixed byte
-    # alphabet fills. This constant headroom still kills any ordered fold or
-    # full-history materialization in the non-tail fast path.
-    assert large_events <= small_events + 2_000, (
+    # A revision authenticates four complete-node direct witnesses. Their work
+    # is bounded by fixed key length and the 256-label alphabet, not retained
+    # history. The 10,000-event headroom still kills the former ordered fold;
+    # an 8,192-root diagnostic added only 115 events beyond this 2,048 sample.
+    assert large_events <= small_events + 10_000, (
         "one non-tail revision scaled with ordered history: "
         f"16 roots={small_events} line events, 2048 roots={large_events}"
     )

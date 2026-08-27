@@ -1,0 +1,9 @@
+# Human-controlled DDL gate and bounded source controls.
+/tests/execution_core/approved_schema_digest.py @amujtabaa
+/tests/execution_core/test_sqlite_boundary.py @amujtabaa
+/tests_gated/ @amujtabaa
+/app/execution_core/persistence/schema.py @amujtabaa
+
+# Publication and ownership policy cannot approve themselves.
+/.github/workflows/ @amujtabaa
+/.github/CODEOWNERS @amujtabaa

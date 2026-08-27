@@ -997,11 +997,6 @@ class _FixedModeProtectionMarketMachine(RuleBasedStateMachine):
     def exact_replay_preserves_state_and_delivery_watermark(self) -> None:
         before = self.state
         replay = self.last_occurrence
-        if replay.evaluation_time < protection_fixtures._U64_MAX:
-            replay = replace(
-                replay,
-                evaluation_time=replay.evaluation_time + 1,
-            )
         result = self._deliver(replay)
         self._assert_result(result, "EXACT_REPLAY")
         assert result.state == before
@@ -1043,11 +1038,7 @@ class _FixedModeProtectionMarketMachine(RuleBasedStateMachine):
         self._record_occurrence(crossed, denied)
 
         before_replay = self.state
-        replay = replace(
-            crossed,
-            evaluation_time=crossed.evaluation_time + 1,
-        )
-        replayed = self._deliver(replay)
+        replayed = self._deliver(crossed)
         self._assert_result(replayed, "EXACT_REPLAY")
         assert replayed.state == before_replay
 
@@ -1086,11 +1077,7 @@ class _FixedModeProtectionMarketMachine(RuleBasedStateMachine):
         self._enter_baseline_required()
 
         before = self.state
-        replay = replace(
-            occurrence,
-            evaluation_time=occurrence.evaluation_time + 1,
-        )
-        replayed = self._deliver(replay)
+        replayed = self._deliver(occurrence)
         self._assert_result(replayed, "EXACT_REPLAY")
         assert replayed.state == before
 
@@ -1828,7 +1815,7 @@ class RetainedMarketPolicyMachine(RuleBasedStateMachine):
             self.module,
             self.state,
             self.projection,
-            replace(old_occurrence, evaluation_time=old_occurrence.evaluation_time + 1),
+            old_occurrence,
         )
         assert replay.disposition is disposition.EXACT_REPLAY
         assert replay.state == self.state

@@ -26,14 +26,14 @@ the deleted scanner internals beyond the kernel you are retaining. They are cont
   old `automation-alpaca-worktrees/codex-m2-wo0168c` checkout. Do not reset, clean, or edit that
   old worktree.
 - Order of work: Scope 2 (relocation) → 1 (scanner reduction) → 4 (gate lifecycle) → 3
-  (boundary layer, red-first with the canaries) → 5 (CODEOWNERS) → 6 (ADR-023) → 7 (verify).
+  (boundary layer, red-first with the canaries) → 5 (CODEOWNERS) → 6 (ADR-026) → 7 (verify).
 - Fable discipline applies: red-first for every new control, pasted fresh evidence, FIX blocks
   with root cause. The interim prohibition re-scope in WO-0168d §"Ratified prohibition re-scope"
   is your execution guard now — repo-wide pytest excluding `tests_gated/` is authorized.
 - Respect the budgets: ≤400 new SLOC, <60 s boundary runtime, ≥500-SLOC meta-code proposals
   escalate to Ameen instead of being built. If you feel the pull to model Python semantics,
   stop — that is the superseded approach.
-- Open `work/review/REV-0106/request.md` when frozen. Its implementation lens uses ADR-023's
+- Open `work/review/REV-0106/request.md` when frozen. Its implementation lens uses ADR-026's
   bounded threat model; its governance lens judges Core 20 under `AGENTS.md` and doc 15 without
   letting Core 20 constrain findings about itself. Close-out ships only after zero open P0/P1.
 

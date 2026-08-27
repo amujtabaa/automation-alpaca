@@ -1,15 +1,11 @@
-"""The sole human-controlled execution unlock for changed schema DDL.
+"""Human-controlled execution unlock, separate from the expected DDL identity.
 
-This module intentionally does **not** know the candidate DDL digest. Candidate
-identity is evidence recorded in the review packet; execution authority is a
-separate, deny-by-default human decision. Until that decision is recorded in a
-bounded unlock commit, every installer fixture fails before it opens a SQLite
-connection or creates a temporary database file.
+The expected digest is reviewed evidence, not authority. Until Ameen explicitly
+authorizes the one-line flag change from an exact accepted parent, every held
+fixture refuses before opening a SQLite connection or creating a database file.
 
-When Ameen approves an exact candidate commit/tree, DDL SHA-256, byte count, and
-fresh-file command list, change only ``APPROVED_EXECUTION_DDL_SHA256`` from
-``None`` to the approved literal in that unlock commit. Do not derive it from
-``schema_ddl_digest()``, a helper, an alias, or a local computation.
+The unlock protocol and post-commit identity checks are recorded in WO-0168d
+and the governing DDL gate. Agents never infer approval from a matching digest.
 """
 
 from __future__ import annotations
@@ -17,18 +13,21 @@ from __future__ import annotations
 from typing import Final
 
 
-APPROVED_EXECUTION_DDL_SHA256: Final[str | None] = None
+EXPECTED_EXECUTION_DDL_SHA256: Final[str] = (
+    "2636c72793515a46c893d93084750b45ea2f151c58055480d5c601eb8c0faac5"
+)
+DDL_EXECUTION_AUTHORIZED_BY_AMEEN: Final[bool] = False
 
 
 def require_approved_ddl_execution() -> str:
     """Return the human token or refuse before any SQLite activity begins."""
 
-    approved = APPROVED_EXECUTION_DDL_SHA256
-    if approved is None:
+    if DDL_EXECUTION_AUTHORIZED_BY_AMEEN is not True:
         raise RuntimeError(
             "HUMAN-GATE pending: changed DDL remains static-only until Ameen "
-            "approves the exact candidate identity and fresh-file test plan"
+            "authorizes the exact accepted parent, commands, and attempt count"
         )
+    approved = EXPECTED_EXECUTION_DDL_SHA256
     if (
         type(approved) is not str
         or len(approved) != 64

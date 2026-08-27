@@ -1,7 +1,7 @@
 # Live-readiness: the two-tier quality standard and promotion checklist
 
 Status: Accepted (ratified by Ameen Mujtabaa in session, 2026-08-26, as part of the WO-0168d
-hybrid decision). Codified alongside ADR-023. This document defines WHEN live-grade weight
+hybrid decision). Codified alongside ADR-026. This document defines WHEN live-grade weight
 applies; it grants no execution, mode, or credential authority. Live modes remain disabled by
 configuration (CLAUDE.md invariant 1) regardless of this checklist's state.
 
@@ -18,7 +18,7 @@ reconciliation with `TIMEOUT_QUARANTINE` and never blind-resubmit; layer boundar
 surface list. These hold at full strength in every phase, including paper.
 
 **Tier 2 — paper-grade now, ratcheted later (reversible; bolts on cheaply).** Proof burden on
-ordinary changes (tests + CI + one review round, scaled to blast radius per ADR-023's stop
+ordinary changes (tests + CI + one review round, scaled to blast radius per ADR-026's stop
 rule); operational hardening (monitoring, alerting, failover, latency); exhaustive broker
 edge-case coverage (discovered from paper reality, not enumerated up front); performance and
 capacity work; multi-seat review ceremony outside gated surfaces.

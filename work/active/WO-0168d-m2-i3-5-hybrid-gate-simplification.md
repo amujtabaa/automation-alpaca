@@ -29,6 +29,7 @@ execution_authority: >
 allowed_paths:
   - work/active/WO-0168d-m2-i3-5-hybrid-gate-simplification.md
   - work/completed/keep/WO-0168d-m2-i3-5-hybrid-gate-simplification.md
+  - work/completed/keep/WO-0168c-m2-i3-5-anchored-checkpoint-closure.md
   - work/ledger.jsonl
   - work/review/REV-0106/**
   - work/review/CONSULT-0001-wo0168c-architecture/**
@@ -37,6 +38,8 @@ allowed_paths:
   - tests/execution_core/test_persistence_write_capability.py
   - tests/execution_core/approved_schema_digest.py
   - tests/execution_core/test_sqlite_boundary.py
+  - tests/execution_core/test_fill_position.py
+  - tests/execution_core/test_protection_stateful.py
   - tests/execution_core/test_persistence_schema.py
   - tests/execution_core/test_persistence_repository.py
   - tests/execution_core/test_persistence_directness.py
@@ -45,7 +48,7 @@ allowed_paths:
   - pyproject.toml
   - .github/CODEOWNERS
   - docs/LIVE_READINESS.md
-  - docs/adr/ADR-023-interim-ddl-gate-threat-model.md
+  - docs/adr/ADR-026-interim-ddl-gate-threat-model.md
   - .ai-os/core/00_START_HERE.md
   - .ai-os/core/03_IN_USE_STRUCTURE.md
   - .ai-os/core/15_CROSS_MODEL_REVIEW.md
@@ -97,14 +100,16 @@ composition, credentials, network, broker calls, orders, promotion, merge to mas
    `testpaths = ["tests"]`, no `__init__.py`, no symlinks. Fix their imports of
    `tests/execution_core` support modules (a small `tests_gated/execution_core/conftest.py` that
    extends `sys.path` is acceptable). Every installing fixture keeps calling the gate accessor as
-   its first statement, so even a direct `pytest tests_gated/...` invocation refuses before a
+   its first statement. Every helper or fixture that directly opens a connection calls the gate
+   before any other call, so even a direct `pytest tests_gated/...` invocation refuses before a
    connection object exists.
 3. **Boundary layer (new `tests/execution_core/test_sqlite_boundary.py`, ≤400 SLOC total for
    this item plus item 4).**
    (a) Lexical rule: outside an explicit justified allowlist, no file under `app/execution_core/`,
    `tests/execution_core/`, or `tests_gated/` may contain the tokens `sqlite3`, `app.store`, or
-   `SqliteStateStore`. (b) AST pins: each `tests_gated` installing fixture's first call is the
-   gate accessor; `install_schema`'s first non-docstring action derives the digest and calls
+   `SqliteStateStore`. (b) AST pins: each `tests_gated` helper or fixture that directly opens a
+   connection calls the gate accessor first; `install_schema`'s first non-docstring action derives
+   the digest and calls
    `_require_exact_approved_ddl_digest` (source-text/AST check — do not import `schema`
    just to prove this). (c) Canaries: a synthetic disallowed-token source is flagged; a synthetic
    ungated fixture is flagged; the gate accessor with authorization False raises; a digest one
@@ -126,7 +131,7 @@ composition, credentials, network, broker calls, orders, promotion, merge to mas
 5. **CODEOWNERS.** Create `.github/CODEOWNERS` assigning `@amujtabaa` to:
    `tests/execution_core/approved_schema_digest.py`, `tests/execution_core/test_sqlite_boundary.py`,
    `tests_gated/`, `app/execution_core/persistence/schema.py`, `.github/workflows/`, `.github/CODEOWNERS`.
-6. **ADR-023 and scoped Core 20 governance** (`docs/adr/ADR-023-interim-ddl-gate-threat-model.md`,
+6. **ADR-026 and scoped Core 20 governance** (`docs/adr/ADR-026-interim-ddl-gate-threat-model.md`,
    ≤2 pages, ships in the same
    commit): interim threat model (accidents and non-evasive agent mistakes in scope; deliberate
    evasion and host owner out of scope — such concerns are threat-class proposals routed to
@@ -141,15 +146,25 @@ composition, credentials, network, broker calls, orders, promotion, merge to mas
    (which now excludes `tests_gated/` structurally) with the boundary suite passing, on this
    branch, evidence pasted. The four relocated suites are collected by nothing and run by nothing.
 
+### In-flight inherited-baseline reconciliation
+
+The first restored full-suite run reproduced ten failures against blobs identical to pre-work base
+`d088758`: eight stale stateful replay fixtures still changed `evaluation_time` after the accepted
+`d4bcf5c` contract bound it into occurrence identity, and two July performance caps predated M2's
+accepted complete-node direct witnesses. Reconcile only those two test files: exact replay reuses
+the exact occurrence, while changed delivery context remains a conflict in focused protection
+tests; performance caps retain the non-linear-history kill and record 16/2,048/8,192 plateau
+evidence. No product code or safety semantics change.
+
 ## Review contract (REV-0106) and stop rule
 
 One fresh-context reviewer seat. Scope: the complete diff of this work order. The implementation
-is judged against ADR-023's threat model; the Core 20/routing changes are judged independently
+is judged against ADR-026's threat model; the Core 20/routing changes are judged independently
 under `AGENTS.md` and doc 15, without using Core 20 to limit findings about itself. A P0/P1 may
 block with reproducible evidence of any of: an unmet work-order acceptance criterion; scope or
 authority violation; in-model boundary counterexample; a named control that cannot fail;
 regression introduced by implementation or remediation; or product safety/data-integrity defect.
-Concerns that require deliberate evasion outside ADR-023's threat model are recorded as threat-
+Concerns that require deliberate evasion outside ADR-026's threat model are recorded as threat-
 class proposals for Ameen and do not block this interim gate. Maximum two rounds; round 2 examines
 round-1 remediations and regressions caused by them. A round cap never forces acceptance: any
 unresolved P0/P1 returns as an exact blocker and triggers re-diagnosis or human disposition.
@@ -166,7 +181,8 @@ built. Exceeding a budget is a P1, not a reason to silently raise the budget.
 
 ## Done-when
 
-1. Scope items 1–7 implemented with pasted evidence; old scanner WIP preserved in its prior
+1. Scope items 1–7 plus the bounded inherited-baseline reconciliation implemented with pasted
+   evidence; old scanner WIP preserved in its prior
    worktree and absent from this fresh branch.
 2. REV-0106 dispositioned ACCEPT or ACCEPT-WITH-CHANGES with zero unresolved P0/P1 findings.
 3. Close-out ratchet in the finishing commit: status flip, disposition, ledger line, file move to
@@ -179,7 +195,7 @@ No ADEG/EEP-1 external execution plane, Docker/VHDX/sandbox profiles, JSON recor
 attempt-slot state machines, or signatures — Ameen may promote these later via a new decision.
 The DDL intent review and gate-day unlock are a separate human milestone, not this work order.
 Queued M2/M3 work orders (WO-0168 i4, WO-0169, WO-0170, WO-0171, WO-0172) are unchanged; on any
-conflict with the pre-2026-08-26 review regime, this work order and ADR-023 govern, and each
+conflict with the pre-2026-08-26 review regime, this work order and ADR-026 govern, and each
 queued order is refreshed at activation. Frozen records (R1–R20 contracts, REV packets,
 WO-0168c's amendment chain) are immutable evidence.
 
