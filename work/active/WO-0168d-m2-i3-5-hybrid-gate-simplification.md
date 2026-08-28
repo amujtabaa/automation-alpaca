@@ -1,7 +1,7 @@
 ---
 type: Work Order
 title: M2-I3.5 hybrid gate simplification and suite restoration
-status: ACTIVE
+status: REVIEW
 work_order_id: WO-0168d
 wave: M2-I3.5-R13-C-HYBRID
 model_tier: strong

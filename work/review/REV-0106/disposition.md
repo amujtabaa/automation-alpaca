@@ -71,4 +71,21 @@ The revised candidate must receive one fresh exact-head REV-0106 round-two revie
 P0/P1. The changed-DDL gate remains closed throughout; no held suite, DDL, or database execution is
 authorized by this disposition.
 
+## Round-two candidate
+
+The authorized root remediation is frozen at commit
+`a5c95ca271c99f79ecfd045468072274107f6ead`, tree
+`fdbdbe0934a08e97d542945d28b937bdc67708ea`. `install_schema` now computes the actual digest,
+requires the application-owned still-False human authorization and expected identity, checks the
+caller digest, and only then may inspect its supplied connection. The fixture accessor imports the
+same two application-owned facts. Its public signature and `__all__` remain unchanged.
+
+Static extraction proves the `SCHEMA_DDL` remains 178,755 UTF-8 bytes with SHA-256
+`2636c72793515a46c893d93084750b45ea2f151c58055480d5c601eb8c0faac5`; the new schema blob is
+`ef332a0b97d28e0535ac53ea0e4d4e091991abad`, changed only because the gate now lives at the
+sensitive boundary. Focused no-I/O tests pass 18; all ordinary `tests/execution_core` reached 100%
+with exit 0; Ruff, mypy (95 app files), six import contracts, and governance/scope checks pass.
+Broader repository and conformance suites remain NOT_RUN because they create databases forbidden by
+the bounded authority. `request-r2.md` binds the one fresh final review round to this exact head.
+
 [DONE] STATUS: VERIFIED
