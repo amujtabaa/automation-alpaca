@@ -1,6 +1,6 @@
 # ADR-026 — Interim changed-DDL gate threat model and review convergence
 
-Status: **ACCEPTED DIRECTION — exact implementation subject to REV-0106**
+Status: **ACCEPTED DIRECTION — exact implementation subject to REV-0107**
 
 Decision owner: Ameen Mujtabaa
 
@@ -40,8 +40,10 @@ decision may move enforcement to an external process or OS boundary.
 
 1. The four SQLite-bearing suites live under `tests_gated/execution_core/`,
    outside ordinary pytest `testpaths`.
-2. Every direct connection-opening fixture or helper calls the pre-open
-   `require_approved_ddl_execution()` guard before any other call.
+2. One central pre-open helper has exactly two executable statements: call
+   `require_approved_ddl_execution()`, then call `sqlite3.connect`. Every held
+   suite routes connection opening through it; no held suite has another
+   ordinary direct `.connect` or `Connection()` capability.
 3. The application-side installer owns `EXPECTED_EXECUTION_DDL_SHA256` and
    `DDL_EXECUTION_AUTHORIZED_BY_AMEEN`. Expected identity grants no authority;
    the flag remains `False` until Ameen's separately bounded gate-day act.
@@ -49,8 +51,11 @@ decision may move enforcement to an external process or OS boundary.
    authorization and expected identity, then checks the caller digest, all before
    it inspects or changes the supplied connection. The fixture guard reads the
    same facts; it is an earlier convenience refusal, not the load-bearing boundary.
-5. A finite lexical allowlist and bounded AST pins detect ordinary boundary
-   drift. Failure canaries prove each detector can fail.
+5. A finite lexical allowlist identifies justified mentions. Bounded AST pins
+   separately prohibit ordinary direct connection capability in production and
+   held-suite files, and pin the central helper and installer ordering exactly.
+   Conditional-gate, alias, and count-preserving-drift canaries prove the
+   structural controls can fail.
 6. CODEOWNERS marks the gate, gated suites, schema, workflows, and ownership
    policy for Ameen's review. Repository settings determine whether GitHub can
    enforce this marker.
@@ -62,7 +67,7 @@ No control claims that arbitrary Python cannot evade an in-process guard.
 The DDL candidate is frozen and independently reviewed while the authorization
 flag is `False`. A valid source-recorded unlock must:
 
-1. have the exact REV-0106-accepted candidate as its parent;
+1. have the exact REV-0107-accepted candidate as its parent;
 2. change only the installer-owned authorization flag from `False` to `True`;
 3. record Ameen's approved commands and bounded attempt count;
 4. record the resulting commit and tree before execution; and
@@ -75,10 +80,12 @@ execution.
 
 ### 4. Review contract
 
-REV-0106 uses one fresh independent seat and permits failure-capable runtime,
-source/contract, mutation, scope, regression, safety, and data-integrity
-evidence. Deliberate-evasion concerns outside section 1 are proposals, not
-automatic blockers.
+REV-0106 exhausted two rounds after confirming the application-side installer
+correction but finding two bypasses in the static controls. REV-0107 reviews the
+re-diagnosed central-opener design at an exact fresh head and permits
+failure-capable no-I/O runtime, source/contract, mutation, scope, regression, safety,
+and data-integrity evidence. Deliberate-evasion concerns outside section 1 are
+proposals, not automatic blockers.
 
 There are at most two review rounds. Round two covers remediations and
 regressions they introduce. The cap never forces acceptance: unresolved P0/P1
@@ -100,8 +107,9 @@ solution-class decision. It may not silently regrow the retired scanner.
 
 ## Consequences
 
-- Ordinary repository verification resumes while held SQLite suites remain
-  structurally excluded and fail closed when directly invoked.
+- Ordinary pure verification resumes while held SQLite suites remain
+  structurally excluded and fail closed when directly invoked. Broader checks
+  that create databases remain deferred under the narrower F1 authority.
 - The gate is legible and bounded; it protects against the declared accidental
   threat, not a hostile interpreter or host owner.
 - The four held suites remain NOT_RUN until Ameen completes the separate DDL

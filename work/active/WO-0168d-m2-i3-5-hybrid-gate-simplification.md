@@ -7,11 +7,11 @@ wave: M2-I3.5-R13-C-HYBRID
 model_tier: strong
 risk: critical
 disposition: []
-owner: Codex implementation seat; one fresh-context reviewer (REV-0106)
+owner: Codex implementation seat; one fresh-context reviewer (REV-0107)
 created: 2026-08-26
 predecessor: WO-0168c superseded 2026-08-26 after REV-0105 BLOCK and ratified root simplification
 branch: codex/m2-wo0168d-hybrid-r1
-implementation_review_id: REV-0106
+implementation_review_id: REV-0107
 execution_authority: >
   Ameen Mujtabaa, 2026-08-26, in session, verbatim: "Ratified: hybrid points 1-10; scanner
   deletion approved; prohibition re-scoped per point 5. If there are any additional adjustments
@@ -39,6 +39,8 @@ allowed_paths:
   - work/completed/keep/WO-0168c-m2-i3-5-anchored-checkpoint-closure.md
   - work/ledger.jsonl
   - work/review/REV-0106/**
+  - work/review/REV-0107/**
+  - work/review/FINDING-schema-approval-gate-is-self-approving.md
   - work/review/CONSULT-0001-wo0168c-architecture/**
   - work/queue/M2-EXECUTION-2026-08-21/35-WO-0168C-HUMAN-GATE-DDL.md
   - work/queue/M2-EXECUTION-2026-08-21/37-WO-0168D-HYBRID-KICKOFF.md
@@ -74,10 +76,10 @@ REV-0079…REV-0105 (27 packets, ~2 days) tried to prove, by static analysis, th
 files could reach SQLite by any route. That claim is unbounded (arbitrary-Python semantics) and
 review correctly kept refuting it — P0 counts rose 6→5→7 while pytest itself became NOT_RUN. Two
 independent blinded consultations agreed on the root cause and on replacement. The load-bearing
-protection was always the tiny runtime pair: a fail-closed pre-open fixture gate and an installer
-that refuses before connection access. REV-0106 proved the installer checked only digest identity,
-not authorization; Ameen authorized moving that same flag to the sensitive application boundary.
-This order keeps the bounded pair, deletes the scanner, restores pytest, and makes review terminate.
+protection was always a fail-closed opener and an installer that refuses before connection access.
+REV-0106 proved the installer needed an independent authorization check, then exposed two bypasses
+in the supporting static controls. The root correction centralizes all held-suite opening in one
+exact gate-and-connect helper and prohibits direct connection capability elsewhere.
 
 ## Ratified prohibition re-scope (point 5) — the interim rule from now on
 
@@ -87,6 +89,8 @@ ruff/mypy/lint-imports/conformance oracle, and source inspection. STILL FORBIDDE
 gate-day unlock: executing any `tests_gated/` suite, installing/executing changed DDL, creating
 any database file or in-memory database in the execution_core lane, migrations, runtime
 composition, credentials, network, broker calls, orders, promotion, merge to master.
+The narrower 2026-08-27 F1 authority controls this remediation: any otherwise permitted check that
+creates a database remains NOT_RUN until separately authorized.
 
 ## Scope of work (all items in this branch; close-out ships with the finishing commit)
 
@@ -104,20 +108,19 @@ composition, credentials, network, broker calls, orders, promotion, merge to mas
    `test_persistence_runtime_checkpoint_sqlite.py`) to `tests_gated/execution_core/` — outside
    `testpaths = ["tests"]`, no `__init__.py`, no symlinks. Fix their imports of
    `tests/execution_core` support modules (a small `tests_gated/execution_core/conftest.py` that
-   extends `sys.path` is acceptable). Every installing fixture keeps calling the gate accessor as
-   its first statement. Every helper or fixture that directly opens a connection calls the gate
-   before any other call, so even a direct `pytest tests_gated/...` invocation refuses before a
-   connection object exists.
+   extends `sys.path` is acceptable). One central helper has the exact body: call the gate, then
+   call `sqlite3.connect`. Every held-suite opener routes through it, so even a direct
+   `pytest tests_gated/...` invocation refuses before a connection object exists.
 3. **Boundary layer (new `tests/execution_core/test_sqlite_boundary.py`, ≤400 SLOC total for
    this item plus item 4).**
    (a) Lexical rule: outside an explicit justified allowlist, no file under `app/execution_core/`,
-   `tests/execution_core/`, or `tests_gated/` may contain the tokens `sqlite3`, `app.store`, or
-   `SqliteStateStore`. (b) AST pins: each `tests_gated` helper or fixture that directly opens a
-   connection calls the gate accessor first; `install_schema` derives the digest, checks the
-   application-owned human flag/expected identity, then checks the caller digest before connection
-   access (source/AST proof only). (c) Canaries: disallowed tokens, ordinary aliases, added allowed-
-   path occurrences, ungated fixtures, a closed application gate given the known digest, and a
-   one-character digest mismatch all fail using no-I/O stand-ins.
+   `tests/execution_core/`, or `tests_gated/` may contain `sqlite3`, `app.store`, or
+   `SqliteStateStore`. (b) AST pins: the central opener has exactly gate-then-connect; held suites
+   and production persistence modules have no other ordinary direct `.connect` or `Connection()`
+   capability; and
+   `install_schema` enforces the application flag before connection access. (c) Canaries cover
+   conditional gating, import aliases, count-preserving lexical drift, the closed application
+   gate with the known digest, and a one-character digest mismatch using no-I/O stand-ins.
 4. **Gate lifecycle (ADEG §7.5 adaptation) at the installer boundary.** Rename
    `APPROVED_EXECUTION_DDL_SHA256` → `EXPECTED_EXECUTION_DDL_SHA256` and set it now to
    `2636c72793515a46c893d93084750b45ea2f151c58055480d5c601eb8c0faac5` (the identity assertion —
@@ -125,7 +128,7 @@ composition, credentials, network, broker calls, orders, promotion, merge to mas
    `DDL_EXECUTION_AUTHORIZED_BY_AMEEN: Final[bool] = False`; `install_schema` enforces both before
    connection access. The pre-open test accessor reads the same facts and refuses while False.
    ONLY Ameen may authorize flipping the flag. The unlock commit must have the exact
-   REV-0106-accepted head as its parent; its only source diff is the authorization flag changing
+   REV-0107-accepted head as its parent; its only source diff is the authorization flag changing
    `False` to `True`; and its message names the approved commands and attempt count. Before any
    execution, record the resulting unlock commit/tree and verify a clean worktree, local equals
    origin, and unchanged DDL digest, byte count, schema blob, and SQL-manifest identity. Agents
@@ -142,12 +145,13 @@ composition, credentials, network, broker calls, orders, promotion, merge to mas
    model now, paper-grade proof burden elsewhere, promotion via docs/LIVE_READINESS.md), and the
    meta-code tripwire. Narrow Core 20 and its routing text so it governs proportionate assurance
    design without suppressing evidence-backed contract, scope, regression, safety, or data-
-   integrity findings. REV-0106 includes a separate governance lens for these `.ai-os` changes;
+   integrity findings. REV-0107 includes a separate governance lens for these `.ai-os` changes;
    Core 20 does not constrain findings about its own text. The ADR and project policy clear
    through the same packet, avoiding a second review bureaucracy.
-7. **Verification.** Green: ruff, mypy, lint-imports, conformance oracle, and repo-wide pytest
-   (which now excludes `tests_gated/` structurally) with the boundary suite passing, on this
-   branch, evidence pasted. The four relocated suites are collected by nothing and run by nothing.
+7. **Verification.** Green under the narrower F1 authority: no-I/O boundary tests, all ordinary
+   `tests/execution_core`, ruff, mypy, lint-imports, and governance/scope checks. Repo-wide pytest
+   and conformance remain NOT_RUN because they create databases forbidden by that authority. The
+   four relocated suites are collected by nothing and run by nothing.
 
 ### In-flight inherited-baseline reconciliation
 
@@ -159,9 +163,11 @@ the exact occurrence, while changed delivery context remains a conflict in focus
 tests; performance caps retain the non-linear-history kill and record 16/2,048/8,192 plateau
 evidence. No product code or safety semantics change.
 
-## Review contract (REV-0106) and stop rule
+## Review contract (REV-0107) and stop rule
 
-One fresh-context reviewer seat. Scope: the complete diff of this work order. The implementation
+REV-0106 exhausted its two rounds with P0=0/P1=2 after proving the installer correction; its
+results remain immutable. REV-0107 is one fresh-context reviewer seat over the complete exact-head
+diff and the re-diagnosed central-opener design. The implementation
 is judged against ADR-026's threat model; the Core 20/routing changes are judged independently
 under `AGENTS.md` and doc 15, without using Core 20 to limit findings about itself. A P0/P1 may
 block with reproducible evidence of any of: an unmet work-order acceptance criterion; scope or
@@ -187,7 +193,7 @@ built. Exceeding a budget is a P1, not a reason to silently raise the budget.
 1. Scope items 1–7 plus the bounded inherited-baseline reconciliation implemented with pasted
    evidence; old scanner WIP preserved in its prior
    worktree and absent from this fresh branch.
-2. REV-0106 dispositioned ACCEPT or ACCEPT-WITH-CHANGES with zero unresolved P0/P1 findings.
+2. REV-0107 dispositioned ACCEPT or ACCEPT-WITH-CHANGES with zero unresolved P0/P1 findings.
 3. Close-out ratchet in the finishing commit: status flip, disposition, ledger line, file move to
    `work/completed/keep/`, and gate-doc pointer refresh (35-WO-0168C-HUMAN-GATE-DDL.md).
 4. Branch pushed; CI status reported honestly (known-red steps, if any, named with cause).
@@ -206,7 +212,7 @@ WO-0168c's amendment chain) are immutable evidence.
 
 1. GitHub: enable branch protection on `master` requiring CI (needs GitHub Pro for a private
    repo) and CODEOWNERS review enforcement.
-2. Schedule the DDL intent review (catalog/constraint level; the machinery binds exact bytes) —
+2. After REV-0107 acceptance, schedule the DDL intent review (catalog/constraint level) —
    gate-day unlock happens only after it, via your one-line flag commit.
 3. Optional: dispose stale `work/active/REMEDIATION-STATE.md` and `SIGNAL-R4-STATE.md` session
    files (both describe completed/dormant sessions).

@@ -16,7 +16,10 @@ from app.execution_core.fills import PositionScope
 from app.execution_core.position import ExecutionSnapshot
 from app.execution_core.persistence import checkpoint_codec, records, repository
 from app.execution_core.persistence.schema import install_schema
-from approved_schema_digest import require_approved_ddl_execution
+from approved_schema_digest import (
+    open_approved_sqlite_connection,
+    require_approved_ddl_execution,
+)
 import persistence_setup_support as setup_support
 import test_persistence_repository as base
 
@@ -130,8 +133,7 @@ def _explain_details(
 
 
 def _open_fresh(path: Path) -> sqlite3.Connection:
-    require_approved_ddl_execution()
-    connection = sqlite3.connect(path)
+    connection = open_approved_sqlite_connection(path)
     connection.execute("PRAGMA foreign_keys = ON")
     connection.execute("PRAGMA recursive_triggers = ON")
     return connection

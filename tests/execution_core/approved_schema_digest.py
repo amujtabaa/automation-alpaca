@@ -11,6 +11,9 @@ and the governing DDL gate. Agents never infer approval from a matching digest.
 
 from __future__ import annotations
 
+import sqlite3
+from os import PathLike
+
 from app.execution_core.persistence.schema import (
     DDL_EXECUTION_AUTHORIZED_BY_AMEEN,
     EXPECTED_EXECUTION_DDL_SHA256,
@@ -33,3 +36,12 @@ def require_approved_ddl_execution() -> str:
     ):
         raise RuntimeError("HUMAN-GATE invalid: approval token must be SHA-256 text")
     return approved
+
+
+def open_approved_sqlite_connection(
+    database: str | bytes | PathLike[str] | PathLike[bytes],
+) -> sqlite3.Connection:
+    """Open only after the single application-owned human gate allows it."""
+
+    require_approved_ddl_execution()
+    return sqlite3.connect(database)

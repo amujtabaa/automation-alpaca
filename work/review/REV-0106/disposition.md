@@ -2,7 +2,8 @@
 type: Review Disposition
 rev_id: REV-0106
 work_order_id: WO-0168d
-status: OPEN
+status: RESOLVED
+verdict_received: BLOCK
 date: 2026-08-27
 recorded_by: Codex implementation seat
 ---
@@ -87,5 +88,21 @@ sensitive boundary. Focused no-I/O tests pass 18; all ordinary `tests/execution_
 with exit 0; Ruff, mypy (95 app files), six import contracts, and governance/scope checks pass.
 Broader repository and conformance suites remain NOT_RUN because they create databases forbidden by
 the bounded authority. `request-r2.md` binds the one fresh final review round to this exact head.
+
+## Round-two result and re-diagnosis
+
+The independent round-two result is preserved unchanged at SHA-256
+`57bd3a254c7dbd234f92a5169daab560d1bc1bc952c20cd1f47e1fdc126691bd`. It returned
+BLOCK with P0=0/P1=2/P2=0. It confirmed the application installer now refuses the known digest
+before connection access, and confirmed the ordinary import-alias correction. Its two P1s are
+valid: a conditional gate could bypass the flattened call-order detector, and aggregate token
+counts admitted count-preserving production drift.
+
+REV-0106 has exhausted its two permitted rounds and is resolved as a blocking historical packet;
+acceptance is not inferred. The root re-diagnosis removes both brittle mechanisms: one exact
+gate-then-connect helper becomes the only held-suite opener, while AST controls prohibit ordinary
+direct connection capability elsewhere. The resulting exact candidate routes to fresh packet
+REV-0107. The changed-DDL gate remains closed and no held suite, DDL, database, or migration was
+executed.
 
 [DONE] STATUS: VERIFIED

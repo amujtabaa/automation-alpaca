@@ -12,7 +12,10 @@ import sqlite3
 import pytest
 
 import app.execution_core.persistence.schema as schema_module
-from approved_schema_digest import require_approved_ddl_execution
+from approved_schema_digest import (
+    open_approved_sqlite_connection,
+    require_approved_ddl_execution,
+)
 from app.execution_core.persistence.schema import (
     SCHEMA_VERSION,
     SchemaDigestMismatchError,
@@ -58,8 +61,9 @@ _DEFAULT_MARKET_SOURCE_PROFILE_ID = "ef" * 32
 def _connection(tmp_path: object) -> sqlite3.Connection:
     """Gate first: while locked, no connection object or file is ever made."""
 
-    require_approved_ddl_execution()
-    connection = sqlite3.connect(tmp_path / "m2-i2-gate.db")  # type: ignore[arg-type]
+    connection = open_approved_sqlite_connection(
+        tmp_path / "m2-i2-gate.db"  # type: ignore[operator]
+    )
     connection.execute("PRAGMA foreign_keys = ON")
     connection.execute("PRAGMA recursive_triggers = ON")
     _OPEN_CONNECTIONS.append(connection)
@@ -1116,8 +1120,7 @@ def test_disabled_foreign_keys_are_refused(tmp_path: object) -> None:
 
 
 def test_disabled_recursive_triggers_are_refused_before_ddl(tmp_path: object) -> None:
-    require_approved_ddl_execution()
-    connection = sqlite3.connect(tmp_path / "recursive-disabled.db")
+    connection = open_approved_sqlite_connection(tmp_path / "recursive-disabled.db")
     connection.execute("PRAGMA foreign_keys = ON")
     connection.execute("PRAGMA recursive_triggers = OFF")
     _OPEN_CONNECTIONS.append(connection)
@@ -1494,8 +1497,7 @@ def test_closure_chain_rejects_gap_branch_and_cross_owner(
     """Gap, branch, and cross-owner mutants fail on isolated fresh chains."""
 
     def _fresh(name: str) -> tuple[sqlite3.Connection, int]:
-        require_approved_ddl_execution()
-        connection = sqlite3.connect(tmp_path / name)
+        connection = open_approved_sqlite_connection(tmp_path / name)
         connection.execute("PRAGMA foreign_keys = ON")
         connection.execute("PRAGMA recursive_triggers = ON")
         _OPEN_CONNECTIONS.append(connection)
@@ -2993,7 +2995,9 @@ def test_reopened_default_connection_cannot_replace_direct_authority(
     connection.close()
     _OPEN_CONNECTIONS.remove(connection)
 
-    reopened = sqlite3.connect(tmp_path / "m2-i2-gate.db")  # type: ignore[operator]
+    reopened = open_approved_sqlite_connection(
+        tmp_path / "m2-i2-gate.db"  # type: ignore[operator]
+    )
     _OPEN_CONNECTIONS.append(reopened)
     assert reopened.execute("PRAGMA foreign_keys").fetchone() == (0,)
     assert reopened.execute("PRAGMA recursive_triggers").fetchone() == (0,)
@@ -3059,7 +3063,9 @@ def test_reopened_default_connection_cannot_replace_invalidation_evidence(
     connection.close()
     _OPEN_CONNECTIONS.remove(connection)
 
-    reopened = sqlite3.connect(tmp_path / "m2-i2-gate.db")  # type: ignore[operator]
+    reopened = open_approved_sqlite_connection(
+        tmp_path / "m2-i2-gate.db"  # type: ignore[operator]
+    )
     _OPEN_CONNECTIONS.append(reopened)
     assert reopened.execute("PRAGMA foreign_keys").fetchone() == (0,)
     assert reopened.execute("PRAGMA recursive_triggers").fetchone() == (0,)

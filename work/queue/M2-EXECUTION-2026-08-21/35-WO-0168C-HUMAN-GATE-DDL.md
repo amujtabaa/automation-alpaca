@@ -470,3 +470,26 @@ then receive fresh exact-head REV-0106 round-two review with zero open P0/P1.
 After acceptance, the separate DDL intent and unlock gate still applies. Its future one-line source
 change is the installer-owned `DDL_EXECUTION_AUTHORIZED_BY_AMEEN: Final[bool] = False` to `True` from
 the exact accepted parent; this amendment does not perform or authorize that unlock.
+
+---
+
+# Amendment 10 — REV-0106 cap exhausted; central-opener re-diagnosis
+
+Date: 2026-08-27 · Recorded by: Codex implementation seat
+
+REV-0106 round two preserved the application-side installer fix but returned BLOCK with
+P0=0/P1=2/P2=0. A conditional gate could bypass its flattened per-function call-order detector,
+and aggregate token counts admitted a count-preserving production connection mutation. The packet
+has exhausted its two rounds and cannot qualify as the accepted unlock parent.
+
+The root re-diagnosis removes those mechanisms. One central helper has an exact two-statement body:
+human gate, then `sqlite3.connect`. All held-suite openers route through it, while bounded AST
+controls prohibit ordinary direct `.connect` and `Connection()` capability in held suites and
+production persistence modules. Conditional-gate, alias, and count-preserving-drift canaries fail
+without SQLite access.
+Fresh exact-head packet REV-0107 reviews this successor design.
+
+The DDL remains 178,755 UTF-8 bytes with SHA-256
+`2636c72793515a46c893d93084750b45ea2f151c58055480d5c601eb8c0faac5`. No held suite, DDL,
+database, or migration executed. REV-0107 must return zero open P0/P1 before the separate DDL intent
+and human unlock gate can proceed; this amendment grants no execution authority.

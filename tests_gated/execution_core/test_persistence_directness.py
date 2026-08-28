@@ -19,7 +19,10 @@ from app.execution_core.persistence.schema import (
     SchemaInstallError,
     install_schema,
 )
-from approved_schema_digest import require_approved_ddl_execution
+from approved_schema_digest import (
+    open_approved_sqlite_connection,
+    require_approved_ddl_execution,
+)
 import persistence_setup_support as setup_support
 import test_persistence_input_receipt as receipts
 import test_persistence_repository as fixtures
@@ -27,8 +30,7 @@ import test_persistence_repository as fixtures
 
 @pytest.fixture()
 def connection(tmp_path: Path):
-    require_approved_ddl_execution()
-    connection = sqlite3.connect(tmp_path / "wo167-directness.db")
+    connection = open_approved_sqlite_connection(tmp_path / "wo167-directness.db")
     connection.execute("PRAGMA foreign_keys = ON")
     connection.execute("PRAGMA recursive_triggers = ON")
     install_schema(connection, approved_ddl_sha256=require_approved_ddl_execution())
