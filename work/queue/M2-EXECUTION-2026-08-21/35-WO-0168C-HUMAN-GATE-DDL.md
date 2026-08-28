@@ -514,3 +514,25 @@ The DDL remains 178,755 UTF-8 bytes with SHA-256
 `2636c72793515a46c893d93084750b45ea2f151c58055480d5c601eb8c0faac5`, and the human flag remains
 False. No held suite, DDL, database, migration, or later work executed. The separate DDL intent and
 human unlock gate remains closed.
+
+---
+
+# Amendment 12 — REV-0107 cap exhausted; wildcard import closure
+
+Date: 2026-08-27 · Recorded by: Codex implementation seat
+
+REV-0107 round two returned BLOCK with P0=0/P1=1/P2=0 after confirming its round-one corrections.
+The remaining ordinary spelling was a wildcard import from `sqlite3` or `sqlite3.dbapi2`, which
+supplies `Connection` and `connect` without either literal appearing as an imported AST alias.
+REV-0107 has exhausted its two rounds and cannot be an unlock parent.
+
+The finite correction classifies `*` alongside explicit `connect` and `Connection` imports for the
+already-bounded `sqlite3`/`sqlite3.*` family in both structural checks. Wildcard, submodule,
+executable-alias, direct-constructor, conditional-gate, and extra-helper canaries fail without I/O.
+No dataflow, reflection, arbitrary-Python analyzer, or broader assurance claim is added. The exact
+successor routes to fresh packet REV-0108.
+
+The DDL remains 178,755 UTF-8 bytes with SHA-256
+`2636c72793515a46c893d93084750b45ea2f151c58055480d5c601eb8c0faac5`, and the human flag remains
+False. No held suite, DDL, database, migration, or later work executed. REV-0108 must return zero
+open P0/P1 before the separate DDL intent and human unlock gate can proceed.

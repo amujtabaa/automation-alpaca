@@ -7,11 +7,11 @@ wave: M2-I3.5-R13-C-HYBRID
 model_tier: strong
 risk: critical
 disposition: []
-owner: Codex implementation seat; one fresh-context reviewer (REV-0107)
+owner: Codex implementation seat; one fresh-context reviewer (REV-0108)
 created: 2026-08-26
 predecessor: WO-0168c superseded 2026-08-26 after REV-0105 BLOCK and ratified root simplification
 branch: codex/m2-wo0168d-hybrid-r1
-implementation_review_id: REV-0107
+implementation_review_id: REV-0108
 execution_authority: >
   Ameen Mujtabaa, 2026-08-26, in session, verbatim: "Ratified: hybrid points 1-10; scanner
   deletion approved; prohibition re-scoped per point 5. If there are any additional adjustments
@@ -40,6 +40,7 @@ allowed_paths:
   - work/ledger.jsonl
   - work/review/REV-0106/**
   - work/review/REV-0107/**
+  - work/review/REV-0108/**
   - work/review/FINDING-schema-approval-gate-is-self-approving.md
   - work/review/CONSULT-0001-wo0168c-architecture/**
   - work/queue/M2-EXECUTION-2026-08-21/35-WO-0168C-HUMAN-GATE-DDL.md
@@ -128,7 +129,7 @@ creates a database remains NOT_RUN until separately authorized.
    `DDL_EXECUTION_AUTHORIZED_BY_AMEEN: Final[bool] = False`; `install_schema` enforces both before
    connection access. The pre-open test accessor reads the same facts and refuses while False.
    ONLY Ameen may authorize flipping the flag. The unlock commit must have the exact
-   REV-0107-accepted head as its parent; its only source diff is the authorization flag changing
+   REV-0108-accepted head as its parent; its only source diff is the authorization flag changing
    `False` to `True`; and its message names the approved commands and attempt count. Before any
    execution, record the resulting unlock commit/tree and verify a clean worktree, local equals
    origin, and unchanged DDL digest, byte count, schema blob, and SQL-manifest identity. Agents
@@ -145,7 +146,7 @@ creates a database remains NOT_RUN until separately authorized.
    model now, paper-grade proof burden elsewhere, promotion via docs/LIVE_READINESS.md), and the
    meta-code tripwire. Narrow Core 20 and its routing text so it governs proportionate assurance
    design without suppressing evidence-backed contract, scope, regression, safety, or data-
-   integrity findings. REV-0107 includes a separate governance lens for these `.ai-os` changes;
+   integrity findings. REV-0108 includes a separate governance lens for these `.ai-os` changes;
    Core 20 does not constrain findings about its own text. The ADR and project policy clear
    through the same packet, avoiding a second review bureaucracy.
 7. **Verification.** Green under the narrower F1 authority: no-I/O boundary tests, all ordinary
@@ -163,11 +164,11 @@ the exact occurrence, while changed delivery context remains a conflict in focus
 tests; performance caps retain the non-linear-history kill and record 16/2,048/8,192 plateau
 evidence. No product code or safety semantics change.
 
-## Review contract (REV-0107) and stop rule
+## Review contract (REV-0108) and stop rule
 
-REV-0106 exhausted its two rounds with P0=0/P1=2 after proving the installer correction; its
-results remain immutable. REV-0107 is one fresh-context reviewer seat over the complete exact-head
-diff and the re-diagnosed central-opener design. The implementation
+REV-0106 and REV-0107 exhausted their two-round caps while successively proving the installer,
+central-opener, and executable-alias corrections; their results remain immutable. REV-0108 is one
+fresh-context seat over the complete exact-head successor. The implementation
 is judged against ADR-026's threat model; the Core 20/routing changes are judged independently
 under `AGENTS.md` and doc 15, without using Core 20 to limit findings about itself. A P0/P1 may
 block with reproducible evidence of any of: an unmet work-order acceptance criterion; scope or
@@ -193,7 +194,7 @@ built. Exceeding a budget is a P1, not a reason to silently raise the budget.
 1. Scope items 1–7 plus the bounded inherited-baseline reconciliation implemented with pasted
    evidence; old scanner WIP preserved in its prior
    worktree and absent from this fresh branch.
-2. REV-0107 dispositioned ACCEPT or ACCEPT-WITH-CHANGES with zero unresolved P0/P1 findings.
+2. REV-0108 dispositioned ACCEPT or ACCEPT-WITH-CHANGES with zero unresolved P0/P1 findings.
 3. Close-out ratchet in the finishing commit: status flip, disposition, ledger line, file move to
    `work/completed/keep/`, and gate-doc pointer refresh (35-WO-0168C-HUMAN-GATE-DDL.md).
 4. Branch pushed; CI status reported honestly (known-red steps, if any, named with cause).
@@ -212,7 +213,7 @@ WO-0168c's amendment chain) are immutable evidence.
 
 1. GitHub: enable branch protection on `master` requiring CI (needs GitHub Pro for a private
    repo) and CODEOWNERS review enforcement.
-2. After REV-0107 acceptance, schedule the DDL intent review (catalog/constraint level) —
+2. After REV-0108 acceptance, schedule the DDL intent review (catalog/constraint level) —
    gate-day unlock happens only after it, via your one-line flag commit.
 3. Optional: dispose stale `work/active/REMEDIATION-STATE.md` and `SIGNAL-R4-STATE.md` session
    files (both describe completed/dormant sessions).

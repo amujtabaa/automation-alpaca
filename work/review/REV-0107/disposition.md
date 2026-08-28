@@ -2,7 +2,7 @@
 type: Review Disposition
 rev_id: REV-0107
 work_order_id: WO-0168d
-status: REMEDIATED_AWAITING_ROUND_TWO
+status: RESOLVED
 verdict_received: BLOCK
 date: 2026-08-27
 recorded_by: Codex implementation seat
@@ -41,3 +41,16 @@ installer correction remains unchanged and the human authorization flag remains 
 The exact remediation identity and full static/no-I/O evidence belong in `request-r2.md` after the
 candidate is committed. Round two must independently reproduce the round-one mutant and return
 zero open P0/P1. No held suite, database, DDL, migration, unlock, or later work is authorized.
+
+## Round-two result and successor route
+
+The reviewer-owned `result-r2.md` is preserved unchanged at SHA-256
+`714a88cb269a0cba10c72458c9b233f6e8e73b952253bf45564b4634785e782d`. It returned BLOCK with
+P0=0/P1=1/P2=0. It confirmed all round-one alias/submodule forms were rejected and found one valid
+remaining spelling: `from sqlite3 import *` or `from sqlite3.dbapi2 import *` supplies the public
+constructor while the import check examined only explicitly named imports.
+
+REV-0107 has exhausted two rounds and remains a blocking historical packet. The finite root fix is
+to classify wildcard imports as dangerous for the already-bounded `sqlite3`/`sqlite3.*` family in
+both structural checks, with real-source canaries. No name dataflow, reflection, or general Python
+model is added. The exact successor routes to fresh packet REV-0108; the DDL gate remains closed.

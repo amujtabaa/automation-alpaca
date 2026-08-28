@@ -105,7 +105,7 @@ def _direct_connection_capability_violations(
                 violations.append(f"{label}:sqlite3-import:{node.lineno}")
         elif isinstance(node, ast.ImportFrom):
             if _is_sqlite_module(node.module) and any(
-                alias.name in {"connect", "Connection"} for alias in node.names
+                alias.name in {"*", "connect", "Connection"} for alias in node.names
             ):
                 violations.append(f"{label}:connection-import:{node.lineno}")
         elif isinstance(node, ast.Attribute) and node.attr == "connect":
@@ -159,7 +159,7 @@ def _approved_connection_helper_is_exact(source: str) -> bool:
         for node in ast.walk(tree)
         if isinstance(node, ast.ImportFrom) and _is_sqlite_module(node.module)
         for alias in node.names
-        if alias.name in {"connect", "Connection"}
+        if alias.name in {"*", "connect", "Connection"}
     ]
     executable_connection_attributes = [
         node
@@ -281,15 +281,11 @@ def test_sqlite_tokens_exist_only_at_justified_boundaries() -> None:
     ("mutant", "expected"),
     [
         (
-            "import sqlite3 as db\n\n"
-            "def connection(path):\n"
-            "    return db.connect(path)\n",
-            ("mutant.py:connect-attribute:4",),
+            "import sqlite3 as db\ndef connection(path): return db.connect(path)\n",
+            ("mutant.py:connect-attribute:2",),
         ),
         (
-            "from sqlite3 import connect\n\n"
-            "def connection(path):\n"
-            "    return connect(path)\n",
+            "from sqlite3 import connect\ndef connection(path): return connect(path)\n",
             ("mutant.py:connection-import:1",),
         ),
         (
@@ -300,7 +296,7 @@ def test_sqlite_tokens_exist_only_at_justified_boundaries() -> None:
             ("mutant.py:Connection:3", "mutant.py:Connection:5"),
         ),
         (
-            "from sqlite3.dbapi2 import Connection\n"
+            "from sqlite3.dbapi2 import *\n"
             "def connection(path):\n    return Connection(path)\n",
             ("mutant.py:connection-import:1",),
         ),
@@ -364,6 +360,9 @@ def test_central_connection_helper_is_exact_and_conditional_canary_fails() -> No
     assert not _approved_connection_helper_is_exact(
         source + "\nConnection = sqlite3.Connection\n"
         "def bypass_connection(database):\n    return Connection(database)\n"
+    )
+    assert not _approved_connection_helper_is_exact(
+        source + "\nfrom sqlite3 import *\n"
     )
 
 

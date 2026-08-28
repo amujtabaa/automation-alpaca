@@ -1,6 +1,6 @@
 # ADR-026 — Interim changed-DDL gate threat model and review convergence
 
-Status: **ACCEPTED DIRECTION — exact implementation subject to REV-0107**
+Status: **ACCEPTED DIRECTION — exact implementation subject to REV-0108**
 
 Decision owner: Ameen Mujtabaa
 
@@ -67,7 +67,7 @@ No control claims that arbitrary Python cannot evade an in-process guard.
 The DDL candidate is frozen and independently reviewed while the authorization
 flag is `False`. A valid source-recorded unlock must:
 
-1. have the exact REV-0107-accepted candidate as its parent;
+1. have the exact REV-0108-accepted candidate as its parent;
 2. change only the installer-owned authorization flag from `False` to `True`;
 3. record Ameen's approved commands and bounded attempt count;
 4. record the resulting commit and tree before execution; and
@@ -80,9 +80,9 @@ execution.
 
 ### 4. Review contract
 
-REV-0106 exhausted two rounds after confirming the application-side installer
-correction but finding two bypasses in the static controls. REV-0107 reviews the
-re-diagnosed central-opener design at an exact fresh head and permits
+REV-0106 and REV-0107 exhausted two rounds each while confirming the installer,
+central-opener, and executable-alias corrections and exposing finite static-control
+gaps. REV-0108 reviews the exact successor and permits
 failure-capable no-I/O runtime, source/contract, mutation, scope, regression, safety,
 and data-integrity evidence. Deliberate-evasion concerns outside section 1 are
 proposals, not automatic blockers.
