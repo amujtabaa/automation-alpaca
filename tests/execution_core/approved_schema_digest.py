@@ -1,8 +1,9 @@
 """Human-controlled execution unlock, separate from the expected DDL identity.
 
-The expected digest is reviewed evidence, not authority. Until Ameen explicitly
-authorizes the one-line flag change from an exact accepted parent, every held
-fixture refuses before opening a SQLite connection or creating a database file.
+The application-side installer owns and enforces the expected digest and human
+flag. This module is the earlier fixture guard: until Ameen explicitly authorizes
+the one-line flag change from an exact accepted parent, every held fixture refuses
+before opening a SQLite connection or creating a database file.
 
 The unlock protocol and post-commit identity checks are recorded in WO-0168d
 and the governing DDL gate. Agents never infer approval from a matching digest.
@@ -10,13 +11,10 @@ and the governing DDL gate. Agents never infer approval from a matching digest.
 
 from __future__ import annotations
 
-from typing import Final
-
-
-EXPECTED_EXECUTION_DDL_SHA256: Final[str] = (
-    "2636c72793515a46c893d93084750b45ea2f151c58055480d5c601eb8c0faac5"
+from app.execution_core.persistence.schema import (
+    DDL_EXECUTION_AUTHORIZED_BY_AMEEN,
+    EXPECTED_EXECUTION_DDL_SHA256,
 )
-DDL_EXECUTION_AUTHORIZED_BY_AMEEN: Final[bool] = False
 
 
 def require_approved_ddl_execution() -> str:

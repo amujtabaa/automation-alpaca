@@ -9,7 +9,10 @@ from typing import Mapping
 import pytest
 
 from app.execution_core.persistence.schema import (
+    EXPECTED_EXECUTION_DDL_SHA256,
     SchemaDigestMismatchError,
+    SchemaInstallError,
+    _require_exact_approved_ddl_digest,
     install_schema,
     schema_ddl_digest,
 )
@@ -73,7 +76,9 @@ class _Connection:
 
     def execute(self, sql: str, parameters: object = ()) -> object:
         del sql, parameters
-        raise AssertionError("digest refusal must precede connection access")
+        raise AssertionError(
+            "authorization or digest refusal must precede connection access"
+        )
 
 
 def _token_violations(
@@ -233,7 +238,7 @@ def _connection_gate_violations(source: str, label: str) -> tuple[str, ...]:
     return tuple(sorted(violations))
 
 
-def _installer_digest_order_is_exact(source: str) -> bool:
+def _installer_gate_order_is_exact(source: str) -> bool:
     tree = ast.parse(source, filename="schema.py")
     installers = [
         node
@@ -245,9 +250,9 @@ def _installer_digest_order_is_exact(source: str) -> bool:
     body = list(installers[0].body)
     if ast.get_docstring(installers[0]) is not None:
         body = body[1:]
-    if len(body) < 2:
+    if len(body) < 3:
         return False
-    digest_assignment, guard_statement = body[:2]
+    digest_assignment, authorization_guard, digest_guard = body[:3]
     return bool(
         isinstance(digest_assignment, ast.Assign)
         and len(digest_assignment.targets) == 1
@@ -258,16 +263,23 @@ def _installer_digest_order_is_exact(source: str) -> bool:
         and digest_assignment.value.func.id == "schema_ddl_digest"
         and not digest_assignment.value.args
         and not digest_assignment.value.keywords
-        and isinstance(guard_statement, ast.Expr)
-        and isinstance(guard_statement.value, ast.Call)
-        and isinstance(guard_statement.value.func, ast.Name)
-        and guard_statement.value.func.id == "_require_exact_approved_ddl_digest"
-        and not guard_statement.value.keywords
-        and len(guard_statement.value.args) == 2
-        and all(
-            isinstance(argument, ast.Name) for argument in guard_statement.value.args
-        )
-        and [argument.id for argument in guard_statement.value.args]  # type: ignore[union-attr]
+        and isinstance(authorization_guard, ast.Expr)
+        and isinstance(authorization_guard.value, ast.Call)
+        and isinstance(authorization_guard.value.func, ast.Name)
+        and authorization_guard.value.func.id
+        == "_require_human_authorized_schema_install"
+        and not authorization_guard.value.keywords
+        and len(authorization_guard.value.args) == 1
+        and isinstance(authorization_guard.value.args[0], ast.Name)
+        and authorization_guard.value.args[0].id == "actual_digest"
+        and isinstance(digest_guard, ast.Expr)
+        and isinstance(digest_guard.value, ast.Call)
+        and isinstance(digest_guard.value.func, ast.Name)
+        and digest_guard.value.func.id == "_require_exact_approved_ddl_digest"
+        and not digest_guard.value.keywords
+        and len(digest_guard.value.args) == 2
+        and all(isinstance(argument, ast.Name) for argument in digest_guard.value.args)
+        and [argument.id for argument in digest_guard.value.args]  # type: ignore[union-attr]
         == ["approved_ddl_sha256", "actual_digest"]
     )
 
@@ -372,14 +384,15 @@ def test_every_direct_connection_opener_calls_the_human_gate_first() -> None:
     )
 
 
-def test_schema_installer_digest_refusal_is_first_and_can_fail() -> None:
+def test_schema_installer_authorization_and_digest_order_is_exact() -> None:
     source = (_REPO_ROOT / "app/execution_core/persistence/schema.py").read_text(
         encoding="utf-8"
     )
-    assert _installer_digest_order_is_exact(source)
-    assert not _installer_digest_order_is_exact(
+    assert _installer_gate_order_is_exact(source)
+    assert not _installer_gate_order_is_exact(
         "def install_schema(connection, *, approved_ddl_sha256):\n"
-        "    connection.execute('BEGIN')\n"
+        "    actual_digest = schema_ddl_digest()\n"
+        "    _require_exact_approved_ddl_digest(approved_ddl_sha256, actual_digest)\n"
     )
 
 
@@ -388,8 +401,13 @@ def test_human_gate_is_closed_without_ameen_authorization() -> None:
         require_approved_ddl_execution()
 
 
-def test_one_character_digest_mismatch_refuses_before_connection_use() -> None:
+def test_matching_expected_digest_cannot_bypass_closed_human_gate() -> None:
+    with pytest.raises(SchemaInstallError, match="HUMAN-GATE pending"):
+        install_schema(_Connection(), approved_ddl_sha256=EXPECTED_EXECUTION_DDL_SHA256)
+
+
+def test_one_character_digest_mismatch_is_refused_without_connection_use() -> None:
     actual = schema_ddl_digest()
     wrong = ("0" if actual[0] != "0" else "1") + actual[1:]
     with pytest.raises(SchemaDigestMismatchError):
-        install_schema(_Connection(), approved_ddl_sha256=wrong)  # type: ignore[arg-type]
+        _require_exact_approved_ddl_digest(wrong, actual)

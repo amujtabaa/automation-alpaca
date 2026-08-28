@@ -8,11 +8,13 @@ surface that opens a connection, discovers no database path, and never opens or 
 database by itself. ``install_schema`` acts only on an explicitly supplied
 empty SQLite connection and refuses to act unless:
 
-1. the caller's ``approved_ddl_sha256`` equals the SHA-256 of these exact
+1. Ameen's application-owned execution authorization flag is exactly ``True``;
+2. the reviewed expected digest and the caller's ``approved_ddl_sha256`` both
+   equal the SHA-256 of these exact
    DDL bytes (EC-4: any byte drift returns to the human gate);
-2. the supplied connection targets an empty database (zero ``sqlite_master``
+3. the supplied connection targets an empty database (zero ``sqlite_master``
    rows — EC-3: non-empty target refused before execution); and
-3. ``PRAGMA foreign_keys`` and ``PRAGMA recursive_triggers`` verifiably report
+4. ``PRAGMA foreign_keys`` and ``PRAGMA recursive_triggers`` verifiably report
    ``1`` on that connection (EC-3: disabled relational enforcement refused
    before execution).
 
@@ -39,11 +41,17 @@ from __future__ import annotations as _annotations
 
 from hashlib import sha256 as _sha256
 from typing import Any as _Any
+from typing import Final as _Final
 from typing import Protocol as _Protocol
 from typing import Sequence as _Sequence
 
 
 SCHEMA_VERSION = 2
+
+EXPECTED_EXECUTION_DDL_SHA256: _Final[str] = (
+    "2636c72793515a46c893d93084750b45ea2f151c58055480d5c601eb8c0faac5"
+)
+DDL_EXECUTION_AUTHORIZED_BY_AMEEN: _Final[bool] = False
 
 SCHEMA_DDL = """
 CREATE TABLE schema_meta (
@@ -4636,6 +4644,20 @@ class SchemaForeignKeysDisabledError(SchemaInstallError):
     """PRAGMA foreign_keys did not verifiably report enabled on the connection."""
 
 
+def _require_human_authorized_schema_install(actual_ddl_sha256: str) -> None:
+    """Refuse before connection access unless Ameen unlocked these exact bytes."""
+
+    if DDL_EXECUTION_AUTHORIZED_BY_AMEEN is not True:
+        raise SchemaInstallError(
+            "HUMAN-GATE pending: changed DDL execution is not authorized by Ameen"
+        )
+    if EXPECTED_EXECUTION_DDL_SHA256 != actual_ddl_sha256:
+        raise SchemaDigestMismatchError(
+            "expected execution DDL identity does not match the exact schema bytes; "
+            "returning to the human gate"
+        )
+
+
 class SQLiteConnectionProtocol(_Protocol):
     """Structural subset of sqlite3.Connection used by the installer."""
 
@@ -4774,6 +4796,7 @@ def install_schema(
     """
 
     actual_digest = schema_ddl_digest()
+    _require_human_authorized_schema_install(actual_digest)
     _require_exact_approved_ddl_digest(approved_ddl_sha256, actual_digest)
     _verify_connection_pragmas(connection)
 
