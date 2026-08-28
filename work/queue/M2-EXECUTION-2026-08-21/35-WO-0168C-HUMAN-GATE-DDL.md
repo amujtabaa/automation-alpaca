@@ -536,3 +536,29 @@ The DDL remains 178,755 UTF-8 bytes with SHA-256
 `2636c72793515a46c893d93084750b45ea2f151c58055480d5c601eb8c0faac5`, and the human flag remains
 False. No held suite, DDL, database, migration, or later work executed. REV-0108 must return zero
 open P0/P1 before the separate DDL intent and human unlock gate can proceed.
+
+---
+
+# Amendment 13 — REV-0108 accepted; WO-0168d remediation closed
+
+Date: 2026-08-27 · Recorded by: Codex implementation seat
+
+Independent REV-0108 returned ACCEPT with P0=0/P1=0/P2=0 against exact implementation successor
+`70dc59cb11a8a8f5b9e50c876fb7e5ed0945815c`, tree
+`f5ee0646d74047d373ce6b09728177453bd45c82`. The reviewer result is preserved at SHA-256
+`920a93295573159e9b46148f03248cc8fd70c43e7c69533299e05b7b7d70a894`. WO-0168d is archived at
+`work/completed/keep/WO-0168d-m2-i3-5-hybrid-gate-simplification.md`.
+
+The accepted controls enforce the application-owned still-False flag before installer connection
+access, centralize held-suite opening behind exact unconditional gate-then-connect, and reject the
+declared ordinary public `sqlite3`/`sqlite3.*` direct, alias, submodule, executable-constructor, and
+wildcard import forms. The finite threat boundary and line budgets remain intact.
+
+The DDL remains exactly 178,755 UTF-8 bytes with SHA-256
+`2636c72793515a46c893d93084750b45ea2f151c58055480d5c601eb8c0faac5`; schema blob is
+`ef332a0b97d28e0535ac53ea0e4d4e091991abad`; the human flag remains False. No held suite, SQLite
+connection, database, DDL, migration, or later work executed.
+
+This acceptance does NOT authorize DDL execution. The next milestone is the separate human DDL
+intent review, exact command/attempt authorization, and one-line unlock commit from the accepted
+parent. Until Ameen expressly authorizes that milestone, the gate remains CLOSED.

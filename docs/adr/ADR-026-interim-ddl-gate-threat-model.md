@@ -1,6 +1,6 @@
 # ADR-026 — Interim changed-DDL gate threat model and review convergence
 
-Status: **ACCEPTED DIRECTION — exact implementation subject to REV-0108**
+Status: **ACCEPTED — exact implementation accepted by REV-0108**
 
 Decision owner: Ameen Mujtabaa
 

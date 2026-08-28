@@ -1,12 +1,12 @@
 ---
 type: Work Order
 title: M2-I3.5 hybrid gate simplification and suite restoration
-status: REVIEW
+status: CLOSED
 work_order_id: WO-0168d
 wave: M2-I3.5-R13-C-HYBRID
 model_tier: strong
 risk: critical
-disposition: []
+disposition: [RESULT_SUMMARY_KEPT, ARCHIVED]
 owner: Codex implementation seat; one fresh-context reviewer (REV-0108)
 created: 2026-08-26
 predecessor: WO-0168c superseded 2026-08-26 after REV-0105 BLOCK and ratified root simplification
@@ -69,7 +69,7 @@ allowed_paths:
 
 # Work Order: WO-0168d — hybrid gate simplification and suite restoration
 
-`[FABLE • FULL • root-cause • smallest adequate mechanism • no DDL execution]`
+`[CLOSED • REV-0108 ACCEPT P0=0/P1=0/P2=0 • no DDL execution]`
 
 ## Why (one paragraph)
 

@@ -1,9 +1,9 @@
 # FINDING — the schema approval gate approves itself
 
-- **Status:** OPEN. Found 2026-08-24 by adversarial review during WO-0168c. Predates WO-0168c.
+- **Status:** RESOLVED 2026-08-27 by WO-0168d and REV-0108.
 - **Severity:** **P2 today, P0 on the day `execution_core` is wired in.** No runtime path exists
   yet, so nothing is currently at risk; the severity is entirely about what happens when one does.
-- **Owner:** unassigned. Must close **before** `execution_core` reaches any running code.
+- **Owner:** resolved by the Codex implementation seat under Ameen's bounded authority.
 - **Blocks:** wiring `execution_core` persistence into the app, and any beta that installs this
   schema against a real database.
 
@@ -85,3 +85,17 @@ tests/execution_core/test_persistence_runtime_checkpoint_sqlite.py:73
 - `work/queue/M2-EXECUTION-2026-08-21/35-WO-0168C-HUMAN-GATE-DDL.md` — Amendment 1 records the
   `_GATE_DIGEST` re-pin and its ratification.
 - `work/review/REV-0078/in-process-adversarial-pass-r1.md` — the pass that surfaced this.
+
+## Resolution
+
+Application commit `a5c95ca271c99f79ecfd045468072274107f6ead` moved the still-False human
+authorization and expected identity to the application installer, which now refuses before supplied-
+connection access. Successor `70dc59cb11a8a8f5b9e50c876fb7e5ed0945815c`, tree
+`f5ee0646d74047d373ce6b09728177453bd45c82`, centralizes held-suite opening behind an exact
+gate-then-connect helper and closes ordinary public `sqlite3`/`sqlite3.*` direct, alias, submodule,
+and wildcard import forms without a general Python analyzer.
+
+Independent REV-0108 returned ACCEPT with P0=0/P1=0/P2=0; result SHA-256 is
+`920a93295573159e9b46148f03248cc8fd70c43e7c69533299e05b7b7d70a894`. The DDL remains
+178,755 bytes at SHA-256 `2636c72793515a46c893d93084750b45ea2f151c58055480d5c601eb8c0faac5`,
+the authorization flag remains False, and no held suite, database, DDL, or migration executed.
