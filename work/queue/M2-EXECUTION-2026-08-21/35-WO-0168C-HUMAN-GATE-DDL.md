@@ -493,3 +493,24 @@ The DDL remains 178,755 UTF-8 bytes with SHA-256
 `2636c72793515a46c893d93084750b45ea2f151c58055480d5c601eb8c0faac5`. No held suite, DDL,
 database, or migration executed. REV-0107 must return zero open P0/P1 before the separate DDL intent
 and human unlock gate can proceed; this amendment grants no execution authority.
+
+---
+
+# Amendment 11 — REV-0107 round-one executable-alias remediation
+
+Date: 2026-08-27 · Recorded by: Codex implementation seat
+
+REV-0107 round one returned BLOCK with P0=0/P1=1/P2=0. The checked-in installer and central opener
+were correctly closed, but an ordinary `Connection = sqlite3.Connection` assignment plus name call,
+or a direct `sqlite3.dbapi2` constructor import, passed the supporting structural controls.
+
+The bounded correction rejects executable non-annotation `Connection` references and applies the
+SQLite import rule to `sqlite3` plus its submodules. Deferred annotations remain allowed; no
+dataflow or arbitrary-Python analyzer is introduced. Local-alias, direct-constructor, submodule-
+import, and extra-helper canaries fail without I/O. REV-0107 round two must review the exact
+remediation candidate with zero open P0/P1.
+
+The DDL remains 178,755 UTF-8 bytes with SHA-256
+`2636c72793515a46c893d93084750b45ea2f151c58055480d5c601eb8c0faac5`, and the human flag remains
+False. No held suite, DDL, database, migration, or later work executed. The separate DDL intent and
+human unlock gate remains closed.

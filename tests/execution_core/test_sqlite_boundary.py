@@ -71,35 +71,51 @@ def _token_violations(
     )
 
 
+def _annotation_node_ids(tree: ast.Module) -> frozenset[int]:
+    roots: list[ast.expr] = []
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.arg, ast.AnnAssign)) and node.annotation is not None:
+            roots.append(node.annotation)
+        elif (
+            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.returns is not None
+        ):
+            roots.append(node.returns)
+    return frozenset(id(child) for root in roots for child in ast.walk(root))
+
+
+def _is_sqlite_module(name: str | None) -> bool:
+    return name is not None and (name == "sqlite3" or name.startswith("sqlite3."))
+
+
 def _direct_connection_capability_violations(
     source: str,
     label: str,
     *,
     allow_sqlite_import: bool,
 ) -> tuple[str, ...]:
-    """Find ordinary direct SQLite connection capabilities, not string mentions."""
-
     tree = ast.parse(source, filename=label)
+    annotation_nodes = _annotation_node_ids(tree)
     violations: list[str] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             if not allow_sqlite_import and any(
-                alias.name == "sqlite3" for alias in node.names
+                _is_sqlite_module(alias.name) for alias in node.names
             ):
                 violations.append(f"{label}:sqlite3-import:{node.lineno}")
         elif isinstance(node, ast.ImportFrom):
-            if node.module == "sqlite3" and any(
+            if _is_sqlite_module(node.module) and any(
                 alias.name in {"connect", "Connection"} for alias in node.names
             ):
                 violations.append(f"{label}:connection-import:{node.lineno}")
         elif isinstance(node, ast.Attribute) and node.attr == "connect":
             violations.append(f"{label}:connect-attribute:{node.lineno}")
         elif (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
-            and node.func.attr == "Connection"
+            isinstance(node, ast.Attribute)
+            and node.attr == "Connection"
+            and id(node) not in annotation_nodes
         ):
-            violations.append(f"{label}:connection-constructor:{node.lineno}")
+            violations.append(f"{label}:Connection:{node.lineno}")
     return tuple(sorted(violations))
 
 
@@ -125,12 +141,13 @@ def _approved_connection_helper_is_exact(source: str) -> bool:
         and isinstance(connection.value.func, ast.Attribute)
     ):
         return False
+    annotation_nodes = _annotation_node_ids(tree)
     sqlite_imports = [
         alias
         for node in tree.body
         if isinstance(node, ast.Import)
         for alias in node.names
-        if alias.name == "sqlite3"
+        if _is_sqlite_module(alias.name)
     ]
     connect_attributes = [
         node
@@ -140,24 +157,25 @@ def _approved_connection_helper_is_exact(source: str) -> bool:
     forbidden_connection_imports = [
         alias
         for node in ast.walk(tree)
-        if isinstance(node, ast.ImportFrom) and node.module == "sqlite3"
+        if isinstance(node, ast.ImportFrom) and _is_sqlite_module(node.module)
         for alias in node.names
         if alias.name in {"connect", "Connection"}
     ]
-    connection_constructors = [
+    executable_connection_attributes = [
         node
         for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "Connection"
+        if isinstance(node, ast.Attribute)
+        and node.attr == "Connection"
+        and id(node) not in annotation_nodes
     ]
     return bool(
         len(sqlite_imports) == 1
+        and sqlite_imports[0].name == "sqlite3"
         and sqlite_imports[0].asname is None
         and len(connect_attributes) == 1
         and connect_attributes[0] is connection.value.func
         and not forbidden_connection_imports
-        and not connection_constructors
+        and not executable_connection_attributes
         and isinstance(gate, ast.Expr)
         and isinstance(gate.value, ast.Call)
         and isinstance(gate.value.func, ast.Name)
@@ -256,8 +274,7 @@ def test_lexical_allowlist_does_not_claim_semantic_connection_control() -> None:
 def test_sqlite_tokens_exist_only_at_justified_boundaries() -> None:
     sources = _repository_sources()
     assert _token_violations(sources, _TOKEN_ALLOWLIST) == ()
-    assert set(_TOKEN_ALLOWLIST) <= set(sources)
-    assert all(_TOKEN_ALLOWLIST.values())
+    assert set(_TOKEN_ALLOWLIST) <= set(sources) and all(_TOKEN_ALLOWLIST.values())
 
 
 @pytest.mark.parametrize(
@@ -277,9 +294,15 @@ def test_sqlite_tokens_exist_only_at_justified_boundaries() -> None:
         ),
         (
             "import sqlite3 as db\n\n"
-            "def connection(path):\n"
-            "    return db.Connection(path)\n",
-            ("mutant.py:connection-constructor:4",),
+            "Connection = db.Connection\n"
+            "def direct(path):\n    return db.Connection(path)\n"
+            "def aliased(path):\n    return Connection(path)\n",
+            ("mutant.py:Connection:3", "mutant.py:Connection:5"),
+        ),
+        (
+            "from sqlite3.dbapi2 import Connection\n"
+            "def connection(path):\n    return Connection(path)\n",
+            ("mutant.py:connection-import:1",),
         ),
     ],
 )
@@ -337,6 +360,10 @@ def test_central_connection_helper_is_exact_and_conditional_canary_fails() -> No
     assert not _approved_connection_helper_is_exact(
         source + "\n\ndef bypass_connection(database):\n"
         "    return sqlite3.connect(database)\n"
+    )
+    assert not _approved_connection_helper_is_exact(
+        source + "\nConnection = sqlite3.Connection\n"
+        "def bypass_connection(database):\n    return Connection(database)\n"
     )
 
 
