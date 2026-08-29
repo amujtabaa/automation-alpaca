@@ -448,3 +448,12 @@ found a cross-layer ordinal/classification mismatch in the shared proof fixture 
 boundary while the accepted one-based DDL contract remained correct. The quarantined flag-true
 branch is evidence only. Application/test root remediation, fresh static review, and a new human
 fresh-file gate are required before rerun.
+
+The bounded root correction is candidate `dee3533099bba6ffeaa3372d33b04c1513cd75b7`, tree
+`50861bbcc4d6e1b68490f619132fb16338a30e8e`. It preserves the domain's zero-based generation
+identity while applying the already-established one-based durable-row translation at checkpoint
+proof boundaries, and aligns the shared proof records with durable `CONSISTENT` / `NORMAL`
+vocabulary. The changed hydration file passed 22 tests; all 2,261 ordinary `execution_core` tests
+reached 100% with exit code 0; Ruff, mypy, and correction-range whitespace checks passed. DDL,
+schema blob, held-test blob, and exact-false human flag remain unchanged. One finite static R2 review
+is open under `correction-r2-request.md`; no SQLite rerun is authorized yet.
