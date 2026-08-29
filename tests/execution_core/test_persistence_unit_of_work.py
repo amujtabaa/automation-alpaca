@@ -9,6 +9,8 @@ import pytest
 
 from app.execution_core import authority
 from app.execution_core.persistence import checkpoint_codec
+from app.execution_core.persistence import records
+from app.execution_core.persistence import unit_of_work
 import test_persistence_runtime_checkpoint_pure as checkpoint_fixtures
 
 
@@ -223,3 +225,236 @@ def test_manual_observation_proof_is_owner_issued_and_required() -> None:
             begin,
             manual_observation=forged,
         )
+
+
+class _TransactionConnection:
+    def __init__(
+        self,
+        *,
+        commit_error: Exception | None = None,
+        rollback_error: Exception | None = None,
+    ) -> None:
+        self.in_transaction = False
+        self.commit_error = commit_error
+        self.rollback_error = rollback_error
+        self.events: list[str] = []
+
+    def execute(self, sql: str, parameters: object = ()) -> object:
+        del parameters
+        self.events.append(sql)
+        if sql == "BEGIN IMMEDIATE":
+            assert not self.in_transaction
+            self.in_transaction = True
+        elif sql == "COMMIT":
+            assert self.in_transaction
+            if self.commit_error is not None:
+                raise self.commit_error
+            self.in_transaction = False
+        elif sql == "ROLLBACK":
+            assert self.in_transaction
+            if self.rollback_error is not None:
+                raise self.rollback_error
+            self.in_transaction = False
+        else:
+            raise AssertionError(f"unexpected transaction SQL: {sql}")
+        return object()
+
+    def close(self) -> None:
+        self.events.append("CLOSE")
+
+
+def _uow_context() -> unit_of_work.UnitOfWorkContext:
+    proof, book, state, owners = checkpoint_fixtures._dormant_projection_inputs()
+    expected = records.KernelCheckpointRecord(
+        proof.request.application_generation_id,
+        0,
+        "0" * 64,
+        1,
+    )
+    return unit_of_work.UnitOfWorkContext(
+        expected,
+        book,
+        state,
+        tuple(
+            (
+                owner.scope_id,
+                owner.acquisition,
+                owner.execution,
+                owner.protection,
+            )
+            for owner in owners
+        ),
+    )
+
+
+def _patch_prepared_path(
+    monkeypatch: pytest.MonkeyPatch,
+    body: object,
+) -> None:
+    monkeypatch.setattr(unit_of_work, "_canonicalize_operation", lambda value: value)
+    monkeypatch.setattr(
+        unit_of_work,
+        "_prepare_transaction",
+        lambda connection, operation, context: unit_of_work._PreparedOperation(
+            operation,
+            context,
+        ),
+    )
+    monkeypatch.setattr(unit_of_work, "_execute_prepared", body)
+
+
+def _refused_result() -> unit_of_work.UnitOfWorkResult:
+    return unit_of_work.UnitOfWorkResult(
+        unit_of_work.UnitOfWorkDisposition.REFUSED,
+        None,
+        None,
+        None,
+        None,
+    )
+
+
+def _committed_result(
+    context: unit_of_work.UnitOfWorkContext,
+) -> unit_of_work.UnitOfWorkResult:
+    return unit_of_work.UnitOfWorkResult(
+        unit_of_work.UnitOfWorkDisposition.COMMITTED,
+        "AUTHORITY",
+        "APPLIED",
+        context,
+        None,
+    )
+
+
+def test_unit_of_work_exports_are_exact_and_invalid_input_never_begins() -> None:
+    assert set(unit_of_work.__all__) == {
+        "PostCommitEffectEligibility",
+        "UnitOfWorkContext",
+        "UnitOfWorkDisposition",
+        "UnitOfWorkResult",
+        "execute_unit_of_work",
+    }
+    connection = _TransactionConnection()
+    result = unit_of_work.execute_unit_of_work(connection, object(), _uow_context())
+    assert result.disposition is unit_of_work.UnitOfWorkDisposition.REFUSED
+    assert connection.events == []
+
+
+def test_body_fault_retires_lease_then_rolls_back_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection = _TransactionConnection()
+    retained_capability: list[object] = []
+
+    def fail_body(
+        body_connection: object,
+        prepared: object,
+        capability: object,
+    ) -> object:
+        del body_connection, prepared
+        retained_capability.append(capability)
+        raise RuntimeError("injected body fault")
+
+    _patch_prepared_path(monkeypatch, fail_body)
+    with pytest.raises(RuntimeError, match="injected body fault"):
+        unit_of_work.execute_unit_of_work(connection, object(), _uow_context())
+    assert connection.events == ["BEGIN IMMEDIATE", "ROLLBACK"]
+    with pytest.raises(ValueError, match="not current"):
+        unit_of_work._repository._require_write_capability(
+            connection,
+            retained_capability[0],
+        )
+
+
+def test_noncommitting_decision_retires_lease_and_rolls_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection = _TransactionConnection()
+
+    def refuse(
+        body_connection: object,
+        prepared: object,
+        capability: object,
+    ) -> unit_of_work._TransactionDecision:
+        del body_connection, prepared, capability
+        return unit_of_work._TransactionDecision(False, _refused_result(), None)
+
+    _patch_prepared_path(monkeypatch, refuse)
+    result = unit_of_work.execute_unit_of_work(connection, object(), _uow_context())
+    assert result.disposition is unit_of_work.UnitOfWorkDisposition.REFUSED
+    assert connection.events == ["BEGIN IMMEDIATE", "ROLLBACK"]
+
+
+def test_commit_mints_effect_eligibility_only_after_normal_return(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection = _TransactionConnection()
+    context = _uow_context()
+
+    def commit(
+        body_connection: object,
+        prepared: object,
+        capability: object,
+    ) -> unit_of_work._TransactionDecision:
+        del body_connection, prepared, capability
+        assert connection.events == ["BEGIN IMMEDIATE"]
+        return unit_of_work._TransactionDecision(
+            True,
+            _committed_result(context),
+            unit_of_work._PostCommitEffectCandidate(7, 11, 13, "a" * 64),
+        )
+
+    _patch_prepared_path(monkeypatch, commit)
+    result = unit_of_work.execute_unit_of_work(connection, object(), context)
+    assert connection.events == ["BEGIN IMMEDIATE", "COMMIT"]
+    assert result.effect_eligibility == unit_of_work.PostCommitEffectEligibility(
+        7,
+        11,
+        13,
+        "a" * 64,
+    )
+
+
+def test_commit_ambiguity_never_rolls_back_or_mints_eligibility(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection = _TransactionConnection(commit_error=RuntimeError("ambiguous commit"))
+    context = _uow_context()
+
+    def commit(
+        body_connection: object,
+        prepared: object,
+        capability: object,
+    ) -> unit_of_work._TransactionDecision:
+        del body_connection, prepared, capability
+        return unit_of_work._TransactionDecision(
+            True,
+            _committed_result(context),
+            unit_of_work._PostCommitEffectCandidate(7, 11, 13, "a" * 64),
+        )
+
+    _patch_prepared_path(monkeypatch, commit)
+    result = unit_of_work.execute_unit_of_work(connection, object(), context)
+    assert result.disposition is unit_of_work.UnitOfWorkDisposition.RECONCILIATION_ONLY
+    assert result.effect_eligibility is None
+    assert connection.events == ["BEGIN IMMEDIATE", "COMMIT", "CLOSE"]
+
+
+def test_rollback_ambiguity_propagates_without_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection = _TransactionConnection(
+        rollback_error=RuntimeError("ambiguous rollback")
+    )
+
+    def refuse(
+        body_connection: object,
+        prepared: object,
+        capability: object,
+    ) -> unit_of_work._TransactionDecision:
+        del body_connection, prepared, capability
+        return unit_of_work._TransactionDecision(False, _refused_result(), None)
+
+    _patch_prepared_path(monkeypatch, refuse)
+    with pytest.raises(RuntimeError, match="ambiguous rollback"):
+        unit_of_work.execute_unit_of_work(connection, object(), _uow_context())
+    assert connection.events == ["BEGIN IMMEDIATE", "ROLLBACK"]
