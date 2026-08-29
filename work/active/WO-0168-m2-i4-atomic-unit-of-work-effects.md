@@ -389,6 +389,16 @@ call mutants are explicit. All 2,177 ordinary execution-core tests and focused/s
 passed at the exact correction. `REV-0115/request-r2.md` is a same-reviewer, single-P1 verification;
 it is not another whole-work-order review.
 
+R2 verified the runtime correction (1,000 observed calls across all 172 exact prefixes) and found
+one remaining syntax-only blind spot: `contextlib.suppress` is `ast.With`, not `ast.Try`. Exact
+candidate `5ea37da06ddbd18977f39174e690f07433357234`, tree
+`a8a13c7badde63fa0e302fa5ec9bee8f1ba2f0c7`, now rejects ordinary try, try-star, with, async-with,
+and decorators through the complete transitive write-call closure. It permits only the exact
+ordinary-try transaction coordinator independently pinned to rollback/refuse or rollback/re-raise.
+Four compile-valid syntax mutants use the same detector. All 2,181 execution-core tests and static/
+type checks passed; application and DDL remain unchanged. `request-r3.md` is the final narrow check
+of this exact syntax gap.
+
 ## Done
 
 Focused pure and fresh-file fault suites, full `tests/execution_core`, Ruff check/format, mypy,
