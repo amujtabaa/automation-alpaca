@@ -9,8 +9,8 @@ Status: **ACCEPTED — one new fresh-file run authorized by standing continuatio
   `789ca0016eb9e5a1300285caf0cdf73483180283`.
 - Fresh reviewer: subagent `Lagrange` (`gpt-5.6-luna`, high reasoning).
 - Verdict: `ACCEPT`, P0=0, P1=0, P2=0.
-- Verbatim result SHA-256:
-  `a92eb51cae1facdc0ff1ad9cf234e1feca9a6f84e0f184fcbe070dbc31c8c5b0`.
+- Reviewer result SHA-256 (Markdown whitespace normalized):
+  `80a944547fb28c5d492b375ad272a2efd45f003111eb3215b35a7a839a942e39`.
 
 No finding requires remediation. The direct controller-authority error expectation and unchanged-row
 assertion are accepted as the narrow root correction. DDL, schema blob, expected digest, and the
