@@ -147,6 +147,12 @@ clean tracked state, local equals origin, and every exact identity. Any assertio
 product/schema defect, ambiguous attribution, source/test/fixture change, or second failure stops
 and returns to Ameen. No repair is authorized inside the execution packet.
 
+## New-invariant probe obligation
+
+No `INV-*` entry is added or amended by this remediation. Fresh invariant-probe lines are therefore
+not applicable. The new held route-splice controls are behavior probes for existing durable-state
+requirements, not new invariant declarations.
+
 ## Response contract
 
 For each finding, give priority, exact `file:line`, governing requirement, evidence level, concrete
