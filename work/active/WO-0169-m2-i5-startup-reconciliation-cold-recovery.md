@@ -199,11 +199,16 @@ invalidation as one transition. It:
 6. returns either the exact successor context, exact replay, or fail-closed refusal.
 
 The compact cutover is idempotent: an already normalized and invalidated current checkpoint is an
-exact replay and does not advance again. This private lifecycle transition is not a ninth external
+exact replay and does not advance again. Startup invokes this transition once before any
+reconciliation mutation to establish the first admissible compact context, and once against the
+latest post-reconciliation context as the final pre-source invalidation barrier. The second call is
+exact replay when reconciliation preserved invalidation; otherwise it commits and rereads exactly
+one new invalidated successor. This private lifecycle transition is not a ninth external
 durable-input domain and creates no
 caller-shaped operation, DDL, receipt bypass for an external input, effect, or dispatch authority.
 Its idempotence and checkpoint successor are the durable recovery evidence. No adapter/query task
-may start until the committed invalidation result has returned normally.
+may start until the first committed invalidation result has returned normally, and no source task
+may start until the final invalidation barrier has returned normally.
 
 ### Exact startup sequence
 
@@ -213,14 +218,19 @@ may start until the committed invalidation result has returned normally.
    proof by direct keys, and construct only non-serving compact owners through proof-bound private
    constructors. Require complete semantic agreement; hydrate no authority from explanatory
    history and do not claim inherited history-shaped commitments are reproducible.
-4. Enter `RECONCILING`; enumerate the complete authenticated current-unresolved effect union from
+4. Persist the atomic compact-owner cutover and cold market invalidation through the private UOW
+   bridge, reread its exact successor checkpoint C1, and only then form the private context used by
+   M2-I4. A rollback returns no context; ambiguous commit returns non-serving and retry reloads the
+   latest committed checkpoint.
+5. Enter `RECONCILING`; enumerate the complete authenticated current-unresolved effect union from
    the checkpoint selection proof: OPEN, qualifying INVALIDATED, and qualifying closed-late-owner
    rows. Query every exact claimed unresolved identity through the injected effect-query port and
    apply returned existing venue-recovery items through M2-I4. Never submit or resend an effect;
-   unclaimed rows are not queried or treated as evidence of prior dispatch.
-5. Reload direct proof and require complete resolution/coverage.
-6. Persist the atomic compact-owner cutover and cold market invalidation through the private UOW
-   bridge, reread its exact successor checkpoint, and only then call the market port.
+   unclaimed rows are not queried or treated as evidence of prior dispatch. Each applied operation
+   consumes and returns the latest admitted successor context.
+6. Reload direct proof and require complete resolution/coverage. Apply the same private cold
+   invalidation transition against the latest context and require its committed-and-reread result,
+   or exact replay when invalidation remained current. Only then call the market port.
 7. Subscribe to the exact selected source/profile/generation/mode and retain exact acknowledgement.
 8. Obtain a source-authoritative post-ack fence `F` that covers every possibly pre-ack emission.
    With a retained cursor require strict `F > cursor`; equality fails. The exact no-cursor initial
@@ -244,13 +254,15 @@ may start until the committed invalidation result has returned normally.
 - CR-06: every retained scope has direct-route totality and exactly one LIVE/controller authority.
 - CR-07: current heads, claims, owners, acceptance, closure, and supervisor-fence coordinates agree.
 - CR-08: owner-locked hydration uses proof-bound compact owner construction, refuses any missing or
-  substituted bounded semantic row, and atomically cuts over to a normalized successor without
-  replaying omitted history; non-serving retry reloads the latest committed context.
+  substituted bounded semantic row, and atomically cuts over to a normalized, cold-invalidated
+  successor before reconciliation without replaying omitted history; non-serving retry reloads the
+  latest committed context.
 - CR-09: stranded claims are found from the complete authenticated current-unresolved union without
   history scans, including qualifying invalidated and closed-late-owner rows.
 - CR-10: every exact claimed member of that union receives one targeted query and complete coverage.
 - CR-11: phases are monotonic; successful open or reconciliation entry is never serving.
-- CR-12: market invalidation commits idempotently before the first source/adapter call.
+- CR-12: market invalidation commits with the initial compact cutover before reconciliation and is
+  re-established idempotently against the latest context before the first source/adapter call.
 - CR-13: subscription binds selected source profile, stream generation, sequence mode, and
   retry-stable coordinate.
 - CR-14: the post-ack fence proves coverage of every coordinate possibly emitted before ack.
@@ -353,6 +365,11 @@ an explicit work-order scope amendment and preflight re-review before editing.
 - OS-2: Configured DB and live/shadow — forbidden; temporary accepted M2 persistence only.
 - OS-3: M2-I6 execution, M3, promotion, and `master` merge — later separately authorized work.
 
+The CR-08/CR-12 controls include a C0-plus-unresolved claimed effect whose returned
+venue-recovery operation changes the checkpoint, and prove initial-cutover rollback,
+commit-ambiguity, final-invalidation exact replay or advance, source-refusal/retry reload, and no
+extra checkpoint advance.
+
 Completion requires RED, CR-01..19 and failure-capable mutants, focused/static/full-governance
 evidence, independent P0=0/P1=0 acceptance, exact publication, and an M2-I6 handoff.
 
@@ -383,3 +400,10 @@ context becomes serving-eligible. This is the predecessor-required behavioral-co
 not a history replay or empty-map bypass. Source work on hydration/cutover is held until one fresh
 finite R2 review returns zero open P0/P1; the already-green capability-contract slice does not
 implement or prejudge the cutover.
+
+R2 returned `ACCEPT-WITH-CHANGES`, P0=0/P1=1/P2=0. The accepted finding showed that compact owners
+could not authenticate against C0 for pre-cutover M2-I4 reconciliation. The corrected sequence
+commits and rereads compact cold-invalidated C1 before reconciliation, uses only admitted successor
+contexts thereafter, and applies one final idempotent invalidation barrier before source access.
+Hydration/cutover source remains held until the same reviewer verifies this correction with zero
+open P0/P1.
