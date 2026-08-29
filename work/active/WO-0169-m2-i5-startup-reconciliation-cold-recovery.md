@@ -157,35 +157,50 @@ serving owner or proof. Only after acquiring the process owner lease, startup ma
 1. load the current inert envelope using the request's immutable application/profile coordinates;
 2. derive its exact `KernelCheckpointRecord` and request one current
    `RuntimeCheckpointSelectionProof` by direct keys;
-3. decode each canonical owner component into private checkpoint candidates;
-4. invoke owner-module-private restore constructors for venue, authority, acquisition, execution,
-   and protection, each requiring both its exact candidate and the relevant sealed repository
-   proof/current rows; and
-5. project the restored owners through the accepted checkpoint projector and require byte-identical
-   payload, digest, owner commitments, scope order, and current head before forming a private
-   `UnitOfWorkContext`.
+3. decode each canonical owner component into private non-serving checkpoint candidates;
+4. invoke owner-module-private compact restore constructors for venue, authority, acquisition,
+   execution, and protection, each requiring both its exact candidate and the relevant sealed
+   repository proof/current rows;
+5. require exact semantic agreement for every payload-owned scalar and bounded current/active/
+   unresolved row, direct-proof coordinate, scope order, current head, and dormant/active shape;
+   and
+6. atomically persist one normalized compact-owner successor checkpoint together with cold market
+   invalidation before forming the private serving-eligible `UnitOfWorkContext`.
+
+The loaded payload remains byte-identical and hash-authenticated but explicitly inert. Inherited
+history-shaped behavior commitments are integrity evidence, not reproducible serving authority:
+the accepted predecessor deliberately omitted the history needed to rebuild them. Compact restore
+constructors therefore rebuild only complete bounded current/active/unresolved semantic state,
+leave omitted audit history omitted, and cut over to newly derived compact commitments in the
+successor. Future operations that address omitted history remain governed by the accepted
+operation-keyed direct-proof boundary; no default-empty answer may decide them.
 
 The new restore constructors are private, add no `__all__` member, cannot operate from bytes or a
 digest alone, and must reject stale/spliced proof, omitted current rows, forged candidate types,
 and cross-scope/profile/application substitution. Dormant scope rows restore only dormant `None`
-owners. The restored context remains private until the final `SERVING` result. An
-invalidation-commit/source-refusal/retry test proves the second call reloads committed C1 rather
-than requiring caller-retained C0.
+owners. No restored candidate is serving authority before the compact cutover commits and is
+reread exactly. The context remains private until the final `SERVING` result. A cutover-commit/
+source-refusal/retry test proves the second call reloads committed C1 rather than requiring
+caller-retained C0.
 
 ### Private startup invalidation bridge
 
 The accepted eight-member public `M2Operation` union and all public UOW exports remain unchanged.
-One private unit-of-work entry point may persist system-owned cold-start market invalidation. It:
+One private unit-of-work entry point may persist the system-owned cold compact cutover and market
+invalidation as one transition. It:
 
 1. begins one explicit `BEGIN IMMEDIATE` transaction after owner-lock acquisition;
-2. authenticates the supplied owner context against direct retained checkpoint/current proof;
-3. applies only `invalidate_position_protection_market` to exact current projections;
-4. persists any changed protection/controller/cursor rows and one canonical successor checkpoint
-   under the existing runtime write lease;
+2. authenticates the loaded inert checkpoint, compact owner candidates, and direct current proof;
+3. applies only the history-independent compact-owner cutover plus
+   `invalidate_position_protection_market` to exact current projections;
+4. persists any changed protection/controller/cursor rows and exactly one canonical compact
+   successor checkpoint under the existing runtime write lease;
 5. authenticates its sealed capability-bound decision before commit; and
 6. returns either the exact successor context, exact replay, or fail-closed refusal.
 
-This private lifecycle transition is not a ninth external durable-input domain and creates no
+The compact cutover is idempotent: an already normalized and invalidated current checkpoint is an
+exact replay and does not advance again. This private lifecycle transition is not a ninth external
+durable-input domain and creates no
 caller-shaped operation, DDL, receipt bypass for an external input, effect, or dispatch authority.
 Its idempotence and checkpoint successor are the durable recovery evidence. No adapter/query task
 may start until the committed invalidation result has returned normally.
@@ -195,15 +210,17 @@ may start until the committed invalidation result has returned normally.
 1. Validate exact request shape without touching the connection.
 2. Acquire and validate process owner evidence.
 3. Verify schema/application/profile identity, load the exact inert runtime checkpoint/current
-   proof by direct keys, restore owners only through proof-bound private constructors, and require
-   a byte-identical reprojection. Hydrate no authority from explanatory history.
+   proof by direct keys, and construct only non-serving compact owners through proof-bound private
+   constructors. Require complete semantic agreement; hydrate no authority from explanatory
+   history and do not claim inherited history-shaped commitments are reproducible.
 4. Enter `RECONCILING`; enumerate the complete authenticated current-unresolved effect union from
    the checkpoint selection proof: OPEN, qualifying INVALIDATED, and qualifying closed-late-owner
    rows. Query every exact claimed unresolved identity through the injected effect-query port and
    apply returned existing venue-recovery items through M2-I4. Never submit or resend an effect;
    unclaimed rows are not queried or treated as evidence of prior dispatch.
 5. Reload direct proof and require complete resolution/coverage.
-6. Persist cold market invalidation through the private UOW bridge before calling the market port.
+6. Persist the atomic compact-owner cutover and cold market invalidation through the private UOW
+   bridge, reread its exact successor checkpoint, and only then call the market port.
 7. Subscribe to the exact selected source/profile/generation/mode and retain exact acknowledgement.
 8. Obtain a source-authoritative post-ack fence `F` that covers every possibly pre-ack emission.
    With a retained cursor require strict `F > cursor`; equality fails. The exact no-cursor initial
@@ -226,8 +243,9 @@ may start until the committed invalidation result has returned normally.
 - CR-05: stale, changed, forged, or noncanonical checkpoint proof refuses startup.
 - CR-06: every retained scope has direct-route totality and exactly one LIVE/controller authority.
 - CR-07: current heads, claims, owners, acceptance, closure, and supervisor-fence coordinates agree.
-- CR-08: owner-locked hydration uses proof-bound private owner construction and byte-identical
-  checkpoint round trip; non-serving retry reloads the latest committed context.
+- CR-08: owner-locked hydration uses proof-bound compact owner construction, refuses any missing or
+  substituted bounded semantic row, and atomically cuts over to a normalized successor without
+  replaying omitted history; non-serving retry reloads the latest committed context.
 - CR-09: stranded claims are found from the complete authenticated current-unresolved union without
   history scans, including qualifying invalidated and closed-late-owner rows.
 - CR-10: every exact claimed member of that union receives one targeted query and complete coverage.
@@ -353,3 +371,15 @@ contract candidate `9867e45fe53540c06cd821760f27e2e844be716a`, tree
 `8c2e237aca44928ea04ec10cfd122f869535cb97`. The source hold is released. The stale boundedness
 shorthand above was normalized from literal open effects to the already-reviewed authenticated
 current-unresolved union without changing the accepted contract.
+
+## REV-0116 R2 implementation-discovered root correction
+
+The first hydration RED found that R1's byte-identical serving-owner reconstruction contradicted
+the accepted WO-0168c predecessor: bounded checkpoint bytes deliberately do not reproduce
+history-shaped behavior commitments. The corrected contract keeps loaded bytes inert, validates
+all bounded semantic state against fresh direct proof, constructs compact non-serving owners, and
+atomically persists one normalized compact-owner plus market-invalidation successor before any
+context becomes serving-eligible. This is the predecessor-required behavioral-commitment cutover,
+not a history replay or empty-map bypass. Source work on hydration/cutover is held until one fresh
+finite R2 review returns zero open P0/P1; the already-green capability-contract slice does not
+implement or prejudge the cutover.
