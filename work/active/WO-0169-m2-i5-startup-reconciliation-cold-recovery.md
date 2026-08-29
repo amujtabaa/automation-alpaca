@@ -471,3 +471,9 @@ REV-0117 R3 returned `ACCEPT`, P0=0/P1=0/P2=0, against exact test-only correctio
 and confirmed the unresolved-generation mutant is failure-capable. `sqlite-execution-manifest-r2.md`
 now holds the corrected candidate at a new human gate. The first authorization remains consumed;
 no new SQLite execution is authorized yet.
+
+The exact flag-false R2 source candidate is `06fb2e2b1c2d9f184c12032ed20ff81676bf9ac0`, tree
+`0762b252c803f9331b98e099e5712947955d6a04`, with R2 manifest SHA-256
+`83ff7f3a65f6a9f8a69d015a69c278d392dead3db985570f7c9e4a1a661f8c84`.
+`execution-request-r2.md` records the new branch, absent scratch path, exact command, stop rules,
+and approval text. The human gate remains closed.
