@@ -30,6 +30,44 @@ import test_protection as protection_fixtures
 from tests.execution_core import test_venue_recovery as recovery_fixtures
 
 
+_LOCAL_EXCEPTION_CATCHERS = (ast.Try, ast.TryStar, ast.With, ast.AsyncWith)
+
+
+def _call_local_exception_catchers(
+    node: ast.Call,
+    parents: dict[ast.AST, ast.AST],
+) -> tuple[ast.AST, ...]:
+    catchers: list[ast.AST] = []
+    ancestor = parents.get(node)
+    while ancestor is not None and not isinstance(
+        ancestor,
+        (ast.FunctionDef, ast.AsyncFunctionDef),
+    ):
+        if isinstance(ancestor, _LOCAL_EXCEPTION_CATCHERS):
+            catchers.append(ancestor)
+        ancestor = parents.get(ancestor)
+    return tuple(catchers)
+
+
+def _call_has_local_exception_catcher(
+    node: ast.Call,
+    parents: dict[ast.AST, ast.AST],
+) -> bool:
+    return bool(_call_local_exception_catchers(node, parents))
+
+
+def _call_enclosing_function_name(
+    node: ast.Call,
+    parents: dict[ast.AST, ast.AST],
+) -> str | None:
+    ancestor = parents.get(node)
+    while ancestor is not None:
+        if isinstance(ancestor, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            return ancestor.name
+        ancestor = parents.get(ancestor)
+    return None
+
+
 _EXPECTED_M2_C6_WRITE_TABLE = (
     (
         "O1",
@@ -412,14 +450,8 @@ def test_every_repository_mutator_call_site_is_static_and_catalogued() -> None:
                         }
                     ):
                         calls.append(node.func.attr)
-                        ancestor = parents.get(node)
-                        while ancestor is not None and not isinstance(
-                            ancestor, ast.FunctionDef
-                        ):
-                            if isinstance(ancestor, ast.Try):
-                                locally_caught_calls.append(node.lineno)
-                                break
-                            ancestor = parents.get(ancestor)
+                        if _call_has_local_exception_catcher(node, parents):
+                            locally_caught_calls.append(node.lineno)
                         if any(
                             isinstance(argument, ast.Starred) for argument in node.args
                         ) or any(keyword.arg is None for keyword in node.keywords):
@@ -441,26 +473,115 @@ def test_every_repository_mutator_call_site_is_static_and_catalogued() -> None:
         for family in unit_of_work._M2_COMMON_WRITE_TABLE
         for call in family.repository_calls
     )
+    functions = {
+        node.name: node
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    calls_by_function = {
+        name: {
+            call.func.id
+            for call in ast.walk(function)
+            if isinstance(call, ast.Call)
+            and isinstance(call.func, ast.Name)
+            and call.func.id in functions
+        }
+        for name, function in functions.items()
+    }
+    write_closure = set(expected)
+    while True:
+        callers = {
+            name
+            for name, callees in calls_by_function.items()
+            if callees & write_closure
+        }
+        expanded = write_closure | callers
+        if expanded == write_closure:
+            break
+        write_closure = expanded
+    assert "_execute_prepared" in write_closure
+    assert "execute_unit_of_work" in write_closure
     locally_caught_write_helpers: list[int] = []
     for node in ast.walk(tree):
         if (
             not isinstance(node, ast.Call)
             or not isinstance(node.func, ast.Name)
-            or node.func.id not in expected
+            or node.func.id not in write_closure
         ):
             continue
-        ancestor = parents.get(node)
-        while ancestor is not None and not isinstance(ancestor, ast.FunctionDef):
-            if isinstance(ancestor, ast.Try):
-                locally_caught_write_helpers.append(node.lineno)
-                break
-            ancestor = parents.get(ancestor)
+        catchers = _call_local_exception_catchers(node, parents)
+        if (
+            node.func.id == "_execute_prepared"
+            and _call_enclosing_function_name(node, parents) == "execute_unit_of_work"
+            and len(catchers) == 1
+            and isinstance(catchers[0], ast.Try)
+        ):
+            # This one catcher is the required transaction coordinator: it
+            # retires the lease and rolls back, then refuses or re-raises.
+            continue
+        if catchers:
+            locally_caught_write_helpers.append(node.lineno)
+    decorated_write_functions = [
+        function.lineno
+        for name, function in functions.items()
+        if name in write_closure and function.decorator_list
+    ]
     assert dynamic_calls == []
     assert wildcard_calls == []
     assert locally_caught_calls == []
     assert locally_caught_write_helpers == []
+    assert decorated_write_functions == []
     assert actual == expected
     assert catalogued == set(unit_of_work._M2_REPOSITORY_WRITE_CALLS)
+
+
+@pytest.mark.parametrize(
+    "mutant_source",
+    (
+        """
+def mutant(_repository, connection, record, capability):
+    try:
+        _repository.store_execution_fact(connection, record, capability=capability)
+    except Exception:
+        pass
+""",
+        """
+def mutant(_repository, connection, record, capability):
+    try:
+        _repository.store_execution_fact(connection, record, capability=capability)
+    except* Exception:
+        pass
+""",
+        """
+def mutant(_repository, connection, record, capability):
+    with contextlib.suppress(Exception):
+        _repository.store_execution_fact(connection, record, capability=capability)
+""",
+        """
+async def mutant(_repository, connection, record, capability):
+    async with suppressor():
+        _repository.store_execution_fact(connection, record, capability=capability)
+""",
+    ),
+)
+def test_write_ratchet_detects_every_local_exception_catcher_form(
+    mutant_source: str,
+) -> None:
+    tree = ast.parse(mutant_source)
+    compile(tree, "<write-catcher-mutant>", "exec")
+    parents = {
+        child: parent
+        for parent in ast.walk(tree)
+        for child in ast.iter_child_nodes(parent)
+    }
+    call = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "store_execution_fact"
+    )
+    assert _call_has_local_exception_catcher(call, parents)
 
 
 @pytest.mark.parametrize(
