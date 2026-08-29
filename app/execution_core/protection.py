@@ -52,6 +52,7 @@ from .venue import (
     _ProtectionTransitionProof,
     _SymbolAuthoritySummary,
     _extract_protection_transition,
+    _m2_current_protection_scope_values,
 )
 
 
@@ -4807,6 +4808,101 @@ def project_protection_venue(
         transition,
         mandate,
         require_mandate_identity=True,
+    )
+
+
+def _m2_project_current_protection_venue(
+    book: _VenueRecoveryBook,
+    execution: _ExecutionSnapshot,
+    state: PositionProtectionState,
+) -> ProtectionVenueProjection:
+    """Project the exact bounded current venue view for a market-only reduction."""
+
+    if type(book) is not _VenueRecoveryBook:
+        raise TypeError("book must be exact VenueRecoveryBook")
+    if type(execution) is not _ExecutionSnapshot:
+        raise TypeError("execution must be exact ExecutionSnapshot")
+    if type(state) is not PositionProtectionState or not _state_is_authentic(state):
+        raise ValueError("protection state must be exact and authentic")
+    position = execution.position
+    scope = state.mandate.position_scope
+    source = _m2_current_protection_scope_values(book, execution, scope)
+    summary = source[0]
+    cursor = source[2]
+    if (
+        position.scope != scope
+        or execution.commitment != state.execution_commitment
+        or cursor.ordinal != state._cursor_ordinal
+        or cursor.head != state._cursor_head
+    ):
+        raise ValueError("current venue and protection owners do not agree")
+    mandate_commitment = _commit_mandate(state.mandate)
+    if not mandate_commitment:
+        raise ValueError("protection mandate is not authentic")
+    if type(position.basis_price_metadata) is _ReportedPrice:
+        basis_metadata_available = True
+        basis_price = position.basis_price_metadata
+    else:
+        basis_metadata_available = False
+        basis_price = _ReportedPrice(
+            _PriceUnits(0),
+            state.mandate.tick.scale,
+            state.mandate.tick,
+        )
+    basis_available = position.basis_authority is _BasisAuthority.AVAILABLE
+    cost_basis = (
+        position.cost_basis.value if position.cost_basis is not None else _Fraction(0)
+    )
+    projection_commitment = _projection_commitment(
+        state._cursor_ordinal,
+        state._cursor_head,
+        state._cursor_ordinal,
+        state._cursor_head,
+        execution.commitment,
+        execution.commitment,
+        summary.blocking_effect_count,
+        summary.blocking_buy_effect_count,
+        summary.blocking_effect_count,
+        summary.blocking_buy_effect_count,
+        source[3],
+        source[3],
+        source[4],
+        source[4],
+        scope,
+        mandate_commitment,
+        position.raw_quantity,
+        position.root_count,
+        basis_available,
+        cost_basis,
+        basis_metadata_available,
+        basis_price,
+        execution.integrity,
+    )
+    return _new_protection_venue_projection(
+        state._cursor_ordinal,
+        state._cursor_head,
+        state._cursor_ordinal,
+        state._cursor_head,
+        execution.commitment,
+        execution.commitment,
+        summary.blocking_effect_count,
+        summary.blocking_buy_effect_count,
+        summary.blocking_effect_count,
+        summary.blocking_buy_effect_count,
+        source[3],
+        source[3],
+        source[4],
+        source[4],
+        scope,
+        mandate_commitment,
+        position.raw_quantity,
+        position.root_count,
+        basis_available,
+        cost_basis,
+        basis_metadata_available,
+        basis_price,
+        execution.integrity,
+        projection_commitment,
     )
 
 

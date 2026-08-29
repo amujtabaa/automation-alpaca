@@ -260,6 +260,196 @@ def _matching_broker_evidence(
     )
 
 
+def test_public_venue_operation_delegates_to_the_m2_kernel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    book, execution = recovery_fixtures._seed_needs_review(capacity=4)
+    item = _matching_broker_evidence(
+        source="m2-public-kernel",
+        root="m2-public-kernel-root",
+    )
+    sentinel = object()
+    calls: list[tuple[object, object, object]] = []
+
+    def shared_kernel(state: object, selected: object, proof: object) -> object:
+        calls.append((state, selected, proof))
+        assert selected is execution
+        assert proof.item is item
+        assert proof.mode == "REFERENCE"
+        return sentinel
+
+    monkeypatch.setattr(venue_module, "_m2_apply_venue_input", shared_kernel)
+
+    assert _public_apply_venue_recovery_input(book, execution, item) is sentinel
+    assert len(calls) == 1
+    state, _, proof = calls[0]
+    assert state.book is book
+    assert proof.source_state_commitment == state.commitment
+
+
+def test_direct_venue_proof_excludes_unbound_input_history() -> None:
+    book, execution = recovery_fixtures._seed_needs_review(capacity=4)
+    item = _matching_broker_evidence(
+        source="m2-direct-proof",
+        root="m2-direct-proof-root",
+    )
+    noise = _matching_broker_evidence(
+        source="m2-unbound-noise",
+        root="m2-unbound-noise-root",
+    )
+    ledger, by_id, by_semantic, by_fact = venue_module._append_input_proof(book, noise)
+    noisy_book = venue_module._copy_book_with_bootstrap_values(
+        book,
+        _input_ledger=ledger,
+        _input_by_id=by_id,
+        _direct_input_by_semantic=by_semantic,
+        _first_input_by_fact=by_fact,
+    )
+
+    state = venue_module._m2_venue_state_from_book(book)
+    proof = venue_module._m2_venue_observation_from_direct_evidence(
+        state,
+        item,
+        retained_item=None,
+        retained_input_bytes=None,
+        retained_outcome_bytes=None,
+        retained_fact_item=None,
+        retained_fact_input_bytes=None,
+        retained_fact_outcome_bytes=None,
+    )
+    direct = venue_module._m2_venue_state_from_direct_proof(state, proof)
+    noisy_state = venue_module._m2_venue_state_from_book(noisy_book)
+    noisy_proof = venue_module._m2_venue_observation_from_direct_evidence(
+        noisy_state,
+        item,
+        retained_item=None,
+        retained_input_bytes=None,
+        retained_outcome_bytes=None,
+        retained_fact_item=None,
+        retained_fact_input_bytes=None,
+        retained_fact_outcome_bytes=None,
+    )
+    noisy_direct = venue_module._m2_venue_state_from_direct_proof(
+        noisy_state,
+        noisy_proof,
+    )
+
+    assert direct.commitment == noisy_direct.commitment
+    expected = venue_module._m2_apply_venue_input(direct, execution, proof)
+    actual = venue_module._m2_apply_venue_input(noisy_direct, execution, noisy_proof)
+    assert actual == expected
+
+    object.__setattr__(noisy_proof, "commitment", b"\xff" * 32)
+    with pytest.raises(ValueError, match="proof is not authentic"):
+        venue_module._m2_apply_venue_input(noisy_direct, execution, noisy_proof)
+
+
+def test_direct_venue_observation_decides_exactly_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    book, execution = recovery_fixtures._seed_needs_review(capacity=4)
+    item = _matching_broker_evidence(
+        source="m2-direct-single-decision",
+        root="m2-direct-single-decision-root",
+    )
+    state = venue_module._m2_venue_state_from_book(book)
+    proof = venue_module._m2_venue_observation_from_direct_evidence(
+        state,
+        item,
+        retained_item=None,
+        retained_input_bytes=None,
+        retained_outcome_bytes=None,
+        retained_fact_item=None,
+        retained_fact_input_bytes=None,
+        retained_fact_outcome_bytes=None,
+    )
+    original = venue_module._m2_apply_venue_input
+    calls: list[tuple[object, object, object]] = []
+
+    def counted_kernel(
+        selected_state: object,
+        selected_execution: object,
+        selected_proof: object,
+    ) -> object:
+        calls.append((selected_state, selected_execution, selected_proof))
+        return original(selected_state, selected_execution, selected_proof)
+
+    monkeypatch.setattr(venue_module, "_m2_apply_venue_input", counted_kernel)
+
+    result = venue_module._m2_apply_venue_input_from_direct_observation(
+        state,
+        execution,
+        proof,
+    )
+
+    assert result.disposition is VenueRecoveryDisposition.APPLIED
+    assert len(calls) == 1
+    assert calls[0][1:] == (execution, proof)
+
+
+def test_direct_venue_proof_retains_the_first_fact_owner_separately() -> None:
+    book, execution = recovery_fixtures._seed_needs_review(capacity=4)
+    first_item = _matching_broker_evidence(
+        source="m2-direct-fact-owner",
+        root="m2-direct-fact-owner-root",
+    )
+    first = _public_apply_venue_recovery_input(book, execution, first_item)
+    assert first.disposition is VenueRecoveryDisposition.APPLIED
+
+    changed = replace(
+        first_item,
+        input_id=VenueInputId("m2-direct-fact-owner-conflict"),
+        evidence_digest=b"\xc2" * 32,
+    )
+    expected = _public_apply_venue_recovery_input(
+        first.book,
+        first.execution,
+        changed,
+    )
+    assert expected.disposition is VenueRecoveryDisposition.RECONCILIATION_REQUIRED
+
+    state = venue_module._m2_venue_state_from_book(first.book)
+    proof = venue_module._m2_venue_observation_from_direct_evidence(
+        state,
+        changed,
+        retained_item=None,
+        retained_input_bytes=None,
+        retained_outcome_bytes=None,
+        retained_fact_item=first_item,
+        retained_fact_input_bytes=b"retained-fact-input",
+        retained_fact_outcome_bytes=b"retained-fact-outcome",
+    )
+    actual = venue_module._m2_apply_venue_input_from_direct_observation(
+        state,
+        first.execution,
+        proof,
+    )
+    assert actual.disposition is expected.disposition
+    assert actual.quantity_delta == expected.quantity_delta
+    assert actual.execution == expected.execution
+    assert actual.book.reconciliations == expected.book.reconciliations
+    assert actual.book.broker_coverage_for_leg(
+        recovery_fixtures.LEG_A
+    ) == expected.book.broker_coverage_for_leg(recovery_fixtures.LEG_A)
+
+    omitted = venue_module._m2_venue_observation_from_direct_evidence(
+        state,
+        changed,
+        retained_item=None,
+        retained_input_bytes=None,
+        retained_outcome_bytes=None,
+        retained_fact_item=None,
+        retained_fact_input_bytes=None,
+        retained_fact_outcome_bytes=None,
+    )
+    omitted_result = venue_module._m2_apply_venue_input_from_direct_observation(
+        state,
+        first.execution,
+        omitted,
+    )
+    assert omitted_result.book.reconciliations != expected.book.reconciliations
+
+
 def test_cross_symbol_catch_up_after_human_attestation_is_indexed() -> None:
     book, aapl_execution = recovery_fixtures._seed_needs_review(capacity=4)
     registered, msft_scope, stale_msft, _ = _register_msft_effect(
@@ -1558,6 +1748,8 @@ def test_hydration_rejects_a_coordinated_cross_symbol_catch_up_rewrite() -> None
             advanced.book.execution_reconciliations,
             advanced.book._registry_transition_head_commitment,
             foreign_generation_scope,
+            advanced.book.execution_registry_count,
+            advanced.book.execution_registry_commitment,
         )
 
     omitted_inputs = tuple(
@@ -2366,11 +2558,29 @@ def test_registry_transition_proof_rejects_contradictions_and_chain_forks() -> N
         (resolved,),
         proof.commitment,
         book.scope,
+        resolved.resulting_registry_count,
+        resolved.resulting_registry_commitment,
     )
     with pytest.raises(ValueError, match="input order"):
-        validate_chain((proof,), (), (resolved,), proof.commitment, book.scope)
+        validate_chain(
+            (proof,),
+            (),
+            (resolved,),
+            proof.commitment,
+            book.scope,
+            resolved.resulting_registry_count,
+            resolved.resulting_registry_commitment,
+        )
     with pytest.raises(ValueError, match="length"):
-        validate_chain((), (record,), (resolved,), None, book.scope)
+        validate_chain(
+            (),
+            (record,),
+            (resolved,),
+            None,
+            book.scope,
+            resolved.resulting_registry_count,
+            resolved.resulting_registry_commitment,
+        )
     with pytest.raises(TypeError, match="proof type"):
         validate_chain(
             (object(),),
@@ -2378,6 +2588,8 @@ def test_registry_transition_proof_rejects_contradictions_and_chain_forks() -> N
             (resolved,),
             proof.commitment,
             book.scope,
+            resolved.resulting_registry_count,
+            resolved.resulting_registry_commitment,
         )
     shadow_record = venue_module.VenueInputRecord(
         input_id=resolved_item.input_id,
@@ -2390,6 +2602,8 @@ def test_registry_transition_proof_rejects_contradictions_and_chain_forks() -> N
             (resolved,),
             proof.commitment,
             book.scope,
+            resolved.resulting_registry_count,
+            resolved.resulting_registry_commitment,
         )
     with pytest.raises(ValueError, match="predecessor or outcome"):
         validate_chain(
@@ -2398,6 +2612,8 @@ def test_registry_transition_proof_rejects_contradictions_and_chain_forks() -> N
             (resolved,),
             proof.commitment,
             book.scope,
+            resolved.resulting_registry_count,
+            resolved.resulting_registry_commitment,
         )
     with pytest.raises(ValueError, match="head"):
         validate_chain(
@@ -2406,6 +2622,8 @@ def test_registry_transition_proof_rejects_contradictions_and_chain_forks() -> N
             (resolved,),
             b"\x93" * 32,
             book.scope,
+            resolved.resulting_registry_count,
+            resolved.resulting_registry_commitment,
         )
 
     higher_item = replace(
@@ -2444,7 +2662,7 @@ def test_registry_transition_proof_rejects_contradictions_and_chain_forks() -> N
         item=lower_item,
         outcome=lower_outcome,
     )
-    with pytest.raises(ValueError, match="regresses"):
+    with pytest.raises(ValueError, match="predecessor head"):
         validate_chain(
             (higher_proof, lower_proof),
             (
@@ -2460,4 +2678,6 @@ def test_registry_transition_proof_rejects_contradictions_and_chain_forks() -> N
             (higher_outcome, lower_outcome),
             lower_proof.commitment,
             book.scope,
+            lower_outcome.resulting_registry_count,
+            lower_outcome.resulting_registry_commitment,
         )

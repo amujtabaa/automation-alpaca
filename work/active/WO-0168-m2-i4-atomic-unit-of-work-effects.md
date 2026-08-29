@@ -40,6 +40,8 @@ allowed_paths:
   - tests/execution_core/test_persistence_unit_of_work.py
   - tests/execution_core/test_persistence_crash_atomicity.py
   - tests/execution_core/test_import_boundary.py
+  - tests/execution_core/test_protection.py
+  - tests/execution_core/test_venue_binding_recovery.py
   - tests_gated/execution_core/test_persistence_unit_of_work_sqlite.py
   - work/active/WO-0168-m2-i4-atomic-unit-of-work-effects.md
   - work/completed/keep/WO-0168-m2-i4-atomic-unit-of-work-effects.md
@@ -203,6 +205,53 @@ only when tied to a contract clause or demonstrated failure.
 Any DDL-byte change is an explicit stop requiring a new digest/byte-count/schema-blob/test packet
 and separate human approval. No successor activation until WO-0168 is independently accepted,
 closed, clean, pushed, and local equals origin.
+
+### Consolidated changed-DDL stop — six manifestations, one ownership correction
+
+Pure implementation reached one relational design stop before any SQLite execution. The accepted
+schema still protects the older write sequence, while the frozen WO-0168 operation protocol writes
+an owner before its optional root route, admits NORMAL effects while protection is deliberately
+dormant, activates protection after a first economic fact, and records late-owner invalidation plus
+the resulting protection checkpoint in one transaction. Treat the following as one bounded DDL
+correction; do not split it into independent trigger exceptions:
+
+1. Make `acquisition_root_route` reference the existing root-independent unique venue-owner key.
+   Add one `BEFORE INSERT` guard requiring the retained owner root to be either `NULL` or the exact
+   routed root, and add an exact owner-key uniqueness/guard so that a rootless owner cannot acquire
+   a second route. Keep the route-to-root foreign key unchanged. This preserves immutable
+   ownership while allowing a root discovered after the owner to bind exactly once.
+2. Add one exact dormant-NORMAL branch to both current-controller admission triggers for
+   `venue_effect` and `dispatch_claim`: controller `CONSISTENT`, aggregate quantity zero, exact
+   controller/protection versions, and all six protection stream coordinates `NULL`. Keep active
+   NORMAL and HARD_BAIL branches unchanged.
+3. Narrowly permit the first all-`NULL` to all-non-`NULL` NORMAL protection activation while the
+   controller quantity is positive only when the controller is `CONSISTENT`, the new stream
+   generation is its live generation, and the expected head is exact. Continue refusing
+   active-to-active and active-to-dormant transfer while positive, partial coordinates, and every
+   quarantined transfer. Preserve the accepted existing ability to transfer while flat and
+   `CONSISTENT`; ADR-021 excludes transfer only while positive.
+4. Make one late owner produce one immediate controller advance in the owner trigger, preserving
+   database-owned quarantine even if a lower-level caller stops before inserting evidence. Make
+   the invalidation trigger skip its controller advance only when that evidence exactly names a
+   retained owner admitted after closure; ordinary invalidation still advances. Thus the matching
+   evidence for each first or later late owner cannot double-advance. Generation unresolved-count
+   maintenance remains unconditional.
+5. Add one UPDATE-only NORMAL protection-currentness branch for an exact
+   `UNRESOLVED_VENUE_QUARANTINED` final controller head when the active coordinates and authority
+   class are unchanged and a retained late owner has matching INVALIDATION evidence against the
+   INVALIDATED effect in that scope. Do not relax protection INSERT, stale heads, coordinate
+   transfer, or any other quarantine class.
+
+The failure-capable fresh-file controls are staged, but not executed, in
+`tests_gated/execution_core/test_persistence_unit_of_work_sqlite.py`. They require rootless routing
+to succeed, prebound-root mismatch to fail, flat dormant effect plus claim to succeed, nonflat or
+stale dormant admission to fail, first positive activation to succeed while negative activation
+and positive transfer still fail, flat consistent transfer/release to remain accepted, and each
+first/later late owner to advance exactly once with dormant and active protection catching up only
+after matching invalidation evidence at the exact final controller head. The DDL remains
+byte-for-byte unchanged and the human
+execution flag remains `False` until a separately authorized schema candidate is produced, freshly
+reviewed, hash-bound, and explicitly approved for fresh-file execution.
 
 ## Done
 

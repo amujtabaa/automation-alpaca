@@ -61,6 +61,7 @@ from .position import (
     _bind_execution_reconciliation_cursor,
     _project_execution_registry,
     _require_execution_components,
+    apply_broker_execution_fact as _apply_broker_execution_fact,
 )
 from .values import Quantity
 
@@ -237,6 +238,7 @@ def _require_exact_venue_recovery_input(item: object) -> None:
         ObserveVenueStatus,
         CloseAcceptanceSet,
         CatchUpExecutionRegistry,
+        _BrokerExecutionRegistryCatchUp,
         _BootstrapTargetRegistryInput,
         IngestHumanAttestedFill,
         ReleaseVenueLeg,
@@ -1645,6 +1647,12 @@ def _new_acquisition_fact_relation(
 def _acquisition_fact_source_item_is_exact(item: object) -> bool:
     from .recovery import RecordBrokerFillEvidence, RecordBrokerRevisionEvidence
 
+    if type(item) is _BrokerExecutionRegistryCatchUp:
+        return type(cast(_BrokerExecutionRegistryCatchUp, item).fact) in {
+            BrokerFillFact,
+            BrokerTradeCorrectFact,
+            BrokerTradeBustFact,
+        }
     if type(item) is RecordBrokerFillEvidence:
         return type(cast(RecordBrokerFillEvidence, item).fact) is BrokerFillFact
     return type(item) is RecordBrokerRevisionEvidence and type(
@@ -1693,7 +1701,9 @@ def _acquisition_fact_proof_is_authentic(value: object) -> bool:
     ):
         return False
     exact_source = cast(
-        RecordBrokerFillEvidence | RecordBrokerRevisionEvidence,
+        RecordBrokerFillEvidence
+        | RecordBrokerRevisionEvidence
+        | _BrokerExecutionRegistryCatchUp,
         source_item,
     )
     for digest in (
@@ -1739,7 +1749,9 @@ def _canonical_acquisition_fact_observation_matches(
     from .recovery import RecordBrokerFillEvidence, RecordBrokerRevisionEvidence
 
     source = cast(
-        RecordBrokerFillEvidence | RecordBrokerRevisionEvidence,
+        RecordBrokerFillEvidence
+        | RecordBrokerRevisionEvidence
+        | _BrokerExecutionRegistryCatchUp,
         proof._source_item,
     )
     observation = execution.seen_facts.get(proof.fact_key)
@@ -1844,7 +1856,9 @@ def _mint_acquisition_fact_proof(
     ):
         return None
     exact_item = cast(
-        RecordBrokerFillEvidence | RecordBrokerRevisionEvidence,
+        RecordBrokerFillEvidence
+        | RecordBrokerRevisionEvidence
+        | _BrokerExecutionRegistryCatchUp,
         item,
     )
     fact = exact_item.fact
@@ -2201,6 +2215,89 @@ class CatchUpExecutionRegistry:
         return self.target_checkpoint.position_scope
 
 
+_DIRECT_BROKER_FACT_CLASSIFICATIONS = (
+    FirstObservationClassification.APPLIED_AVAILABLE,
+    FirstObservationClassification.APPLIED_BASIS_PENDING,
+    FirstObservationClassification.APPLIED_OVERFILL_QUARANTINE,
+    FirstObservationClassification.APPLIED_PENDING_OVERFILL,
+)
+
+
+@dataclass(frozen=True, slots=True)
+class _BrokerExecutionRegistryCatchUp:
+    """Owner-derived registry catch-up for one direct broker execution fact."""
+
+    input_id: VenueInputId
+    target_checkpoint: VenueExecutionCheckpoint
+    prior_account_registry_count: int
+    prior_account_registry_commitment: bytes
+    prior_source_binding: VenueExecutionBinding
+    source_execution: ExecutionSnapshot
+    fact: BrokerFillFact | BrokerTradeCorrectFact | BrokerTradeBustFact
+    effect_id: EffectId
+    leg_key: VenueLegKey
+
+    def __post_init__(self) -> None:
+        _require("input_id", self.input_id, VenueInputId)
+        if type(self.target_checkpoint) is not VenueExecutionCheckpoint:
+            raise TypeError("target_checkpoint must be exact")
+        if (
+            type(self.prior_account_registry_count) is not int
+            or self.prior_account_registry_count < 0
+        ):
+            raise ValueError("prior registry count must be non-negative")
+        _require_digest(
+            "prior_account_registry_commitment",
+            self.prior_account_registry_commitment,
+        )
+        if type(self.prior_source_binding) is not VenueExecutionBinding:
+            raise TypeError("prior_source_binding must be exact")
+        if type(self.source_execution) is not ExecutionSnapshot:
+            raise TypeError("source_execution must be exact")
+        if type(self.fact) not in {
+            BrokerFillFact,
+            BrokerTradeCorrectFact,
+            BrokerTradeBustFact,
+        }:
+            raise TypeError("fact must be an exact broker execution fact")
+        _require("effect_id", self.effect_id, EffectId)
+        _require("leg_key", self.leg_key, VenueLegKey)
+        observation = self.source_execution.seen_facts.get(self.fact.key)
+        if (
+            self.target_checkpoint.registry_count != self.prior_account_registry_count
+            or self.target_checkpoint.registry_commitment
+            != self.prior_account_registry_commitment
+            or self.target_checkpoint.binding != self.prior_source_binding
+            or self.target_checkpoint.position_scope != self.fact.scope.position_scope
+            or self.source_execution.position.scope
+            != self.target_checkpoint.position_scope
+            or self.source_execution.seen_facts.count
+            != self.prior_account_registry_count + 1
+            or not self.source_execution.seen_facts.has_prefix(
+                self.prior_account_registry_count,
+                self.prior_account_registry_commitment,
+            )
+            or self.source_execution.seen_facts.observation_at(
+                self.prior_account_registry_count
+            )
+            != observation
+            or observation is None
+            or observation.fact != self.fact
+            or observation.classification not in _DIRECT_BROKER_FACT_CLASSIFICATIONS
+            or self.fact.scope.order_id != self.leg_key.order_id
+            or self.fact.scope.broker != self.leg_key.broker
+            or self.fact.scope.environment != self.leg_key.environment
+            or self.fact.scope.account != self.leg_key.account
+        ):
+            raise ValueError(
+                "broker catch-up must retain one exact owner-attributed observation"
+            )
+
+    @property
+    def target_scope(self) -> PositionScope:
+        return self.target_checkpoint.position_scope
+
+
 def _require_effect_shape(value: object) -> BrokerEffect:
     _require("effect", value, BrokerEffect)
     effect = cast(BrokerEffect, value)
@@ -2339,6 +2436,7 @@ def _require_input_record_shape(value: object) -> VenueInputRecord:
         ObserveVenueStatus,
         CloseAcceptanceSet,
         CatchUpExecutionRegistry,
+        _BrokerExecutionRegistryCatchUp,
         _BootstrapTargetRegistryInput,
         IngestHumanAttestedFill,
         ReleaseVenueLeg,
@@ -2355,9 +2453,14 @@ def _require_input_record_shape(value: object) -> VenueInputRecord:
     return record
 
 
-def _catch_up_input_commitment(item: CatchUpExecutionRegistry) -> bytes:
-    if type(item) is not CatchUpExecutionRegistry:
-        raise TypeError("item must be the exact CatchUpExecutionRegistry type")
+def _catch_up_input_commitment(
+    item: CatchUpExecutionRegistry | _BrokerExecutionRegistryCatchUp,
+) -> bytes:
+    if type(item) not in {
+        CatchUpExecutionRegistry,
+        _BrokerExecutionRegistryCatchUp,
+    }:
+        raise TypeError("item must be one exact registry catch-up type")
     return _commit_parts(
         b"execution-core/catch-up-input/v1",
         *_input_command_identity(item, include_input_id=True),
@@ -2588,8 +2691,139 @@ class _UnresolvedRegistryAdvanceOutcome:
         return self.resulting_source_binding.integrity_bits
 
 
+@dataclass(frozen=True, slots=True)
+class _AttributedRegistryAdvanceOutcome:
+    """New source-symbol truth bound to one exact retained venue owner."""
+
+    input_id: VenueInputId
+    command_commitment: bytes
+    target_checkpoint: VenueExecutionCheckpoint
+    prior_account_registry_count: int
+    prior_account_registry_commitment: bytes
+    prior_source_binding: VenueExecutionBinding
+    resulting_source_binding: VenueExecutionBinding
+    effect_id: EffectId
+    leg_key: VenueLegKey
+    fact: BrokerFillFact | BrokerTradeCorrectFact | BrokerTradeBustFact
+    observation_classification: FirstObservationClassification
+    resulting_registry_count: int
+    resulting_registry_commitment: bytes
+    reason: str
+
+    def __post_init__(self) -> None:
+        _validate_registry_outcome_common(
+            input_id=self.input_id,
+            command_commitment=self.command_commitment,
+            target_checkpoint=self.target_checkpoint,
+            resulting_registry_count=self.resulting_registry_count,
+            resulting_registry_commitment=self.resulting_registry_commitment,
+            reason=self.reason,
+        )
+        if (
+            type(self.prior_account_registry_count) is not int
+            or self.prior_account_registry_count < 0
+            or self.prior_account_registry_count + 1 != self.resulting_registry_count
+        ):
+            raise ValueError(
+                "attributed registry advance must append exactly one observation"
+            )
+        _require_digest(
+            "prior_account_registry_commitment",
+            self.prior_account_registry_commitment,
+        )
+        if type(self.prior_source_binding) is not VenueExecutionBinding:
+            raise TypeError(
+                "prior_source_binding must be the exact VenueExecutionBinding type"
+            )
+        if type(self.resulting_source_binding) is not VenueExecutionBinding:
+            raise TypeError(
+                "resulting_source_binding must be the exact VenueExecutionBinding type"
+            )
+        _require("effect_id", self.effect_id, EffectId)
+        _require("leg_key", self.leg_key, VenueLegKey)
+        if type(self.fact) not in {
+            BrokerFillFact,
+            BrokerTradeCorrectFact,
+            BrokerTradeBustFact,
+        }:
+            raise TypeError("fact must be one exact broker execution fact")
+        if (
+            type(self.observation_classification) is not FirstObservationClassification
+            or self.observation_classification
+            not in _DIRECT_BROKER_FACT_CLASSIFICATIONS
+        ):
+            raise ValueError(
+                "attributed registry advance requires an applied classification"
+            )
+        if (
+            self.target_checkpoint.registry_count != self.prior_account_registry_count
+            or self.target_checkpoint.registry_commitment
+            != self.prior_account_registry_commitment
+            or self.target_checkpoint.binding != self.prior_source_binding
+            or self.prior_source_binding.position_scope
+            != self.resulting_source_binding.position_scope
+            or self.target_checkpoint.position_scope
+            != self.resulting_source_binding.position_scope
+            or self.fact.scope.position_scope
+            != self.resulting_source_binding.position_scope
+            or self.fact.key.broker != self.leg_key.broker
+            or self.fact.key.environment != self.leg_key.environment
+            or self.fact.key.account != self.leg_key.account
+            or self.fact.scope.order_id != self.leg_key.order_id
+        ):
+            raise ValueError(
+                "attributed registry advance must retain one exact owner scope"
+            )
+
+    @property
+    def canonical_applied(self) -> bool:
+        return True
+
+    @property
+    def attribution_resolved(self) -> bool:
+        return True
+
+    @property
+    def position_scope(self) -> PositionScope:
+        return self.resulting_source_binding.position_scope
+
+    @property
+    def prior_registry_count(self) -> int:
+        return self.prior_account_registry_count
+
+    @property
+    def prior_registry_commitment(self) -> bytes:
+        return self.prior_account_registry_commitment
+
+    @property
+    def prior_position_commitment(self) -> bytes:
+        return self.prior_source_binding.position_commitment
+
+    @property
+    def resulting_position_commitment(self) -> bytes:
+        return self.resulting_source_binding.position_commitment
+
+    @property
+    def prior_root_heads_commitment(self) -> bytes:
+        return self.prior_source_binding.root_heads_commitment
+
+    @property
+    def resulting_root_heads_commitment(self) -> bytes:
+        return self.resulting_source_binding.root_heads_commitment
+
+    @property
+    def prior_integrity_bits(self) -> int:
+        return self.prior_source_binding.integrity_bits
+
+    @property
+    def resulting_integrity_bits(self) -> int:
+        return self.resulting_source_binding.integrity_bits
+
+
 ExecutionRegistryReconciliationRecord = (
-    _ResolvedRegistryProjectionOutcome | _UnresolvedRegistryAdvanceOutcome
+    _ResolvedRegistryProjectionOutcome
+    | _UnresolvedRegistryAdvanceOutcome
+    | _AttributedRegistryAdvanceOutcome
 )
 
 
@@ -2597,6 +2831,7 @@ class _RegistryTransitionKind(Enum):
     RESOLVED_TARGET_PROJECTION = "RESOLVED_TARGET_PROJECTION"
     RESOLVED_CURSOR_PROJECTION = "RESOLVED_CURSOR_PROJECTION"
     UNRESOLVED_SOURCE_ADVANCE = "UNRESOLVED_SOURCE_ADVANCE"
+    ATTRIBUTED_SOURCE_ADVANCE = "ATTRIBUTED_SOURCE_ADVANCE"
 
 
 @dataclass(frozen=True, slots=True)
@@ -2632,16 +2867,35 @@ def _registry_transition_proof_for(
     ordinal: int,
     predecessor_commitment: bytes | None,
     venue_scope: VenueScope,
-    item: CatchUpExecutionRegistry,
+    item: CatchUpExecutionRegistry | _BrokerExecutionRegistryCatchUp,
     outcome: ExecutionRegistryReconciliationRecord,
 ) -> _RegistryTransitionProof:
     if type(venue_scope) is not VenueScope:
         raise TypeError("venue_scope must be the exact VenueScope type")
-    if type(item) is not CatchUpExecutionRegistry:
-        raise TypeError("registry transition requires an exact CatchUp command")
+    if type(item) not in {
+        CatchUpExecutionRegistry,
+        _BrokerExecutionRegistryCatchUp,
+    }:
+        raise TypeError("registry transition requires one exact CatchUp command")
+    if type(item) is CatchUpExecutionRegistry:
+        CatchUpExecutionRegistry.__post_init__(item)
+    else:
+        _BrokerExecutionRegistryCatchUp.__post_init__(
+            cast(_BrokerExecutionRegistryCatchUp, item)
+        )
+    if type(outcome) is _ResolvedRegistryProjectionOutcome:
+        _ResolvedRegistryProjectionOutcome.__post_init__(outcome)
+    elif type(outcome) is _UnresolvedRegistryAdvanceOutcome:
+        _UnresolvedRegistryAdvanceOutcome.__post_init__(outcome)
+    elif type(outcome) is _AttributedRegistryAdvanceOutcome:
+        _AttributedRegistryAdvanceOutcome.__post_init__(outcome)
+    else:
+        raise TypeError("registry transition outcome type is not admitted")
     if item.prior_source_binding is None:
         raise ValueError("admitted CatchUp transition requires a prior source binding")
     if type(outcome) is _ResolvedRegistryProjectionOutcome:
+        if type(item) is not CatchUpExecutionRegistry:
+            raise TypeError("registry projection requires ordinary CatchUp provenance")
         kind = (
             _RegistryTransitionKind.RESOLVED_CURSOR_PROJECTION
             if outcome.projection_kind
@@ -2666,6 +2920,8 @@ def _registry_transition_proof_for(
             )
         resulting_target_binding = item.target_checkpoint.binding
     elif type(outcome) is _UnresolvedRegistryAdvanceOutcome:
+        if type(item) is not CatchUpExecutionRegistry:
+            raise TypeError("unresolved advance requires ordinary CatchUp provenance")
         kind = _RegistryTransitionKind.UNRESOLVED_SOURCE_ADVANCE
         resulting_source_binding = outcome.resulting_source_binding
         if (
@@ -2680,8 +2936,34 @@ def _registry_transition_proof_for(
             if item.target_scope == resulting_source_binding.position_scope
             else item.target_checkpoint.binding
         )
+    elif type(outcome) is _AttributedRegistryAdvanceOutcome:
+        if type(item) is not _BrokerExecutionRegistryCatchUp:
+            raise TypeError("attributed advance requires broker-owner provenance")
+        kind = _RegistryTransitionKind.ATTRIBUTED_SOURCE_ADVANCE
+        resulting_source_binding = outcome.resulting_source_binding
+        observation = item.source_execution.seen_facts.get(item.fact.key)
+        if (
+            item.prior_account_registry_count != outcome.prior_account_registry_count
+            or item.prior_account_registry_commitment
+            != outcome.prior_account_registry_commitment
+            or item.prior_source_binding != outcome.prior_source_binding
+            or item.effect_id != outcome.effect_id
+            or item.leg_key != outcome.leg_key
+            or item.fact != outcome.fact
+            or observation is None
+            or observation.fact != outcome.fact
+            or observation.classification is not outcome.observation_classification
+            or item.source_execution.seen_facts.count
+            != outcome.resulting_registry_count
+            or item.source_execution.seen_facts.commitment
+            != outcome.resulting_registry_commitment
+            or _execution_binding_for_snapshot(item.source_execution)
+            != resulting_source_binding
+        ):
+            raise ValueError("attributed advance contradicts its exact owner proof")
+        resulting_target_binding = resulting_source_binding
     else:
-        raise TypeError("registry transition outcome type is not admitted")
+        raise AssertionError("closed registry outcome union was not exhausted")
     return _RegistryTransitionProof(
         ordinal=ordinal,
         predecessor_commitment=predecessor_commitment,
@@ -2707,48 +2989,82 @@ def _validate_registry_transition_chain(
     outcomes: tuple[ExecutionRegistryReconciliationRecord, ...],
     head_commitment: bytes | None,
     venue_scope: VenueScope,
+    current_registry_count: int | None,
+    current_registry_commitment: bytes | None,
 ) -> None:
     input_by_id = {record.input_id: record.item for record in inputs}
     catch_up_input_ids = tuple(
         record.input_id
         for record in inputs
-        if type(record.item) is CatchUpExecutionRegistry
+        if type(record.item)
+        in {
+            CatchUpExecutionRegistry,
+            _BrokerExecutionRegistryCatchUp,
+        }
     )
     if catch_up_input_ids != tuple(outcome.input_id for outcome in outcomes):
         raise ValueError("CatchUp input order contradicts registry outcomes")
     if len(proofs) != len(outcomes):
         raise ValueError("registry transition chain length contradicts outcomes")
     predecessor: bytes | None = None
-    prior_result_count = -1
+    prior_result_count: int | None = None
     prior_result_commitment: bytes | None = None
     for ordinal, (proof, outcome) in enumerate(zip(proofs, outcomes), start=1):
         if type(proof) is not _RegistryTransitionProof:
             raise TypeError("registry transition proof type is not admitted")
         item = input_by_id.get(outcome.input_id)
-        if type(item) is not CatchUpExecutionRegistry:
+        if type(item) not in {
+            CatchUpExecutionRegistry,
+            _BrokerExecutionRegistryCatchUp,
+        }:
             raise ValueError("registry transition lacks its exact CatchUp input")
         expected = _registry_transition_proof_for(
             ordinal=ordinal,
             predecessor_commitment=predecessor,
             venue_scope=venue_scope,
-            item=cast(CatchUpExecutionRegistry, item),
+            item=cast(
+                CatchUpExecutionRegistry | _BrokerExecutionRegistryCatchUp,
+                item,
+            ),
             outcome=outcome,
         )
         if proof != expected:
             raise ValueError(
                 "registry transition chain contradicts its predecessor or outcome"
             )
-        if outcome.resulting_registry_count < prior_result_count or (
-            outcome.resulting_registry_count == prior_result_count
-            and prior_result_commitment is not None
-            and outcome.resulting_registry_commitment != prior_result_commitment
+        if prior_result_count is not None and (
+            proof.prior_account_registry_count < prior_result_count
+            or (
+                proof.prior_account_registry_count == prior_result_count
+                and proof.prior_account_registry_commitment != prior_result_commitment
+            )
         ):
-            raise ValueError("registry transition order regresses its account head")
+            raise ValueError("registry transition predecessor head regresses")
+        same_head = bool(
+            outcome.resulting_registry_count == proof.prior_account_registry_count
+            and outcome.resulting_registry_commitment
+            == proof.prior_account_registry_commitment
+        )
+        if same_head != (
+            proof.kind
+            in {
+                _RegistryTransitionKind.RESOLVED_TARGET_PROJECTION,
+                _RegistryTransitionKind.RESOLVED_CURSOR_PROJECTION,
+            }
+        ):
+            raise ValueError(
+                "registry transition kind contradicts its account-head advance"
+            )
         prior_result_count = outcome.resulting_registry_count
         prior_result_commitment = outcome.resulting_registry_commitment
         predecessor = proof.commitment
     if predecessor != head_commitment:
         raise ValueError("registry transition chain head does not close exactly")
+    if outcomes and (
+        current_registry_count != prior_result_count
+        or current_registry_commitment != prior_result_commitment
+    ):
+        raise ValueError("registry transition chain does not close at current registry")
 
 
 class _ProtectionTransitionSourceKind(str, Enum):
@@ -2916,6 +3232,12 @@ class VenueRecoveryTransition:
     def __init_subclass__(cls, **kwargs: object) -> None:
         del cls, kwargs
         raise TypeError("VenueRecoveryTransition cannot be subclassed")
+
+    def _m2_derivative_commitment(self) -> bytes:
+        """Return one owner-authenticated derivative binding to peer owners."""
+
+        _m2_venue_transition_source_item(self)
+        return self._protection_proof_commitment
 
 
 class _BootstrapSourceKind(str, Enum):
@@ -4514,6 +4836,7 @@ class VenueRecoveryBook:
             not in {
                 _ResolvedRegistryProjectionOutcome,
                 _UnresolvedRegistryAdvanceOutcome,
+                _AttributedRegistryAdvanceOutcome,
             }
             for entry in self.execution_reconciliations
         ):
@@ -6027,6 +6350,8 @@ class VenueRecoveryBook:
             self.execution_reconciliations,
             self._registry_transition_head_commitment,
             self.scope,
+            self.execution_registry_count,
+            self.execution_registry_commitment,
         )
         expected_unresolved_account_count = sum(
             1
@@ -6087,11 +6412,17 @@ class VenueRecoveryBook:
         )
         for registry_record in self.execution_reconciliations:
             source = input_by_id.get(registry_record.input_id)
-            if type(source) is not CatchUpExecutionRegistry:
+            if type(source) not in {
+                CatchUpExecutionRegistry,
+                _BrokerExecutionRegistryCatchUp,
+            }:
                 raise ValueError(
                     "execution reconciliation requires exact catch-up provenance"
                 )
-            source = cast(CatchUpExecutionRegistry, source)
+            source = cast(
+                CatchUpExecutionRegistry | _BrokerExecutionRegistryCatchUp,
+                source,
+            )
             execution = source.source_execution
             scope = execution.position.scope
             if (
@@ -6152,6 +6483,10 @@ class VenueRecoveryBook:
             )
             resulting_source_binding = _execution_binding_for_snapshot(execution)
             if type(registry_record) is _ResolvedRegistryProjectionOutcome:
+                if type(source) is not CatchUpExecutionRegistry:
+                    raise ValueError(
+                        "resolved projection requires ordinary catch-up provenance"
+                    )
                 if (
                     source.prior_account_registry_count != execution.seen_facts.count
                     or source.prior_account_registry_commitment
@@ -6164,6 +6499,66 @@ class VenueRecoveryBook:
                 ):
                     raise ValueError(
                         "resolved catch-up outcome lacks exact target/source proof"
+                    )
+                continue
+            if type(registry_record) is _AttributedRegistryAdvanceOutcome:
+                if type(source) is not _BrokerExecutionRegistryCatchUp:
+                    raise ValueError(
+                        "attributed advance requires broker-owner provenance"
+                    )
+                source_prior = _replay_venue_hydration_snapshot(
+                    scope,
+                    execution.seen_facts,
+                    authorized_human_facts=authorized_human_facts,
+                    authorized_corroborations=authorized_corroborations,
+                    limit=source.prior_account_registry_count,
+                )
+                prior_source_binding = _execution_binding_for_snapshot(source_prior)
+                observation = execution.seen_facts.get(source.fact.key)
+                owner = owners.get(source.leg_key)
+                effect = effects.get(source.effect_id)
+                if (
+                    source.target_scope != scope
+                    or source.prior_account_registry_count + 1
+                    != execution.seen_facts.count
+                    or source.prior_account_registry_count
+                    != registry_record.prior_account_registry_count
+                    or source.prior_account_registry_commitment
+                    != registry_record.prior_account_registry_commitment
+                    or source.prior_source_binding != prior_source_binding
+                    or registry_record.prior_source_binding != prior_source_binding
+                    or registry_record.resulting_source_binding
+                    != resulting_source_binding
+                    or registry_record.effect_id != source.effect_id
+                    or registry_record.leg_key != source.leg_key
+                    or registry_record.fact != source.fact
+                    or observation is None
+                    or observation.fact != source.fact
+                    or observation.classification
+                    is not registry_record.observation_classification
+                    or observation.classification
+                    not in _DIRECT_BROKER_FACT_CLASSIFICATIONS
+                    or owner is None
+                    or effect is None
+                    or owner.effect_id != source.effect_id
+                    or owner.leg_key != source.leg_key
+                    or effect.scope.position_scope != scope
+                    or effect.scope.symbol_id != source.fact.scope.symbol_id
+                    or effect.scope.side is not source.fact.scope.side
+                    or not _direct_acquisition_relation_matches_book(
+                        self,
+                        self.scope.generation,
+                        scope,
+                        effect.scope.request_occurrence_id,
+                        source.effect_id,
+                        source.leg_key,
+                        source.fact.root_key,
+                    )
+                    or _execution_binding_for_snapshot(target_result)
+                    != resulting_source_binding
+                ):
+                    raise ValueError(
+                        "attributed catch-up outcome lacks exact owner/source proof"
                     )
                 continue
             if type(registry_record) is not _UnresolvedRegistryAdvanceOutcome:
@@ -6505,6 +6900,7 @@ class VenueRecoveryBook:
             RecordBrokerRevisionEvidence,
             ReleaseVenueLeg,
             CatchUpExecutionRegistry,
+            _BrokerExecutionRegistryCatchUp,
         )
         for input_record in self.input_records:
             item = input_record.item
@@ -6522,6 +6918,23 @@ class VenueRecoveryBook:
                 raise ValueError(
                     "recovery input requires a direct outcome or backward alias"
                 )
+        rebuilt_correlations = _audit_rebuild_acquisition_correlation_index(
+            self.scope,
+            self._effect_by_request_occurrence,
+            self._effect_by_id,
+            self._owner_by_leg,
+            self.human_coverages,
+            self.broker_coverages,
+            self.input_records,
+            self.execution_reconciliations,
+        )
+        if (
+            rebuilt_correlations.commitment
+            != self._acquisition_correlation_by_root.commitment
+        ):
+            raise ValueError(
+                "acquisition correlation index contradicts exact retained provenance"
+            )
 
     def _validate_effect_edges(
         self,
@@ -8036,8 +8449,14 @@ def _protection_position_scope(
     execution: ExecutionSnapshot,
     item: object,
 ) -> PositionScope:
-    if type(item) is CatchUpExecutionRegistry:
-        return item.target_scope
+    if type(item) in {
+        CatchUpExecutionRegistry,
+        _BrokerExecutionRegistryCatchUp,
+    }:
+        return cast(
+            CatchUpExecutionRegistry | _BrokerExecutionRegistryCatchUp,
+            item,
+        ).target_scope
     if type(item) is RequestedEffect:
         return PositionScope(
             broker=book.scope.broker,
@@ -8104,6 +8523,45 @@ def _protection_scope_values(
         view.execution_binding_matches,
         view.account_reconciliation_clear,
     )
+
+
+def _m2_current_protection_scope_values(
+    book: object,
+    execution: object,
+    position_scope: object,
+) -> tuple[
+    _SymbolAuthoritySummary,
+    VenueExecutionBinding | None,
+    _ProtectionCursor,
+    bool,
+    bool,
+]:
+    """Return one bounded owner-validated current projection for protection."""
+
+    if type(book) is not VenueRecoveryBook:
+        raise TypeError("book must be exact VenueRecoveryBook")
+    if type(execution) is not ExecutionSnapshot:
+        raise TypeError("execution must be exact ExecutionSnapshot")
+    if type(position_scope) is not PositionScope:
+        raise TypeError("position_scope must be exact PositionScope")
+    exact_book = cast(VenueRecoveryBook, book)
+    exact_execution = cast(ExecutionSnapshot, execution)
+    exact_scope = cast(PositionScope, position_scope)
+    context = exact_book.project_acquisition_context(exact_execution, exact_scope)
+    values = _protection_scope_values(exact_book, exact_execution, exact_scope)
+    cursor = values[2]
+    if (
+        not context.matches_current(
+            exact_book,
+            exact_execution,
+            exact_book.scope.generation,
+            exact_scope,
+        )
+        or context._source_protection_cursor_ordinal != cursor.ordinal
+        or context._source_protection_cursor_head != cursor.head
+    ):
+        raise ValueError("current venue protection projection is not exact")
+    return values
 
 
 def _set_protection_cursor(
@@ -8812,6 +9270,46 @@ def _m2_venue_transition_source_item(
     return source
 
 
+@dataclass(frozen=True, slots=True)
+class _M2AcceptanceClosurePersistence:
+    """Exact relational projection of one owner-authenticated acceptance closure."""
+
+    effect_id: EffectId
+    claim_occurrence_id: ClaimOccurrenceId | None
+    proof_kind: str
+    evidence_digest: bytes
+
+    def __post_init__(self) -> None:
+        _require("effect_id", self.effect_id, EffectId)
+        if self.claim_occurrence_id is not None:
+            _require(
+                "claim_occurrence_id",
+                self.claim_occurrence_id,
+                ClaimOccurrenceId,
+            )
+        if type(self.proof_kind) is not str or not self.proof_kind:
+            raise TypeError("acceptance closure proof kind must be exact text")
+        if type(self.evidence_digest) is not bytes or len(self.evidence_digest) != 32:
+            raise ValueError("acceptance closure evidence digest must be exact")
+
+
+def _m2_venue_transition_acceptance_closure(
+    transition: object,
+) -> _M2AcceptanceClosurePersistence | None:
+    """Project raw closure authority without exporting its reducer command type."""
+
+    source = _m2_venue_transition_source_item(transition)
+    if type(source) is not CloseAcceptanceSet:
+        return None
+    closure = cast(CloseAcceptanceSet, source)
+    return _M2AcceptanceClosurePersistence(
+        closure.effect_id,
+        closure.proof.claim_occurrence_id,
+        closure.proof.kind.value,
+        closure.proof.evidence_digest,
+    )
+
+
 def _protection_transition_proof_is_authentic(
     proof: _ProtectionTransitionProof,
 ) -> bool:
@@ -9170,12 +9668,19 @@ def _evolve_acquisition_correlation_index(
 
     from .recovery import RecordBrokerFillEvidence
 
-    if type(item) is not RecordBrokerFillEvidence:
+    if type(item) not in {
+        RecordBrokerFillEvidence,
+        _BrokerExecutionRegistryCatchUp,
+    }:
         return retained
-    observed = resulting_execution.seen_facts.get(item.fact.key)
+    exact_item = cast(
+        RecordBrokerFillEvidence | _BrokerExecutionRegistryCatchUp,
+        item,
+    )
+    observed = resulting_execution.seen_facts.get(exact_item.fact.key)
     if (
         observed is None
-        or observed.fact != item.fact
+        or observed.fact != exact_item.fact
         or observed.classification
         not in {
             FirstObservationClassification.APPLIED_AVAILABLE,
@@ -9191,9 +9696,9 @@ def _evolve_acquisition_correlation_index(
         effect_by_request_occurrence,
         effect_by_id,
         owner_by_leg,
-        effect_id=item.effect_id,
-        leg_key=item.leg_key,
-        root_key=item.fact.root_key,
+        effect_id=exact_item.effect_id,
+        leg_key=exact_item.leg_key,
+        root_key=exact_item.fact.root_key,
     )
     return _append_acquisition_correlation(retained, entry)
 
@@ -9205,6 +9710,10 @@ def _audit_rebuild_acquisition_correlation_index(
     owner_by_leg: _PersistentKeyMap[VenueIdentityOwner],
     human_coverages: tuple[object, ...],
     broker_coverages: tuple[object, ...],
+    input_records: tuple[VenueInputRecord, ...],
+    execution_reconciliations: tuple[ExecutionRegistryReconciliationRecord, ...],
+    *,
+    defer_invalid_provenance: bool = False,
 ) -> _PersistentKeyMap[_AcquisitionCorrelationEntry]:
     """Rebuild the derived direct root map only in the explicit slow audit fold."""
 
@@ -9213,37 +9722,72 @@ def _audit_rebuild_acquisition_correlation_index(
     retained: _PersistentKeyMap[_AcquisitionCorrelationEntry] = (
         _PersistentKeyMap.empty()
     )
-    for coverage in broker_coverages:
-        if type(coverage) is not _BrokerCoverage:
-            raise TypeError("broker coverage audit value has the wrong type")
-        retained = _append_acquisition_correlation(
-            retained,
-            _acquisition_correlation_entry_for(
+
+    def append_entry(
+        current: _PersistentKeyMap[_AcquisitionCorrelationEntry],
+        *,
+        effect_id: EffectId,
+        leg_key: VenueLegKey,
+        root_key: RootFillKey,
+    ) -> _PersistentKeyMap[_AcquisitionCorrelationEntry]:
+        try:
+            entry = _acquisition_correlation_entry_for(
                 venue_scope,
                 effect_by_request_occurrence,
                 effect_by_id,
                 owner_by_leg,
-                effect_id=coverage.effect_id,
-                leg_key=coverage.leg_key,
-                root_key=coverage.fact.root_key,
-            ),
+                effect_id=effect_id,
+                leg_key=leg_key,
+                root_key=root_key,
+            )
+        except ValueError:
+            if defer_invalid_provenance:
+                return current
+            raise
+        return _append_acquisition_correlation(current, entry)
+
+    for coverage in broker_coverages:
+        if type(coverage) is not _BrokerCoverage:
+            raise TypeError("broker coverage audit value has the wrong type")
+        retained = append_entry(
+            retained,
+            effect_id=coverage.effect_id,
+            leg_key=coverage.leg_key,
+            root_key=coverage.fact.root_key,
         )
     for coverage in human_coverages:
         if type(coverage) is not HumanCoverage:
             raise TypeError("human coverage audit value has the wrong type")
         if coverage.broker_corroborated and coverage.broker_fact is not None:
-            retained = _append_acquisition_correlation(
+            retained = append_entry(
                 retained,
-                _acquisition_correlation_entry_for(
-                    venue_scope,
-                    effect_by_request_occurrence,
-                    effect_by_id,
-                    owner_by_leg,
-                    effect_id=coverage.effect_id,
-                    leg_key=coverage.leg_key,
-                    root_key=coverage.broker_fact.root_key,
-                ),
+                effect_id=coverage.effect_id,
+                leg_key=coverage.leg_key,
+                root_key=coverage.broker_fact.root_key,
             )
+    outcomes_by_input = {
+        outcome.input_id: outcome for outcome in execution_reconciliations
+    }
+    for record in input_records:
+        if type(record.item) is not _BrokerExecutionRegistryCatchUp:
+            continue
+        item = cast(_BrokerExecutionRegistryCatchUp, record.item)
+        outcome = outcomes_by_input.get(record.input_id)
+        if (
+            type(outcome) is not _AttributedRegistryAdvanceOutcome
+            or outcome.fact != item.fact
+            or outcome.effect_id != item.effect_id
+            or outcome.leg_key != item.leg_key
+        ):
+            raise ValueError(
+                "direct broker fact lacks its exact attributed registry outcome"
+            )
+        retained = append_entry(
+            retained,
+            effect_id=item.effect_id,
+            leg_key=item.leg_key,
+            root_key=item.fact.root_key,
+        )
     return retained
 
 
@@ -9775,6 +10319,7 @@ def _append_execution_reconciliation_value(
     if type(record) not in {
         _ResolvedRegistryProjectionOutcome,
         _UnresolvedRegistryAdvanceOutcome,
+        _AttributedRegistryAdvanceOutcome,
     }:
         raise TypeError(
             "execution reconciliation append must be an exact registry outcome"
@@ -10381,6 +10926,7 @@ def _audit_hydrate_book(
         not in {
             _ResolvedRegistryProjectionOutcome,
             _UnresolvedRegistryAdvanceOutcome,
+            _AttributedRegistryAdvanceOutcome,
         }
         for entry in execution_reconciliations
     ):
@@ -10907,6 +11453,22 @@ def _audit_hydrate_book(
         "_account_unclaimed_requested_effect_ids",
         account_unclaimed_requested_effect_ids,
     )
+    acquisition_correlation_by_root = _audit_rebuild_acquisition_correlation_index(
+        result.scope,
+        result._effect_by_request_occurrence,
+        result._effect_by_id,
+        result._owner_by_leg,
+        result.human_coverages,
+        result.broker_coverages,
+        result.input_records,
+        result.execution_reconciliations,
+        defer_invalid_provenance=True,
+    )
+    object.__setattr__(
+        result,
+        "_acquisition_correlation_by_root",
+        acquisition_correlation_by_root,
+    )
     result._validate_full()
     if not result._execution_reconciliation_cursor_matches(execution):
         raise ValueError(
@@ -11101,6 +11663,24 @@ def _audit_hydrate_book(
         }
         for record in input_records:
             source_fact = getattr(record.item, "fact", None)
+            if type(record.item) is _BrokerExecutionRegistryCatchUp:
+                registry_outcome = result._execution_reconciliation_for_input(
+                    record.input_id
+                )
+                observation = (
+                    None
+                    if source_fact is None
+                    else execution.seen_facts.get(source_fact.key)
+                )
+                if (
+                    type(registry_outcome) is _AttributedRegistryAdvanceOutcome
+                    and observation is not None
+                    and observation.fact == source_fact
+                    and observation.classification
+                    is not FirstObservationClassification.RECONCILIATION_REQUIRED
+                ):
+                    attributed_broker_facts.add(source_fact.key)
+                continue
             if not isinstance(
                 source_fact,
                 (BrokerTradeCorrectFact, BrokerTradeBustFact),
@@ -11206,19 +11786,6 @@ def _audit_hydrate_book(
             "M1 audit hydration requires an exact reconstruction of the supplied "
             "opaque checkpoint; replacement loading remains deferred"
         )
-    acquisition_correlation_by_root = _audit_rebuild_acquisition_correlation_index(
-        result.scope,
-        result._effect_by_request_occurrence,
-        result._effect_by_id,
-        result._owner_by_leg,
-        result.human_coverages,
-        result.broker_coverages,
-    )
-    object.__setattr__(
-        result,
-        "_acquisition_correlation_by_root",
-        acquisition_correlation_by_root,
-    )
     return result
 
 
@@ -11917,6 +12484,7 @@ _VENUE_INPUTS = (
     ObserveVenueStatus,
     CloseAcceptanceSet,
     CatchUpExecutionRegistry,
+    _BrokerExecutionRegistryCatchUp,
     _BootstrapTargetRegistryInput,
 )
 
@@ -11943,7 +12511,7 @@ def _execution_is_exact_genesis(execution: ExecutionSnapshot) -> bool:
 def _apply_execution_registry_catch_up(
     book: VenueRecoveryBook,
     target: ExecutionSnapshot,
-    item: CatchUpExecutionRegistry,
+    item: CatchUpExecutionRegistry | _BrokerExecutionRegistryCatchUp,
     evolve: _BookEvolver,
     transition: _TransitionFactory,
 ) -> VenueRecoveryTransition:
@@ -12171,6 +12739,109 @@ def _apply_execution_registry_catch_up(
             disposition,
             item=item,
             quantity_delta=0,
+        )
+
+    if type(item) is _BrokerExecutionRegistryCatchUp:
+        exact_item = cast(_BrokerExecutionRegistryCatchUp, item)
+        owner = book.owner(exact_item.leg_key)
+        effect = book._current_effect(exact_item.effect_id)
+        observation = source.seen_facts.get(exact_item.fact.key)
+        applied = _apply_broker_execution_fact(
+            target.position,
+            target.integrity,
+            target.root_heads,
+            target.seen_facts,
+            exact_item.fact,
+        )
+        expected_source = ExecutionSnapshot(
+            applied.position,
+            applied.integrity,
+            applied.root_heads,
+            applied.seen_facts,
+        )
+        if (
+            source_scope != target_scope
+            or not book._execution_pair_matches_fast(target)
+            or book.execution_registry_count != target.seen_facts.count
+            or book.execution_registry_commitment != target.seen_facts.commitment
+            or source.seen_facts.count != target.seen_facts.count + 1
+            or not source.seen_facts.has_prefix(
+                target.seen_facts.count,
+                target.seen_facts.commitment,
+            )
+            or not source_binding_changed
+            or applied.disposition.value != "APPLIED"
+            or expected_source != source
+            or observation is None
+            or observation.fact != exact_item.fact
+            or observation.classification
+            is FirstObservationClassification.RECONCILIATION_REQUIRED
+            or owner is None
+            or effect is None
+            or owner.effect_id != exact_item.effect_id
+            or owner.leg_key != exact_item.leg_key
+            or effect.scope.position_scope != target_scope
+            or effect.scope.symbol_id != exact_item.fact.scope.symbol_id
+            or effect.scope.side is not exact_item.fact.scope.side
+        ):
+            return transition(
+                book,
+                target,
+                target,
+                VenueRecoveryDisposition.RECONCILIATION_REQUIRED,
+                item=item,
+                quantity_delta=0,
+            )
+        resulting_binding = _execution_binding_for_snapshot(source)
+        attributed_record = _AttributedRegistryAdvanceOutcome(
+            input_id=exact_item.input_id,
+            command_commitment=_catch_up_input_commitment(exact_item),
+            target_checkpoint=exact_item.target_checkpoint,
+            prior_account_registry_count=target.seen_facts.count,
+            prior_account_registry_commitment=target.seen_facts.commitment,
+            prior_source_binding=source_binding,
+            resulting_source_binding=resulting_binding,
+            effect_id=exact_item.effect_id,
+            leg_key=exact_item.leg_key,
+            fact=exact_item.fact,
+            observation_classification=observation.classification,
+            resulting_registry_count=source.seen_facts.count,
+            resulting_registry_commitment=source.seen_facts.commitment,
+            reason="canonical broker fact retained exact venue-owner attribution",
+        )
+        registry_proof = _registry_transition_proof_for(
+            ordinal=book_transition_count + 1,
+            predecessor_commitment=book._registry_transition_head_commitment,
+            venue_scope=book.scope,
+            item=exact_item,
+            outcome=attributed_record,
+        )
+        next_execution = _bind_execution_reconciliation_cursor(
+            source,
+            transition_count=book_transition_count + 1,
+            transition_head=registry_proof.commitment,
+            account_reconciliation_required=account_reconciliation_required,
+        )
+        next_book = evolve(
+            book,
+            target,
+            next_execution,
+            item=exact_item,
+            execution_registry_count=source.seen_facts.count,
+            execution_registry_commitment=source.seen_facts.commitment,
+            _binding_upserts=(_execution_binding_for_snapshot(next_execution),),
+            _execution_reconciliation_append=attributed_record,
+            canonical_economic_input=True,
+        )
+        return transition(
+            next_book,
+            target,
+            next_execution,
+            VenueRecoveryDisposition.APPLIED,
+            item=exact_item,
+            quantity_delta=(
+                next_execution.position.raw_quantity - target.position.raw_quantity
+            ),
         )
 
     if source.seen_facts.count == book.execution_registry_count:
@@ -12519,11 +13190,23 @@ def _apply_venue_input(
             == prior_execution.seen_facts.commitment
             and current.execution_binding(prior_execution.position.scope) is None
         )
+        catch_up_item = (
+            cast(
+                CatchUpExecutionRegistry | _BrokerExecutionRegistryCatchUp,
+                item,
+            )
+            if type(item)
+            in {
+                CatchUpExecutionRegistry,
+                _BrokerExecutionRegistryCatchUp,
+            }
+            else None
+        )
         catching_up_registry = bool(
-            isinstance(item, CatchUpExecutionRegistry)
+            catch_up_item is not None
             and current._execution_binding_matches(prior_execution)
             and resulting_execution.seen_facts.commitment
-            == item.source_execution.seen_facts.commitment
+            == catch_up_item.source_execution.seen_facts.commitment
             and changes.get("execution_registry_commitment")
             == resulting_execution.seen_facts.commitment
             and changes.get("execution_registry_count")
@@ -12684,15 +13367,21 @@ def _apply_venue_input(
                 unresolved_execution_reconciliation_count_by_scope,
                 execution_reconciliation_append,
             )
-            if type(item) is not CatchUpExecutionRegistry:
+            if type(item) not in {
+                CatchUpExecutionRegistry,
+                _BrokerExecutionRegistryCatchUp,
+            }:
                 raise TypeError(
-                    "registry reconciliation requires its exact CatchUp command"
+                    "registry reconciliation requires one exact CatchUp command"
                 )
             registry_transition = _registry_transition_proof_for(
                 ordinal=registry_transition_ledger.length + 1,
                 predecessor_commitment=registry_transition_head_commitment,
                 venue_scope=current.scope,
-                item=cast(CatchUpExecutionRegistry, item),
+                item=cast(
+                    CatchUpExecutionRegistry | _BrokerExecutionRegistryCatchUp,
+                    item,
+                ),
                 outcome=execution_reconciliation_append,
             )
             registry_transition_ledger = registry_transition_ledger.append(
@@ -13285,6 +13974,7 @@ def _apply_venue_input(
             IngestHumanAttestedFill,
             RecordBrokerFillEvidence,
             RecordBrokerRevisionEvidence,
+            _BrokerExecutionRegistryCatchUp,
         }
         if (
             economic_command
@@ -13555,11 +14245,17 @@ def _apply_venue_input(
                 item=item,
                 quantity_delta=0,
             )
-    if isinstance(item, CatchUpExecutionRegistry):
+    if type(item) in {
+        CatchUpExecutionRegistry,
+        _BrokerExecutionRegistryCatchUp,
+    }:
         return _apply_execution_registry_catch_up(
             book,
             execution,
-            item,
+            cast(
+                CatchUpExecutionRegistry | _BrokerExecutionRegistryCatchUp,
+                item,
+            ),
             evolve,
             transition,
         )
@@ -13844,6 +14540,761 @@ def _apply_venue_input(
     )
 
 
+@dataclass(frozen=True, slots=True, init=False)
+class _M2VenueState:
+    """Owner-sealed venue state used by the public and direct-proof routes."""
+
+    book: VenueRecoveryBook
+    commitment: bytes
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise TypeError("_M2VenueState is owner-constructed")
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        del cls, kwargs
+        raise TypeError("_M2VenueState cannot be subclassed")
+
+
+@dataclass(frozen=True, slots=True, init=False)
+class _M2VenueObservationProof:
+    """Exact operation-keyed evidence for one venue/recovery reduction."""
+
+    mode: str
+    source_state_commitment: bytes
+    serving_state_commitment: bytes
+    item: object
+    retained_item: object | None
+    retained_input_bytes: bytes | None
+    retained_outcome_bytes: bytes | None
+    retained_fact_item: object | None
+    retained_fact_input_bytes: bytes | None
+    retained_fact_outcome_bytes: bytes | None
+    retained_coverage_items: tuple[object | None, object | None, object | None]
+    retained_coverage_input_bytes: tuple[bytes | None, bytes | None, bytes | None]
+    retained_coverage_outcome_bytes: tuple[bytes | None, bytes | None, bytes | None]
+    commitment: bytes
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise TypeError("_M2VenueObservationProof is owner-constructed")
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        del cls, kwargs
+        raise TypeError("_M2VenueObservationProof cannot be subclassed")
+
+
+def _require_m2_venue_operation_item(item: object) -> None:
+    from .recovery import (
+        IngestHumanAttestedFill,
+        RecordBrokerFillEvidence,
+        RecordBrokerRevisionEvidence,
+        ReleaseVenueLeg,
+    )
+
+    if type(item) not in {
+        RecordTransportOutcome,
+        RecoverClaimedEffect,
+        DiscoverVenueLeg,
+        ObserveVenueStatus,
+        IngestHumanAttestedFill,
+        ReleaseVenueLeg,
+        RecordBrokerFillEvidence,
+        RecordBrokerRevisionEvidence,
+    }:
+        raise TypeError("M2 venue operation item has the wrong exact type")
+
+
+def _is_m2_venue_operation_item(item: object) -> bool:
+    try:
+        _require_m2_venue_operation_item(item)
+    except TypeError:
+        return False
+    return True
+
+
+def _m2_venue_state_commitment(book: VenueRecoveryBook) -> bytes:
+    return _commit_parts(
+        b"execution-core/m2-venue-state/v1",
+        _protection_book_commitment(book),
+    )
+
+
+def _m2_venue_state_from_book(book: VenueRecoveryBook) -> _M2VenueState:
+    """Project one exact in-memory owner into the shared venue-kernel state."""
+
+    if type(book) is not VenueRecoveryBook:
+        raise TypeError("book must be exact VenueRecoveryBook")
+    result = object.__new__(_M2VenueState)
+    object.__setattr__(result, "book", book)
+    object.__setattr__(result, "commitment", _m2_venue_state_commitment(book))
+    return result
+
+
+def _m2_venue_state_is_authentic(state: object) -> bool:
+    if type(state) is not _M2VenueState:
+        return False
+    try:
+        return bool(
+            type(state.book) is VenueRecoveryBook
+            and state.commitment == _m2_venue_state_commitment(state.book)
+        )
+    except (AttributeError, TypeError, ValueError):
+        return False
+
+
+def _m2_scoped_input_book(
+    book: VenueRecoveryBook,
+    retained_item: object | None,
+    retained_fact_item: object | None,
+    retained_coverage_items: tuple[object | None, object | None, object | None],
+) -> VenueRecoveryBook:
+    """Retain only the fixed operation-keyed semantic owners."""
+
+    empty_sequence: _PersistentSequence[VenueInputRecord] = _PersistentSequence.empty()
+    empty_map: _PersistentKeyMap[VenueInputRecord] = _PersistentKeyMap.empty()
+    scoped = _copy_book_with_bootstrap_values(
+        book,
+        _input_ledger=empty_sequence,
+        _input_by_id=empty_map,
+        _direct_input_by_semantic=empty_map,
+        _first_input_by_fact=empty_map,
+    )
+    retained: list[object] = []
+    for candidate in (retained_fact_item, retained_item, *retained_coverage_items):
+        if candidate is None:
+            continue
+        _require_m2_venue_operation_item(candidate)
+        retained_input_id = getattr(candidate, "input_id", None)
+        prior = next(
+            (
+                item
+                for item in retained
+                if getattr(item, "input_id", None) == retained_input_id
+            ),
+            None,
+        )
+        if prior is not None:
+            if prior != candidate:
+                raise ValueError(
+                    "retained venue owners disagree for one input identity"
+                )
+            continue
+        retained.append(candidate)
+    for selected in retained:
+        ledger, by_id, by_semantic, by_fact = _append_input_proof(scoped, selected)
+        scoped = _copy_book_with_bootstrap_values(
+            scoped,
+            _input_ledger=ledger,
+            _input_by_id=by_id,
+            _direct_input_by_semantic=by_semantic,
+            _first_input_by_fact=by_fact,
+        )
+    return scoped
+
+
+def _validate_m2_direct_retained_evidence(
+    item: object,
+    retained_item: object | None,
+    retained_input_bytes: bytes | None,
+    retained_outcome_bytes: bytes | None,
+    retained_fact_item: object | None,
+    retained_fact_input_bytes: bytes | None,
+    retained_fact_outcome_bytes: bytes | None,
+    retained_coverage_items: tuple[object | None, object | None, object | None],
+    retained_coverage_input_bytes: tuple[bytes | None, bytes | None, bytes | None],
+    retained_coverage_outcome_bytes: tuple[bytes | None, bytes | None, bytes | None],
+) -> None:
+    """Validate the fixed command, fact, and coverage semantic identities."""
+
+    from .recovery import (
+        IngestHumanAttestedFill,
+        RecordBrokerFillEvidence,
+        RecordBrokerRevisionEvidence,
+    )
+
+    def coverage_interval(value: object) -> tuple[VenueLegKey, int, int] | None:
+        if type(value) is IngestHumanAttestedFill:
+            human = cast(IngestHumanAttestedFill, value)
+            return (
+                human.fact.leg_key,
+                human.fact.prior_cumulative_quantity.value,
+                human.fact.resulting_cumulative_quantity.value,
+            )
+        if type(value) is RecordBrokerFillEvidence:
+            broker_fill = cast(RecordBrokerFillEvidence, value)
+            return (
+                broker_fill.leg_key,
+                broker_fill.prior_cumulative_quantity.value,
+                broker_fill.resulting_cumulative_quantity.value,
+            )
+        if type(value) is RecordBrokerRevisionEvidence:
+            revision = cast(RecordBrokerRevisionEvidence, value)
+            return (
+                revision.leg_key,
+                revision.prior_venue_cumulative_quantity.value,
+                revision.resulting_venue_cumulative_quantity.value,
+            )
+        return None
+
+    for name, values in (
+        ("coverage items", retained_coverage_items),
+        ("coverage input bytes", retained_coverage_input_bytes),
+        ("coverage outcome bytes", retained_coverage_outcome_bytes),
+    ):
+        if type(values) is not tuple or len(values) != 3:
+            raise TypeError(f"retained venue {name} must be an exact three-slot tuple")
+
+    _require_m2_venue_operation_item(item)
+    item_input_id = getattr(item, "input_id", None)
+    if retained_item is None:
+        if retained_input_bytes is not None or retained_outcome_bytes is not None:
+            raise ValueError("absent semantic evidence cannot carry retained bytes")
+    else:
+        _require_m2_venue_operation_item(retained_item)
+        if (
+            _semantic_input_key(retained_item) != _semantic_input_key(item)
+            or getattr(retained_item, "input_id", None) == item_input_id
+            or type(retained_input_bytes) is not bytes
+            or not retained_input_bytes
+            or type(retained_outcome_bytes) is not bytes
+            or not retained_outcome_bytes
+        ):
+            raise ValueError("retained venue semantic evidence is not exact")
+
+    item_fact_key = getattr(getattr(item, "fact", None), "key", None)
+    if retained_fact_item is None:
+        if (
+            retained_fact_input_bytes is not None
+            or retained_fact_outcome_bytes is not None
+        ):
+            raise ValueError("absent fact evidence cannot carry retained bytes")
+    else:
+        _require_m2_venue_operation_item(retained_fact_item)
+        retained_fact_key = getattr(
+            getattr(retained_fact_item, "fact", None),
+            "key",
+            None,
+        )
+        if (
+            type(item_fact_key) is not ExecutionFactKey
+            or type(retained_fact_key) is not ExecutionFactKey
+            or retained_fact_key != item_fact_key
+            or getattr(retained_fact_item, "input_id", None) == item_input_id
+            or type(retained_fact_input_bytes) is not bytes
+            or not retained_fact_input_bytes
+            or type(retained_fact_outcome_bytes) is not bytes
+            or not retained_fact_outcome_bytes
+        ):
+            raise ValueError("retained venue fact evidence is not exact")
+
+    fact = getattr(item, "fact", None)
+    expected_root = getattr(fact, "root_key", None)
+    if type(expected_root) is not RootFillKey:
+        expected_root = None
+    expected_interval = coverage_interval(item)
+    expected_broker_fact = (
+        item_fact_key
+        if type(item) in {RecordBrokerFillEvidence, RecordBrokerRevisionEvidence}
+        and type(item_fact_key) is ExecutionFactKey
+        else None
+    )
+    expected = (expected_root, expected_interval, expected_broker_fact)
+    for index, (candidate, input_bytes, outcome_bytes) in enumerate(
+        zip(
+            retained_coverage_items,
+            retained_coverage_input_bytes,
+            retained_coverage_outcome_bytes,
+            strict=True,
+        )
+    ):
+        if candidate is None:
+            if input_bytes is not None or outcome_bytes is not None:
+                raise ValueError("absent coverage evidence cannot carry retained bytes")
+            continue
+        _require_m2_venue_operation_item(candidate)
+        candidate_fact = getattr(candidate, "fact", None)
+        candidate_identity: object | None
+        if index == 0:
+            candidate_identity = getattr(candidate_fact, "root_key", None)
+        elif index == 1:
+            candidate_identity = coverage_interval(candidate)
+        else:
+            candidate_identity = (
+                getattr(candidate_fact, "key", None)
+                if type(candidate)
+                in {RecordBrokerFillEvidence, RecordBrokerRevisionEvidence}
+                else None
+            )
+        if (
+            expected[index] is None
+            or candidate_identity != expected[index]
+            or getattr(candidate, "input_id", None) == item_input_id
+            or type(input_bytes) is not bytes
+            or not input_bytes
+            or type(outcome_bytes) is not bytes
+            or not outcome_bytes
+        ):
+            raise ValueError("retained venue coverage evidence is not exact")
+
+    retained_triplets = (
+        (retained_item, retained_input_bytes, retained_outcome_bytes),
+        (
+            retained_fact_item,
+            retained_fact_input_bytes,
+            retained_fact_outcome_bytes,
+        ),
+        *tuple(
+            zip(
+                retained_coverage_items,
+                retained_coverage_input_bytes,
+                retained_coverage_outcome_bytes,
+                strict=True,
+            )
+        ),
+    )
+    seen_by_input: dict[object, tuple[object, bytes | None, bytes | None]] = {}
+    for candidate, input_bytes, outcome_bytes in retained_triplets:
+        if candidate is None:
+            continue
+        candidate_input_id = getattr(candidate, "input_id", None)
+        prior = seen_by_input.get(candidate_input_id)
+        current = (candidate, input_bytes, outcome_bytes)
+        if prior is not None and prior != current:
+            raise ValueError("retained venue owners disagree for one input identity")
+        seen_by_input[candidate_input_id] = current
+
+
+def _m2_venue_observation_proof_commitment(
+    *,
+    mode: str,
+    source_state_commitment: bytes,
+    serving_state_commitment: bytes,
+    item: object,
+    retained_item: object | None,
+    retained_input_bytes: bytes | None,
+    retained_outcome_bytes: bytes | None,
+    retained_fact_item: object | None,
+    retained_fact_input_bytes: bytes | None,
+    retained_fact_outcome_bytes: bytes | None,
+    retained_coverage_items: tuple[object | None, object | None, object | None],
+    retained_coverage_input_bytes: tuple[bytes | None, bytes | None, bytes | None],
+    retained_coverage_outcome_bytes: tuple[bytes | None, bytes | None, bytes | None],
+) -> bytes:
+    return _commit_parts(
+        b"execution-core/m2-venue-observation-proof/v3",
+        _encode_text(mode),
+        source_state_commitment,
+        serving_state_commitment,
+        _canonical_value_commitment(item),
+        _canonical_value_commitment(retained_item),
+        _canonical_value_commitment(retained_input_bytes),
+        _canonical_value_commitment(retained_outcome_bytes),
+        _canonical_value_commitment(retained_fact_item),
+        _canonical_value_commitment(retained_fact_input_bytes),
+        _canonical_value_commitment(retained_fact_outcome_bytes),
+        _canonical_value_commitment(retained_coverage_items),
+        _canonical_value_commitment(retained_coverage_input_bytes),
+        _canonical_value_commitment(retained_coverage_outcome_bytes),
+    )
+
+
+def _new_m2_venue_observation_proof(
+    *,
+    mode: str,
+    source_state_commitment: bytes,
+    serving_state_commitment: bytes,
+    item: object,
+    retained_item: object | None,
+    retained_input_bytes: bytes | None,
+    retained_outcome_bytes: bytes | None,
+    retained_fact_item: object | None,
+    retained_fact_input_bytes: bytes | None,
+    retained_fact_outcome_bytes: bytes | None,
+    retained_coverage_items: tuple[object | None, object | None, object | None],
+    retained_coverage_input_bytes: tuple[bytes | None, bytes | None, bytes | None],
+    retained_coverage_outcome_bytes: tuple[bytes | None, bytes | None, bytes | None],
+) -> _M2VenueObservationProof:
+    commitment = _m2_venue_observation_proof_commitment(
+        mode=mode,
+        source_state_commitment=source_state_commitment,
+        serving_state_commitment=serving_state_commitment,
+        item=item,
+        retained_item=retained_item,
+        retained_input_bytes=retained_input_bytes,
+        retained_outcome_bytes=retained_outcome_bytes,
+        retained_fact_item=retained_fact_item,
+        retained_fact_input_bytes=retained_fact_input_bytes,
+        retained_fact_outcome_bytes=retained_fact_outcome_bytes,
+        retained_coverage_items=retained_coverage_items,
+        retained_coverage_input_bytes=retained_coverage_input_bytes,
+        retained_coverage_outcome_bytes=retained_coverage_outcome_bytes,
+    )
+    result = object.__new__(_M2VenueObservationProof)
+    for name, value in (
+        ("mode", mode),
+        ("source_state_commitment", source_state_commitment),
+        ("serving_state_commitment", serving_state_commitment),
+        ("item", item),
+        ("retained_item", retained_item),
+        ("retained_input_bytes", retained_input_bytes),
+        ("retained_outcome_bytes", retained_outcome_bytes),
+        ("retained_fact_item", retained_fact_item),
+        ("retained_fact_input_bytes", retained_fact_input_bytes),
+        ("retained_fact_outcome_bytes", retained_fact_outcome_bytes),
+        ("retained_coverage_items", retained_coverage_items),
+        ("retained_coverage_input_bytes", retained_coverage_input_bytes),
+        ("retained_coverage_outcome_bytes", retained_coverage_outcome_bytes),
+        ("commitment", commitment),
+    ):
+        object.__setattr__(result, name, value)
+    return result
+
+
+def _m2_venue_observation_from_book(
+    state: _M2VenueState,
+    item: object,
+) -> _M2VenueObservationProof:
+    if not _m2_venue_state_is_authentic(state):
+        raise ValueError("venue state is not authentic")
+    _require_m2_venue_operation_item(item)
+    return _new_m2_venue_observation_proof(
+        mode="REFERENCE",
+        source_state_commitment=state.commitment,
+        serving_state_commitment=state.commitment,
+        item=item,
+        retained_item=None,
+        retained_input_bytes=None,
+        retained_outcome_bytes=None,
+        retained_fact_item=None,
+        retained_fact_input_bytes=None,
+        retained_fact_outcome_bytes=None,
+        retained_coverage_items=(None, None, None),
+        retained_coverage_input_bytes=(None, None, None),
+        retained_coverage_outcome_bytes=(None, None, None),
+    )
+
+
+def _m2_venue_observation_from_direct_evidence(
+    state: _M2VenueState,
+    item: object,
+    *,
+    retained_item: object | None,
+    retained_input_bytes: bytes | None,
+    retained_outcome_bytes: bytes | None,
+    retained_fact_item: object | None,
+    retained_fact_input_bytes: bytes | None,
+    retained_fact_outcome_bytes: bytes | None,
+    retained_coverage_items: tuple[object | None, object | None, object | None] = (
+        None,
+        None,
+        None,
+    ),
+    retained_coverage_input_bytes: tuple[bytes | None, bytes | None, bytes | None] = (
+        None,
+        None,
+        None,
+    ),
+    retained_coverage_outcome_bytes: tuple[bytes | None, bytes | None, bytes | None] = (
+        None,
+        None,
+        None,
+    ),
+) -> _M2VenueObservationProof:
+    """Mint one proof from exact retained command, fact, and coverage evidence."""
+
+    if not _m2_venue_state_is_authentic(state):
+        raise ValueError("venue state is not authentic")
+    _require_m2_venue_operation_item(item)
+    _validate_m2_direct_retained_evidence(
+        item,
+        retained_item,
+        retained_input_bytes,
+        retained_outcome_bytes,
+        retained_fact_item,
+        retained_fact_input_bytes,
+        retained_fact_outcome_bytes,
+        retained_coverage_items,
+        retained_coverage_input_bytes,
+        retained_coverage_outcome_bytes,
+    )
+    scoped_book = _m2_scoped_input_book(
+        state.book,
+        retained_item,
+        retained_fact_item,
+        retained_coverage_items,
+    )
+    serving_state_commitment = _m2_venue_state_commitment(scoped_book)
+    return _new_m2_venue_observation_proof(
+        mode="DIRECT",
+        source_state_commitment=state.commitment,
+        serving_state_commitment=serving_state_commitment,
+        item=item,
+        retained_item=retained_item,
+        retained_input_bytes=retained_input_bytes,
+        retained_outcome_bytes=retained_outcome_bytes,
+        retained_fact_item=retained_fact_item,
+        retained_fact_input_bytes=retained_fact_input_bytes,
+        retained_fact_outcome_bytes=retained_fact_outcome_bytes,
+        retained_coverage_items=retained_coverage_items,
+        retained_coverage_input_bytes=retained_coverage_input_bytes,
+        retained_coverage_outcome_bytes=retained_coverage_outcome_bytes,
+    )
+
+
+def _m2_venue_observation_proof_is_authentic(
+    proof: object,
+) -> bool:
+    if type(proof) is not _M2VenueObservationProof:
+        return False
+    try:
+        if proof.mode == "REFERENCE":
+            if any(
+                value is not None
+                for value in (
+                    proof.retained_item,
+                    proof.retained_input_bytes,
+                    proof.retained_outcome_bytes,
+                    proof.retained_fact_item,
+                    proof.retained_fact_input_bytes,
+                    proof.retained_fact_outcome_bytes,
+                )
+            ):
+                return False
+            if (
+                proof.retained_coverage_items != (None, None, None)
+                or proof.retained_coverage_input_bytes != (None, None, None)
+                or proof.retained_coverage_outcome_bytes != (None, None, None)
+            ):
+                return False
+        elif proof.mode == "DIRECT":
+            _validate_m2_direct_retained_evidence(
+                proof.item,
+                proof.retained_item,
+                proof.retained_input_bytes,
+                proof.retained_outcome_bytes,
+                proof.retained_fact_item,
+                proof.retained_fact_input_bytes,
+                proof.retained_fact_outcome_bytes,
+                proof.retained_coverage_items,
+                proof.retained_coverage_input_bytes,
+                proof.retained_coverage_outcome_bytes,
+            )
+        else:
+            return False
+        return bool(
+            proof.commitment
+            == _m2_venue_observation_proof_commitment(
+                mode=proof.mode,
+                source_state_commitment=proof.source_state_commitment,
+                serving_state_commitment=proof.serving_state_commitment,
+                item=proof.item,
+                retained_item=proof.retained_item,
+                retained_input_bytes=proof.retained_input_bytes,
+                retained_outcome_bytes=proof.retained_outcome_bytes,
+                retained_fact_item=proof.retained_fact_item,
+                retained_fact_input_bytes=proof.retained_fact_input_bytes,
+                retained_fact_outcome_bytes=proof.retained_fact_outcome_bytes,
+                retained_coverage_items=proof.retained_coverage_items,
+                retained_coverage_input_bytes=proof.retained_coverage_input_bytes,
+                retained_coverage_outcome_bytes=proof.retained_coverage_outcome_bytes,
+            )
+        )
+    except (AttributeError, TypeError, ValueError):
+        return False
+
+
+def _m2_venue_state_from_direct_proof(
+    state: _M2VenueState,
+    proof: _M2VenueObservationProof,
+) -> _M2VenueState:
+    """Replace omitted input history with the proof's exact direct evidence."""
+
+    if not _m2_venue_state_is_authentic(state):
+        raise ValueError("venue state is not authentic")
+    if (
+        not _m2_venue_observation_proof_is_authentic(proof)
+        or proof.mode != "DIRECT"
+        or proof.source_state_commitment != state.commitment
+    ):
+        raise ValueError("venue direct proof is not bound to its source state")
+    scoped = _m2_venue_state_from_book(
+        _m2_scoped_input_book(
+            state.book,
+            proof.retained_item,
+            proof.retained_fact_item,
+            proof.retained_coverage_items,
+        )
+    )
+    if scoped.commitment != proof.serving_state_commitment:
+        raise ValueError("venue direct proof does not match its serving state")
+    return scoped
+
+
+def _m2_apply_venue_input(
+    state: _M2VenueState,
+    execution: ExecutionSnapshot,
+    proof: _M2VenueObservationProof,
+) -> VenueRecoveryTransition:
+    """Apply one venue input through the sole shared owner decision kernel."""
+
+    if not _m2_venue_state_is_authentic(state):
+        raise ValueError("venue state is not authentic")
+    if not _m2_venue_observation_proof_is_authentic(proof):
+        raise ValueError("venue observation proof is not authentic")
+    if proof.mode == "REFERENCE":
+        if (
+            proof.source_state_commitment != state.commitment
+            or proof.serving_state_commitment != state.commitment
+        ):
+            raise ValueError("reference venue proof is not current")
+    elif proof.mode == "DIRECT":
+        if proof.serving_state_commitment != state.commitment:
+            raise ValueError("direct venue proof is not current")
+    else:
+        raise ValueError("venue proof mode is not admitted")
+    return _apply_venue_input(state.book, execution, proof.item)
+
+
+def _m2_apply_venue_input_from_direct_observation(
+    state: _M2VenueState,
+    execution: ExecutionSnapshot,
+    proof: _M2VenueObservationProof,
+) -> VenueRecoveryTransition:
+    """Apply one direct proof exactly once through the shared owner kernel."""
+
+    if not _m2_venue_state_is_authentic(state):
+        raise ValueError("venue state is not authentic")
+    if (
+        not _m2_venue_observation_proof_is_authentic(proof)
+        or proof.mode != "DIRECT"
+        or proof.source_state_commitment != state.commitment
+    ):
+        raise ValueError("direct venue observation is not bound to its owner")
+    direct_state = _m2_venue_state_from_direct_proof(state, proof)
+    direct = _m2_apply_venue_input(direct_state, execution, proof)
+    if not _m2_venue_transition_matches_direct_observation(
+        state,
+        execution,
+        proof,
+        direct,
+    ):
+        raise ValueError("direct venue transition is not bound to its observation")
+    return direct
+
+
+def _m2_venue_transition_matches_direct_observation(
+    state: _M2VenueState,
+    execution: ExecutionSnapshot,
+    proof: _M2VenueObservationProof,
+    transition: VenueRecoveryTransition,
+) -> bool:
+    """Verify the direct proof-to-transition chain without deciding again."""
+
+    if (
+        not _m2_venue_state_is_authentic(state)
+        or type(execution) is not ExecutionSnapshot
+        or not _m2_venue_observation_proof_is_authentic(proof)
+        or proof.mode != "DIRECT"
+        or proof.source_state_commitment != state.commitment
+        or type(transition) is not VenueRecoveryTransition
+    ):
+        return False
+    try:
+        serving = _m2_venue_state_from_direct_proof(state, proof)
+        source = _m2_venue_transition_source_item(transition)
+        transition_proof = transition._protection_proof
+        return bool(
+            source == proof.item
+            and transition_proof.predecessor_book_commitment
+            == _protection_book_commitment(serving.book)
+            and transition_proof.predecessor_execution_commitment
+            == execution.commitment
+            and transition_proof.book_commitment
+            == _protection_book_commitment(transition.book)
+            and transition_proof.execution_commitment == transition.execution.commitment
+        )
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        return False
+
+
+def _m2_catch_up_broker_execution_fact(
+    book: VenueRecoveryBook,
+    predecessor: ExecutionSnapshot,
+    successor: ExecutionSnapshot,
+    fact: BrokerFillFact | BrokerTradeCorrectFact | BrokerTradeBustFact,
+) -> VenueRecoveryTransition:
+    """Bind one direct broker fact to its existing venue owner and registry."""
+
+    if type(book) is not VenueRecoveryBook:
+        raise TypeError("book must be exact VenueRecoveryBook")
+    if type(predecessor) is not ExecutionSnapshot:
+        raise TypeError("predecessor must be exact ExecutionSnapshot")
+    if type(successor) is not ExecutionSnapshot:
+        raise TypeError("successor must be exact ExecutionSnapshot")
+    if type(fact) not in {
+        BrokerFillFact,
+        BrokerTradeCorrectFact,
+        BrokerTradeBustFact,
+    }:
+        raise TypeError("fact must be an exact broker execution fact")
+    applied = _apply_broker_execution_fact(
+        predecessor.position,
+        predecessor.integrity,
+        predecessor.root_heads,
+        predecessor.seen_facts,
+        fact,
+    )
+    expected = ExecutionSnapshot(
+        applied.position,
+        applied.integrity,
+        applied.root_heads,
+        applied.seen_facts,
+    )
+    if expected != successor or applied.disposition.value != "APPLIED":
+        raise ValueError("successor is not the exact first application of fact")
+    leg_key = VenueLegKey(
+        fact.scope.broker,
+        fact.scope.environment,
+        fact.scope.account,
+        fact.scope.order_id,
+    )
+    owner = book.owner(leg_key)
+    current = None if owner is None else book._current_effect(owner.effect_id)
+    if (
+        owner is None
+        or current is None
+        or owner.leg_key != leg_key
+        or owner.effect_id != current.scope.effect_id
+        or current.scope.position_scope != fact.scope.position_scope
+        or book.execution_registry_count is None
+        or book.execution_registry_commitment is None
+        or not book._execution_pair_matches_fast(predecessor)
+    ):
+        raise ValueError("broker fact has no exact current venue owner")
+    source_binding = book.execution_binding(predecessor.position.scope)
+    if source_binding is None:
+        raise ValueError("broker fact source has no current venue binding")
+    item = _BrokerExecutionRegistryCatchUp(
+        VenueInputId(
+            "m2-broker-execution-catch-up:"
+            + _commit_parts(
+                b"execution-core/m2-broker-execution-catch-up/v1",
+                _canonical_value_commitment(fact),
+            ).hex()
+        ),
+        VenueExecutionCheckpoint.from_execution(predecessor),
+        book.execution_registry_count,
+        book.execution_registry_commitment,
+        source_binding,
+        successor,
+        fact,
+        owner.effect_id,
+        leg_key,
+    )
+    return _apply_venue_input(book, predecessor, item)
+
+
 def apply_venue_recovery_input(
     book: VenueRecoveryBook,
     execution: ExecutionSnapshot,
@@ -13855,8 +15306,11 @@ def apply_venue_recovery_input(
         raise TypeError("book must be the exact opaque VenueRecoveryBook type")
     if type(execution) is not ExecutionSnapshot:
         raise TypeError("execution must be the exact ExecutionSnapshot type")
-    if type(item) is _BootstrapTargetRegistryInput:
-        raise TypeError("bootstrap target input is internal and not publicly admitted")
+    if type(item) in {
+        _BootstrapTargetRegistryInput,
+        _BrokerExecutionRegistryCatchUp,
+    }:
+        raise TypeError("internal venue input is not publicly admitted")
     _require_exact_venue_recovery_input(item)
     if type(item) in {
         RequestedEffect,
@@ -13868,6 +15322,10 @@ def apply_venue_recovery_input(
         raise TypeError(
             "authority-changing capability is internal and not admitted publicly"
         )
+    if _is_m2_venue_operation_item(item):
+        state = _m2_venue_state_from_book(book)
+        proof = _m2_venue_observation_from_book(state, item)
+        return _m2_apply_venue_input(state, execution, proof)
     return _apply_venue_input(book, execution, item)
 
 

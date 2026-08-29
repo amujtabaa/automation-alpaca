@@ -200,6 +200,7 @@ _PROTECTION_ALLOWED_INTERNAL_IMPORTED_CALLS = {
     ("app.execution_core.values", "ReportedPrice"),
     ("app.execution_core.values", "TickMetadata"),
     ("app.execution_core.venue", "_extract_protection_transition"),
+    ("app.execution_core.venue", "_m2_current_protection_scope_values"),
 }
 
 _PROTECTION_ALLOWED_IMPORTED_BINDINGS = (
@@ -572,6 +573,7 @@ _LEGACY_PROTECTION_E2_IMPORTS = {
     ("identity", "EmergencyRecoveryCompatibilityId"),
     ("venue", "AcquisitionVenueContext"),
     ("venue", "VenueRecoveryBook"),
+    ("venue", "_m2_current_protection_scope_values"),
 }
 
 _LEGACY_PROTECTION_E2_CLASSES = {
@@ -620,6 +622,7 @@ _LEGACY_PROTECTION_E2_FUNCTIONS = {
     # the public wrappers remain the historical entry points.
     "_m2_optional_acquisition_generation_commitment",
     "_m2_issue_protection_authority_proof",
+    "_m2_project_current_protection_venue",
     "_m2_position_protection_from_checkpoint",
     "_m2_protection_authority_proof_commitment",
     "_protection_mandate_commitment",
@@ -7184,6 +7187,7 @@ _ACQUISITION_R8_OPAQUE_TYPES = {
 
 _ACQUISITION_R8_ALLOCATION_OWNERS = {
     "empty",
+    "_finish_acquisition_transition",
     "_mint_dual_mandate_binding",
     "_new_acquisition_controller_state",
     "_new_acquisition_lineage_index",
@@ -7193,10 +7197,12 @@ _ACQUISITION_R8_ALLOCATION_OWNERS = {
     "_new_generation_record_view",
     "_new_applied_fact_transition",
     "_new_applied_fact_preemption_transition",
+    "_new_applied_dormant_venue_refresh_transition",
     "_new_applied_neutral_reprojection_transition",
     "_new_applied_preemption_transition",
     "_new_applied_protection_exit_transition",
     "_new_applied_rebase_transition",
+    "_new_applied_venue_rebase_transition",
     "_new_applied_successor_transition",
     "_new_claimed_effect_transition",
     "_new_created_effect_transition",

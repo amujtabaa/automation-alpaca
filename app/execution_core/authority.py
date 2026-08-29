@@ -49,6 +49,7 @@ from .venue import (
     VenueRecoveryDisposition,
     VenueRecoveryTransition,
     VenueScope,
+    _M2VenueObservationProof,
     _authority_begin_symbol_flatten,
     _authority_bootstrap_unbound_target_pair_for_scope,
     _authority_claim_effect,
@@ -61,6 +62,9 @@ from .venue import (
     _authority_stand_down_account_requested_effects,
     _authority_stand_down_requested_effect,
     _authority_symbol_flatten_ready,
+    _m2_venue_observation_proof_is_authentic,
+    _m2_venue_state_from_book,
+    _m2_venue_transition_matches_direct_observation,
     _venue_authority_view,
 )
 
@@ -1390,6 +1394,10 @@ class AcquisitionContextRefresh:
     authority_commitment: bytes | None = field(init=False)
     ordered_venue_transition_commitments: tuple[bytes, ...] = field(init=False)
     venue_transitions: tuple[VenueRecoveryTransition, ...] = field(init=False)
+    _venue_observation_proof: _M2VenueObservationProof | None = field(
+        init=False,
+        repr=False,
+    )
     _source_execution: ExecutionSnapshot | None = field(init=False, repr=False)
     predecessor_authority: ExecutionAuthorityState | None = field(
         init=False, repr=False
@@ -3462,6 +3470,22 @@ def _acquisition_context_refresh_seal(commitment: bytes) -> bytes:
     )
 
 
+def _acquisition_context_refresh_bound_commitment(
+    base_commitment: bytes,
+    observation: _M2VenueObservationProof | None,
+) -> bytes:
+    _require_digest("acquisition refresh base commitment", base_commitment)
+    if observation is None:
+        return base_commitment
+    if not _m2_venue_observation_proof_is_authentic(observation):
+        raise ValueError("acquisition refresh venue observation is not authentic")
+    return _commit_parts(
+        b"execution-core/acquisition-authority/direct-venue-refresh/v1",
+        base_commitment,
+        observation.commitment,
+    )
+
+
 def _new_acquisition_context_refresh(
     *,
     disposition: AcquisitionContextRefreshDisposition,
@@ -3477,6 +3501,7 @@ def _new_acquisition_context_refresh(
     venue_context: AcquisitionVenueContext | None,
     authority_context: AcquisitionAuthorityContext | None,
     venue_transitions: tuple[VenueRecoveryTransition, ...],
+    venue_observation_proof: _M2VenueObservationProof | None = None,
 ) -> AcquisitionContextRefresh:
     if (
         type(disposition) is not AcquisitionContextRefreshDisposition
@@ -3525,7 +3550,7 @@ def _new_acquisition_context_refresh(
     current_authority_commitment = (
         None if authority_context is None else authority_context.authority_commitment
     )
-    commitment = _acquisition_context_refresh_commitment(
+    base_commitment = _acquisition_context_refresh_commitment(
         disposition,
         application_generation_id,
         position_scope,
@@ -3539,6 +3564,10 @@ def _new_acquisition_context_refresh(
         predecessor_authority_commitment,
         current_authority_commitment,
         transition_proof_commitment,
+    )
+    commitment = _acquisition_context_refresh_bound_commitment(
+        base_commitment,
+        venue_observation_proof,
     )
     result = object.__new__(AcquisitionContextRefresh)
     object.__setattr__(result, "disposition", disposition)
@@ -3578,6 +3607,11 @@ def _new_acquisition_context_refresh(
         () if transition_proof_commitment is None else (transition_proof_commitment,),
     )
     object.__setattr__(result, "venue_transitions", venue_transitions)
+    object.__setattr__(
+        result,
+        "_venue_observation_proof",
+        venue_observation_proof,
+    )
     object.__setattr__(result, "predecessor_authority", predecessor_authority)
     object.__setattr__(result, "predecessor_execution", predecessor_execution)
     object.__setattr__(result, "predecessor_venue_context", predecessor_venue_context)
@@ -3700,6 +3734,7 @@ def _acquisition_context_refresh_is_authentic(
         authority_commitment = value.authority_commitment
         ordered_transition_commitments = value.ordered_venue_transition_commitments
         venue_transitions = value.venue_transitions
+        venue_observation_proof = value._venue_observation_proof
         source_execution = value._source_execution
         predecessor_authority = value.predecessor_authority
         predecessor_execution = value.predecessor_execution
@@ -3719,6 +3754,10 @@ def _acquisition_context_refresh_is_authentic(
         or type(position_scope) is not PositionScope
         or type(ordered_transition_commitments) is not tuple
         or type(venue_transitions) is not tuple
+        or (
+            venue_observation_proof is not None
+            and type(venue_observation_proof) is not _M2VenueObservationProof
+        )
         or not _optional_digest_is_exact(source_execution_snapshot_commitment)
         or not _optional_digest_is_exact(predecessor_execution_snapshot_commitment)
         or not _optional_digest_is_exact(execution_snapshot_commitment)
@@ -3757,6 +3796,8 @@ def _acquisition_context_refresh_is_authentic(
         transition_proof_commitment = transition._protection_proof_commitment
     else:
         return False
+    if venue_observation_proof is not None and transition is None:
+        return False
     if disposition is AcquisitionContextRefreshDisposition.REFUSED:
         if (
             source_execution is not None
@@ -3778,6 +3819,7 @@ def _acquisition_context_refresh_is_authentic(
             or predecessor_authority_commitment is not None
             or authority_commitment is not None
             or transition is not None
+            or venue_observation_proof is not None
         ):
             return False
     elif disposition is AcquisitionContextRefreshDisposition.UNBOUND_BOOTSTRAP:
@@ -3801,6 +3843,7 @@ def _acquisition_context_refresh_is_authentic(
             or venue_commitment != venue_context.commitment
             or authority_commitment != authority_context.authority_commitment
             or transition is None
+            or venue_observation_proof is not None
             or predecessor_authority is authority
             or predecessor_authority.venue is authority.venue
             or transition.disposition is not VenueRecoveryDisposition.APPLIED
@@ -3846,6 +3889,7 @@ def _acquisition_context_refresh_is_authentic(
         if disposition is AcquisitionContextRefreshDisposition.CURRENT:
             if (
                 transition is not None
+                or venue_observation_proof is not None
                 or predecessor_authority is not authority
                 or predecessor_execution is not execution
                 or predecessor_scope_execution_commitment != scope_execution_commitment
@@ -3865,16 +3909,38 @@ def _acquisition_context_refresh_is_authentic(
                     position_scope,
                 )
             )
+            direct_venue_refresh = bool(
+                transition is not None
+                and venue_observation_proof is not None
+                and _m2_venue_transition_matches_direct_observation(
+                    _m2_venue_state_from_book(predecessor_authority.venue),
+                    predecessor_execution,
+                    venue_observation_proof,
+                    transition,
+                )
+                and authority
+                == _state_with(predecessor_authority, venue=transition.book)
+            )
             if (
                 transition is None
                 or predecessor_authority is authority
                 or predecessor_authority.venue is authority.venue
-                or transition.disposition is not VenueRecoveryDisposition.APPLIED
+                or transition.disposition
+                not in {
+                    VenueRecoveryDisposition.APPLIED,
+                    VenueRecoveryDisposition.RECONCILIATION_REQUIRED,
+                }
+                or (
+                    transition.disposition
+                    is VenueRecoveryDisposition.RECONCILIATION_REQUIRED
+                    and not direct_venue_refresh
+                )
                 or transition.quantity_delta != 0
                 or transition.book is not authority.venue
                 or transition.execution is not execution
                 or (
                     not r8_checkpoint_refresh
+                    and not direct_venue_refresh
                     and (
                         predecessor_scope_execution_commitment
                         != scope_execution_commitment
@@ -3888,7 +3954,7 @@ def _acquisition_context_refresh_is_authentic(
             return False
     else:
         return False
-    expected = _acquisition_context_refresh_commitment(
+    expected_base = _acquisition_context_refresh_commitment(
         disposition,
         application_generation_id,
         position_scope,
@@ -3903,9 +3969,67 @@ def _acquisition_context_refresh_is_authentic(
         authority_commitment,
         transition_proof_commitment,
     )
+    try:
+        expected = _acquisition_context_refresh_bound_commitment(
+            expected_base,
+            venue_observation_proof,
+        )
+    except (TypeError, ValueError):
+        return False
     return bool(
         commitment == expected and seal == _acquisition_context_refresh_seal(commitment)
     )
+
+
+def _m2_venue_refresh_transition_matches(
+    predecessor_authority: ExecutionAuthorityState,
+    source_execution: ExecutionSnapshot,
+    position_scope: PositionScope,
+    transition: VenueRecoveryTransition,
+    observation: _M2VenueObservationProof,
+    authority: ExecutionAuthorityState,
+    execution: ExecutionSnapshot,
+) -> bool:
+    """Re-derive one zero-economic venue refresh through its owner kernel."""
+
+    if (
+        type(predecessor_authority) is not ExecutionAuthorityState
+        or type(source_execution) is not ExecutionSnapshot
+        or type(position_scope) is not PositionScope
+        or type(transition) is not VenueRecoveryTransition
+        or type(observation) is not _M2VenueObservationProof
+        or type(authority) is not ExecutionAuthorityState
+        or type(execution) is not ExecutionSnapshot
+        or transition.disposition
+        not in {
+            VenueRecoveryDisposition.APPLIED,
+            VenueRecoveryDisposition.RECONCILIATION_REQUIRED,
+        }
+        or (
+            transition.disposition is VenueRecoveryDisposition.RECONCILIATION_REQUIRED
+            and transition.book is predecessor_authority.venue
+        )
+        or transition.quantity_delta != 0
+        or source_execution.position.scope != position_scope
+        or transition.execution != source_execution
+        or execution != transition.execution
+        or authority
+        != _state_with(
+            predecessor_authority,
+            venue=transition.book,
+        )
+    ):
+        return False
+    try:
+        predecessor = _m2_venue_state_from_book(predecessor_authority.venue)
+        return _m2_venue_transition_matches_direct_observation(
+            predecessor,
+            source_execution,
+            observation,
+            transition,
+        )
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        return False
 
 
 def _acquisition_context_refresh_pairs_match_live(
@@ -4019,6 +4143,41 @@ def _acquisition_context_refresh_pairs_match_live(
     )
     if not same_account:
         return False
+    if (
+        value.disposition is AcquisitionContextRefreshDisposition.REFRESHED
+        and len(value.venue_transitions) == 1
+        and type(value._venue_observation_proof) is _M2VenueObservationProof
+        and _m2_venue_refresh_transition_matches(
+            predecessor_authority,
+            source_execution,
+            value.position_scope,
+            value.venue_transitions[0],
+            value._venue_observation_proof,
+            authority,
+            execution,
+        )
+    ):
+        try:
+            return bool(
+                predecessor_authority_context.matches_current(
+                    predecessor_authority,
+                    predecessor_execution,
+                    predecessor_venue_context,
+                )
+                and venue_context.matches_current(
+                    authority.venue,
+                    execution,
+                    value.application_generation_id,
+                    value.position_scope,
+                )
+                and authority_context.matches_current(
+                    authority,
+                    execution,
+                    venue_context,
+                )
+            )
+        except (AttributeError, RuntimeError, TypeError, ValueError):
+            return False
     resolved = _authority_execution_pair_for_scope(
         predecessor_authority.venue,
         source_execution,
@@ -4272,6 +4431,92 @@ def refresh_acquisition_context(
         venue_context=venue_context,
         authority_context=authority_context,
         venue_transitions=transitions,
+    )
+
+
+def _m2_refresh_acquisition_context_from_venue_transition(
+    state: ExecutionAuthorityState,
+    source_execution: ExecutionSnapshot,
+    position_scope: PositionScope,
+    transition: VenueRecoveryTransition,
+    observation: _M2VenueObservationProof,
+) -> AcquisitionContextRefresh:
+    """Adopt one authenticated neutral venue transition as an E2 refresh."""
+
+    exact = _validate_authority_state(state)
+    _require("source_execution", source_execution, ExecutionSnapshot)
+    _require("position_scope", position_scope, PositionScope)
+    _require("transition", transition, VenueRecoveryTransition)
+    _require("observation", observation, _M2VenueObservationProof)
+    replacement = _state_with(exact, venue=transition.book)
+    if not _m2_venue_refresh_transition_matches(
+        exact,
+        source_execution,
+        position_scope,
+        transition,
+        observation,
+        replacement,
+        transition.execution,
+    ):
+        return _refused_acquisition_context_refresh(exact, position_scope)
+    predecessor_venue_context = exact.venue.project_acquisition_context(
+        source_execution,
+        position_scope,
+    )
+    predecessor_authority_context = project_acquisition_authority_context(
+        exact,
+        source_execution,
+        predecessor_venue_context,
+    )
+    venue_context = replacement.venue.project_acquisition_context(
+        transition.execution,
+        position_scope,
+    )
+    authority_context = project_acquisition_authority_context(
+        replacement,
+        transition.execution,
+        venue_context,
+    )
+    if not (
+        predecessor_venue_context.matches_current(
+            exact.venue,
+            source_execution,
+            exact.venue.scope.generation,
+            position_scope,
+        )
+        and predecessor_authority_context.matches_current(
+            exact,
+            source_execution,
+            predecessor_venue_context,
+        )
+        and venue_context.matches_current(
+            replacement.venue,
+            transition.execution,
+            replacement.venue.scope.generation,
+            position_scope,
+        )
+        and authority_context.matches_current(
+            replacement,
+            transition.execution,
+            venue_context,
+        )
+    ):
+        return _refused_acquisition_context_refresh(exact, position_scope)
+    return _new_acquisition_context_refresh(
+        disposition=AcquisitionContextRefreshDisposition.REFRESHED,
+        application_generation_id=exact.venue.scope.generation,
+        position_scope=position_scope,
+        source_execution=source_execution,
+        predecessor_authority=exact,
+        predecessor_execution=source_execution,
+        predecessor_venue_context=predecessor_venue_context,
+        predecessor_authority_context=predecessor_authority_context,
+        authority=replacement,
+        execution=transition.execution,
+        venue_context=venue_context,
+        authority_context=authority_context,
+        venue_transitions=(transition,),
+        venue_observation_proof=observation,
     )
 
 

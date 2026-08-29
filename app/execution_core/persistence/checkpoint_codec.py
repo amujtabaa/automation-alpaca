@@ -5241,14 +5241,25 @@ def _project_runtime_checkpoint(
                 )
             if not _acquisition._controller_state_is_authentic(acquisition):
                 raise ValueError("acquisition owner is not authentic")
+            venue_context = venue.project_acquisition_context(
+                execution,
+                position_scope,
+            )
             if (
-                acquisition.application_generation_id
+                not venue_context.matches_current(
+                    venue,
+                    execution,
+                    venue_scope.generation,
+                    position_scope,
+                )
+                or acquisition.application_generation_id
                 != request.application_generation_id
                 or acquisition.position_scope != position_scope
                 or acquisition._controller.live_generation_id
                 != controller_record.live_acquisition_generation_id
-                or acquisition.scope_execution_commitment != execution.commitment
-                or acquisition.venue_commitment != venue._protection_commitment
+                or acquisition.scope_execution_commitment
+                != venue_context.scope_execution_commitment
+                or acquisition.venue_commitment != venue_context.commitment
             ):
                 raise ValueError("active acquisition owner is spliced")
             acquisition_wire, _ = _encode_runtime_checkpoint_acquisition(

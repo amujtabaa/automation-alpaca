@@ -2688,6 +2688,26 @@ def load_venue_effect(
     )
 
 
+def _load_venue_effect_by_external(
+    connection: _SQLiteConnectionProtocol,
+    execution_profile_id: str,
+    effect_id: _identity.EffectId,
+) -> _records.RepositoryOutcome[_records.VenueEffectRecord]:
+    _verify_schema_connection(connection)
+    try:
+        profile_key = _exact_text(execution_profile_id)
+        external = _identity_text(effect_id, _identity.EffectId, "effect_id")
+    except (TypeError, ValueError):
+        return _integrity()
+    return _select_one_unchecked(
+        connection,
+        f"SELECT {_EFFECT_COLUMNS} FROM venue_effect"
+        " WHERE execution_profile_id = ? AND effect_external = ?",
+        (profile_key, external),
+        _build_effect,
+    )
+
+
 _OWNER_COLUMNS = (
     "scope_id, execution_profile_id, owner_external, observation_external,"
     " effect_id, root_fill_key_id, owner_generation_id,"

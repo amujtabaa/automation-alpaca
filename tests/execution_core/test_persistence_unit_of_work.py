@@ -11,7 +11,10 @@ import pytest
 
 from app.execution_core import authority
 from app.execution_core import acquisition
+from app.execution_core import fills
 from app.execution_core import identity
+from app.execution_core import position
+from app.execution_core import protection
 from app.execution_core import venue
 from app.execution_core.persistence import checkpoint_codec
 from app.execution_core.persistence import operations
@@ -20,6 +23,9 @@ from app.execution_core.persistence import unit_of_work
 import test_persistence_runtime_checkpoint_pure as checkpoint_fixtures
 import test_persistence_input_receipt as input_fixtures
 import test_authority as authority_fixtures
+import test_acquisition as acquisition_fixtures
+import test_protection as protection_fixtures
+from tests.execution_core import test_venue_recovery as recovery_fixtures
 
 
 @pytest.mark.parametrize(
@@ -49,6 +55,83 @@ def test_acquisition_public_routes_delegate_to_the_shared_m2_kernel(
     monkeypatch.setattr(acquisition, kernel_name, kernel)
     assert getattr(acquisition, public_name)(*arguments) is sentinel
     assert calls == [arguments]
+
+
+def test_acquisition_transition_exposes_only_its_authenticated_venue_derivatives() -> (
+    None
+):
+    _, _, created = acquisition_fixtures._r8_created_first_effect()
+    derivatives = acquisition._m2_acquisition_transition_venue_derivatives(created)
+
+    assert len(derivatives) == 1
+    assert type(venue._m2_venue_transition_source_item(derivatives[0])) is (
+        venue.RequestedEffect
+    )
+
+    forged = copy(created)
+    object.__setattr__(forged, "_venue_derivatives", ())
+    with pytest.raises(ValueError, match="derivative proof"):
+        acquisition._m2_acquisition_transition_venue_derivatives(forged)
+
+
+def test_current_protection_projection_matches_the_owner_transition_projection() -> (
+    None
+):
+    _, _, claimed, filled = acquisition_fixtures._r8_current_generation_fill_transition(
+        acknowledged=True,
+        prefill_needs_review=False,
+    )
+    applied = acquisition.reduce_acquisition_controller(
+        claimed.state,
+        filled,
+        None,
+        claimed.authority,
+    )
+    assert applied.protection is not None
+    mandate = applied.state._mandate.protection_mandate
+
+    expected = protection.project_protection_venue(filled, mandate)
+    actual = protection._m2_project_current_protection_venue(
+        applied.venue,
+        applied.execution,
+        applied.protection,
+    )
+
+    assert (
+        actual.cursor_ordinal,
+        actual.cursor_head,
+        actual.execution_commitment,
+        actual.blocking_effect_count,
+        actual.blocking_buy_effect_count,
+        actual.execution_binding_matches,
+        actual.account_reconciliation_clear,
+        actual._position_scope,
+        actual._mandate_commitment,
+        actual._raw_quantity,
+        actual._position_root_count,
+        actual._basis_available,
+        actual._cost_basis,
+        actual._basis_metadata_available,
+        actual._basis_price,
+        actual._integrity,
+    ) == (
+        expected.cursor_ordinal,
+        expected.cursor_head,
+        expected.execution_commitment,
+        expected.blocking_effect_count,
+        expected.blocking_buy_effect_count,
+        expected.execution_binding_matches,
+        expected.account_reconciliation_clear,
+        expected._position_scope,
+        expected._mandate_commitment,
+        expected._raw_quantity,
+        expected._position_root_count,
+        expected._basis_available,
+        expected._cost_basis,
+        expected._basis_metadata_available,
+        expected._basis_price,
+        expected._integrity,
+    )
 
 
 def _payload_equal_manual_contexts() -> tuple[
@@ -511,6 +594,1200 @@ def test_venue_transition_source_is_bound_to_the_owner_proof() -> None:
         venue._m2_venue_transition_source_item(forged)
 
 
+def test_direct_broker_fact_catch_up_retains_exact_owner_attribution() -> None:
+    book, predecessor = recovery_fixtures._seed_needs_review(capacity=4)
+    fact = recovery_fixtures._broker_fill(
+        "m2-direct-owned-fill",
+        "m2-direct-owned-root",
+        quantity=4,
+    )
+    applied = position.apply_broker_execution_fact(
+        predecessor.position,
+        predecessor.integrity,
+        predecessor.root_heads,
+        predecessor.seen_facts,
+        fact,
+    )
+    assert applied.disposition is position.TransitionDisposition.APPLIED
+    successor = position.ExecutionSnapshot(
+        applied.position,
+        applied.integrity,
+        applied.root_heads,
+        applied.seen_facts,
+    )
+
+    transition = venue._m2_catch_up_broker_execution_fact(
+        book,
+        predecessor,
+        successor,
+        fact,
+    )
+
+    assert transition.disposition is venue.VenueRecoveryDisposition.APPLIED
+    [outcome] = transition.book.execution_reconciliations
+    assert type(outcome) is venue._AttributedRegistryAdvanceOutcome
+    assert outcome.attribution_resolved is True
+    assert outcome.effect_id == recovery_fixtures.EFFECT
+    assert outcome.leg_key == recovery_fixtures.LEG_A
+    assert outcome.fact == fact
+    assert outcome.observation_classification in {
+        fills.FirstObservationClassification.APPLIED_AVAILABLE,
+        fills.FirstObservationClassification.APPLIED_BASIS_PENDING,
+        fills.FirstObservationClassification.APPLIED_OVERFILL_QUARANTINE,
+        fills.FirstObservationClassification.APPLIED_PENDING_OVERFILL,
+    }
+    assert transition.book._unresolved_account_execution_reconciliation_count == 0
+    assert transition.execution.seen_facts.get(fact.key).fact == fact
+    assert venue._acquisition_fact_proof_is_authentic(
+        transition._acquisition_fact_proof
+    )
+    transition.book._validate_full()
+    source = venue._m2_venue_transition_source_item(transition)
+    assert type(source) is venue._BrokerExecutionRegistryCatchUp
+    with pytest.raises(TypeError, match="internal venue input"):
+        venue.apply_venue_recovery_input(book, predecessor, source)
+    hydrated = venue._audit_hydrate_book(transition.book, transition.execution)
+    assert (
+        hydrated._acquisition_correlation_by_root.commitment
+        == transition.book._acquisition_correlation_by_root.commitment
+    )
+
+
+def test_direct_broker_fact_catch_up_rejects_a_non_owner_successor() -> None:
+    book, predecessor = recovery_fixtures._seed_needs_review(capacity=4)
+    fact = recovery_fixtures._broker_fill(
+        "m2-direct-owner-mismatch",
+        "m2-direct-owner-mismatch-root",
+        leg_key=replace(
+            recovery_fixtures.LEG_A,
+            order_id=identity.OrderId("not-the-retained-owner"),
+        ),
+        quantity=4,
+    )
+    applied = position.apply_broker_execution_fact(
+        predecessor.position,
+        predecessor.integrity,
+        predecessor.root_heads,
+        predecessor.seen_facts,
+        fact,
+    )
+    successor = position.ExecutionSnapshot(
+        applied.position,
+        applied.integrity,
+        applied.root_heads,
+        applied.seen_facts,
+    )
+
+    with pytest.raises(ValueError, match="no exact current venue owner"):
+        venue._m2_catch_up_broker_execution_fact(
+            book,
+            predecessor,
+            successor,
+            fact,
+        )
+
+
+def test_broker_operation_uses_one_position_classification_and_owned_route(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, _, claimed, filled = acquisition_fixtures._r8_current_generation_fill_transition(
+        acknowledged=True,
+        prefill_needs_review=False,
+    )
+    source = venue._m2_venue_transition_source_item(filled)
+    assert type(source) is recovery_fixtures.RecordBrokerFillEvidence
+    fact = source.fact
+    operation = operations.BrokerExecutionOperation(
+        operations.ExecutionOperationCoordinates(
+            claimed.state.application_generation_id,
+            "ep",
+            7,
+        ),
+        fact,
+    )
+    prepared = _prepared_acquisition_operation(operation, claimed)
+    owner = filled.book.owner(source.leg_key)
+    assert owner is not None
+    effect = filled.book._current_effect(owner.effect_id)
+    assert effect is not None
+    generation_id = claimed.state._controller.live_generation_id
+    assert generation_id is not None
+    effect_record = records.VenueEffectRecord(
+        41,
+        effect.scope.effect_id,
+        7,
+        claimed.state.application_generation_id,
+        "ep",
+        generation_id,
+        claimed.state._mandate.binding.commitment.hex(),
+        10,
+        3,
+        "NORMAL",
+        effect.scope.request_occurrence_id,
+        effect.scope.mandate_id,
+        effect.scope.kind.value,
+        effect.scope.client_order_id,
+        None,
+        effect.scope.side.value,
+        effect.scope.quantity,
+        effect.scope.economic_scope,
+        effect.state.value,
+        effect.acceptance_set_state.value,
+        None,
+        None,
+        None,
+        None,
+        1,
+    )
+    owner_record = records.VenueIdentityOwnerRecord(
+        7,
+        "ep",
+        owner.leg_key.order_id,
+        owner.observation_id,
+        effect_record.effect_id,
+        None,
+        generation_id,
+        False,
+    )
+    monkeypatch.setattr(
+        unit_of_work,
+        "_broker_execution_predecessor_records",
+        lambda *args: (None, None, None),
+    )
+    monkeypatch.setattr(
+        unit_of_work,
+        "_broker_owner_records",
+        lambda *args: (effect_record, owner_record),
+    )
+    acquisition_result = acquisition.reduce_acquisition_controller(
+        claimed.state,
+        filled,
+        None,
+        claimed.authority,
+    )
+    assert (
+        acquisition_result.disposition
+        is acquisition.AcquisitionControllerDisposition.APPLIED
+    )
+    venue_calls: list[tuple[object, ...]] = []
+    acquisition_calls: list[tuple[object, ...]] = []
+
+    def catch_up(*args: object) -> venue.VenueRecoveryTransition:
+        venue_calls.append(args)
+        assert args == (claimed.venue, claimed.execution, filled.execution, fact)
+        return filled
+
+    def reduce(*args: object) -> acquisition.AcquisitionControllerTransition:
+        acquisition_calls.append(args)
+        assert args == (claimed.state, filled, None, claimed.authority)
+        return acquisition_result
+
+    monkeypatch.setattr(
+        unit_of_work._venue, "_m2_catch_up_broker_execution_fact", catch_up
+    )
+    monkeypatch.setattr(
+        unit_of_work._acquisition,
+        "reduce_acquisition_controller",
+        reduce,
+    )
+
+    (
+        execution_transition,
+        acquisition_transition,
+        derivatives,
+        selected,
+        root,
+        route,
+        predecessor,
+        selected_effect,
+        selected_owner,
+    ) = unit_of_work._broker_execution_transition_for_operation(object(), prepared)
+
+    assert execution_transition.disposition is position.TransitionDisposition.APPLIED
+    assert (
+        acquisition_transition.disposition
+        is acquisition.AcquisitionControllerDisposition.APPLIED
+    )
+    assert acquisition_transition.execution == filled.execution
+    assert selected.generation.acquisition_generation_id == generation_id
+    assert (root, route, predecessor) == (None, None, None)
+    assert (selected_effect, selected_owner) == (effect_record, owner_record)
+    assert venue_calls == [
+        (claimed.venue, claimed.execution, filled.execution, fact),
+    ]
+    assert acquisition_calls == [
+        (claimed.state, filled, None, claimed.authority),
+    ]
+    assert derivatives == acquisition._m2_acquisition_transition_venue_derivatives(
+        acquisition_transition
+    )
+
+
+def test_broker_operation_preserves_an_unowned_fact_for_quarantine(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, _, claimed, filled = acquisition_fixtures._r8_current_generation_fill_transition(
+        acknowledged=True,
+        prefill_needs_review=False,
+    )
+    source = venue._m2_venue_transition_source_item(filled)
+    assert type(source) is recovery_fixtures.RecordBrokerFillEvidence
+    operation = operations.BrokerExecutionOperation(
+        operations.ExecutionOperationCoordinates(
+            claimed.state.application_generation_id,
+            "ep",
+            7,
+        ),
+        source.fact,
+    )
+    prepared = _prepared_acquisition_operation(operation, claimed)
+    monkeypatch.setattr(
+        unit_of_work,
+        "_broker_execution_predecessor_records",
+        lambda *args: (None, None, None),
+    )
+    monkeypatch.setattr(
+        unit_of_work,
+        "_broker_owner_records",
+        lambda *args: None,
+    )
+    monkeypatch.setattr(
+        unit_of_work._venue,
+        "_m2_catch_up_broker_execution_fact",
+        lambda *args: pytest.fail("unowned fact reached the attributed venue reducer"),
+    )
+
+    (
+        execution_transition,
+        acquisition_transition,
+        derivatives,
+        selected,
+        root,
+        route,
+        predecessor,
+        effect,
+        owner,
+    ) = unit_of_work._broker_execution_transition_for_operation(object(), prepared)
+
+    assert execution_transition.disposition is position.TransitionDisposition.APPLIED
+    assert execution_transition.position == filled.execution.position
+    assert acquisition_transition is None
+    assert derivatives == ()
+    assert selected.generation.acquisition_generation_id == (
+        claimed.state._controller.live_generation_id
+    )
+    assert (root, route, predecessor, effect, owner) == (None, None, None, None, None)
+
+
+def _apply_direct_venue_observation(
+    book: venue.VenueRecoveryBook,
+    execution: position.ExecutionSnapshot,
+    item: object,
+) -> tuple[venue.VenueRecoveryTransition, venue._M2VenueObservationProof]:
+    state = venue._m2_venue_state_from_book(book)
+    proof = venue._m2_venue_observation_from_direct_evidence(
+        state,
+        item,
+        retained_item=None,
+        retained_input_bytes=None,
+        retained_outcome_bytes=None,
+        retained_fact_item=None,
+        retained_fact_input_bytes=None,
+        retained_fact_outcome_bytes=None,
+    )
+    return (
+        venue._m2_apply_venue_input_from_direct_observation(
+            state,
+            execution,
+            proof,
+        ),
+        proof,
+    )
+
+
+def test_direct_venue_refresh_rebases_a_dormant_controller_without_economics() -> None:
+    _, scope, claimed = acquisition_fixtures._r8_claimed_first_effect()
+    assert claimed.fresh_claim is not None
+    item = venue.RecordTransportOutcome(
+        venue.VenueInputId("uow-o2-dormant-transport"),
+        claimed.fresh_claim.effect_id,
+        venue.BrokerEffectState.OUTCOME_UNKNOWN,
+    )
+    venue_transition, observation = _apply_direct_venue_observation(
+        claimed.venue,
+        claimed.execution,
+        item,
+    )
+    refresh = authority._m2_refresh_acquisition_context_from_venue_transition(
+        claimed.authority,
+        claimed.execution,
+        scope,
+        venue_transition,
+        observation,
+    )
+    rebased, protection_transition = acquisition._m2_rebase_acquisition_venue(
+        claimed.state,
+        refresh,
+        None,
+    )
+
+    assert (
+        refresh.disposition is authority.AcquisitionContextRefreshDisposition.REFRESHED
+    )
+    assert venue_transition.disposition is venue.VenueRecoveryDisposition.APPLIED
+    assert venue_transition.quantity_delta == 0
+    assert rebased.disposition is acquisition.AcquisitionControllerDisposition.APPLIED
+    assert protection_transition is None
+    assert rebased.protection is None
+    assert rebased.venue is venue_transition.book
+    assert rebased.authority is refresh.authority
+    assert rebased.execution is venue_transition.execution
+    assert rebased.execution.commitment == claimed.execution.commitment
+    assert rebased.state.registry is claimed.state.registry
+    assert rebased.state.lineage is claimed.state.lineage
+    assert (
+        rebased.state._controller.controller_head
+        == claimed.state._controller.controller_head
+    )
+    assert refresh.venue_context is not None
+    assert rebased.state.scope_execution_commitment == (
+        refresh.venue_context.scope_execution_commitment
+    )
+    assert rebased.state.venue_commitment == refresh.venue_context.commitment
+
+
+def test_venue_operation_composes_the_direct_owner_with_acquisition_currentness(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, _, claimed = acquisition_fixtures._r8_claimed_first_effect()
+    assert claimed.fresh_claim is not None
+    item = venue.RecordTransportOutcome(
+        venue.VenueInputId("uow-o2-composite-transport"),
+        claimed.fresh_claim.effect_id,
+        venue.BrokerEffectState.OUTCOME_UNKNOWN,
+    )
+    transition, observation = _apply_direct_venue_observation(
+        claimed.venue,
+        claimed.execution,
+        item,
+    )
+    operation = operations.VenueRecoveryOperation(
+        operations.VenueOperationCoordinates(
+            claimed.state.application_generation_id,
+            "ep",
+            7,
+            claimed.state._mandate.session_id,
+        ),
+        item,
+    )
+    prepared = _prepared_acquisition_operation(operation, claimed)
+    monkeypatch.setattr(
+        unit_of_work,
+        "_venue_direct_observation",
+        lambda *args: (
+            venue._m2_venue_state_from_book(claimed.venue),
+            observation,
+        ),
+    )
+
+    actual, rebased, derivatives, selected, relation = (
+        unit_of_work._venue_composite_transition_for_operation(object(), prepared)
+    )
+
+    assert actual == transition
+    assert relation is None
+    assert rebased is not None
+    assert rebased.venue is actual.book
+    assert rebased.execution is actual.execution
+    assert rebased.authority.venue is actual.book
+    assert selected.controller.currentness_head_ordinal == 10
+    assert derivatives == acquisition._m2_acquisition_transition_venue_derivatives(
+        rebased
+    )
+
+
+def test_fresh_venue_input_emits_only_its_owner_proven_semantic_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, _, claimed = acquisition_fixtures._r8_claimed_first_effect()
+    assert claimed.fresh_claim is not None
+    item = venue.RecordTransportOutcome(
+        venue.VenueInputId("uow-o2-semantic-transport"),
+        claimed.fresh_claim.effect_id,
+        venue.BrokerEffectState.OUTCOME_UNKNOWN,
+    )
+    transition, _ = _apply_direct_venue_observation(
+        claimed.venue,
+        claimed.execution,
+        item,
+    )
+    operation = operations.VenueRecoveryOperation(
+        operations.VenueOperationCoordinates(
+            claimed.state.application_generation_id,
+            "ep",
+            7,
+            claimed.state._mandate.session_id,
+        ),
+        item,
+    )
+    prepared = _prepared_acquisition_operation(operation, claimed)
+    stored: list[tuple[operations.InputSemanticKeyKind, bytes]] = []
+
+    def retain(
+        connection: object,
+        received_prepared: object,
+        received_claimed: object,
+        kind: operations.InputSemanticKeyKind,
+        key_bytes: bytes,
+        capability: object,
+    ) -> None:
+        del connection, received_claimed, capability
+        assert received_prepared is prepared
+        stored.append((kind, key_bytes))
+
+    monkeypatch.setattr(unit_of_work, "_store_venue_semantic_key", retain)
+    unit_of_work._store_venue_transition_semantic_keys(
+        object(),
+        prepared,
+        object(),
+        transition,
+        object(),
+    )
+
+    assert stored == [
+        (
+            operations.InputSemanticKeyKind.VENUE_COMMAND_V2,
+            unit_of_work._venue_command_key_bytes(prepared, item),
+        )
+    ]
+
+
+def test_venue_semantic_alias_does_not_overwrite_the_command_owner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, _, claimed = acquisition_fixtures._r8_claimed_first_effect()
+    assert claimed.fresh_claim is not None
+    first_item = venue.RecordTransportOutcome(
+        venue.VenueInputId("uow-o2-semantic-owner"),
+        claimed.fresh_claim.effect_id,
+        venue.BrokerEffectState.OUTCOME_UNKNOWN,
+    )
+    first = venue.apply_venue_recovery_input(
+        claimed.venue,
+        claimed.execution,
+        first_item,
+    )
+    alias_item = replace(
+        first_item,
+        input_id=venue.VenueInputId("uow-o2-semantic-alias"),
+    )
+    alias = venue.apply_venue_recovery_input(
+        first.book,
+        first.execution,
+        alias_item,
+    )
+    operation = operations.VenueRecoveryOperation(
+        operations.VenueOperationCoordinates(
+            claimed.state.application_generation_id,
+            "ep",
+            7,
+            claimed.state._mandate.session_id,
+        ),
+        alias_item,
+    )
+    prepared = SimpleNamespace(
+        operation=operation,
+        context=SimpleNamespace(venue=first.book),
+        execution_profile_id="ep",
+    )
+    stored: list[operations.InputSemanticKeyKind] = []
+    monkeypatch.setattr(
+        unit_of_work,
+        "_store_venue_semantic_key",
+        lambda _connection, _prepared, _claimed, kind, _bytes, _capability: (
+            stored.append(kind)
+        ),
+    )
+
+    unit_of_work._store_venue_transition_semantic_keys(
+        object(),
+        prepared,
+        object(),
+        alias,
+        object(),
+    )
+
+    alias_record = alias.book._input_record(alias_item.input_id)
+    retained_owner = first.book._direct_semantic_input(alias_item)
+    assert retained_owner is not None
+    assert retained_owner.input_id == first_item.input_id
+    assert alias_record is None
+    assert stored == []
+
+
+def test_venue_economic_input_emits_the_complete_coverage_key_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, _, claimed, filled = acquisition_fixtures._r8_current_generation_fill_transition(
+        acknowledged=True,
+        prefill_needs_review=False,
+    )
+    item = venue._m2_venue_transition_source_item(filled)
+    assert type(item) is recovery_fixtures.RecordBrokerFillEvidence
+    operation = operations.VenueRecoveryOperation(
+        operations.VenueOperationCoordinates(
+            claimed.state.application_generation_id,
+            "ep",
+            7,
+            claimed.state._mandate.session_id,
+        ),
+        item,
+    )
+    prepared = _prepared_acquisition_operation(operation, claimed)
+    stored: list[operations.InputSemanticKeyKind] = []
+
+    def retain(
+        connection: object,
+        received_prepared: object,
+        received_claimed: object,
+        kind: operations.InputSemanticKeyKind,
+        key_bytes: bytes,
+        capability: object,
+    ) -> None:
+        del connection, received_claimed, key_bytes, capability
+        assert received_prepared is prepared
+        stored.append(kind)
+
+    monkeypatch.setattr(unit_of_work, "_store_venue_semantic_key", retain)
+    unit_of_work._store_venue_transition_semantic_keys(
+        object(),
+        prepared,
+        object(),
+        filled,
+        object(),
+    )
+
+    assert stored == [
+        operations.InputSemanticKeyKind.VENUE_COMMAND_V2,
+        operations.InputSemanticKeyKind.VENUE_EXECUTION_FACT_V1,
+        operations.InputSemanticKeyKind.VENUE_COVERAGE_ROOT_V1,
+        operations.InputSemanticKeyKind.VENUE_COVERAGE_INTERVAL_V1,
+        operations.InputSemanticKeyKind.VENUE_BROKER_FACT_V1,
+    ]
+
+
+def test_venue_direct_observation_loads_every_coverage_semantic_slot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, _, claimed, filled = acquisition_fixtures._r8_current_generation_fill_transition(
+        acknowledged=True,
+        prefill_needs_review=False,
+    )
+    item = venue._m2_venue_transition_source_item(filled)
+    assert type(item) is recovery_fixtures.RecordBrokerFillEvidence
+    operation = operations.VenueRecoveryOperation(
+        operations.VenueOperationCoordinates(
+            claimed.state.application_generation_id,
+            "ep",
+            7,
+            claimed.state._mandate.session_id,
+        ),
+        item,
+    )
+    prepared = _prepared_acquisition_operation(operation, claimed)
+    looked_up: list[operations.InputSemanticKeyKind] = []
+
+    def load(
+        connection: object,
+        received_prepared: object,
+        kind: operations.InputSemanticKeyKind,
+        key_bytes: bytes,
+    ) -> None:
+        del connection, key_bytes
+        assert received_prepared is prepared
+        looked_up.append(kind)
+        return None
+
+    monkeypatch.setattr(unit_of_work, "_load_terminal_semantic_input", load)
+    _, proof = unit_of_work._venue_direct_observation(object(), prepared, item)
+
+    assert looked_up == [
+        operations.InputSemanticKeyKind.VENUE_COMMAND_V2,
+        operations.InputSemanticKeyKind.VENUE_EXECUTION_FACT_V1,
+        operations.InputSemanticKeyKind.VENUE_COVERAGE_ROOT_V1,
+        operations.InputSemanticKeyKind.VENUE_COVERAGE_INTERVAL_V1,
+        operations.InputSemanticKeyKind.VENUE_BROKER_FACT_V1,
+    ]
+    assert proof.retained_coverage_items == (None, None, None)
+    assert proof.retained_coverage_input_bytes == (None, None, None)
+    assert proof.retained_coverage_outcome_bytes == (None, None, None)
+    assert venue._m2_venue_observation_proof_is_authentic(proof)
+
+
+def test_venue_direct_proof_binds_fixed_coverage_owners_into_scoped_state() -> None:
+    _, _, claimed, filled = acquisition_fixtures._r8_current_generation_fill_transition(
+        acknowledged=True,
+        prefill_needs_review=False,
+    )
+    item = venue._m2_venue_transition_source_item(filled)
+    assert type(item) is recovery_fixtures.RecordBrokerFillEvidence
+    retained = replace(
+        item,
+        input_id=venue.VenueInputId("uow-o2-retained-coverage-owner"),
+    )
+    state = venue._m2_venue_state_from_book(claimed.venue)
+    proof = venue._m2_venue_observation_from_direct_evidence(
+        state,
+        item,
+        retained_item=None,
+        retained_input_bytes=None,
+        retained_outcome_bytes=None,
+        retained_fact_item=None,
+        retained_fact_input_bytes=None,
+        retained_fact_outcome_bytes=None,
+        retained_coverage_items=(retained, retained, retained),
+        retained_coverage_input_bytes=(b"input", b"input", b"input"),
+        retained_coverage_outcome_bytes=(b"outcome", b"outcome", b"outcome"),
+    )
+
+    scoped = venue._m2_venue_state_from_direct_proof(state, proof)
+
+    assert venue._m2_venue_observation_proof_is_authentic(proof)
+    assert scoped.book._input_record(retained.input_id) is not None
+    wrong_interval = replace(
+        retained,
+        resulting_cumulative_quantity=fills.Quantity(
+            retained.resulting_cumulative_quantity.value + 1
+        ),
+    )
+    with pytest.raises(ValueError, match="coverage evidence"):
+        venue._m2_venue_observation_from_direct_evidence(
+            state,
+            item,
+            retained_item=None,
+            retained_input_bytes=None,
+            retained_outcome_bytes=None,
+            retained_fact_item=None,
+            retained_fact_input_bytes=None,
+            retained_fact_outcome_bytes=None,
+            retained_coverage_items=(retained, wrong_interval, retained),
+            retained_coverage_input_bytes=(b"input", b"input", b"input"),
+            retained_coverage_outcome_bytes=(b"outcome", b"outcome", b"outcome"),
+        )
+
+
+def test_execute_prepared_dispatches_venue_operations_to_the_o2_route(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, _, claimed = acquisition_fixtures._r8_claimed_first_effect()
+    assert claimed.fresh_claim is not None
+    item = venue.RecordTransportOutcome(
+        venue.VenueInputId("uow-o2-dispatch"),
+        claimed.fresh_claim.effect_id,
+        venue.BrokerEffectState.OUTCOME_UNKNOWN,
+    )
+    operation = operations.VenueRecoveryOperation(
+        operations.VenueOperationCoordinates(
+            claimed.state.application_generation_id,
+            "ep",
+            7,
+            claimed.state._mandate.session_id,
+        ),
+        item,
+    )
+    prepared = SimpleNamespace(operation=operation)
+    claimed_record = object()
+    primary = unit_of_work._ClaimedPrimaryInput(operation, claimed_record)
+    expected = object()
+    calls: list[tuple[object, ...]] = []
+    monkeypatch.setattr(
+        unit_of_work,
+        "_claim_primary_input",
+        lambda *args: primary,
+    )
+
+    def execute(*args: object) -> object:
+        calls.append(args)
+        return expected
+
+    monkeypatch.setattr(unit_of_work, "_execute_venue_operation", execute)
+    connection = object()
+    capability = object()
+
+    actual = unit_of_work._execute_prepared(connection, prepared, capability)
+
+    assert actual is expected
+    assert calls == [(connection, prepared, claimed_record, capability)]
+
+
+def test_human_execution_fact_record_retains_every_attestation_field() -> None:
+    fact = recovery_fixtures._human_fill(input_suffix="uow-o2-record")
+    prepared = SimpleNamespace(
+        scope_id=7,
+        application_generation_id=authority_fixtures.GENERATION,
+        execution_profile_id="ep",
+    )
+
+    record = unit_of_work._venue_execution_fact_record(
+        prepared,
+        fact,
+        fact_id=31,
+        root_fill_key_id=29,
+        predecessor_fact_id=None,
+        fact_ordinal=37,
+    )
+
+    assert record == records.ExecutionFactRecord(
+        31,
+        7,
+        authority_fixtures.GENERATION,
+        "ep",
+        29,
+        fact.key.source_event_id,
+        fact.scope.order_id,
+        fact.scope.side.value,
+        fact.kind.value,
+        fact.authority.value,
+        fact.quantity,
+        fact.price,
+        fact.request_occurrence_id,
+        fact.claim_occurrence_id,
+        fact.prior_cumulative_quantity,
+        fact.resulting_cumulative_quantity,
+        fact.actor,
+        fact.reason,
+        fact.evidence_reference,
+        None,
+        37,
+    )
+    assert unit_of_work._execution_record_matches_fact(
+        record,
+        fact,
+        root_fill_key_id=29,
+        predecessor_fact_id=None,
+    )
+    assert not unit_of_work._execution_record_matches_fact(
+        replace(record, actor_id=None),
+        fact,
+        root_fill_key_id=29,
+        predecessor_fact_id=None,
+    )
+
+
+def test_venue_economics_persists_root_route_then_fact_and_reselects_heads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, _, claimed, filled = acquisition_fixtures._r8_current_generation_fill_transition(
+        acknowledged=True,
+        prefill_needs_review=False,
+    )
+    item = venue._m2_venue_transition_source_item(filled)
+    assert type(item) is recovery_fixtures.RecordBrokerFillEvidence
+    relation = filled.book.project_acquisition_fact(filled).fact_relation()
+    assert relation is not None
+    operation = operations.VenueRecoveryOperation(
+        operations.VenueOperationCoordinates(
+            claimed.state.application_generation_id,
+            "ep",
+            7,
+            claimed.state._mandate.session_id,
+        ),
+        item,
+    )
+    prepared = _prepared_acquisition_operation(operation, claimed)
+    owner = filled.book.owner(item.leg_key)
+    effect = filled.book._current_effect(item.effect_id)
+    generation_id = claimed.state._controller.live_generation_id
+    assert owner is not None
+    assert effect is not None
+    assert generation_id is not None
+    effect_record = records.VenueEffectRecord(
+        41,
+        effect.scope.effect_id,
+        7,
+        claimed.state.application_generation_id,
+        "ep",
+        generation_id,
+        claimed.state._mandate.binding.commitment.hex(),
+        10,
+        3,
+        "NORMAL",
+        effect.scope.request_occurrence_id,
+        effect.scope.mandate_id,
+        effect.scope.kind.value,
+        effect.scope.client_order_id,
+        None,
+        effect.scope.side.value,
+        effect.scope.quantity,
+        effect.scope.economic_scope,
+        effect.state.value,
+        effect.acceptance_set_state.value,
+        None,
+        None,
+        None,
+        None,
+        1,
+    )
+    owner_record = records.VenueIdentityOwnerRecord(
+        7,
+        "ep",
+        owner.leg_key.order_id,
+        owner.observation_id,
+        effect_record.effect_id,
+        None,
+        generation_id,
+        False,
+    )
+    selection = prepared.selection_proof._selection
+    selection.effects = (effect_record,)
+    selection.owners = (owner_record,)
+    writes: list[str] = []
+    captured: dict[str, object] = {}
+
+    class Connection:
+        def execute(self, sql: str, parameters: object = ()) -> _OrdinalCursor:
+            del parameters
+            if "MAX(root_fill_key_id)" in sql:
+                return _OrdinalCursor(11)
+            if "MAX(fact_id)" in sql:
+                return _OrdinalCursor(13)
+            if "MAX(fact_ordinal)" in sql:
+                return _OrdinalCursor(17)
+            raise AssertionError(sql)
+
+    def applied(name: str, record: object) -> records.RepositoryOutcome[object]:
+        writes.append(name)
+        captured[name] = record
+        return records.RepositoryOutcome(records.RepositoryOutcomeKind.APPLIED)
+
+    monkeypatch.setattr(
+        unit_of_work._repository,
+        "load_root_fill_by_external",
+        lambda *args: records.RepositoryOutcome(records.RepositoryOutcomeKind.ABSENT),
+    )
+    monkeypatch.setattr(
+        unit_of_work._repository,
+        "store_root_fill",
+        lambda connection, record, *, capability: applied("root", record),
+    )
+    monkeypatch.setattr(
+        unit_of_work._repository,
+        "store_acquisition_root_route",
+        lambda connection, record, *, capability: applied("route", record),
+    )
+    monkeypatch.setattr(
+        unit_of_work._repository,
+        "store_execution_fact",
+        lambda connection, record, *, capability: applied("fact", record),
+    )
+
+    def found(record: object) -> records.RepositoryOutcome[object]:
+        return records.RepositoryOutcome(records.RepositoryOutcomeKind.FOUND, record)
+
+    def resulting_root() -> records.RootFillRecord:
+        root = captured["root"]
+        fact = captured["fact"]
+        assert type(root) is records.RootFillRecord
+        assert type(fact) is records.ExecutionFactRecord
+        return replace(
+            root,
+            current_fact_id=fact.fact_id,
+            current_kind=fact.kind,
+            current_authority=fact.authority,
+            current_side=fact.side,
+            current_quantity=fact.quantity,
+            current_price=fact.price,
+            economics_head_ordinal=fact.fact_ordinal,
+        )
+
+    monkeypatch.setattr(
+        unit_of_work._repository,
+        "load_root_fill",
+        lambda *args: found(resulting_root()),
+    )
+    monkeypatch.setattr(
+        unit_of_work._repository,
+        "load_acquisition_root_route",
+        lambda *args: found(captured["route"]),
+    )
+    monkeypatch.setattr(
+        unit_of_work._repository,
+        "load_execution_fact_by_source",
+        lambda *args: found(captured["fact"]),
+    )
+
+    def fact_head(*args: object) -> records.RepositoryOutcome[object]:
+        del args
+        fact = captured["fact"]
+        assert type(fact) is records.ExecutionFactRecord
+        return found(
+            records.ExecutionFactHeadRecord(
+                fact.root_fill_key_id,
+                fact.fact_id,
+                fact.fact_ordinal,
+            )
+        )
+
+    monkeypatch.setattr(
+        unit_of_work._repository,
+        "load_execution_fact_head",
+        fact_head,
+    )
+
+    fact_record, root_record, route_record, predecessor = (
+        unit_of_work._persist_venue_economics(
+            Connection(),
+            prepared,
+            filled,
+            relation,
+            object(),
+        )
+    )
+
+    assert writes == ["root", "route", "fact"]
+    assert predecessor is None
+    assert fact_record == captured["fact"]
+    assert root_record == resulting_root()
+    assert route_record == captured["route"]
+
+
+def test_direct_terminal_venue_refresh_rebases_active_protection_once() -> None:
+    _, scope, claimed, filled = (
+        acquisition_fixtures._r8_current_generation_fill_transition(
+            acknowledged=True,
+            prefill_needs_review=False,
+        )
+    )
+    current = acquisition.reduce_acquisition_controller(
+        claimed.state,
+        filled,
+        None,
+        claimed.authority,
+    )
+    assert current.protection is not None
+    relation = filled.book.project_acquisition_fact(filled).fact_relation()
+    assert relation is not None
+    item = venue.ObserveVenueStatus(
+        venue.VenueInputId("uow-o2-active-terminal"),
+        relation.leg_key,
+        venue.VenueAttemptState.FILLED,
+        venue.VenueObservationId("uow-o2-active-terminal-observation"),
+        authority_fixtures.Quantity(current.execution.position.raw_quantity),
+        venue.ClosureId("uow-o2-active-terminal-closure"),
+        venue.EvidenceReference("uow-o2-active-terminal-evidence"),
+    )
+    venue_transition, observation = _apply_direct_venue_observation(
+        current.venue,
+        current.execution,
+        item,
+    )
+    refresh = authority._m2_refresh_acquisition_context_from_venue_transition(
+        current.authority,
+        current.execution,
+        scope,
+        venue_transition,
+        observation,
+    )
+    rebased, protection_transition = acquisition._m2_rebase_acquisition_venue(
+        current.state,
+        refresh,
+        current.protection,
+    )
+
+    assert venue_transition.disposition is venue.VenueRecoveryDisposition.APPLIED
+    assert venue_transition.quantity_delta == 0
+    assert (
+        refresh.disposition is authority.AcquisitionContextRefreshDisposition.REFRESHED
+    )
+    assert protection_transition is not None
+    assert protection_transition.disposition is protection.ProtectionDisposition.APPLIED
+    assert rebased.protection is protection_transition.state
+    assert rebased.venue is venue_transition.book
+    assert rebased.execution.position == current.execution.position
+    assert rebased.execution.seen_facts.commitment == (
+        current.execution.seen_facts.commitment
+    )
+    assert rebased.state.registry is current.state.registry
+    assert rebased.state.lineage is current.state.lineage
+    assert (
+        rebased.state._controller.controller_head
+        == current.state._controller.controller_head
+    )
+    assert rebased.state.commitment != current.state.commitment
+
+
+def test_direct_late_owner_reconciliation_rebases_active_protection_once() -> None:
+    _, scope, claimed, filled = (
+        acquisition_fixtures._r8_current_generation_fill_transition(
+            acknowledged=True,
+            prefill_needs_review=False,
+        )
+    )
+    current = acquisition.reduce_acquisition_controller(
+        claimed.state,
+        filled,
+        None,
+        claimed.authority,
+    )
+    assert current.protection is not None
+    relation = filled.book.project_acquisition_fact(filled).fact_relation()
+    assert relation is not None
+
+    terminal, terminal_observation = _apply_direct_venue_observation(
+        current.venue,
+        current.execution,
+        venue.ObserveVenueStatus(
+            venue.VenueInputId("uow-o2-late-owner-terminal"),
+            relation.leg_key,
+            venue.VenueAttemptState.FILLED,
+            venue.VenueObservationId("uow-o2-late-owner-terminal-observation"),
+            authority_fixtures.Quantity(current.execution.position.raw_quantity),
+            venue.ClosureId("uow-o2-late-owner-terminal-closure"),
+            venue.EvidenceReference("uow-o2-late-owner-terminal-evidence"),
+        ),
+    )
+    terminal_refresh = authority._m2_refresh_acquisition_context_from_venue_transition(
+        current.authority,
+        current.execution,
+        scope,
+        terminal,
+        terminal_observation,
+    )
+    terminal_current, terminal_protection = acquisition._m2_rebase_acquisition_venue(
+        current.state,
+        terminal_refresh,
+        current.protection,
+    )
+    assert terminal_protection is not None
+    assert terminal_current.protection is terminal_protection.state
+
+    closed = recovery_fixtures.apply_venue_recovery_input(
+        terminal_current.venue,
+        terminal_current.execution,
+        venue.CloseAcceptanceSet(
+            venue.VenueInputId("uow-o2-close-before-late-owner"),
+            claimed.fresh_claim.effect_id,
+            venue.AcceptanceProof(
+                kind=venue.AcceptanceProofKind.COVERED_RECONCILIATION,
+                effect_scope=terminal_current.venue.effect(
+                    claimed.fresh_claim.effect_id
+                ).scope,
+                claim_occurrence_id=claimed.fresh_claim.claim_occurrence_id,
+                evidence_reference=venue.EvidenceReference(
+                    "uow-o2-close-before-late-owner-proof"
+                ),
+                evidence_digest=b"\xa7" * 32,
+            ),
+        ),
+    )
+    assert closed.disposition is venue.VenueRecoveryDisposition.APPLIED
+    assert (
+        closed.book.effect(claimed.fresh_claim.effect_id).acceptance_set_state
+        is venue.AcceptanceSetState.CLOSED
+    )
+    closed_protection_transition = protection.reduce_position_protection(
+        terminal_current.protection,
+        protection.project_protection_venue(
+            closed,
+            terminal_current.state._mandate.protection_mandate,
+        ),
+    )
+    assert (
+        closed_protection_transition.disposition
+        is protection.ProtectionDisposition.APPLIED
+    )
+    closed_protection = closed_protection_transition.state
+    closed_authority = authority._state_with(
+        terminal_current.authority,
+        venue=closed.book,
+    )
+    closed_venue_context = closed.book.project_acquisition_context(
+        closed.execution,
+        scope,
+    )
+    closed_authority_context = authority.project_acquisition_authority_context(
+        closed_authority,
+        closed.execution,
+        closed_venue_context,
+    )
+    closed_protection_context = protection.project_acquisition_protection_context(
+        closed_protection,
+        closed.book,
+        closed.execution,
+        closed_venue_context,
+    )
+    assert closed_protection_context is not None
+    prior_controller = terminal_current.state._controller
+    closed_controller = acquisition._new_symbol_acquisition_controller(
+        application_generation_id=terminal_current.state.application_generation_id,
+        position_scope=terminal_current.state.position_scope,
+        controller_head=prior_controller.controller_head,
+        successor_ordinal=prior_controller.successor_ordinal,
+        live_generation_id=prior_controller.live_generation_id,
+        recovery_class=prior_controller.recovery_class,
+        scope_execution_commitment=(closed_venue_context.scope_execution_commitment),
+        venue_commitment=closed_venue_context.commitment,
+        authority_context_commitment=(closed_authority_context.authority_commitment),
+        protection_commitment=(closed_protection_context.scope_protection_commitment),
+        binding_commitment=prior_controller._binding_commitment,
+        compatibility_commitment=prior_controller._compatibility_commitment,
+    )
+    closed_state = acquisition._new_acquisition_controller_state(
+        controller=closed_controller,
+        mandate=terminal_current.state._mandate,
+        registry=terminal_current.state.registry,
+        lineage=terminal_current.state.lineage,
+    )
+
+    late_leg = identity.VenueLegKey(
+        broker=scope.broker,
+        environment=scope.environment,
+        account=scope.account,
+        order_id=identity.OrderId("uow-o2-late-owner-order"),
+    )
+    late, late_observation = _apply_direct_venue_observation(
+        closed.book,
+        closed.execution,
+        venue.DiscoverVenueLeg(
+            venue.VenueInputId("uow-o2-late-owner-discovery"),
+            claimed.fresh_claim.effect_id,
+            late_leg,
+            venue.VenueObservationId("uow-o2-late-owner-observation"),
+        ),
+    )
+    assert late.disposition is venue.VenueRecoveryDisposition.RECONCILIATION_REQUIRED
+    assert late.quantity_delta == 0
+    assert late.execution == closed.execution
+    assert late.book.owner(late_leg) is not None
+
+    refresh = authority._m2_refresh_acquisition_context_from_venue_transition(
+        closed_authority,
+        closed.execution,
+        scope,
+        late,
+        late_observation,
+    )
+    rebased, late_protection = acquisition._m2_rebase_acquisition_venue(
+        closed_state,
+        refresh,
+        closed_protection,
+    )
+
+    assert (
+        refresh.disposition is authority.AcquisitionContextRefreshDisposition.REFRESHED
+    )
+    assert late_protection is not None
+    assert late_protection.disposition is protection.ProtectionDisposition.APPLIED
+    assert rebased.protection is late_protection.state
+    assert rebased.venue is late.book
+    assert rebased.execution == closed.execution
+    assert rebased.state.registry is closed_state.registry
+    assert rebased.state.lineage is closed_state.lineage
+    assert (
+        rebased.state._controller.controller_head == closed_controller.controller_head
+    )
+
+
 def _authority_effect_prepared(
     state: authority.ExecutionAuthorityState,
     execution: object,
@@ -828,6 +2105,73 @@ def test_unit_of_work_exports_are_exact_and_invalid_input_never_begins() -> None
     assert connection.events == []
 
 
+def test_owner_projection_must_equal_the_retained_checkpoint_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _LoadedEnvelope:
+        def __init__(
+            self,
+            payload: bytes,
+            digest: str,
+            provenance: str = "LOADED",
+        ) -> None:
+            self.canonical_payload_bytes = payload
+            self.payload_sha256 = digest
+            self._provenance = provenance
+
+        @classmethod
+        def _is_authentic(cls, value: object) -> bool:
+            return type(value) is cls
+
+    monkeypatch.setattr(
+        unit_of_work._checkpoint_codec,
+        "RuntimeCheckpointEnvelope",
+        _LoadedEnvelope,
+    )
+    context = _uow_context()
+    projected = SimpleNamespace(canonical_payload_bytes=b"retained")
+    accepted = records.RepositoryOutcome(
+        records.RepositoryOutcomeKind.FOUND,
+        _LoadedEnvelope(b"retained", context.expected_checkpoint.checkpoint_sha256),
+    )
+    unit_of_work._require_retained_checkpoint_payload(
+        context,
+        projected,
+        accepted,
+    )
+
+    for rejected in (
+        records.RepositoryOutcome(records.RepositoryOutcomeKind.ABSENT),
+        records.RepositoryOutcome(
+            records.RepositoryOutcomeKind.FOUND,
+            _LoadedEnvelope(
+                b"different", context.expected_checkpoint.checkpoint_sha256
+            ),
+        ),
+        records.RepositoryOutcome(
+            records.RepositoryOutcomeKind.FOUND,
+            _LoadedEnvelope(b"retained", "f" * 64),
+        ),
+        records.RepositoryOutcome(
+            records.RepositoryOutcomeKind.FOUND,
+            _LoadedEnvelope(
+                b"retained",
+                context.expected_checkpoint.checkpoint_sha256,
+                "PROJECTED",
+            ),
+        ),
+    ):
+        with pytest.raises(
+            unit_of_work._TechnicalRefusal,
+            match="retained checkpoint payload",
+        ):
+            unit_of_work._require_retained_checkpoint_payload(
+                context,
+                projected,
+                rejected,
+            )
+
+
 def test_body_fault_retires_lease_then_rolls_back_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1014,6 +2358,830 @@ def _prepared_primary_claim() -> unit_of_work._PreparedOperation:
         input_identity_sha256,
         object(),
         object(),
+    )
+
+
+def _acquisition_coordinates(
+    transition: acquisition.AcquisitionControllerTransition,
+) -> operations.AcquisitionOperationCoordinates:
+    live_generation_id = transition.state._controller.live_generation_id
+    assert live_generation_id is not None
+    return operations.AcquisitionOperationCoordinates(
+        authority_fixtures.GENERATION,
+        "ep",
+        7,
+        transition.state._mandate.session_id,
+        live_generation_id,
+    )
+
+
+def _prepared_acquisition_operation(
+    operation: operations.M2Operation,
+    transition: acquisition.AcquisitionControllerTransition,
+) -> unit_of_work._PreparedOperation:
+    payload = operations.encode_m2_operation(operation)
+    (
+        domain,
+        application_generation_id,
+        execution_profile_id,
+        scope_id,
+        session_id,
+        acquisition_generation_id,
+        market_source_profile_id,
+        stream_generation_id,
+        input_identity_sha256,
+    ) = operations._derive_m2_durable_input_projection(operation)
+    context = unit_of_work.UnitOfWorkContext(
+        _uow_context().expected_checkpoint,
+        transition.venue,
+        transition.authority,
+        ((7, transition.state, transition.execution, transition.protection),),
+    )
+    generation_id = transition.state._controller.live_generation_id
+    assert generation_id is not None
+    generation = transition.state.registry.record(generation_id)
+    assert generation is not None
+    mandate = transition.state._mandate
+    stream_id = mandate.protection_mandate.evidence_policy.stream_generation
+    stream = records.MarketStreamAuthorityRecord(
+        stream_id,
+        7,
+        transition.state.application_generation_id,
+        generation_id,
+        generation.binding.dual_mandate_binding_commitment.hex(),
+        "mp",
+        mandate.session_id,
+        mandate.protection_mandate.evidence_policy.sequence_mode.value,
+    )
+    venue_context = transition.venue.project_acquisition_context(
+        transition.execution,
+        transition.state.position_scope,
+    )
+    fixed_cursor = (
+        venue_context._source_protection_cursor_ordinal
+        if transition.protection is None
+        else transition.protection._cursor_ordinal
+    )
+    if transition.protection is None:
+        protection_record = records.ProtectionAuthorityRecord(
+            7,
+            "NORMAL",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            10,
+            "aa" * 32,
+            3,
+        )
+    else:
+        protection_record = records.ProtectionAuthorityRecord(
+            7,
+            (
+                "HARD_BAIL"
+                if transition.protection.policy is protection.ProtectionPolicy.HARD_BAIL
+                else "NORMAL"
+            ),
+            stream_id,
+            generation_id,
+            generation.binding.dual_mandate_binding_commitment.hex(),
+            "mp",
+            mandate.session_id,
+            mandate.protection_mandate.evidence_policy.sequence_mode.value,
+            10,
+            transition.protection.commitment.hex(),
+            3,
+        )
+    selection = SimpleNamespace(
+        scopes=(
+            records.ScopeRecord(
+                7,
+                transition.state.application_generation_id,
+                "ep",
+                transition.state.position_scope.symbol_id,
+            ),
+        ),
+        controllers=(
+            records.SymbolControllerRecord(
+                7,
+                transition.state.application_generation_id,
+                "ep",
+                generation_id,
+                transition.execution.position.raw_quantity,
+                "CONSISTENT",
+                10,
+                3,
+                generation.binding.emergency_recovery_compatibility_commitment.hex(),
+            ),
+        ),
+        protection_authorities=(protection_record,),
+        live_generations=(
+            records.AcquisitionGenerationRecord(
+                generation_id,
+                7,
+                "LIVE",
+                generation.binding.successor_ordinal + 1,
+                None,
+                generation.binding.dual_mandate_binding_commitment.hex(),
+                generation.binding.emergency_recovery_compatibility_commitment.hex(),
+            ),
+        ),
+        live_generation_current=(
+            records.AcquisitionGenerationCurrentRecord(
+                generation_id,
+                7,
+                0,
+                0,
+                0 if transition.protection is None else 1,
+            ),
+        ),
+        streams=(stream,),
+        cursors=(
+            records.MarketCursorRecord(
+                stream.stream_generation_id,
+                stream.scope_id,
+                stream.application_generation_id,
+                stream.acquisition_generation_id,
+                stream.generation_mandate_commitment_sha256,
+                stream.source_profile_id,
+                stream.session_id,
+                stream.sequence_mode,
+                fixed_cursor,
+                max(fixed_cursor, 10),
+            ),
+        ),
+        effects=(),
+        acceptance_sets=(),
+        claims=(),
+    )
+    return unit_of_work._PreparedOperation(
+        operation,
+        context,
+        payload,
+        domain,
+        application_generation_id,
+        execution_profile_id,
+        scope_id,
+        session_id,
+        acquisition_generation_id,
+        market_source_profile_id,
+        stream_generation_id,
+        input_identity_sha256,
+        SimpleNamespace(
+            request=SimpleNamespace(market_source_profile_id="mp"),
+            _selection=selection,
+        ),
+        object(),
+    )
+
+
+def test_acquisition_current_proof_rejects_dormant_count_and_class_splices() -> None:
+    _, _, initialized = acquisition_fixtures._r8_initialized_controller()
+    operation = operations.CreateAcquisitionEffectOperation(
+        _acquisition_coordinates(initialized),
+        authority.AuthorityInputId("uow-dormant-current-proof"),
+        acquisition.AcquisitionEffectTerms(
+            authority_fixtures.Quantity(1),
+            authority_fixtures.PRICE,
+            acquisition.AcquisitionOrderType.LIMIT,
+            1,
+        ),
+    )
+
+    prepared = _prepared_acquisition_operation(operation, initialized)
+    selection = prepared.selection_proof._selection
+    original_current = selection.live_generation_current
+    selection.live_generation_current = (
+        replace(original_current[0], active_protection_count=1),
+    )
+    with pytest.raises(
+        unit_of_work._TechnicalRefusal,
+        match="dormant protection authority",
+    ):
+        unit_of_work._selected_acquisition_authority(
+            prepared,
+            initialized.state,
+            initialized.execution,
+            initialized.protection,
+        )
+
+    selection.live_generation_current = original_current
+    original_protection = selection.protection_authorities
+    selection.protection_authorities = (
+        replace(original_protection[0], authority_class="HARD_BAIL"),
+    )
+    with pytest.raises(
+        unit_of_work._TechnicalRefusal,
+        match="dormant protection authority",
+    ):
+        unit_of_work._selected_acquisition_authority(
+            prepared,
+            initialized.state,
+            initialized.execution,
+            initialized.protection,
+        )
+
+
+def test_acquisition_current_proof_rejects_active_count_and_class_splices() -> None:
+    _, _, claimed, filled = acquisition_fixtures._r8_current_generation_fill_transition(
+        acknowledged=True,
+        prefill_needs_review=False,
+    )
+    current = acquisition.reduce_acquisition_controller(
+        claimed.state,
+        filled,
+        None,
+        claimed.authority,
+    )
+    assert current.protection is not None
+    operation = operations.BeginAcquisitionPreemptionOperation(
+        _acquisition_coordinates(current),
+        authority.AuthorityInputId("uow-active-current-proof"),
+    )
+    prepared = _prepared_acquisition_operation(operation, current)
+    selection = prepared.selection_proof._selection
+    original_current = selection.live_generation_current
+    selection.live_generation_current = (
+        replace(original_current[0], active_protection_count=0),
+    )
+    with pytest.raises(
+        unit_of_work._TechnicalRefusal,
+        match="active protection authority",
+    ):
+        unit_of_work._selected_acquisition_authority(
+            prepared,
+            current.state,
+            current.execution,
+            current.protection,
+        )
+
+    selection.live_generation_current = original_current
+    original_protection = selection.protection_authorities
+    wrong_class = (
+        "NORMAL"
+        if original_protection[0].authority_class == "HARD_BAIL"
+        else "HARD_BAIL"
+    )
+    selection.protection_authorities = (
+        replace(original_protection[0], authority_class=wrong_class),
+    )
+    with pytest.raises(
+        unit_of_work._TechnicalRefusal,
+        match="active protection authority",
+    ):
+        unit_of_work._selected_acquisition_authority(
+            prepared,
+            current.state,
+            current.execution,
+            current.protection,
+        )
+
+
+def test_create_acquisition_effect_route_uses_owner_kernel_and_exact_derivative() -> (
+    None
+):
+    _, _, initialized = acquisition_fixtures._r8_initialized_controller()
+    operation = operations.CreateAcquisitionEffectOperation(
+        _acquisition_coordinates(initialized),
+        authority.AuthorityInputId("uow-create-acquisition-effect"),
+        acquisition.AcquisitionEffectTerms(
+            authority_fixtures.Quantity(1),
+            authority_fixtures.PRICE,
+            acquisition.AcquisitionOrderType.LIMIT,
+            1,
+        ),
+    )
+
+    result, derivatives = unit_of_work._acquisition_transition_for_operation(
+        _prepared_acquisition_operation(operation, initialized)
+    )
+
+    assert result.disposition is acquisition.AcquisitionControllerDisposition.APPLIED
+    assert result.created_effect_id is not None
+    assert tuple(
+        type(venue._m2_venue_transition_source_item(item)) for item in derivatives
+    ) == (venue.RequestedEffect,)
+
+
+def test_claim_acquisition_effect_route_uses_owner_kernel_and_exact_derivative() -> (
+    None
+):
+    _, _, created = acquisition_fixtures._r8_created_first_effect()
+    assert created.created_effect_id is not None
+    operation = operations.ClaimAcquisitionEffectOperation(
+        _acquisition_coordinates(created),
+        authority.AuthorityInputId("uow-claim-acquisition-effect"),
+        created.created_effect_id,
+        authority.ClaimOccurrenceId("uow-acquisition-claim-occurrence"),
+    )
+
+    result, derivatives = unit_of_work._acquisition_transition_for_operation(
+        _prepared_acquisition_operation(operation, created)
+    )
+
+    assert result.disposition is acquisition.AcquisitionControllerDisposition.APPLIED
+    assert result.fresh_claim is not None
+    assert result.fresh_claim.effect_id == operation.effect_id
+    assert result.fresh_claim.claim_occurrence_id == operation.claim_occurrence_id
+    assert tuple(
+        type(venue._m2_venue_transition_source_item(item)) for item in derivatives
+    ) == (venue.RecordDispatchClaim,)
+
+
+def test_begin_acquisition_preemption_route_uses_owner_kernel_and_exact_derivative() -> (
+    None
+):
+    _, _, current, _ = acquisition_fixtures._r11_waiting_preemption_fixture()
+    operation = operations.BeginAcquisitionPreemptionOperation(
+        _acquisition_coordinates(current),
+        authority.AuthorityInputId("uow-begin-acquisition-preemption"),
+    )
+
+    result, derivatives = unit_of_work._acquisition_transition_for_operation(
+        _prepared_acquisition_operation(operation, current)
+    )
+
+    assert result.disposition is acquisition.AcquisitionControllerDisposition.APPLIED
+    assert tuple(
+        type(venue._m2_venue_transition_source_item(item)) for item in derivatives
+    ) == (venue.RequestedEffect,)
+
+
+def test_begin_acquisition_generation_route_uses_owner_kernel_and_serial_successor() -> (
+    None
+):
+    _, _, initialized = acquisition_fixtures._r8_initialized_controller()
+    predecessor_generation_id = initialized.state._controller.live_generation_id
+    assert predecessor_generation_id is not None
+    successor_mandate = acquisition_fixtures._successor_mandate(
+        initialized.state._mandate,
+        "uow-successor",
+    )
+    operation = operations.BeginAcquisitionGenerationOperation(
+        _acquisition_coordinates(initialized),
+        authority.AuthorityInputId("uow-begin-acquisition-generation"),
+        successor_mandate,
+    )
+
+    result, derivatives = unit_of_work._acquisition_transition_for_operation(
+        _prepared_acquisition_operation(operation, initialized)
+    )
+
+    assert result.disposition is acquisition.AcquisitionControllerDisposition.APPLIED
+    successor_generation_id = result.state._controller.live_generation_id
+    assert successor_generation_id not in (None, predecessor_generation_id)
+    assert (
+        result.state.registry.record(predecessor_generation_id).serving_class
+        is acquisition.GenerationServingClass.RETIRED_UNSERVING
+    )
+    assert (
+        result.state.registry.record(successor_generation_id).serving_class
+        is acquisition.GenerationServingClass.LIVE
+    )
+    assert derivatives == ()
+
+
+def test_market_occurrence_route_reduces_protection_then_rebases_acquisition() -> None:
+    _, scope, claimed, filled = (
+        acquisition_fixtures._r8_current_generation_fill_transition(
+            acknowledged=True,
+            prefill_needs_review=False,
+        )
+    )
+    current = acquisition.reduce_acquisition_controller(
+        claimed.state,
+        filled,
+        None,
+        claimed.authority,
+    )
+    assert current.protection is not None
+    mandate = current.protection.mandate
+    occurrence = protection_fixtures._occurrence(
+        protection,
+        "uow-market-baseline",
+        bid=101,
+        ask=102,
+        sequence=0,
+        source_time=0,
+        evaluation_time=0,
+        market_epoch=0,
+        source_id=mandate.evidence_policy.source_id,
+        stream_generation=mandate.evidence_policy.stream_generation,
+        position_scope=scope,
+        session_id=mandate.session_id,
+    )
+    coordinates = _acquisition_coordinates(current)
+    operation = operations.MarketOccurrenceOperation(
+        operations.MarketOperationCoordinates(
+            coordinates.application_generation_id,
+            coordinates.execution_profile_id,
+            coordinates.scope_id,
+            coordinates.session_id,
+            coordinates.acquisition_generation_id,
+            "mp",
+            mandate.evidence_policy.stream_generation,
+        ),
+        occurrence,
+    )
+
+    protection_result, acquisition_result, derivatives = (
+        unit_of_work._market_transition_for_operation(
+            _prepared_acquisition_operation(operation, current)
+        )
+    )
+
+    assert protection_result.disposition is protection.ProtectionDisposition.APPLIED
+    assert protection_result.goal is None
+    assert acquisition_result is not None
+    assert (
+        acquisition_result.disposition
+        is acquisition.AcquisitionControllerDisposition.APPLIED
+    )
+    assert acquisition_result.protection is protection_result.state
+    assert derivatives == ()
+
+
+def test_protection_persistence_advances_cursor_controller_then_authority_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, _, current, _ = acquisition_fixtures._r11_waiting_preemption_fixture()
+    assert current.protection is not None
+    prepared = _prepared_acquisition_operation(
+        operations.BeginAcquisitionPreemptionOperation(
+            _acquisition_coordinates(current),
+            authority.AuthorityInputId("uow-protection-write-order"),
+        ),
+        current,
+    )
+    transition, _ = unit_of_work._acquisition_transition_for_operation(prepared)
+    assert transition.protection is not None
+    selected = unit_of_work._selected_acquisition_authority(
+        prepared,
+        current.state,
+        current.execution,
+        current.protection,
+    )
+    events: list[tuple[str, object]] = []
+
+    def advance_cursor(
+        connection: object,
+        expected_fixed: int,
+        expected_published: int,
+        record: object,
+        *,
+        capability: object,
+    ) -> records.RepositoryOutcome[object]:
+        del connection, capability
+        events.append(("cursor", (expected_fixed, expected_published, record)))
+        return records.RepositoryOutcome(records.RepositoryOutcomeKind.APPLIED)
+
+    def advance_protection(
+        connection: object,
+        expected_version: int,
+        record: object,
+        *,
+        capability: object,
+    ) -> records.RepositoryOutcome[object]:
+        del connection, capability
+        events.append(("protection", (expected_version, record)))
+        return records.RepositoryOutcome(records.RepositoryOutcomeKind.APPLIED)
+
+    def advance_controller(
+        connection: object,
+        expected_version: int,
+        record: object,
+        *,
+        capability: object,
+    ) -> records.RepositoryOutcome[object]:
+        del connection, capability
+        events.append(("controller", (expected_version, record)))
+        return records.RepositoryOutcome(records.RepositoryOutcomeKind.APPLIED)
+
+    monkeypatch.setattr(
+        unit_of_work._repository,
+        "advance_market_cursor",
+        advance_cursor,
+    )
+    monkeypatch.setattr(
+        unit_of_work._repository,
+        "advance_protection_authority",
+        advance_protection,
+    )
+    monkeypatch.setattr(
+        unit_of_work._repository,
+        "advance_symbol_controller",
+        advance_controller,
+    )
+
+    resulting = unit_of_work._advance_acquisition_currentness(
+        object(),
+        selected,
+        current.protection,
+        transition.protection,
+        object(),
+    )
+
+    assert [name for name, _ in events] == ["cursor", "controller", "protection"]
+    cursor = events[0][1][2]
+    assert isinstance(cursor, records.MarketCursorRecord)
+    assert cursor.fixed_cursor_ordinal == transition.protection._cursor_ordinal
+    assert cursor.published_head_ordinal == selected.cursor.published_head_ordinal + 1
+    assert resulting.protection.version_ordinal == (
+        selected.protection.version_ordinal + 1
+    )
+    assert (
+        resulting.protection.state_commitment_sha256
+        == transition.protection.commitment.hex()
+    )
+    assert resulting.controller.currentness_head_ordinal == (
+        selected.controller.currentness_head_ordinal + 1
+    )
+
+
+def test_preemption_persists_successor_protection_before_new_effect_authority(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, _, current, _ = acquisition_fixtures._r11_waiting_preemption_fixture()
+    operation = operations.BeginAcquisitionPreemptionOperation(
+        _acquisition_coordinates(current),
+        authority.AuthorityInputId("uow-preemption-write-order"),
+    )
+    prepared = _prepared_acquisition_operation(operation, current)
+    transition, _ = unit_of_work._acquisition_transition_for_operation(prepared)
+    assert transition.created_effect_id is not None
+    events: list[str] = []
+    successor_protection = replace(
+        prepared.selection_proof._selection.protection_authorities[0],
+        state_commitment_sha256="bb" * 32,
+        version_ordinal=4,
+    )
+
+    selected = unit_of_work._selected_acquisition_authority(
+        prepared,
+        current.state,
+        current.execution,
+        current.protection,
+    )
+    successor_controller = replace(
+        selected.controller,
+        currentness_head_ordinal=selected.controller.currentness_head_ordinal + 1,
+        controller_version_ordinal=selected.controller.controller_version_ordinal + 1,
+    )
+    successor_authority = unit_of_work._SelectedScopeAuthority(
+        selected.scope,
+        successor_controller,
+        selected.generation,
+        successor_protection,
+    )
+
+    def advance(*args: object, **kwargs: object) -> object:
+        del args, kwargs
+        events.append("protection")
+        return successor_authority
+
+    def persist(
+        connection: object,
+        routed: object,
+        derivatives: object,
+        capability: object,
+        *,
+        new_effect_authority: object = None,
+    ) -> tuple[tuple[object, ...], tuple[object, ...]]:
+        del connection, routed, derivatives, capability
+        events.append("effect")
+        assert isinstance(
+            new_effect_authority,
+            unit_of_work._SelectedScopeAuthority,
+        )
+        assert new_effect_authority is successor_authority
+        return ((SimpleNamespace(effect_external=transition.created_effect_id),), ())
+
+    completed = object()
+
+    def complete(*args: object, **kwargs: object) -> object:
+        del args
+        events.append("complete")
+        assert kwargs["checkpoint_changed"] is True
+        return completed
+
+    monkeypatch.setattr(unit_of_work, "_advance_acquisition_currentness", advance)
+    monkeypatch.setattr(
+        unit_of_work,
+        "_persist_authority_venue_transitions",
+        persist,
+    )
+    monkeypatch.setattr(unit_of_work, "_complete_claimed_input", complete)
+
+    result = unit_of_work._execute_acquisition_operation(
+        object(),
+        prepared,
+        object(),
+        object(),
+    )
+
+    assert result is completed
+    assert events == ["protection", "effect", "complete"]
+
+
+def test_claim_uses_retained_effect_fence_before_advancing_currentness(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, _, current = acquisition_fixtures._r8_created_first_effect()
+    assert current.created_effect_id is not None
+    operation = operations.ClaimAcquisitionEffectOperation(
+        _acquisition_coordinates(current),
+        authority.AuthorityInputId("uow-claim-fence-order"),
+        current.created_effect_id,
+        authority.ClaimOccurrenceId("uow-claim-fence-occurrence"),
+    )
+    prepared = _prepared_acquisition_operation(operation, current)
+    transition, _ = unit_of_work._acquisition_transition_for_operation(prepared)
+    assert transition.fresh_claim is not None
+    events: list[str] = []
+    persisted = unit_of_work._PersistedEffectClaim(
+        SimpleNamespace(effect_external=transition.fresh_claim.effect_id),
+        SimpleNamespace(claim_occurrence_id=transition.fresh_claim.claim_occurrence_id),
+    )
+
+    def persist(*args: object, **kwargs: object):
+        del args
+        events.append("claim")
+        assert kwargs["new_effect_authority"] is None
+        return (), (persisted,)
+
+    def outbox(*args: object, **kwargs: object) -> object:
+        del args, kwargs
+        events.append("outbox")
+        return object()
+
+    def advance(*args: object, **kwargs: object) -> object:
+        del args, kwargs
+        events.append("currentness")
+        return object()
+
+    completed = object()
+
+    def complete(*args: object, **kwargs: object) -> object:
+        del args
+        events.append("complete")
+        assert kwargs["checkpoint_changed"] is True
+        return completed
+
+    monkeypatch.setattr(
+        unit_of_work,
+        "_persist_authority_venue_transitions",
+        persist,
+    )
+    monkeypatch.setattr(unit_of_work, "_broker_outbox_record", outbox)
+    monkeypatch.setattr(unit_of_work, "_advance_acquisition_currentness", advance)
+    monkeypatch.setattr(unit_of_work, "_complete_claimed_input", complete)
+
+    result = unit_of_work._execute_acquisition_operation(
+        object(),
+        prepared,
+        object(),
+        object(),
+    )
+
+    assert result is completed
+    assert events == ["claim", "outbox", "currentness", "complete"]
+
+
+def test_generation_persistence_uses_fenced_null_then_serial_successor_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, _, predecessor = acquisition_fixtures._r8_initialized_controller()
+    successor_mandate = acquisition_fixtures._successor_mandate(
+        predecessor.state._mandate,
+        "uow-persisted-successor",
+    )
+    operation = operations.BeginAcquisitionGenerationOperation(
+        _acquisition_coordinates(predecessor),
+        authority.AuthorityInputId("uow-persist-generation"),
+        successor_mandate,
+    )
+    prepared = _prepared_acquisition_operation(operation, predecessor)
+    transition, _ = unit_of_work._acquisition_transition_for_operation(prepared)
+    selected = unit_of_work._selected_acquisition_authority(
+        prepared,
+        predecessor.state,
+        predecessor.execution,
+        predecessor.protection,
+    )
+    events: list[tuple[str, object]] = []
+
+    def applied(name: str):
+        def operation_call(*args: object, **kwargs: object):
+            del kwargs
+            record = args[-1] if name not in {"retire"} else args[1]
+            events.append((name, record))
+            return records.RepositoryOutcome(records.RepositoryOutcomeKind.APPLIED)
+
+        return operation_call
+
+    monkeypatch.setattr(
+        unit_of_work._repository,
+        "advance_symbol_controller",
+        applied("controller"),
+    )
+    monkeypatch.setattr(
+        unit_of_work._repository,
+        "advance_protection_authority",
+        applied("protection"),
+    )
+    monkeypatch.setattr(
+        unit_of_work._repository,
+        "retire_acquisition_generation",
+        applied("retire"),
+    )
+    captured_generation: list[records.AcquisitionGenerationRecord] = []
+
+    def store_generation(*args: object, **kwargs: object):
+        del kwargs
+        record = args[1]
+        assert isinstance(record, records.AcquisitionGenerationRecord)
+        captured_generation.append(record)
+        events.append(("generation", record))
+        return records.RepositoryOutcome(records.RepositoryOutcomeKind.APPLIED)
+
+    def load_current(*args: object, **kwargs: object):
+        del args, kwargs
+        generation = captured_generation[0]
+        events.append(("load-current", generation.acquisition_generation_id))
+        return records.RepositoryOutcome(
+            records.RepositoryOutcomeKind.FOUND,
+            records.AcquisitionGenerationCurrentRecord(
+                generation.acquisition_generation_id,
+                generation.scope_id,
+                0,
+                0,
+                0,
+            ),
+        )
+
+    monkeypatch.setattr(
+        unit_of_work._repository,
+        "store_acquisition_generation",
+        store_generation,
+    )
+    monkeypatch.setattr(
+        unit_of_work._repository,
+        "load_acquisition_generation_current",
+        load_current,
+    )
+    monkeypatch.setattr(
+        unit_of_work._repository,
+        "store_market_stream_authority",
+        applied("stream"),
+    )
+    monkeypatch.setattr(
+        unit_of_work._repository,
+        "store_market_cursor",
+        applied("cursor"),
+    )
+    committed = object()
+
+    def complete(*args: object, **kwargs: object) -> object:
+        del args
+        events.append(("complete", kwargs["successor_context"]))
+        return committed
+
+    monkeypatch.setattr(unit_of_work, "_complete_claimed_input", complete)
+
+    result = unit_of_work._execute_generation_operation(
+        object(),
+        prepared,
+        object(),
+        transition,
+        selected,
+        object(),
+    )
+
+    assert result is committed
+    assert [name for name, _ in events] == [
+        "controller",
+        "protection",
+        "retire",
+        "generation",
+        "load-current",
+        "stream",
+        "cursor",
+        "controller",
+        "protection",
+        "complete",
+    ]
+    controllers = [value for name, value in events if name == "controller"]
+    assert isinstance(controllers[0], records.SymbolControllerRecord)
+    assert isinstance(controllers[1], records.SymbolControllerRecord)
+    assert controllers[0].live_acquisition_generation_id is None
+    assert (
+        controllers[1].live_acquisition_generation_id
+        == captured_generation[0].acquisition_generation_id
+    )
+    assert captured_generation[0].successor_ordinal == (
+        selected.generation.successor_ordinal + 1
     )
 
 

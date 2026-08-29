@@ -7581,14 +7581,16 @@ def test_every_venue_transition_field_is_bound_to_its_owner_proof() -> None:
         "_protection_proof",
         "_protection_proof_commitment",
     }
+    source_owned_fields = {"_source_item"}
     acquisition_owned_fields = {
         "_acquisition_fact_proof",
         "_acquisition_fact_proof_commitment",
     }
     assert {retained.name for retained in fields(applied)} == (
-        protection_owned_fields | acquisition_owned_fields
+        protection_owned_fields | source_owned_fields | acquisition_owned_fields
     )
     tested_protection = set()
+    tested_source = set()
     tested_acquisition = set()
     for retained in fields(applied):
         current = getattr(applied, retained.name)
@@ -7599,11 +7601,18 @@ def test_every_venue_transition_field_is_bound_to_its_owner_proof() -> None:
             with pytest.raises((TypeError, ValueError)):
                 _projection(module, forged, mandate)
             tested_protection.add(retained.name)
+        elif retained.name in source_owned_fields:
+            import app.execution_core.venue as venue_module
+
+            with pytest.raises((TypeError, ValueError)):
+                venue_module._m2_venue_transition_source_item(forged)
+            tested_source.add(retained.name)
         else:
             assert retained.name in acquisition_owned_fields
             assert applied.book.project_acquisition_fact(forged).fact_relation() is None
             tested_acquisition.add(retained.name)
     assert tested_protection == protection_owned_fields
+    assert tested_source == source_owned_fields
     assert tested_acquisition == acquisition_owned_fields
 
 

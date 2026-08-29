@@ -2321,6 +2321,11 @@ class AcquisitionControllerTransition:
         init=False,
         repr=False,
     )
+    _venue_derivatives: tuple[_VenueRecoveryTransition, ...] = _field(
+        init=False,
+        repr=False,
+    )
+    _venue_derivative_proof: bytes = _field(init=False, repr=False)
     _seal: bytes = _field(init=False, repr=False)
 
     def __init__(self, *args: object, **kwargs: object) -> None:
@@ -2330,6 +2335,79 @@ class AcquisitionControllerTransition:
     def __init_subclass__(cls, **kwargs: object) -> None:
         del cls, kwargs
         raise TypeError("AcquisitionControllerTransition cannot be subclassed")
+
+
+def _acquisition_venue_derivative_proof(
+    transition_seal: bytes,
+    derivatives: tuple[_VenueRecoveryTransition, ...],
+) -> bytes:
+    _require_exact_digest("acquisition transition seal", transition_seal)
+    if type(derivatives) is not tuple:
+        raise TypeError("acquisition venue derivatives must be an exact tuple")
+    commitments: list[bytes] = []
+    for derivative in derivatives:
+        if type(derivative) is not _VenueRecoveryTransition:
+            raise TypeError("acquisition venue derivative must be exact")
+        commitments.append(
+            _require_exact_digest(
+                "acquisition venue derivative commitment",
+                derivative._m2_derivative_commitment(),
+            )
+        )
+    return _commit_parts(
+        b"execution-core/acquisition/controller-venue-derivatives/v1",
+        transition_seal,
+        *commitments,
+    )
+
+
+def _finish_acquisition_transition(
+    result: AcquisitionControllerTransition,
+    derivatives: tuple[_VenueRecoveryTransition, ...] = (),
+) -> AcquisitionControllerTransition:
+    if type(result) is not AcquisitionControllerTransition:
+        raise TypeError("acquisition transition result must be exact")
+    if derivatives and derivatives[-1].book is not result.venue:
+        raise ValueError("acquisition venue derivative chain is incomplete")
+    receipt = result._registration_receipt
+    if receipt is not None and derivatives:
+        commitments = tuple(
+            derivative._protection_proof_commitment for derivative in derivatives
+        )
+        if receipt.ordered_venue_transition_commitments[-len(commitments) :] != (
+            commitments
+        ):
+            raise ValueError("acquisition venue derivatives do not match the receipt")
+    object.__setattr__(result, "_venue_derivatives", derivatives)
+    object.__setattr__(
+        result,
+        "_venue_derivative_proof",
+        _acquisition_venue_derivative_proof(result._seal, derivatives),
+    )
+    return result
+
+
+def _m2_acquisition_transition_venue_derivatives(
+    transition: AcquisitionControllerTransition,
+) -> tuple[_VenueRecoveryTransition, ...]:
+    """Return only the owner-authenticated venue changes minted by this result."""
+
+    if type(transition) is not AcquisitionControllerTransition:
+        raise TypeError("acquisition transition must be exact")
+    try:
+        derivatives = transition._venue_derivatives
+        proof = transition._venue_derivative_proof
+        expected = _acquisition_venue_derivative_proof(
+            transition._seal,
+            derivatives,
+        )
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise ValueError("acquisition venue derivative proof is invalid") from exc
+    if proof != expected:
+        raise ValueError("acquisition venue derivative proof is invalid")
+    if derivatives and derivatives[-1].book is not transition.venue:
+        raise ValueError("acquisition venue derivative proof is incomplete")
+    return derivatives
 
 
 def _new_initialization_transition(
@@ -2385,7 +2463,7 @@ def _new_initialization_transition(
             commitment,
         ),
     )
-    return result
+    return _finish_acquisition_transition(result)
 
 
 def _new_refused_successor_transition(
@@ -2427,7 +2505,7 @@ def _new_refused_successor_transition(
             b"" if protection is None else protection.commitment,
         ),
     )
-    return result
+    return _finish_acquisition_transition(result)
 
 
 def _new_applied_successor_transition(
@@ -2512,7 +2590,7 @@ def _new_applied_successor_transition(
             receipt.commitment,
         ),
     )
-    return result
+    return _finish_acquisition_transition(result, venue_transitions)
 
 
 def _new_refused_create_transition(
@@ -2556,7 +2634,7 @@ def _new_refused_create_transition(
             b"" if protection is None else protection.commitment,
         ),
     )
-    return result
+    return _finish_acquisition_transition(result)
 
 
 def _new_refused_claim_transition(
@@ -2600,7 +2678,7 @@ def _new_refused_claim_transition(
             b"" if protection is None else protection.commitment,
         ),
     )
-    return result
+    return _finish_acquisition_transition(result)
 
 
 def _new_refused_preemption_transition(
@@ -2643,7 +2721,7 @@ def _new_refused_preemption_transition(
             protection.commitment,
         ),
     )
-    return result
+    return _finish_acquisition_transition(result)
 
 
 def _new_applied_preemption_transition(
@@ -2655,6 +2733,7 @@ def _new_applied_preemption_transition(
     authority: _ExecutionAuthorityState,
     receipt: _AcquisitionAuthorityReceipt,
     created_effect_id: _EffectId | None,
+    venue_derivatives: tuple[_VenueRecoveryTransition, ...],
 ) -> AcquisitionControllerTransition:
     """Assemble one currentness advance and at most one bounded BUY cancel."""
 
@@ -2665,6 +2744,7 @@ def _new_applied_preemption_transition(
         or type(protection) is not _PositionProtectionState
         or type(authority) is not _ExecutionAuthorityState
         or type(receipt) is not _AcquisitionAuthorityReceipt
+        or type(venue_derivatives) is not tuple
         or (created_effect_id is not None and type(created_effect_id) is not _EffectId)
         or refresh.execution is None
         or receipt.operation is not _AcquisitionAuthorityOperation.PREEMPT
@@ -2703,7 +2783,7 @@ def _new_applied_preemption_transition(
             b"" if created_effect_id is None else _encode_text(created_effect_id.value),
         ),
     )
-    return result
+    return _finish_acquisition_transition(result, venue_derivatives)
 
 
 def _new_refused_protection_exit_transition(
@@ -2749,7 +2829,7 @@ def _new_refused_protection_exit_transition(
             transition._seal,
         ),
     )
-    return result
+    return _finish_acquisition_transition(result)
 
 
 def _new_applied_protection_exit_transition(
@@ -2762,6 +2842,7 @@ def _new_applied_protection_exit_transition(
     authority: _ExecutionAuthorityState,
     receipt: _AcquisitionAuthorityReceipt,
     created_effect_id: _EffectId,
+    venue_derivatives: tuple[_VenueRecoveryTransition, ...],
 ) -> AcquisitionControllerTransition:
     """Assemble one controller/currentness advance and one protective SELL."""
 
@@ -2773,6 +2854,7 @@ def _new_applied_protection_exit_transition(
         or type(source_transition) is not _ProtectionTransition
         or type(authority) is not _ExecutionAuthorityState
         or type(receipt) is not _AcquisitionAuthorityReceipt
+        or type(venue_derivatives) is not tuple
         or type(created_effect_id) is not _EffectId
         or refresh.execution is None
         or receipt.operation is not _AcquisitionAuthorityOperation.PROTECTION_EXIT
@@ -2812,7 +2894,7 @@ def _new_applied_protection_exit_transition(
             _encode_text(created_effect_id.value),
         ),
     )
-    return result
+    return _finish_acquisition_transition(result, venue_derivatives)
 
 
 def _new_refused_rebase_transition(
@@ -2872,7 +2954,7 @@ def _new_refused_rebase_transition(
             refresh.commitment,
         ),
     )
-    return result
+    return _finish_acquisition_transition(result)
 
 
 def _new_applied_neutral_reprojection_transition(
@@ -2930,7 +3012,120 @@ def _new_applied_neutral_reprojection_transition(
             refresh.commitment,
         ),
     )
-    return result
+    return _finish_acquisition_transition(result, refresh.venue_transitions)
+
+
+def _new_applied_dormant_venue_refresh_transition(
+    *,
+    state: AcquisitionControllerState,
+    refresh: _AcquisitionContextRefresh,
+) -> AcquisitionControllerTransition:
+    """Carry one neutral venue refresh while protection remains dormant."""
+
+    if (
+        not _controller_state_is_authentic(state)
+        or type(refresh) is not _AcquisitionContextRefresh
+        or refresh.disposition is not _AcquisitionContextRefreshDisposition.REFRESHED
+        or refresh.authority is None
+        or refresh.execution is None
+        or state.protection_commitment is not None
+        or len(refresh.venue_transitions) != 1
+    ):
+        raise ValueError("dormant venue refresh components do not match")
+    result = object.__new__(AcquisitionControllerTransition)
+    for name, value in (
+        ("state", state),
+        ("venue", refresh.authority.venue),
+        ("execution", refresh.execution),
+        ("protection", None),
+        ("authority", refresh.authority),
+        ("disposition", AcquisitionControllerDisposition.APPLIED),
+        ("created_effect_id", None),
+        ("fresh_claim", None),
+        ("_refresh", refresh),
+        ("_registration_receipt", None),
+    ):
+        object.__setattr__(result, name, value)
+    object.__setattr__(
+        result,
+        "_seal",
+        _commit_parts(
+            b"execution-core/acquisition/controller-dormant-venue-refresh/v1",
+            state.commitment,
+            refresh.commitment,
+        ),
+    )
+    return _finish_acquisition_transition(result, refresh.venue_transitions)
+
+
+def _new_applied_venue_rebase_transition(
+    *,
+    predecessor_state: AcquisitionControllerState,
+    state: AcquisitionControllerState,
+    protection: _PositionProtectionState | None,
+    refresh: _AcquisitionContextRefresh,
+) -> AcquisitionControllerTransition:
+    """Assemble one zero-economic venue/protection currentness rebase."""
+
+    if (
+        not _controller_state_is_authentic(predecessor_state)
+        or not _controller_state_is_authentic(state)
+        or type(refresh) is not _AcquisitionContextRefresh
+        or refresh.disposition is not _AcquisitionContextRefreshDisposition.REFRESHED
+        or refresh.authority is None
+        or refresh.execution is None
+        or refresh.venue_context is None
+        or refresh.authority_context is None
+        or len(refresh.venue_transitions) != 1
+        or predecessor_state.application_generation_id
+        != state.application_generation_id
+        or predecessor_state.position_scope != state.position_scope
+        or predecessor_state._mandate != state._mandate
+        or predecessor_state.registry != state.registry
+        or predecessor_state.lineage != state.lineage
+        or predecessor_state._controller.controller_head
+        != state._controller.controller_head
+        or predecessor_state._controller.successor_ordinal
+        != state._controller.successor_ordinal
+        or predecessor_state._controller.live_generation_id
+        != state._controller.live_generation_id
+        or predecessor_state._controller.recovery_class
+        is not state._controller.recovery_class
+        or state.scope_execution_commitment
+        != refresh.venue_context.scope_execution_commitment
+        or state.venue_commitment != refresh.venue_context.commitment
+        or state.authority_context_commitment
+        != refresh.authority_context.authority_commitment
+        or (protection is None and state.protection_commitment is not None)
+        or (protection is not None and type(protection) is not _PositionProtectionState)
+    ):
+        raise ValueError("venue rebase components do not exactly match")
+    result = object.__new__(AcquisitionControllerTransition)
+    for name, value in (
+        ("state", state),
+        ("venue", refresh.authority.venue),
+        ("execution", refresh.execution),
+        ("protection", protection),
+        ("authority", refresh.authority),
+        ("disposition", AcquisitionControllerDisposition.APPLIED),
+        ("created_effect_id", None),
+        ("fresh_claim", None),
+        ("_refresh", refresh),
+        ("_registration_receipt", None),
+    ):
+        object.__setattr__(result, name, value)
+    object.__setattr__(
+        result,
+        "_seal",
+        _commit_parts(
+            b"execution-core/acquisition/controller-venue-rebase/v1",
+            predecessor_state.commitment,
+            state.commitment,
+            refresh.commitment,
+            b"" if protection is None else protection.commitment,
+        ),
+    )
+    return _finish_acquisition_transition(result, refresh.venue_transitions)
 
 
 def _new_applied_rebase_transition(
@@ -2995,7 +3190,7 @@ def _new_applied_rebase_transition(
             receipt.commitment,
         ),
     )
-    return result
+    return _finish_acquisition_transition(result)
 
 
 def _new_created_effect_transition(
@@ -3007,6 +3202,7 @@ def _new_created_effect_transition(
     receipt: _AcquisitionAuthorityReceipt,
     effect_id: _EffectId,
     protection: _PositionProtectionState | None,
+    venue_derivatives: tuple[_VenueRecoveryTransition, ...],
 ) -> AcquisitionControllerTransition:
     """Assemble the authority receipt and replacement controller atomically."""
 
@@ -3017,6 +3213,7 @@ def _new_created_effect_transition(
         or type(authority) is not _ExecutionAuthorityState
         or type(receipt) is not _AcquisitionAuthorityReceipt
         or type(effect_id) is not _EffectId
+        or type(venue_derivatives) is not tuple
         or refresh.execution is None
         or receipt.operation is not _AcquisitionAuthorityOperation.CREATE
         or receipt.application_generation_id != state.application_generation_id
@@ -3058,7 +3255,7 @@ def _new_created_effect_transition(
             effect_id.value.encode("utf-8"),
         ),
     )
-    return result
+    return _finish_acquisition_transition(result, venue_derivatives)
 
 
 def _new_claimed_effect_transition(
@@ -3072,6 +3269,7 @@ def _new_claimed_effect_transition(
     effect_id: _EffectId,
     claim_occurrence_id: _ClaimOccurrenceId,
     protection: _PositionProtectionState | None,
+    venue_derivatives: tuple[_VenueRecoveryTransition, ...],
 ) -> AcquisitionControllerTransition:
     """Assemble one exact specialized final-claim composite result."""
 
@@ -3084,6 +3282,7 @@ def _new_claimed_effect_transition(
         or type(claim_receipt) is not _AcquisitionClaimReceipt
         or type(effect_id) is not _EffectId
         or type(claim_occurrence_id) is not _ClaimOccurrenceId
+        or type(venue_derivatives) is not tuple
         or refresh.execution is None
         or receipt.operation is not _AcquisitionAuthorityOperation.CLAIM
         or receipt.application_generation_id != state.application_generation_id
@@ -3131,7 +3330,7 @@ def _new_claimed_effect_transition(
             claim_receipt.commitment,
         ),
     )
-    return result
+    return _finish_acquisition_transition(result, venue_derivatives)
 
 
 def _new_refused_fact_transition(
@@ -3172,7 +3371,7 @@ def _new_refused_fact_transition(
             transition._acquisition_fact_proof_commitment or b"",
         ),
     )
-    return result
+    return _finish_acquisition_transition(result)
 
 
 def _new_replayed_fact_transition(
@@ -3246,7 +3445,7 @@ def _new_replayed_fact_transition(
             transition._acquisition_fact_proof_commitment or b"",
         ),
     )
-    return result
+    return _finish_acquisition_transition(result)
 
 
 def _new_applied_fact_transition(
@@ -3259,6 +3458,7 @@ def _new_applied_fact_transition(
     authority: _ExecutionAuthorityState,
     refresh: _AcquisitionContextRefresh,
     receipt: _AcquisitionAuthorityReceipt,
+    venue_derivatives: tuple[_VenueRecoveryTransition, ...],
 ) -> AcquisitionControllerTransition:
     """Assemble one atomic first-root controller, authority, and protection step."""
 
@@ -3271,6 +3471,7 @@ def _new_applied_fact_transition(
         or type(authority) is not _ExecutionAuthorityState
         or type(refresh) is not _AcquisitionContextRefresh
         or type(receipt) is not _AcquisitionAuthorityReceipt
+        or type(venue_derivatives) is not tuple
         or receipt.operation is not _AcquisitionAuthorityOperation.REGISTER
         or authority.venue is not transition.book
         or refresh.authority is not authority
@@ -3331,7 +3532,7 @@ def _new_applied_fact_transition(
             protection_context.commitment,
         ),
     )
-    return result
+    return _finish_acquisition_transition(result, venue_derivatives)
 
 
 def _new_applied_fact_preemption_transition(
@@ -3345,6 +3546,7 @@ def _new_applied_fact_preemption_transition(
     refresh: _AcquisitionContextRefresh,
     receipt: _AcquisitionAuthorityReceipt,
     created_effect_id: _EffectId | None,
+    venue_derivatives: tuple[_VenueRecoveryTransition, ...],
 ) -> AcquisitionControllerTransition:
     """Assemble one atomic retired-fact and current-BUY preemption result."""
 
@@ -3357,6 +3559,7 @@ def _new_applied_fact_preemption_transition(
         or type(authority) is not _ExecutionAuthorityState
         or type(refresh) is not _AcquisitionContextRefresh
         or type(receipt) is not _AcquisitionAuthorityReceipt
+        or type(venue_derivatives) is not tuple
         or (created_effect_id is not None and type(created_effect_id) is not _EffectId)
         or receipt.operation is not _AcquisitionAuthorityOperation.PREEMPT
         or refresh.authority is not authority
@@ -3423,7 +3626,7 @@ def _new_applied_fact_preemption_transition(
             else created_effect_id.value.encode("utf-8"),
         ),
     )
-    return result
+    return _finish_acquisition_transition(result, venue_derivatives)
 
 
 def _r8_unbound_initialization_inputs_are_exact(
@@ -3657,6 +3860,7 @@ def _semantic_rebase_source_is_exact(
         or projection.position_scope != state.position_scope
         or refresh.application_generation_id != state.application_generation_id
         or refresh.position_scope != state.position_scope
+        or state._controller.live_generation_id is None
         or refresh.execution.position.scope != state.position_scope
         or refresh.authority.session_id != state._mandate.session_id
         or not refresh.matches_current(
@@ -3777,6 +3981,65 @@ def _neutral_reprojection_source_is_exact(
         or refresh.venue_transitions[0].execution is not execution
         or refresh.venue_transitions[0].disposition
         is not _VenueRecoveryDisposition.APPLIED
+        or refresh.venue_transitions[0].quantity_delta != 0
+    ):
+        return False
+    return True
+
+
+def _dormant_venue_refresh_source_is_exact(
+    state: AcquisitionControllerState,
+    refresh: _AcquisitionContextRefresh,
+) -> bool:
+    """Authenticate one scoped-neutral venue change before the first fill."""
+
+    predecessor_authority = refresh.predecessor_authority
+    predecessor_execution = refresh.predecessor_execution
+    predecessor_venue_context = refresh.predecessor_venue_context
+    predecessor_authority_context = refresh.predecessor_authority_context
+    authority = refresh.authority
+    execution = refresh.execution
+    venue_context = refresh.venue_context
+    authority_context = refresh.authority_context
+    if (
+        not _controller_state_is_authentic(state)
+        or type(refresh) is not _AcquisitionContextRefresh
+        or refresh.disposition is not _AcquisitionContextRefreshDisposition.REFRESHED
+        or type(predecessor_authority) is not _ExecutionAuthorityState
+        or type(predecessor_execution) is not _ExecutionSnapshot
+        or predecessor_venue_context is None
+        or predecessor_authority_context is None
+        or type(authority) is not _ExecutionAuthorityState
+        or type(execution) is not _ExecutionSnapshot
+        or venue_context is None
+        or authority_context is None
+        or len(refresh.venue_transitions) != 1
+        or state.protection_commitment is not None
+        or refresh.application_generation_id != state.application_generation_id
+        or refresh.position_scope != state.position_scope
+        or predecessor_execution.position.scope != state.position_scope
+        or execution.position.scope != state.position_scope
+        or not refresh.matches_current(
+            authority,
+            state.application_generation_id,
+            state.position_scope,
+        )
+        or state.scope_execution_commitment
+        != predecessor_venue_context.scope_execution_commitment
+        or state.scope_execution_commitment != venue_context.scope_execution_commitment
+        or state.venue_commitment != predecessor_venue_context.commitment
+        or state.venue_commitment != venue_context.commitment
+        or state.authority_context_commitment
+        != predecessor_authority_context.authority_commitment
+        or predecessor_authority_context.authority_commitment
+        != authority_context.authority_commitment
+        or refresh.venue_transitions[0].book is not authority.venue
+        or refresh.venue_transitions[0].execution is not execution
+        or refresh.venue_transitions[0].disposition
+        not in {
+            _VenueRecoveryDisposition.APPLIED,
+            _VenueRecoveryDisposition.RECONCILIATION_REQUIRED,
+        }
         or refresh.venue_transitions[0].quantity_delta != 0
     ):
         return False
@@ -4903,6 +5166,7 @@ def reduce_acquisition_controller(
             refresh=refresh,
             receipt=receipt,
             created_effect_id=created_effect_id,
+            venue_derivatives=applied.venue_transitions,
         )
     return _new_applied_fact_transition(
         predecessor_state=state,
@@ -4913,6 +5177,7 @@ def reduce_acquisition_controller(
         authority=applied.state,
         refresh=refresh,
         receipt=receipt,
+        venue_derivatives=applied.venue_transitions,
     )
 
 
@@ -5123,6 +5388,130 @@ def _m2_rebase_acquisition_protection(
     )
 
 
+def _m2_rebase_acquisition_venue(
+    state: AcquisitionControllerState,
+    refresh: _AcquisitionContextRefresh,
+    protection: _PositionProtectionState | None,
+) -> tuple[AcquisitionControllerTransition, _ProtectionTransition | None]:
+    """Rebase one authenticated zero-economic venue transition."""
+
+    _require_exact("state", state, AcquisitionControllerState)
+    _require_exact("refresh", refresh, _AcquisitionContextRefresh)
+    predecessor_authority = refresh.predecessor_authority
+    predecessor_execution = refresh.predecessor_execution
+    predecessor_venue_context = refresh.predecessor_venue_context
+    predecessor_authority_context = refresh.predecessor_authority_context
+    authority = refresh.authority
+    execution = refresh.execution
+    venue_context = refresh.venue_context
+    authority_context = refresh.authority_context
+    if (
+        type(predecessor_authority) is not _ExecutionAuthorityState
+        or type(predecessor_execution) is not _ExecutionSnapshot
+        or predecessor_venue_context is None
+        or predecessor_authority_context is None
+        or type(authority) is not _ExecutionAuthorityState
+        or type(execution) is not _ExecutionSnapshot
+        or venue_context is None
+        or authority_context is None
+        or refresh.disposition is not _AcquisitionContextRefreshDisposition.REFRESHED
+        or len(refresh.venue_transitions) != 1
+        or refresh.application_generation_id != state.application_generation_id
+        or refresh.position_scope != state.position_scope
+        or predecessor_execution.position.scope != state.position_scope
+        or execution.position.scope != state.position_scope
+        or not refresh.matches_current(
+            authority,
+            state.application_generation_id,
+            state.position_scope,
+        )
+        or state.scope_execution_commitment
+        != predecessor_venue_context.scope_execution_commitment
+        or state.venue_commitment != predecessor_venue_context.commitment
+        or state.authority_context_commitment
+        != predecessor_authority_context.authority_commitment
+        or refresh.venue_transitions[0].book is not authority.venue
+        or refresh.venue_transitions[0].execution is not execution
+        or refresh.venue_transitions[0].disposition
+        not in {
+            _VenueRecoveryDisposition.APPLIED,
+            _VenueRecoveryDisposition.RECONCILIATION_REQUIRED,
+        }
+        or refresh.venue_transitions[0].quantity_delta != 0
+    ):
+        raise ValueError("venue refresh predecessor is not exact")
+    live_generation_id = state._controller.live_generation_id
+    assert live_generation_id is not None
+    predecessor_protection_context = _project_acquisition_protection_context(
+        protection,
+        predecessor_authority.venue,
+        predecessor_execution,
+        predecessor_venue_context,
+    )
+    if (
+        predecessor_protection_context is None
+        or predecessor_protection_context.scope_protection_commitment
+        != state.protection_commitment
+    ):
+        raise ValueError("venue refresh predecessor protection is not current")
+    protection_transition: _ProtectionTransition | None
+    successor_protection: _PositionProtectionState | None
+    if protection is None:
+        protection_transition = None
+        successor_protection = None
+    else:
+        _require_exact("protection", protection, _PositionProtectionState)
+        projection = _project_protection_venue(
+            refresh.venue_transitions[0],
+            protection.mandate,
+        )
+        protection_transition = _reduce_position_protection(
+            protection,
+            projection,
+        )
+        if protection_transition.disposition not in {
+            _ProtectionDisposition.APPLIED,
+            _ProtectionDisposition.EXACT_REPLAY,
+        }:
+            raise ValueError("venue refresh protection reduction was refused")
+        successor_protection = protection_transition.state
+    current_protection_context = _project_acquisition_protection_context(
+        successor_protection,
+        authority.venue,
+        execution,
+        venue_context,
+    )
+    if current_protection_context is None:
+        raise ValueError("venue refresh protection context is incomplete")
+    next_controller = _new_symbol_acquisition_controller(
+        application_generation_id=state.application_generation_id,
+        position_scope=state.position_scope,
+        controller_head=state._controller.controller_head,
+        successor_ordinal=state._controller.successor_ordinal,
+        live_generation_id=live_generation_id,
+        recovery_class=state._controller.recovery_class,
+        scope_execution_commitment=venue_context.scope_execution_commitment,
+        venue_commitment=venue_context.commitment,
+        authority_context_commitment=authority_context.authority_commitment,
+        protection_commitment=(current_protection_context.scope_protection_commitment),
+        binding_commitment=state._controller._binding_commitment,
+        compatibility_commitment=state._controller._compatibility_commitment,
+    )
+    next_state = _new_acquisition_controller_state(
+        controller=next_controller,
+        mandate=state._mandate,
+        registry=state.registry,
+        lineage=state.lineage,
+    )
+    result = _new_applied_venue_rebase_transition(
+        predecessor_state=state,
+        state=next_state,
+        protection=successor_protection,
+        refresh=refresh,
+    )
+    return result, protection_transition
+
+
 def rebase_acquisition_protection(
     state: AcquisitionControllerState,
     refresh: _AcquisitionContextRefresh,
@@ -5249,6 +5638,7 @@ def _m2_create_acquisition_effect(
         receipt=receipt,
         effect_id=permit.effect_id,
         protection=protection,
+        venue_derivatives=applied.venue_transitions,
     )
 
 
@@ -5386,6 +5776,7 @@ def _m2_claim_acquisition_effect(
         effect_id=effect_id,
         claim_occurrence_id=claim_occurrence_id,
         protection=protection,
+        venue_derivatives=applied.venue_transitions,
     )
 
 
@@ -5592,6 +5983,7 @@ def _m2_begin_acquisition_preemption(
         authority=applied.state,
         receipt=receipt,
         created_effect_id=created_effect_id,
+        venue_derivatives=applied.venue_transitions,
     )
 
 
@@ -5821,4 +6213,5 @@ def create_acquisition_protection_exit(
         authority=applied.state,
         receipt=receipt,
         created_effect_id=applied.created_effect_ids[0],
+        venue_derivatives=applied.venue_transitions,
     )
