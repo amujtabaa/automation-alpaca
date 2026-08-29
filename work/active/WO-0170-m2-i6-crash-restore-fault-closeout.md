@@ -27,6 +27,7 @@ allowed_paths:
   - tests/execution_core/test_persistence_fault_matrix.py
   - tests/execution_core/test_persistence_restore.py
   - tests/execution_core/test_persistence_boundedness.py
+  - tests/execution_core/test_sqlite_boundary.py
   - tests_gated/execution_core/test_persistence_fault_matrix.py
   - tests_gated/execution_core/test_persistence_restore.py
   - tests_gated/execution_core/test_persistence_boundedness.py
@@ -143,6 +144,7 @@ allowed_paths:
   - tests/execution_core/test_persistence_fault_matrix.py
   - tests/execution_core/test_persistence_restore.py
   - tests/execution_core/test_persistence_boundedness.py
+  - tests/execution_core/test_sqlite_boundary.py
   - tests_gated/execution_core/test_persistence_fault_matrix.py
   - tests_gated/execution_core/test_persistence_restore.py
   - tests_gated/execution_core/test_persistence_boundedness.py

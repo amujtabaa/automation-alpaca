@@ -42,6 +42,12 @@ _TOKEN_ALLOWLIST = {
     "tests_gated/execution_core/test_persistence_cold_recovery_sqlite.py": (
         "held cold-start SQLite proof"
     ),
+    "tests_gated/execution_core/test_persistence_fault_matrix.py": (
+        "held fresh-file commit-fault proof"
+    ),
+    "tests_gated/execution_core/test_persistence_restore.py": (
+        "held independent DB/WAL restore proof"
+    ),
     "tests_gated/execution_core/test_persistence_repository.py": "held SQLite proof",
     "tests_gated/execution_core/test_persistence_runtime_checkpoint_sqlite.py": (
         "held SQLite proof"
