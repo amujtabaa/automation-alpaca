@@ -622,18 +622,34 @@ def _canonicalize_operation(operation: object) -> _operations.M2Operation:
 
 def _require_retained_checkpoint_payload(
     context: UnitOfWorkContext,
-    authenticated_current: _checkpoint_codec.RuntimeCheckpointEnvelope,
+    authenticated_owner_projection: _checkpoint_codec.RuntimeCheckpointEnvelope,
     loaded: _records.RepositoryOutcome[object],
 ) -> None:
     retained = loaded.record
+    expected = context.expected_checkpoint
     if (
         loaded.kind is not _records.RepositoryOutcomeKind.FOUND
         or type(retained) is not _checkpoint_codec.RuntimeCheckpointEnvelope
         or not _checkpoint_codec.RuntimeCheckpointEnvelope._is_authentic(retained)
         or retained._provenance != "LOADED"
-        or retained.canonical_payload_bytes
-        != authenticated_current.canonical_payload_bytes
-        or retained.payload_sha256 != context.expected_checkpoint.checkpoint_sha256
+        or type(authenticated_owner_projection)
+        is not _checkpoint_codec.RuntimeCheckpointEnvelope
+        or not _checkpoint_codec.RuntimeCheckpointEnvelope._is_authentic(
+            authenticated_owner_projection
+        )
+        or authenticated_owner_projection._provenance != "PROJECTED"
+        or authenticated_owner_projection.currentness_head_ordinal
+        < expected.currentness_head_ordinal
+        or authenticated_owner_projection.checkpoint_version_ordinal
+        != expected.checkpoint_version_ordinal + 1
+        or retained.application_generation_id != expected.application_generation_id
+        or retained.currentness_head_ordinal != expected.currentness_head_ordinal
+        or retained.checkpoint_version_ordinal != expected.checkpoint_version_ordinal
+        or retained.payload_sha256 != expected.checkpoint_sha256
+        or not _m2_checkpoint_semantics_match(
+            retained,
+            authenticated_owner_projection,
+        )
     ):
         raise _TechnicalRefusal(
             "runtime owners do not equal the retained checkpoint payload"

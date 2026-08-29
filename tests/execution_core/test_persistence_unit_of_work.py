@@ -3376,62 +3376,187 @@ def test_unit_of_work_exports_are_exact_and_invalid_input_never_begins() -> None
     assert connection.events == []
 
 
-def test_owner_projection_must_equal_the_retained_checkpoint_payload(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    class _LoadedEnvelope:
-        def __init__(
-            self,
-            payload: bytes,
-            digest: str,
-            provenance: str = "LOADED",
-        ) -> None:
-            self.canonical_payload_bytes = payload
-            self.payload_sha256 = digest
-            self._provenance = provenance
-
-        @classmethod
-        def _is_authentic(cls, value: object) -> bool:
-            return type(value) is cls
-
-    monkeypatch.setattr(
-        unit_of_work._checkpoint_codec,
-        "RuntimeCheckpointEnvelope",
-        _LoadedEnvelope,
+def _authentic_retained_successor_fixture() -> tuple[
+    unit_of_work.UnitOfWorkContext,
+    records.RuntimeCheckpointSelectionProof,
+    checkpoint_codec.RuntimeCheckpointEnvelope,
+    checkpoint_codec.RuntimeCheckpointEnvelope,
+    checkpoint_codec.RuntimeCheckpointEnvelope,
+]:
+    source_proof, book, authority_state, owners = (
+        checkpoint_fixtures._dormant_projection_inputs()
     )
-    context = _uow_context()
-    projected = SimpleNamespace(canonical_payload_bytes=b"retained")
-    accepted = records.RepositoryOutcome(
-        records.RepositoryOutcomeKind.FOUND,
-        _LoadedEnvelope(b"retained", context.expected_checkpoint.checkpoint_sha256),
+    predecessor_projection = checkpoint_codec._project_runtime_checkpoint(
+        source_proof,
+        book,
+        authority_state,
+        owners,
     )
+    retained = checkpoint_codec._decode_runtime_checkpoint(
+        checkpoint_codec.encode_runtime_checkpoint(predecessor_projection),
+        bytes.fromhex("12" * 32),
+    )
+    head = records.KernelCheckpointRecord(
+        retained.application_generation_id,
+        retained.currentness_head_ordinal,
+        retained.payload_sha256,
+        retained.checkpoint_version_ordinal,
+    )
+    successor_proof = records._issue_runtime_checkpoint_selection_proof(
+        records.RuntimeCheckpointSelectionRequest(
+            retained.application_generation_id,
+            retained.execution_profile_id,
+            retained.market_source_profile_id,
+            head,
+        ),
+        source_proof.application_generation,
+        source_proof.execution_profile,
+        source_proof.market_source_profile,
+        head,
+        head.currentness_head_ordinal,
+        head.checkpoint_version_ordinal + 1,
+        source_proof._selection,
+    )
+    successor_projection = checkpoint_codec._project_runtime_checkpoint(
+        successor_proof,
+        book,
+        authority_state,
+        owners,
+    )
+    context = unit_of_work.UnitOfWorkContext(
+        head,
+        book,
+        authority_state,
+        tuple(
+            (
+                owner.scope_id,
+                owner.acquisition,
+                owner.execution,
+                owner.protection,
+            )
+            for owner in owners
+        ),
+    )
+    return (
+        context,
+        successor_proof,
+        predecessor_projection,
+        retained,
+        successor_projection,
+    )
+
+
+def test_retained_checkpoint_accepts_exact_owners_projected_for_successor() -> None:
+    context, _, _, retained, successor_projection = (
+        _authentic_retained_successor_fixture()
+    )
+
+    assert retained.checkpoint_version_ordinal + 1 == (
+        successor_projection.checkpoint_version_ordinal
+    )
+    assert retained.canonical_payload_bytes != (
+        successor_projection.canonical_payload_bytes
+    )
+    assert unit_of_work._m2_checkpoint_semantics_match(
+        retained,
+        successor_projection,
+    )
+
     unit_of_work._require_retained_checkpoint_payload(
         context,
-        projected,
-        accepted,
+        successor_projection,
+        records.RepositoryOutcome(records.RepositoryOutcomeKind.FOUND, retained),
     )
 
-    for rejected in (
-        records.RepositoryOutcome(records.RepositoryOutcomeKind.ABSENT),
-        records.RepositoryOutcome(
-            records.RepositoryOutcomeKind.FOUND,
-            _LoadedEnvelope(
-                b"different", context.expected_checkpoint.checkpoint_sha256
+
+def test_retained_checkpoint_rejects_wrong_head_provenance_or_owners() -> None:
+    context, _, predecessor_projection, retained, successor_projection = (
+        _authentic_retained_successor_fixture()
+    )
+    head = context.expected_checkpoint
+    active_proof, active_book, active_authority, active_owners = (
+        hydration_fixtures._active_claimed_projection_inputs()
+    )
+    mismatched_owner_projection = checkpoint_codec._project_runtime_checkpoint(
+        active_proof,
+        active_book,
+        active_authority,  # type: ignore[arg-type]
+        active_owners,
+    )
+    assert not unit_of_work._m2_checkpoint_semantics_match(
+        retained,
+        mismatched_owner_projection,
+    )
+
+    mismatched_contexts = (
+        replace(
+            context,
+            expected_checkpoint=replace(
+                head,
+                application_generation_id=identity.ApplicationGenerationId(
+                    "different-checkpoint-app"
+                ),
             ),
         ),
-        records.RepositoryOutcome(
-            records.RepositoryOutcomeKind.FOUND,
-            _LoadedEnvelope(b"retained", "f" * 64),
-        ),
-        records.RepositoryOutcome(
-            records.RepositoryOutcomeKind.FOUND,
-            _LoadedEnvelope(
-                b"retained",
-                context.expected_checkpoint.checkpoint_sha256,
-                "PROJECTED",
+        replace(
+            context,
+            expected_checkpoint=replace(
+                head,
+                currentness_head_ordinal=head.currentness_head_ordinal + 1,
             ),
         ),
-    ):
+        replace(
+            context,
+            expected_checkpoint=replace(
+                head,
+                checkpoint_version_ordinal=head.checkpoint_version_ordinal + 1,
+            ),
+        ),
+        replace(
+            context,
+            expected_checkpoint=replace(head, checkpoint_sha256="f" * 64),
+        ),
+    )
+    for mismatched_context in mismatched_contexts:
+        with pytest.raises(
+            unit_of_work._TechnicalRefusal,
+            match="retained checkpoint payload",
+        ):
+            unit_of_work._require_retained_checkpoint_payload(
+                mismatched_context,
+                successor_projection,
+                records.RepositoryOutcome(
+                    records.RepositoryOutcomeKind.FOUND,
+                    retained,
+                ),
+            )
+
+    rejected_pairs = (
+        (
+            successor_projection,
+            records.RepositoryOutcome(records.RepositoryOutcomeKind.ABSENT),
+        ),
+        (
+            successor_projection,
+            records.RepositoryOutcome(
+                records.RepositoryOutcomeKind.FOUND,
+                predecessor_projection,
+            ),
+        ),
+        (
+            retained,
+            records.RepositoryOutcome(records.RepositoryOutcomeKind.FOUND, retained),
+        ),
+        (
+            predecessor_projection,
+            records.RepositoryOutcome(records.RepositoryOutcomeKind.FOUND, retained),
+        ),
+        (
+            mismatched_owner_projection,
+            records.RepositoryOutcome(records.RepositoryOutcomeKind.FOUND, retained),
+        ),
+    )
+    for projected, loaded in rejected_pairs:
         with pytest.raises(
             unit_of_work._TechnicalRefusal,
             match="retained checkpoint payload",
@@ -3439,8 +3564,71 @@ def test_owner_projection_must_equal_the_retained_checkpoint_payload(
             unit_of_work._require_retained_checkpoint_payload(
                 context,
                 projected,
-                rejected,
+                loaded,
             )
+
+
+def test_prepare_transaction_authenticates_retained_n_against_target_n_plus_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context, successor_proof, _, retained, successor_projection = (
+        _authentic_retained_successor_fixture()
+    )
+    operation = object()
+    monkeypatch.setattr(
+        unit_of_work._operations,
+        "encode_m2_operation",
+        lambda value: b"canonical-operation" if value is operation else b"unexpected",
+    )
+    monkeypatch.setattr(
+        unit_of_work._operations,
+        "_derive_m2_durable_input_projection",
+        lambda _value: (
+            operations.OperationDomain.VENUE_RECOVERY,
+            successor_proof.request.application_generation_id,
+            successor_proof.request.execution_profile_id,
+            1,
+            None,
+            None,
+            None,
+            None,
+            "ab" * 32,
+        ),
+    )
+    monkeypatch.setattr(
+        unit_of_work._repository,
+        "load_application_generation",
+        lambda *args: records.RepositoryOutcome(
+            records.RepositoryOutcomeKind.FOUND,
+            successor_proof.application_generation,
+        ),
+    )
+    monkeypatch.setattr(
+        unit_of_work._repository,
+        "select_runtime_checkpoint",
+        lambda *args: records.RepositoryOutcome(
+            records.RepositoryOutcomeKind.FOUND,
+            successor_proof,
+        ),
+    )
+    monkeypatch.setattr(
+        unit_of_work._repository,
+        "load_runtime_checkpoint",
+        lambda *args: records.RepositoryOutcome(
+            records.RepositoryOutcomeKind.FOUND,
+            retained,
+        ),
+    )
+
+    prepared = unit_of_work._prepare_transaction(object(), operation, context)
+
+    assert prepared.selection_proof is successor_proof
+    assert prepared.authenticated_current.checkpoint_version_ordinal == (
+        retained.checkpoint_version_ordinal + 1
+    )
+    assert prepared.authenticated_current.canonical_payload_bytes == (
+        successor_projection.canonical_payload_bytes
+    )
 
 
 def test_body_fault_retires_lease_then_rolls_back_once(

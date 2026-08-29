@@ -583,3 +583,39 @@ module's existing exact owner-semantic comparator produced first-start `SERVING`
 checkpoint write. No second hidden refusal appeared. No tracked source/test, DDL, schema, original
 database, or held assertion changed. Remediation remains separately unauthorized, and WO-0170 has
 not started.
+
+## REV-0117 R3 retained-checkpoint root remediation
+
+Ameen authorized the instrumented diagnosis and then granted standing authority to finish WO-0169
+without repeated routine approval stops. That authority covers ordinary reversible in-scope root
+correction, tests, static and governance checks, fresh exact-head review, one fresh pytest-owned
+file-database proof with unchanged approved DDL, publication, and closeout. It does not expand the
+work order across its existing hard boundaries: changed DDL, configured or real database access,
+migration, credentials, broker/network activity, orders, destructive history changes, promotion,
+master merge, later-work-order implementation, and M3 implementation remain unauthorized.
+
+The false-positive byte-mock control was replaced with genuine codec-issued projected and loaded
+envelopes. The authentic RED reproduced the production relationship: the retained checkpoint at
+version N and the repository-selected target projection at N+1 had different whole payload bytes
+despite exact owner-semantic equality. A second mutation proved that merely projecting the
+predecessor at N is not an acceptable substitute for the required N+1 projection.
+
+The owning guard now performs two separate checks instead of conflating them:
+
+1. the loaded predecessor must be authentic, have `LOADED` provenance, and match the exact expected
+   application, currentness ordinal, version ordinal, and payload digest; and
+2. the authenticated owner projection must be authentic, have `PROJECTED` provenance, be the
+   expected next checkpoint version without currentness regression, and match every retained owner
+   component through the existing exact `_m2_checkpoint_semantics_match` comparator.
+
+This is an application/test-only correction. It changes no DDL, schema API, startup contract,
+public UOW surface, operation union, held-test assertion, or execution-authority flag. The three
+direct authentic controls are green; all 552 tests in the six source-confirmed pure modules and all
+2,266 ordinary `tests/execution_core` tests pass at 100% with exit zero. Ruff check/format and mypy
+over all 99 application files pass, as do install, version, ledger, PKL, disposition, scope, and
+whitespace checks. Protected identities remain DDL
+190,705 UTF-8 bytes at
+`d4df1aaa0a7fed6002c8a55923fb3a35ba948055779dac99bf82e70b6a804c18`, schema blob
+`164de10ad9fef6ce37324840aff59b5b68c07d2a`, exact-false human flag, and held-test SHA-256
+`f8081a38d2b5bc5fd073a0dbe79a47a8d4e2e1de2defc7323bea34ab4d992aca`. One finite fresh
+exact-head review with zero open P0/P1 remains required before the new fresh-file proof.
