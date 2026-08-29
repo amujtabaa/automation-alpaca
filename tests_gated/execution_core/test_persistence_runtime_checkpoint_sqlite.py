@@ -2057,10 +2057,15 @@ def _assert_unaliased_not_indexed_mutant_is_detected(
 
     mutant_sql = sql.replace(f"INDEXED BY {index}", "NOT INDEXED", 1)
     mutant_details = _explain_details(connection, mutant_sql, parameters)
-    assert any(
-        detail.upper().startswith("SCAN VENUE_EFFECT ") for detail in mutant_details
-    ), mutant_details
-    assert _plan_access_violations(mutant_details, accesses), mutant_details
+    mutant_violations = _plan_access_violations(mutant_details, accesses)
+    assert any("unbounded scan" in violation for violation in mutant_violations), (
+        mutant_details,
+        mutant_violations,
+    )
+    assert any("missing SEARCH" in violation for violation in mutant_violations), (
+        mutant_details,
+        mutant_violations,
+    )
 
 
 def test_thirteen_selection_and_load_queries_have_direct_plans_under_history_stress(
