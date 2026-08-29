@@ -6630,6 +6630,89 @@ def _decode_compact_authority_checkpoint(
     return restored
 
 
+def _restore_compact_execution_from_selected_rows(
+    state: _position._M2ExecutionState,
+    *,
+    scope_id: int,
+    roots: tuple[_records.RootFillRecord, ...],
+    fact_heads: tuple[_records.ExecutionFactHeadRecord, ...],
+    current_facts: tuple[_records.ExecutionFactRecord, ...],
+) -> _position.ExecutionSnapshot:
+    """Build one current-root owner while intentionally omitting seen-fact history."""
+
+    roots_by_id = {root.root_fill_key_id: root for root in roots}
+    heads_by_root = {head.root_fill_key_id: head for head in fact_heads}
+    facts_by_id = {fact.fact_id: fact for fact in current_facts}
+    if (
+        len(roots_by_id) != len(roots)
+        or len(heads_by_root) != len(fact_heads)
+        or len(facts_by_id) != len(current_facts)
+        or set(roots_by_id) != set(heads_by_root)
+        or {head.fact_id for head in fact_heads} != set(facts_by_id)
+    ):
+        raise ValueError("compact execution current rows are incomplete or duplicated")
+    position_scope = state.scope
+    restored_heads = _fills.RootHeadIndex.empty(position_scope)
+    tail = state.tail_fold_input
+    for ordinal, root in enumerate(roots):
+        head_record = heads_by_root[root.root_fill_key_id]
+        fact = facts_by_id[head_record.fact_id]
+        if (
+            root.scope_id != scope_id
+            or fact.scope_id != scope_id
+            or root.application_generation_id
+            != fact.application_generation_id
+            or root.execution_profile_id != fact.execution_profile_id
+            or root.current_fact_id != fact.fact_id
+            or root.economics_head_ordinal != fact.fact_ordinal
+            or head_record.fact_ordinal != fact.fact_ordinal
+            or fact.root_fill_key_id != root.root_fill_key_id
+            or root.current_kind != fact.kind
+            or root.current_authority != fact.authority
+            or root.current_side != fact.side
+            or root.current_quantity != fact.quantity
+            or root.current_price != fact.price
+        ):
+            raise ValueError("compact execution root and current fact are spliced")
+        root_key = _identity.RootFillKey(
+            position_scope.broker,
+            position_scope.environment,
+            position_scope.account,
+            root.root_fill_id,
+        )
+        prefix_heads = b""
+        prefix_proof = b""
+        if tail is not None and tail.tail_root_key == root_key:
+            prefix_heads = tail.prefix_heads_commitment
+            prefix_proof = tail.commitment
+        restored_heads = restored_heads.append(
+            _fills.RootHead(
+                root_key=root_key,
+                original_sequence=ordinal,
+                scope=_fills.ExecutionScope(
+                    position_scope.broker,
+                    position_scope.environment,
+                    position_scope.account,
+                    fact.order_id,
+                    position_scope.symbol_id,
+                    _fills.ExecutionSide(fact.side),
+                ),
+                authority=_fills.ExecutionAuthority(fact.authority),
+                current_source_event_id=fact.source_event_id,
+                kind=_fills.FactKind(fact.kind),
+                quantity=fact.quantity,
+                price=fact.price,
+                prefix_heads_commitment=prefix_heads,
+                prefix_proof_commitment=prefix_proof,
+            )
+        )
+    return _position._m2_restore_compact_execution_snapshot(
+        state,
+        restored_heads,
+        _fills.SeenFactIndex.empty(position_scope),
+    )
+
+
 def _restore_compact_runtime_checkpoint(
     checkpoint: RuntimeCheckpointEnvelope,
     selection_proof: _records.RuntimeCheckpointSelectionProof,
@@ -6777,15 +6860,21 @@ def _restore_compact_runtime_checkpoint(
         scope_roots = tuple(
             row for row in selection.roots if row.scope_id == candidate.scope_id
         )
+        scope_fact_heads = tuple(
+            row
+            for row in selection.fact_heads
+            if row.root_fill_key_id
+            in {root.root_fill_key_id for root in scope_roots}
+        )
         scope_facts = tuple(
             row for row in selection.current_facts if row.scope_id == candidate.scope_id
         )
-        if scope_roots or scope_facts:
-            raise ValueError("compact execution current-root restoration is incomplete")
-        execution = _position._m2_restore_compact_execution_snapshot(
+        execution = _restore_compact_execution_from_selected_rows(
             execution_state,
-            _fills.RootHeadIndex.empty(position_scope),
-            _fills.SeenFactIndex.empty(position_scope),
+            scope_id=candidate.scope_id,
+            roots=scope_roots,
+            fact_heads=scope_fact_heads,
+            current_facts=scope_facts,
         )
 
         acquisition_wire = _decode_canonical_json(candidate.acquisition.canonical_bytes)

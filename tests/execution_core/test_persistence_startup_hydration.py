@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import pytest
 
+from app.execution_core import identity
+from app.execution_core import position
 from app.execution_core.persistence import checkpoint_codec
 from app.execution_core.persistence import records
 import test_persistence_runtime_checkpoint_pure as checkpoint_fixtures
@@ -189,3 +191,87 @@ def test_compact_authority_restores_acquisition_slot_variants(inactive: bool) ->
         effect_ids,
     )
     assert reencoded == authority_wire
+
+
+def _selected_execution_rows() -> tuple[
+    position._M2ExecutionState,
+    tuple[records.RootFillRecord, ...],
+    tuple[records.ExecutionFactHeadRecord, ...],
+    tuple[records.ExecutionFactRecord, ...],
+]:
+    source = checkpoint_fixtures._advanced_execution(
+        identity.SymbolId("AAPL"),
+        9,
+        "compact-hydration",
+    )
+    state = position._m2_execution_state_from_snapshot(source)
+    head = source.root_heads.entries[0]
+    fact = source.seen_facts.entries[0].fact
+    root = records.RootFillRecord(
+        1,
+        1,
+        checkpoint_fixtures._APPLICATION,
+        checkpoint_fixtures._EXECUTION_PROFILE,
+        identity.AcquisitionGenerationId("ab" * 32),
+        fact.root_fill_id,
+        1,
+        fact.kind.value,
+        fact.authority.value,
+        fact.scope.side.value,
+        head.quantity,
+        head.price,
+        1,
+    )
+    current = records.ExecutionFactRecord(
+        1,
+        1,
+        checkpoint_fixtures._APPLICATION,
+        checkpoint_fixtures._EXECUTION_PROFILE,
+        1,
+        fact.key.source_event_id,
+        fact.scope.order_id,
+        fact.scope.side.value,
+        fact.kind.value,
+        fact.authority.value,
+        head.quantity,
+        head.price,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        1,
+    )
+    return state, (root,), (records.ExecutionFactHeadRecord(1, 1, 1),), (current,)
+
+
+def test_compact_execution_restores_current_roots_without_seen_history() -> None:
+    state, roots, heads, facts = _selected_execution_rows()
+
+    restored = checkpoint_codec._restore_compact_execution_from_selected_rows(
+        state,
+        scope_id=1,
+        roots=roots,
+        fact_heads=heads,
+        current_facts=facts,
+    )
+
+    assert restored.position.raw_quantity == state.raw_quantity
+    assert restored.position.cost_basis == state.cost_basis
+    assert restored.root_heads.count == state.root_count
+    assert restored.root_heads.entries[0].current_source_event_id == (
+        facts[0].source_event_id
+    )
+    assert restored.seen_facts.count == 0
+
+    with pytest.raises(ValueError, match="incomplete"):
+        checkpoint_codec._restore_compact_execution_from_selected_rows(
+            state,
+            scope_id=1,
+            roots=roots,
+            fact_heads=heads,
+            current_facts=(),
+        )

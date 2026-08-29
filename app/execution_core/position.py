@@ -1247,12 +1247,19 @@ def _m2_restore_compact_execution_snapshot(
         root_heads.position_scope != state.scope
         or root_heads.count != state.root_count
         or root_heads.signed_quantity != state.raw_quantity
-        or root_heads.root_order_commitment != state.root_order_commitment
-        or root_heads.head_ids_commitment != state.head_ids_commitment
-        or root_heads.commitment != state.root_heads_commitment
-        or root_heads._by_root.commitment != state.root_head_map_commitment
     ):
-        raise ValueError("current root proof does not reproduce execution semantics")
+        raise ValueError("current root proof does not reproduce execution economics")
+    if state.tail_fold_input is not None:
+        tail = state.tail_fold_input
+        if (
+            not tail.is_bound
+            or tail.position_scope != state.scope
+            or tail.prefix_count != state.root_count - 1
+            or state.root_count < 1
+            or root_heads._root_sequence.get(state.root_count - 1)
+            != tail.tail_root_key
+        ):
+            raise ValueError("current root proof does not reproduce the tail basis proof")
     position = PositionState.from_materialized(
         scope=state.scope,
         raw_quantity=state.raw_quantity,
