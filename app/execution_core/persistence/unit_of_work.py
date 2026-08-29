@@ -10,14 +10,17 @@ from __future__ import annotations
 from dataclasses import dataclass as _dataclass
 from dataclasses import replace as _replace
 from enum import Enum as _Enum
+import hashlib as _hashlib
 from typing import TypeAlias as _TypeAlias
 from typing import cast as _cast
 
 from .. import acquisition as _acquisition
 from .. import authority as _authority
+from .. import identity as _identity
 from .. import position as _position
 from .. import protection as _protection
 from .. import venue as _venue
+from . import checkpoint_codec as _checkpoint_codec
 from . import operations as _operations
 from . import records as _records
 from . import repository as _repository
@@ -187,6 +190,24 @@ class _PostCommitEffectCandidate:
 class _PreparedOperation:
     operation: _operations.M2Operation
     context: UnitOfWorkContext
+    canonical_payload_bytes: bytes
+    input_domain: _operations.OperationDomain
+    application_generation_id: _identity.ApplicationGenerationId
+    execution_profile_id: str
+    scope_id: int
+    session_id: _identity.SessionId | None
+    acquisition_generation_id: _identity.AcquisitionGenerationId | None
+    market_source_profile_id: str | None
+    stream_generation_id: _identity.MarketStreamGenerationId | None
+    input_identity_sha256: str
+    selection_proof: _records.RuntimeCheckpointSelectionProof
+    authenticated_current: _checkpoint_codec.RuntimeCheckpointEnvelope
+
+
+@_dataclass(frozen=True, slots=True)
+class _ClaimedPrimaryInput:
+    operation: _operations.M2Operation
+    record: _records.DurableInputRecord
 
 
 @_dataclass(frozen=True, slots=True)
@@ -225,6 +246,15 @@ def _refused_result() -> UnitOfWorkResult:
     return UnitOfWorkResult(UnitOfWorkDisposition.REFUSED, None, None, None, None)
 
 
+def _noncommitting_result(disposition: UnitOfWorkDisposition) -> UnitOfWorkResult:
+    if disposition not in {
+        UnitOfWorkDisposition.EXACT_REPLAY,
+        UnitOfWorkDisposition.CONFLICT,
+    }:
+        raise ValueError("noncommitting result disposition is not admitted")
+    return UnitOfWorkResult(disposition, None, None, None, None)
+
+
 def _reconciliation_result() -> UnitOfWorkResult:
     return UnitOfWorkResult(
         UnitOfWorkDisposition.RECONCILIATION_ONLY,
@@ -251,8 +281,502 @@ def _prepare_transaction(
     operation: _operations.M2Operation,
     context: UnitOfWorkContext,
 ) -> _PreparedOperation:
-    del connection
-    return _PreparedOperation(operation, context)
+    try:
+        payload = _operations.encode_m2_operation(operation)
+        (
+            input_domain,
+            application_generation_id,
+            execution_profile_id,
+            scope_id,
+            session_id,
+            acquisition_generation_id,
+            market_source_profile_id,
+            stream_generation_id,
+            input_identity_sha256,
+        ) = _operations._derive_m2_durable_input_projection(operation)
+        application = _repository.load_application_generation(
+            connection,
+            application_generation_id,
+        )
+        if (
+            application.kind is not _records.RepositoryOutcomeKind.FOUND
+            or type(application.record) is not _records.ApplicationGenerationRecord
+        ):
+            raise _TechnicalRefusal("application generation is not current proof")
+        application_record = application.record
+        if application_record.selected_execution_profile_id != execution_profile_id:
+            raise _TechnicalRefusal("operation execution profile is not selected")
+        if (
+            market_source_profile_id is not None
+            and market_source_profile_id
+            != application_record.selected_market_source_profile_id
+        ):
+            raise _TechnicalRefusal("operation market profile is not selected")
+        request = _records.RuntimeCheckpointSelectionRequest(
+            application_generation_id,
+            execution_profile_id,
+            application_record.selected_market_source_profile_id,
+            context.expected_checkpoint,
+        )
+        selected = _repository.select_runtime_checkpoint(connection, request)
+        if (
+            selected.kind is not _records.RepositoryOutcomeKind.FOUND
+            or type(selected.record) is not _records.RuntimeCheckpointSelectionProof
+            or not _records.RuntimeCheckpointSelectionProof._is_authentic(
+                selected.record
+            )
+        ):
+            raise _TechnicalRefusal("runtime checkpoint selection was refused")
+        proof = selected.record
+        selected_scope_ids = tuple(item.scope_id for item in proof._selection.scopes)
+        if scope_id not in selected_scope_ids:
+            raise _TechnicalRefusal("operation scope is not selected")
+        if acquisition_generation_id is not None:
+            selected_generations = (
+                proof._selection.live_generations
+                + proof._selection.unresolved_generations
+            )
+            if not any(
+                item.acquisition_generation_id == acquisition_generation_id
+                and item.scope_id == scope_id
+                for item in selected_generations
+            ):
+                raise _TechnicalRefusal(
+                    "operation acquisition generation is not selected"
+                )
+        if stream_generation_id is not None:
+            if not any(
+                item.stream_generation_id == stream_generation_id
+                and item.scope_id == scope_id
+                and item.acquisition_generation_id == acquisition_generation_id
+                and item.source_profile_id == market_source_profile_id
+                and item.session_id == session_id
+                for item in proof._selection.streams
+            ):
+                raise _TechnicalRefusal("operation market stream is not selected")
+        owner_rows = tuple(
+            _checkpoint_codec._RuntimeCheckpointScopeOwners(*owner)
+            for owner in context.scope_owners
+        )
+        authenticated_current = _checkpoint_codec._project_runtime_checkpoint(
+            proof,
+            context.venue,
+            context.authority,
+            owner_rows,
+        )
+    except _TechnicalRefusal:
+        raise
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise _TechnicalRefusal("runtime owner authentication failed") from exc
+    return _PreparedOperation(
+        operation,
+        context,
+        payload,
+        input_domain,
+        application_generation_id,
+        execution_profile_id,
+        scope_id,
+        session_id,
+        acquisition_generation_id,
+        market_source_profile_id,
+        stream_generation_id,
+        input_identity_sha256,
+        proof,
+        authenticated_current,
+    )
+
+
+def _next_durable_input_created_ordinal(
+    connection: _SQLiteConnectionProtocol,
+) -> int:
+    cursor = connection.execute(
+        "SELECT COALESCE(MAX(created_ordinal), 0) + 1 FROM durable_input"
+    )
+    row = cursor.fetchone()
+    if type(row) is not tuple or len(row) != 1:
+        raise _TechnicalRefusal("ordinal query returned the wrong shape")
+    return _require_positive_int("next durable input ordinal", row[0])
+
+
+def _claim_primary_input(
+    connection: _SQLiteConnectionProtocol,
+    prepared: _PreparedOperation,
+    capability: _repository._RuntimeWriteCapability,
+) -> _ClaimedPrimaryInput | _TransactionDecision:
+    created_ordinal = _next_durable_input_created_ordinal(connection)
+    candidate = _records.DurableInputRecord(
+        prepared.application_generation_id,
+        prepared.execution_profile_id,
+        prepared.scope_id,
+        prepared.input_domain,
+        prepared.session_id,
+        prepared.acquisition_generation_id,
+        prepared.market_source_profile_id,
+        prepared.stream_generation_id,
+        prepared.input_identity_sha256,
+        1,
+        prepared.canonical_payload_bytes,
+        _hashlib.sha256(prepared.canonical_payload_bytes).hexdigest(),
+        "CLAIMED",
+        created_ordinal,
+    )
+    claimed = _repository.claim_durable_input(
+        connection,
+        candidate,
+        capability=capability,
+    )
+    fact = claimed.record
+    if type(fact) is not _operations.InputDedupeFact:
+        raise _TechnicalRefusal("primary input claim returned no exact fact")
+    if (
+        fact.input_domain != candidate.input_domain.value
+        or fact.input_identity_sha256 != candidate.input_identity_sha256
+        or fact.payload_sha256 != candidate.payload_sha256
+        or fact.semantic_matches
+    ):
+        raise _TechnicalRefusal("primary input claim fact does not agree")
+    if (
+        claimed.kind is _records.RepositoryOutcomeKind.APPLIED
+        and fact.kind is _operations.InputDedupeKind.UNSEEN
+        and fact.retained_outcome_sha256 is None
+    ):
+        return _ClaimedPrimaryInput(prepared.operation, candidate)
+    if (
+        claimed.kind is _records.RepositoryOutcomeKind.FOUND
+        and fact.kind is _operations.InputDedupeKind.EXACT_REPLAY
+        and fact.retained_outcome_sha256 is not None
+    ):
+        return _TransactionDecision(
+            False,
+            _noncommitting_result(UnitOfWorkDisposition.EXACT_REPLAY),
+            None,
+        )
+    if (
+        claimed.kind is _records.RepositoryOutcomeKind.CONFLICT
+        and fact.kind is _operations.InputDedupeKind.IDENTITY_CONFLICT
+        and fact.retained_outcome_sha256 is None
+    ):
+        return _TransactionDecision(
+            False,
+            _noncommitting_result(UnitOfWorkDisposition.CONFLICT),
+            None,
+        )
+    raise _TechnicalRefusal("primary input claim classification is inconsistent")
+
+
+def _next_decision_receipt_ordinal(
+    connection: _SQLiteConnectionProtocol,
+) -> int:
+    cursor = connection.execute(
+        "SELECT COALESCE(MAX(receipt_ordinal), 0) + 1 FROM decision_receipt"
+    )
+    row = cursor.fetchone()
+    if type(row) is not tuple or len(row) != 1:
+        raise _TechnicalRefusal("receipt ordinal query returned the wrong shape")
+    return _require_positive_int("next decision receipt ordinal", row[0])
+
+
+def _require_applied_repository_outcome(
+    name: str,
+    outcome: _records.RepositoryOutcome[object],
+) -> None:
+    if outcome.kind is not _records.RepositoryOutcomeKind.APPLIED:
+        raise _TechnicalRefusal(f"{name} was not applied exactly")
+
+
+def _scope_execution(
+    context: UnitOfWorkContext,
+    scope_id: int,
+) -> _position.ExecutionSnapshot:
+    for (
+        retained_scope_id,
+        _acquisition_owner,
+        execution,
+        _protection_owner,
+    ) in context.scope_owners:
+        if retained_scope_id == scope_id:
+            return execution
+    raise _TechnicalRefusal("operation scope has no execution owner")
+
+
+def _context_scope_rows(
+    context: UnitOfWorkContext,
+) -> tuple[_checkpoint_codec._RuntimeCheckpointScopeOwners, ...]:
+    return tuple(
+        _checkpoint_codec._RuntimeCheckpointScopeOwners(*owner)
+        for owner in context.scope_owners
+    )
+
+
+def _store_successor_checkpoint(
+    connection: _SQLiteConnectionProtocol,
+    prepared: _PreparedOperation,
+    successor_context: UnitOfWorkContext,
+    capability: _repository._RuntimeWriteCapability,
+) -> UnitOfWorkContext:
+    request = _records.RuntimeCheckpointSelectionRequest(
+        prepared.application_generation_id,
+        prepared.execution_profile_id,
+        prepared.selection_proof.request.market_source_profile_id,
+        prepared.context.expected_checkpoint,
+    )
+    selected = _repository.select_runtime_checkpoint(connection, request)
+    if (
+        selected.kind is not _records.RepositoryOutcomeKind.FOUND
+        or type(selected.record) is not _records.RuntimeCheckpointSelectionProof
+        or not _records.RuntimeCheckpointSelectionProof._is_authentic(selected.record)
+    ):
+        raise _TechnicalRefusal("successor checkpoint selection was refused")
+    proof = selected.record
+    try:
+        envelope = _checkpoint_codec._project_runtime_checkpoint(
+            proof,
+            successor_context.venue,
+            successor_context.authority,
+            _context_scope_rows(successor_context),
+        )
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise _TechnicalRefusal("successor owner projection was refused") from exc
+    stored = _repository.store_runtime_checkpoint(
+        connection,
+        proof,
+        envelope,
+        capability=capability,
+    )
+    receipt = stored.record
+    if (
+        stored.kind is not _records.RepositoryOutcomeKind.APPLIED
+        or type(receipt) is not _records.RuntimeCheckpointWriteReceipt
+        or not _records.RuntimeCheckpointWriteReceipt._is_authentic(receipt)
+        or receipt.predecessor_checkpoint != prepared.context.expected_checkpoint
+    ):
+        raise _TechnicalRefusal("successor checkpoint was not stored exactly")
+    return _replace(
+        successor_context,
+        expected_checkpoint=receipt.resulting_checkpoint,
+    )
+
+
+def _decision_receipt(
+    claimed: _records.DurableInputRecord,
+    *,
+    receipt_ordinal: int,
+    owner_domain: str,
+    owner_disposition: str,
+    terminal_technical_state: str,
+    checkpoint_reference: tuple[int, int, str] | None,
+) -> _records.DecisionReceiptRecord:
+    result_sha256 = _records._derive_owner_result_sha256(
+        owner_domain,
+        owner_disposition,
+        terminal_technical_state,
+        checkpoint_reference,
+    )
+    document = [
+        1,
+        "m2.decision-receipt/v1",
+        _operations._encode_m2_m1_atom(claimed.application_generation_id),
+        _operations._encode_m2_enum(claimed.input_domain),
+        claimed.input_identity_sha256,
+        receipt_ordinal,
+        owner_domain,
+        owner_disposition,
+        terminal_technical_state,
+        result_sha256,
+        None if checkpoint_reference is None else [*checkpoint_reference],
+    ]
+    payload = _operations._encode_m2_document_kind(0x04, document)
+    return _records.DecisionReceiptRecord(
+        receipt_ordinal,
+        claimed.application_generation_id,
+        claimed.input_domain,
+        claimed.input_identity_sha256,
+        owner_domain,
+        owner_disposition,
+        terminal_technical_state,
+        result_sha256,
+        None if checkpoint_reference is None else checkpoint_reference[0],
+        None if checkpoint_reference is None else checkpoint_reference[1],
+        None if checkpoint_reference is None else checkpoint_reference[2],
+        payload,
+        len(payload),
+        _hashlib.sha256(payload).hexdigest(),
+    )
+
+
+def _durable_input_outcome(
+    receipt: _records.DecisionReceiptRecord,
+) -> _records.DurableInputOutcomeRecord:
+    checkpoint_reference = (
+        None
+        if receipt.checkpoint_currentness_head_ordinal is None
+        else [
+            receipt.checkpoint_currentness_head_ordinal,
+            receipt.checkpoint_version_ordinal,
+            receipt.checkpoint_payload_sha256,
+        ]
+    )
+    document = [
+        1,
+        "m2.durable-input-outcome/v1",
+        _operations._encode_m2_m1_atom(receipt.application_generation_id),
+        _operations._encode_m2_enum(receipt.input_domain),
+        receipt.input_identity_sha256,
+        receipt.owner_domain,
+        receipt.owner_disposition,
+        receipt.terminal_technical_state,
+        receipt.result_sha256,
+        checkpoint_reference,
+        receipt.receipt_ordinal,
+        receipt.receipt_sha256,
+    ]
+    payload = _operations._encode_m2_document_kind(0x03, document)
+    return _records.DurableInputOutcomeRecord(
+        receipt.application_generation_id,
+        receipt.input_domain,
+        receipt.input_identity_sha256,
+        receipt.owner_domain,
+        receipt.owner_disposition,
+        receipt.terminal_technical_state,
+        receipt.result_sha256,
+        receipt.checkpoint_currentness_head_ordinal,
+        receipt.checkpoint_version_ordinal,
+        receipt.checkpoint_payload_sha256,
+        receipt.receipt_ordinal,
+        receipt.receipt_sha256,
+        payload,
+        len(payload),
+        _hashlib.sha256(payload).hexdigest(),
+    )
+
+
+def _complete_claimed_input(
+    connection: _SQLiteConnectionProtocol,
+    prepared: _PreparedOperation,
+    claimed: _records.DurableInputRecord,
+    *,
+    owner_domain: str,
+    owner_disposition: str,
+    successor_context: UnitOfWorkContext,
+    checkpoint_changed: bool,
+    pending_effect: _PostCommitEffectCandidate | None,
+    capability: _repository._RuntimeWriteCapability,
+) -> _TransactionDecision:
+    if checkpoint_changed:
+        completed_context = _store_successor_checkpoint(
+            connection,
+            prepared,
+            successor_context,
+            capability,
+        )
+        head = completed_context.expected_checkpoint
+        checkpoint_reference: tuple[int, int, str] | None = (
+            head.currentness_head_ordinal,
+            head.checkpoint_version_ordinal,
+            head.checkpoint_sha256,
+        )
+    else:
+        if successor_context is not prepared.context:
+            raise _TechnicalRefusal("no-change result substituted an owner context")
+        completed_context = successor_context
+        checkpoint_reference = None
+    terminal_state = (
+        "RECONCILIATION_PENDING"
+        if owner_disposition == "RECONCILIATION_REQUIRED"
+        else "TERMINAL"
+    )
+    receipt = _decision_receipt(
+        claimed,
+        receipt_ordinal=_next_decision_receipt_ordinal(connection),
+        owner_domain=owner_domain,
+        owner_disposition=owner_disposition,
+        terminal_technical_state=terminal_state,
+        checkpoint_reference=checkpoint_reference,
+    )
+    outcome = _durable_input_outcome(receipt)
+    _require_applied_repository_outcome(
+        "decision receipt",
+        _repository.store_decision_receipt(
+            connection,
+            receipt,
+            capability=capability,
+        ),
+    )
+    _require_applied_repository_outcome(
+        "durable input outcome",
+        _repository.store_durable_input_outcome(
+            connection,
+            outcome,
+            capability=capability,
+        ),
+    )
+    finalized = _replace(claimed, technical_state=terminal_state)
+    _require_applied_repository_outcome(
+        "durable input finalization",
+        _repository.finalize_durable_input(
+            connection,
+            finalized,
+            capability=capability,
+        ),
+    )
+    result = UnitOfWorkResult(
+        UnitOfWorkDisposition.COMMITTED,
+        owner_domain,
+        owner_disposition,
+        completed_context,
+        None,
+    )
+    return _TransactionDecision(True, result, pending_effect)
+
+
+def _execute_authority_operation(
+    connection: _SQLiteConnectionProtocol,
+    prepared: _PreparedOperation,
+    claimed: _records.DurableInputRecord,
+    capability: _repository._RuntimeWriteCapability,
+) -> _TransactionDecision:
+    operation = prepared.operation
+    if type(operation) is not _operations.AuthorityOperation:
+        raise _TechnicalRefusal("authority route received the wrong operation")
+    if type(operation.command) is not _authority.EngageKill:
+        raise _TechnicalRefusal("authority command route is not implemented")
+    execution = _scope_execution(prepared.context, prepared.scope_id)
+    transition = _authority._m2_apply_execution_authority_input(
+        prepared.context.authority,
+        execution,
+        operation.command,
+        manual_observation=None,
+    )
+    if (
+        transition.created_effect_ids
+        or transition.fresh_claim is not None
+        or transition.venue_transitions
+        or transition.acquisition_receipt is not None
+        or transition.acquisition_claim_receipt is not None
+    ):
+        raise _TechnicalRefusal("kill transition emitted an unrelated derivative")
+    changed = transition.state is not prepared.context.authority
+    successor_context = (
+        UnitOfWorkContext(
+            prepared.context.expected_checkpoint,
+            transition.state.venue,
+            transition.state,
+            prepared.context.scope_owners,
+        )
+        if changed
+        else prepared.context
+    )
+    return _complete_claimed_input(
+        connection,
+        prepared,
+        claimed,
+        owner_domain="AUTHORITY",
+        owner_disposition=transition.disposition.value,
+        successor_context=successor_context,
+        checkpoint_changed=changed,
+        pending_effect=None,
+        capability=capability,
+    )
 
 
 def _execute_prepared(
@@ -260,7 +784,17 @@ def _execute_prepared(
     prepared: _PreparedOperation,
     capability: _repository._RuntimeWriteCapability,
 ) -> _TransactionDecision:
-    del connection, prepared, capability
+    primary = _claim_primary_input(connection, prepared, capability)
+    if type(primary) is _TransactionDecision:
+        return primary
+    claimed = _cast(_ClaimedPrimaryInput, primary)
+    if type(prepared.operation) is _operations.AuthorityOperation:
+        return _execute_authority_operation(
+            connection,
+            prepared,
+            claimed.record,
+            capability,
+        )
     raise _TechnicalRefusal("operation route is not implemented in this slice")
 
 

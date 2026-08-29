@@ -9,9 +9,11 @@ import pytest
 
 from app.execution_core import authority
 from app.execution_core.persistence import checkpoint_codec
+from app.execution_core.persistence import operations
 from app.execution_core.persistence import records
 from app.execution_core.persistence import unit_of_work
 import test_persistence_runtime_checkpoint_pure as checkpoint_fixtures
+import test_persistence_input_receipt as input_fixtures
 
 
 def _payload_equal_manual_contexts() -> tuple[
@@ -295,10 +297,7 @@ def _patch_prepared_path(
     monkeypatch.setattr(
         unit_of_work,
         "_prepare_transaction",
-        lambda connection, operation, context: unit_of_work._PreparedOperation(
-            operation,
-            context,
-        ),
+        lambda connection, operation, context: _prepared_primary_claim(),
     )
     monkeypatch.setattr(unit_of_work, "_execute_prepared", body)
 
@@ -458,3 +457,354 @@ def test_rollback_ambiguity_propagates_without_retry(
     with pytest.raises(RuntimeError, match="ambiguous rollback"):
         unit_of_work.execute_unit_of_work(connection, object(), _uow_context())
     assert connection.events == ["BEGIN IMMEDIATE", "ROLLBACK"]
+
+
+class _OrdinalCursor:
+    def __init__(self, ordinal: int) -> None:
+        self.ordinal = ordinal
+
+    def fetchone(self) -> tuple[int]:
+        return (self.ordinal,)
+
+
+class _PrimaryClaimConnection:
+    def __init__(self, ordinal: int = 1) -> None:
+        self.ordinal = ordinal
+        self.statements: list[str] = []
+
+    def execute(self, sql: str, parameters: object = ()) -> _OrdinalCursor:
+        del parameters
+        self.statements.append(sql)
+        assert sql == (
+            "SELECT COALESCE(MAX(created_ordinal), 0) + 1 FROM durable_input"
+        )
+        return _OrdinalCursor(self.ordinal)
+
+
+class _CompletionConnection:
+    def __init__(self, receipt_ordinal: int = 4) -> None:
+        self.receipt_ordinal = receipt_ordinal
+        self.statements: list[str] = []
+
+    def execute(self, sql: str, parameters: object = ()) -> _OrdinalCursor:
+        del parameters
+        self.statements.append(sql)
+        assert sql == (
+            "SELECT COALESCE(MAX(receipt_ordinal), 0) + 1 FROM decision_receipt"
+        )
+        return _OrdinalCursor(self.receipt_ordinal)
+
+
+def _prepared_primary_claim() -> unit_of_work._PreparedOperation:
+    operation = input_fixtures._passive_venue_operation()
+    payload = operations.encode_m2_operation(operation)
+    (
+        domain,
+        application_generation_id,
+        execution_profile_id,
+        scope_id,
+        session_id,
+        acquisition_generation_id,
+        market_source_profile_id,
+        stream_generation_id,
+        input_identity_sha256,
+    ) = operations._derive_m2_durable_input_projection(operation)
+    return unit_of_work._PreparedOperation(
+        operation,
+        _uow_context(),
+        payload,
+        domain,
+        application_generation_id,
+        execution_profile_id,
+        scope_id,
+        session_id,
+        acquisition_generation_id,
+        market_source_profile_id,
+        stream_generation_id,
+        input_identity_sha256,
+        object(),
+        object(),
+    )
+
+
+def test_primary_claim_builds_exact_canonical_record_at_next_ordinal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection = _PrimaryClaimConnection(9)
+    captured: list[records.DurableInputRecord] = []
+
+    def claim(
+        claim_connection: object,
+        record: records.DurableInputRecord,
+        *,
+        capability: object,
+    ) -> records.RepositoryOutcome[operations.InputDedupeFact]:
+        del capability
+        assert claim_connection is connection
+        captured.append(record)
+        return records.RepositoryOutcome(
+            records.RepositoryOutcomeKind.APPLIED,
+            operations.InputDedupeFact(
+                operations.InputDedupeKind.UNSEEN,
+                record.input_domain.value,
+                record.input_identity_sha256,
+                record.payload_sha256,
+                None,
+                (),
+            ),
+        )
+
+    monkeypatch.setattr(unit_of_work._repository, "claim_durable_input", claim)
+    result = unit_of_work._claim_primary_input(
+        connection,
+        _prepared_primary_claim(),
+        object(),
+    )
+
+    assert type(result) is unit_of_work._ClaimedPrimaryInput
+    assert result.record is captured[0]
+    assert result.record.created_ordinal == 9
+    assert result.record.technical_state == "CLAIMED"
+    assert result.record.canonical_payload_bytes == operations.encode_m2_operation(
+        result.operation
+    )
+
+
+@pytest.mark.parametrize(
+    ("repository_kind", "dedupe_kind", "expected_disposition"),
+    (
+        (
+            records.RepositoryOutcomeKind.FOUND,
+            operations.InputDedupeKind.EXACT_REPLAY,
+            unit_of_work.UnitOfWorkDisposition.EXACT_REPLAY,
+        ),
+        (
+            records.RepositoryOutcomeKind.CONFLICT,
+            operations.InputDedupeKind.IDENTITY_CONFLICT,
+            unit_of_work.UnitOfWorkDisposition.CONFLICT,
+        ),
+    ),
+)
+def test_primary_replay_and_conflict_short_circuit_before_owner_reduction(
+    monkeypatch: pytest.MonkeyPatch,
+    repository_kind: records.RepositoryOutcomeKind,
+    dedupe_kind: operations.InputDedupeKind,
+    expected_disposition: unit_of_work.UnitOfWorkDisposition,
+) -> None:
+    prepared = _prepared_primary_claim()
+    connection = _PrimaryClaimConnection()
+
+    def claim(
+        claim_connection: object,
+        record: records.DurableInputRecord,
+        *,
+        capability: object,
+    ) -> records.RepositoryOutcome[operations.InputDedupeFact]:
+        del claim_connection, capability
+        return records.RepositoryOutcome(
+            repository_kind,
+            operations.InputDedupeFact(
+                dedupe_kind,
+                record.input_domain.value,
+                record.input_identity_sha256,
+                record.payload_sha256,
+                "ab" * 32
+                if dedupe_kind is operations.InputDedupeKind.EXACT_REPLAY
+                else None,
+                (),
+            ),
+        )
+
+    monkeypatch.setattr(unit_of_work._repository, "claim_durable_input", claim)
+    result = unit_of_work._claim_primary_input(connection, prepared, object())
+
+    assert type(result) is unit_of_work._TransactionDecision
+    assert result.commit is False
+    assert result.result.disposition is expected_disposition
+    assert result.pending_effect is None
+
+
+def test_committed_no_change_decision_stores_coherent_receipt_outcome_then_finalizes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prepared = _prepared_primary_claim()
+    claimed = records.DurableInputRecord(
+        prepared.application_generation_id,
+        prepared.execution_profile_id,
+        prepared.scope_id,
+        prepared.input_domain,
+        prepared.session_id,
+        prepared.acquisition_generation_id,
+        prepared.market_source_profile_id,
+        prepared.stream_generation_id,
+        prepared.input_identity_sha256,
+        1,
+        prepared.canonical_payload_bytes,
+        unit_of_work._hashlib.sha256(prepared.canonical_payload_bytes).hexdigest(),
+        "CLAIMED",
+        3,
+    )
+    connection = _CompletionConnection()
+    stored: list[object] = []
+
+    def applied(
+        target_connection: object,
+        record: object,
+        *,
+        capability: object,
+    ) -> records.RepositoryOutcome[object]:
+        del capability
+        assert target_connection is connection
+        stored.append(record)
+        return records.RepositoryOutcome(records.RepositoryOutcomeKind.APPLIED)
+
+    monkeypatch.setattr(unit_of_work._repository, "store_decision_receipt", applied)
+    monkeypatch.setattr(
+        unit_of_work._repository,
+        "store_durable_input_outcome",
+        applied,
+    )
+    monkeypatch.setattr(unit_of_work._repository, "finalize_durable_input", applied)
+
+    decision = unit_of_work._complete_claimed_input(
+        connection,
+        prepared,
+        claimed,
+        owner_domain="VENUE_RECOVERY",
+        owner_disposition="REFUSED",
+        successor_context=prepared.context,
+        checkpoint_changed=False,
+        pending_effect=None,
+        capability=object(),
+    )
+
+    assert decision.commit is True
+    assert decision.result.disposition is unit_of_work.UnitOfWorkDisposition.COMMITTED
+    assert decision.result.owner_domain == "VENUE_RECOVERY"
+    assert decision.result.owner_disposition == "REFUSED"
+    assert decision.result.successor_context is prepared.context
+    assert decision.pending_effect is None
+    assert tuple(type(item) for item in stored) == (
+        records.DecisionReceiptRecord,
+        records.DurableInputOutcomeRecord,
+        records.DurableInputRecord,
+    )
+    receipt, outcome, finalized = stored
+    assert type(receipt) is records.DecisionReceiptRecord
+    assert type(outcome) is records.DurableInputOutcomeRecord
+    assert type(finalized) is records.DurableInputRecord
+    assert receipt.receipt_ordinal == 4
+    assert receipt.checkpoint_payload_sha256 is None
+    assert outcome.receipt_sha256 == receipt.receipt_sha256
+    assert outcome.result_sha256 == receipt.result_sha256
+    assert finalized.technical_state == "TERMINAL"
+
+
+def test_authority_engage_kill_route_uses_shared_kernel_and_common_completion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prepared = _prepared_primary_claim()
+    command = authority.EngageKill(
+        authority.AuthorityInputId("uow-engage-kill"),
+        authority.ActorId("operator"),
+        "operator kill",
+        authority.EvidenceReference("evidence"),
+    )
+    scope_id = prepared.context.scope_owners[0][0]
+    operation = operations.AuthorityOperation(
+        operations.ExecutionOperationCoordinates(
+            prepared.application_generation_id,
+            prepared.execution_profile_id,
+            scope_id,
+        ),
+        command,
+    )
+    payload = operations.encode_m2_operation(operation)
+    projection = operations._derive_m2_durable_input_projection(operation)
+    prepared = replace(
+        prepared,
+        operation=operation,
+        canonical_payload_bytes=payload,
+        input_domain=operations.OperationDomain.AUTHORITY,
+        scope_id=scope_id,
+        input_identity_sha256=projection[-1],
+    )
+    owner_called: list[object] = []
+    completed: list[tuple[str, str, bool]] = []
+
+    def owner(
+        state: authority.ExecutionAuthorityState,
+        execution: object,
+        item: object,
+        *,
+        manual_observation: object,
+    ) -> authority.ExecutionAuthorityTransition:
+        del execution
+        assert state is prepared.context.authority
+        assert item is command
+        assert manual_observation is None
+        owner_called.append(item)
+        return authority.ExecutionAuthorityTransition(
+            state,
+            authority.AuthorityDisposition.EXACT_REPLAY,
+            None,
+            (),
+            None,
+            (),
+            None,
+            None,
+        )
+
+    def complete(
+        connection: object,
+        prepared_operation: object,
+        claimed_record: object,
+        *,
+        owner_domain: str,
+        owner_disposition: str,
+        successor_context: object,
+        checkpoint_changed: bool,
+        pending_effect: object,
+        capability: object,
+    ) -> unit_of_work._TransactionDecision:
+        del connection, prepared_operation, claimed_record, successor_context
+        del pending_effect, capability
+        completed.append((owner_domain, owner_disposition, checkpoint_changed))
+        return unit_of_work._TransactionDecision(
+            True,
+            _committed_result(prepared.context),
+            None,
+        )
+
+    monkeypatch.setattr(
+        unit_of_work._authority,
+        "_m2_apply_execution_authority_input",
+        owner,
+    )
+    monkeypatch.setattr(unit_of_work, "_complete_claimed_input", complete)
+
+    result = unit_of_work._execute_authority_operation(
+        object(),
+        prepared,
+        records.DurableInputRecord(
+            prepared.application_generation_id,
+            prepared.execution_profile_id,
+            prepared.scope_id,
+            prepared.input_domain,
+            None,
+            None,
+            None,
+            None,
+            prepared.input_identity_sha256,
+            1,
+            payload,
+            unit_of_work._hashlib.sha256(payload).hexdigest(),
+            "CLAIMED",
+            1,
+        ),
+        object(),
+    )
+
+    assert result.commit is True
+    assert owner_called == [command]
+    assert completed == [("AUTHORITY", "EXACT_REPLAY", False)]
