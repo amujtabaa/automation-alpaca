@@ -567,3 +567,19 @@ the exact command, identities, output, and untouched fresh database path. The fl
 remains quarantined evidence only, and the canonical flag-false branch remains the sole
 implementation predecessor. Further diagnosis/remediation requires new bounded authority; no
 later work order has started.
+
+## REV-0117 R3 instrumented diagnosis
+
+Ameen authorized instrumented diagnosis after the substantive R3 stop. Wrappers on copies of the
+preserved disposable database exposed the erased inner refusal in `_prepare_transaction`:
+`runtime owners do not equal the retained checkpoint payload`. All six bounded owner components
+were byte-identical. The only difference was intentional successor metadata: the retained current
+checkpoint was version 1 while the authentic repository write proof targeted version 2.
+
+`diagnosis-r3-instrumented.md` records the exact values, affected shared boundary, false-positive
+fake-byte unit test, risk, and bounded remediation shape. A transient hypothesis probe using the
+module's existing exact owner-semantic comparator produced first-start `SERVING` with one committed
+`ACKNOWLEDGED` successor at version 2, then second-start `SERVING` with zero queries and no extra
+checkpoint write. No second hidden refusal appeared. No tracked source/test, DDL, schema, original
+database, or held assertion changed. Remediation remains separately unauthorized, and WO-0170 has
+not started.
