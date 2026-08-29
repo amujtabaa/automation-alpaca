@@ -436,3 +436,15 @@ candidate `112d95115f2997ca613238b63eb161a12fbfc791`, tree
 `137f7a7bd8d3bc4838cff905754c3394af07fef1`. Complete ordinary evidence reached 100% with 2,259
 tests collected. The accepted flag-false candidate is now held at the separate human SQLite gate
 described by `work/review/REV-0117/sqlite-execution-manifest.md`; no held test has executed.
+
+## REV-0117 fresh-file attempt 1 disposition
+
+Ameen approved the exact packet in `execution-request.md`. The published flag-only unlock was
+`895715863ffdc49ae71cea33505e3079f875a9c8`, tree
+`20c8e6c50a14743d111126571e699ea956e38edf`. Attempt 1 executed once and stopped during honest
+setup when `store_acquisition_generation` returned `INTEGRITY_FAILURE`; attempt 2 did not run.
+`execution-result-attempt-1.md` preserves the exact evidence and fresh database. Static diagnosis
+found a cross-layer ordinal/classification mismatch in the shared proof fixture and checkpoint
+boundary while the accepted one-based DDL contract remained correct. The quarantined flag-true
+branch is evidence only. Application/test root remediation, fresh static review, and a new human
+fresh-file gate are required before rerun.
