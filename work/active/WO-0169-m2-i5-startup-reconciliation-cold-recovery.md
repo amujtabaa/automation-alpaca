@@ -542,3 +542,12 @@ asserts both projection and storage consume only the fresh proof. The separate n
 also uses a distinct fresh proof and proves an unchanged payload cannot reach storage. One finite
 correction-only R5 review by the same independent reviewer must confirm zero open P0/P1 before a
 new fresh-file execution packet is prepared. No SQLite or held test ran during this correction.
+
+REV-0117 R5 returned `ACCEPT`, P0=0/P1=0/P2=0, against exact correction candidate
+`fe59068d9129d417d0d9c85e4a9b53e0bd97d995`, tree
+`a92dc7fb91ceb349323eee92a9e677fc03769279`. The reviewer reproduced all three direct pure controls
+and confirmed that the stale-proof mutation is killed, the absent-cursor exception is limited to
+dormant venue recovery, and active/default routes retain exact-one cursor enforcement. The
+application/test remediation is statically accepted. A new R3 fresh-file packet is the next
+separate human gate; neither consumed R2 authority nor its quarantined branch/database may be
+reused.
