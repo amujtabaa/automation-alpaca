@@ -2022,8 +2022,16 @@ def _assert_required_indexes_are_hard_requirements(
         connection.execute("SAVEPOINT checkpoint_plan_required_index")
         try:
             connection.execute(f"DROP INDEX {index}")
-            with pytest.raises(sqlite3.OperationalError):
-                _explain_details(connection, sql)
+            # ``sqlite3.Connection`` caches prepared statements by exact SQL text.
+            # Reusing the earlier EXPLAIN text can therefore report the dropped
+            # index from the stale prepared statement.  The inert per-index
+            # comment forces a fresh prepare without changing the query itself.
+            fresh_sql = f"{sql}\n/* required-index-dropped:{index} */"
+            with pytest.raises(
+                sqlite3.OperationalError,
+                match=f"no such index: {index}",
+            ):
+                _explain_details(connection, fresh_sql)
         finally:
             connection.execute("ROLLBACK TO checkpoint_plan_required_index")
             connection.execute("RELEASE checkpoint_plan_required_index")
