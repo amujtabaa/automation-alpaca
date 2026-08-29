@@ -430,3 +430,9 @@ the stale first-layer checkpoint-authenticity oracle without weakening the separ
 pin; and corrects the complete Python-format inventory. The historical blank EOF in reviewer-owned
 `REV-0116/result.md` remains immutable and is disclosed rather than rewritten. One correction-only
 exact-head review with zero open P0/P1 is required before any SQLite gate may open.
+
+REV-0117 correction review R1 returned `ACCEPT`, P0=0/P1=0/P2=0, against exact implementation
+candidate `112d95115f2997ca613238b63eb161a12fbfc791`, tree
+`137f7a7bd8d3bc4838cff905754c3394af07fef1`. Complete ordinary evidence reached 100% with 2,259
+tests collected. The accepted flag-false candidate is now held at the separate human SQLite gate
+described by `work/review/REV-0117/sqlite-execution-manifest.md`; no held test has executed.
