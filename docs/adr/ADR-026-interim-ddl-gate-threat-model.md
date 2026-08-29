@@ -76,7 +76,8 @@ No control claims that arbitrary Python cannot evade an in-process guard.
 The DDL candidate is frozen and independently reviewed while the authorization
 flag is `False`. A valid source-recorded unlock must:
 
-1. have the exact REV-0108-accepted candidate as its parent;
+1. have the exact zero-open-P0/P1 DDL source candidate named by Ameen's later
+   execution approval as its parent;
 2. change only the installer-owned authorization flag from `False` to `True`;
 3. record Ameen's approved commands and bounded attempt count;
 4. record the resulting commit and tree before execution; and
