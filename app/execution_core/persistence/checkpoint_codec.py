@@ -4878,7 +4878,9 @@ def _encode_runtime_checkpoint_acquisition(
         if (
             binding.application_generation_id != state.application_generation_id
             or binding.position_scope != state.position_scope
-            or binding.successor_ordinal != selected_record.successor_ordinal
+            # Acquisition owners are zero-based; durable generation rows are
+            # deliberately one-based so NULL predecessor names the first row.
+            or binding.successor_ordinal + 1 != selected_record.successor_ordinal
             or binding.dual_mandate_binding_commitment.hex()
             != selected_record.mandate_commitment_sha256
             or binding.emergency_recovery_compatibility_commitment.hex()
@@ -8958,7 +8960,9 @@ def _decode_source_acquisition_checkpoint(
         or selected_live_current_row.acquisition_generation_id
         != selected_live_row.acquisition_generation_id
         or selected_live_row.status != live.serving_class.value
-        or selected_live_row.successor_ordinal != live.binding.successor_ordinal
+        # Acquisition owners are zero-based; durable generation rows are
+        # deliberately one-based so NULL predecessor names the first row.
+        or selected_live_row.successor_ordinal != live.binding.successor_ordinal + 1
         or selected_live_row.mandate_commitment_sha256
         != live.binding.dual_mandate_binding_commitment.hex()
         or selected_live_row.emergency_compatibility_sha256

@@ -191,7 +191,7 @@ def _active_acquisition_projection_inputs() -> tuple[
                 checkpoint_fixtures._EXECUTION_PROFILE,
                 generation_id,
                 0,
-                "ACTIVE",
+                "CONSISTENT",
                 0,
                 1,
                 compatibility.hex(),
@@ -200,7 +200,7 @@ def _active_acquisition_projection_inputs() -> tuple[
         protection_authorities=(
             records.ProtectionAuthorityRecord(
                 1,
-                "DORMANT",
+                "NORMAL",
                 None,
                 None,
                 None,
@@ -217,7 +217,7 @@ def _active_acquisition_projection_inputs() -> tuple[
                 generation_id,
                 1,
                 "LIVE",
-                0,
+                1,
                 None,
                 mandate.binding.commitment.hex(),
                 compatibility.hex(),
@@ -508,6 +508,18 @@ def test_compact_hydration_restores_one_active_claimed_effect() -> None:
     )
 
 
+def test_active_claimed_projection_uses_durable_selection_coordinates() -> None:
+    proof, _book, _authority_state, owners = _active_claimed_projection_inputs()
+    source = owners[0].acquisition
+    assert source is not None
+    generation = proof._selection.live_generations[0]
+
+    assert generation.successor_ordinal == source._controller.successor_ordinal + 1
+    assert proof._selection.controllers[0].integrity_state == "CONSISTENT"
+    assert proof._selection.protection_authorities[0].authority_class == "NORMAL"
+    assert proof._selection.effects[0].authority_class == "NORMAL"
+
+
 def test_compact_hydration_requires_loaded_checkpoint_and_fresh_successor_proof() -> (
     None
 ):
@@ -565,6 +577,36 @@ def test_compact_hydration_authenticates_and_rebinds_active_acquisition() -> Non
     assert rebound.protection_commitment == bytes.fromhex("b3" * 32)
 
 
+def test_compact_hydration_rejects_domain_ordinal_as_durable_ordinal() -> None:
+    proof, _book, _authority, owners = _active_acquisition_projection_inputs()
+    source = owners[0].acquisition
+    assert source is not None
+    wire, _ = checkpoint_codec._encode_runtime_checkpoint_acquisition(
+        source,
+        proof._selection,
+        1,
+    )
+    durable = proof._selection.live_generations[0]
+    assert durable.successor_ordinal == source._controller.successor_ordinal + 1
+    wrong_selection = replace(
+        proof._selection,
+        live_generations=(
+            replace(
+                durable,
+                successor_ordinal=source._controller.successor_ordinal,
+            ),
+        ),
+    )
+    wrong_proof = checkpoint_fixtures._selection_proof(selection=wrong_selection)
+
+    with pytest.raises(ValueError, match="spliced"):
+        checkpoint_codec._decode_source_acquisition_checkpoint(
+            wire,
+            selection_proof=wrong_proof,
+            scope_id=1,
+        )
+
+
 def test_compact_hydration_authenticates_and_rebinds_active_protection() -> None:
     transition = protection_fixtures._owned_fill_transition(
         label="compact-active-protection"
@@ -603,7 +645,7 @@ def test_compact_hydration_authenticates_and_rebinds_active_protection() -> None
                 checkpoint_fixtures._EXECUTION_PROFILE,
                 generation_id,
                 state.raw_quantity,
-                "ACTIVE",
+                "CONSISTENT",
                 controller_head,
                 1,
                 compatibility,
@@ -629,7 +671,7 @@ def test_compact_hydration_authenticates_and_rebinds_active_protection() -> None
                 generation_id,
                 1,
                 "LIVE",
-                0,
+                1,
                 None,
                 mandate_commitment,
                 compatibility,
