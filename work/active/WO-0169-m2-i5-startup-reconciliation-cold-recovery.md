@@ -407,3 +407,7 @@ commits and rereads compact cold-invalidated C1 before reconciliation, uses only
 contexts thereafter, and applies one final idempotent invalidation barrier before source access.
 Hydration/cutover source remains held until the same reviewer verifies this correction with zero
 open P0/P1.
+
+REV-0116 R3 returned `ACCEPT`, P0=0/P1=0/P2=0, `Unverified: NONE`, against exact corrected
+candidate `47306fe81fb9f279e6190f00ae5241eef7f9203a`, tree
+`448cc6aabce8674e5e77f9b26521fc1894b222f6`. The hydration/cutover source hold is released.
