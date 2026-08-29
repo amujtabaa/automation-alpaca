@@ -551,3 +551,19 @@ dormant venue recovery, and active/default routes retain exact-one cursor enforc
 application/test remediation is statically accepted. A new R3 fresh-file packet is the next
 separate human gate; neither consumed R2 authority nor its quarantined branch/database may be
 reused.
+
+## REV-0117 fresh-file R3 attempt 1 disposition
+
+Ameen approved the exact R3 packet. The published flag-only unlock is
+`a854f93eb93a70c324fcb9ae5a5d77ceefe3bed1`, tree
+`60317a381b2c6c77487e6cf2b4b046ad30c4d949`, with exact parent
+`9bb76c6f05dd7d9b672a6d3ee91e832134d8d544`. Static revalidation reproduced the approved DDL
+identity and confirmed the unlock commit changed only the exact boolean flag.
+
+Attempt 1 ran once and again returned fail-closed `NON_SERVING / UNRESOLVED_EFFECTS` instead of
+`SERVING`; one held test failed in 1.64 seconds. This is a substantive result, so attempt 2 did not
+run and no repair was made under the consumed gate. `execution-result-r3-attempt-1.md` preserves
+the exact command, identities, output, and untouched fresh database path. The flag-true R3 branch
+remains quarantined evidence only, and the canonical flag-false branch remains the sole
+implementation predecessor. Further diagnosis/remediation requires new bounded authority; no
+later work order has started.
