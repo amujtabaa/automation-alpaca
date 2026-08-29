@@ -913,6 +913,78 @@ def test_effect_query_enumeration_preserves_unclaimed_effects_without_query() ->
     )
 
 
+@pytest.mark.parametrize(
+    ("lifecycle_state", "claimed", "expected"),
+    (
+        ("REQUESTED", False, True),
+        ("ACKNOWLEDGED", True, True),
+        ("REJECTED", True, True),
+        ("OPERATOR_RECONCILED", True, True),
+        ("DISPATCH_CLAIMED", True, False),
+        ("OUTCOME_UNKNOWN", True, False),
+        ("NEEDS_REVIEW", True, False),
+    ),
+)
+def test_claimed_reconciliation_requires_a_known_post_query_state(
+    lifecycle_state: str,
+    claimed: bool,
+    expected: bool,
+) -> None:
+    _context, base = _dormant_context()
+    effect = records.VenueEffectRecord(
+        1,
+        identity.EffectId("coverage-effect"),
+        1,
+        base.request.application_generation_id,
+        base.request.execution_profile_id,
+        identity.AcquisitionGenerationId("ab" * 32),
+        "c" * 64,
+        0,
+        0,
+        "NORMAL",
+        identity.RequestOccurrenceId("coverage-request"),
+        identity.MandateId("coverage-mandate"),
+        "SUBMIT",
+        identity.ClientOrderId("coverage-client"),
+        None,
+        "BUY",
+        values.Quantity(1),
+        b"coverage",
+        lifecycle_state,
+        "OPEN",
+        None,
+        None,
+        None,
+        None,
+        1,
+    )
+    claims = (
+        (
+            records.DispatchClaimRecord(
+                1,
+                effect.effect_id,
+                effect.execution_profile_id,
+                identity.ClaimOccurrenceId("coverage-claim"),
+                1,
+            ),
+        )
+        if claimed
+        else ()
+    )
+    proof = records._issue_runtime_checkpoint_selection_proof(
+        base.request,
+        base.application_generation,
+        base.execution_profile,
+        base.market_source_profile,
+        base.predecessor_checkpoint,
+        base.target_currentness_head_ordinal,
+        base.target_checkpoint_version_ordinal,
+        replace(base._selection, effects=(effect,), claims=claims),
+    )
+
+    assert startup._proof_has_complete_claimed_reconciliation(proof) is expected
+
+
 def test_reconciliation_operation_is_bound_to_exact_effect_scope_and_session() -> None:
     _context, proof = _dormant_context()
     effect = records.VenueEffectRecord(
@@ -1159,9 +1231,10 @@ class _ResolvedEffectQueries(market_recovery.EffectQueryPort):
                 scope_id,
                 session_id,
             ),
-            venue.RecoverClaimedEffect(
-                identity.VenueInputId(f"recover-{request.effect_id.value}"),
+            venue.RecordTransportOutcome(
+                identity.VenueInputId(f"resolve-{request.effect_id.value}"),
                 effect_id,
+                venue.BrokerEffectState.ACKNOWLEDGED,
             ),
         )
         return market_recovery.EffectQueryResult(

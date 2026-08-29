@@ -257,13 +257,28 @@ def _effect_operation_matches_request(
     return item_claim == query.claim_occurrence_id
 
 
-def _proof_has_no_claimed_unresolved_effects(
+def _proof_has_complete_claimed_reconciliation(
     proof: _records.RuntimeCheckpointSelectionProof,
 ) -> bool:
-    return bool(
-        _records.RuntimeCheckpointSelectionProof._is_authentic(proof)
-        and proof._selection.claims == ()
-    )
+    if not _records.RuntimeCheckpointSelectionProof._is_authentic(proof):
+        return False
+    selection = proof._selection
+    effects_by_id = {effect.effect_id: effect for effect in selection.effects}
+    if len(effects_by_id) != len(selection.effects):
+        return False
+    blocking_states = {"DISPATCH_CLAIMED", "OUTCOME_UNKNOWN", "NEEDS_REVIEW"}
+    seen_effects: set[int] = set()
+    for claim in selection.claims:
+        effect = effects_by_id.get(claim.effect_id)
+        if (
+            effect is None
+            or claim.effect_id in seen_effects
+            or claim.execution_profile_id != effect.execution_profile_id
+            or effect.lifecycle_state in blocking_states
+        ):
+            return False
+        seen_effects.add(claim.effect_id)
+    return True
 
 
 def _cutover_refusal_code(
@@ -617,7 +632,7 @@ def start_startup(
                 evidence,
                 connection,
             )
-        if not _proof_has_no_claimed_unresolved_effects(proof):
+        if not _proof_has_complete_claimed_reconciliation(proof):
             return _stop_startup(
                 StartupRefusalCode.UNRESOLVED_EFFECTS,
                 owner_lock,
@@ -659,7 +674,7 @@ def start_startup(
         if (
             type(context) is not _unit_of_work.UnitOfWorkContext
             or type(proof) is not _records.RuntimeCheckpointSelectionProof
-            or not _proof_has_no_claimed_unresolved_effects(proof)
+            or not _proof_has_complete_claimed_reconciliation(proof)
         ):
             return _stop_startup(
                 StartupRefusalCode.CURRENT_PROOF_FAILURE,
@@ -871,7 +886,7 @@ def start_startup(
                 or resulting_state._market_exhausted
                 or resulting_state._market_occurrence_identity
                 != baseline.occurrence.occurrence_id
-                or not _proof_has_no_claimed_unresolved_effects(proof)
+                or not _proof_has_complete_claimed_reconciliation(proof)
             ):
                 return _stop_startup(
                     StartupRefusalCode.BASELINE_FAILURE,
