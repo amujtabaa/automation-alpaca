@@ -8,6 +8,7 @@ from dataclasses import replace
 import pytest
 
 from app.execution_core import authority
+from app.execution_core import acquisition
 from app.execution_core import identity
 from app.execution_core.persistence import checkpoint_codec
 from app.execution_core.persistence import operations
@@ -15,6 +16,35 @@ from app.execution_core.persistence import records
 from app.execution_core.persistence import unit_of_work
 import test_persistence_runtime_checkpoint_pure as checkpoint_fixtures
 import test_persistence_input_receipt as input_fixtures
+
+
+@pytest.mark.parametrize(
+    ("public_name", "kernel_name", "argument_count"),
+    (
+        ("begin_acquisition_generation", "_m2_begin_acquisition_generation", 6),
+        ("rebase_acquisition_protection", "_m2_rebase_acquisition_protection", 3),
+        ("create_acquisition_effect", "_m2_create_acquisition_effect", 5),
+        ("claim_acquisition_effect", "_m2_claim_acquisition_effect", 6),
+        ("begin_acquisition_preemption", "_m2_begin_acquisition_preemption", 4),
+    ),
+)
+def test_acquisition_public_routes_delegate_to_the_shared_m2_kernel(
+    monkeypatch: pytest.MonkeyPatch,
+    public_name: str,
+    kernel_name: str,
+    argument_count: int,
+) -> None:
+    arguments = tuple(object() for _ in range(argument_count))
+    sentinel = object()
+    calls: list[tuple[object, ...]] = []
+
+    def kernel(*received: object) -> object:
+        calls.append(received)
+        return sentinel
+
+    monkeypatch.setattr(acquisition, kernel_name, kernel)
+    assert getattr(acquisition, public_name)(*arguments) is sentinel
+    assert calls == [arguments]
 
 
 def _payload_equal_manual_contexts() -> tuple[

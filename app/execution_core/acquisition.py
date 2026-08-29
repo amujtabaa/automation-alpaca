@@ -4127,7 +4127,7 @@ def _first_current_generation_fact_is_exact(
     )
 
 
-def begin_acquisition_generation(
+def _m2_begin_acquisition_generation(
     state: AcquisitionControllerState,
     successor_mandate: AcquisitionMandate,
     bootstrap: _AcquisitionVenueProjection,
@@ -4409,6 +4409,26 @@ def begin_acquisition_generation(
         receipt=receipt,
         venue_transitions=registration.venue_transitions,
         rollover_required=completed,
+    )
+
+
+def begin_acquisition_generation(
+    state: AcquisitionControllerState,
+    successor_mandate: AcquisitionMandate,
+    bootstrap: _AcquisitionVenueProjection,
+    admission: _AcquisitionAdmissionProjection,
+    refresh: _AcquisitionContextRefresh,
+    protection: _PositionProtectionState | None,
+) -> AcquisitionControllerTransition:
+    """Delegate the public boundary to the shared M2 reducer kernel."""
+
+    return _m2_begin_acquisition_generation(
+        state,
+        successor_mandate,
+        bootstrap,
+        admission,
+        refresh,
+        protection,
     )
 
 
@@ -4896,7 +4916,7 @@ def reduce_acquisition_controller(
     )
 
 
-def rebase_acquisition_protection(
+def _m2_rebase_acquisition_protection(
     state: AcquisitionControllerState,
     refresh: _AcquisitionContextRefresh,
     source: _AcquisitionProtectionRebaseProjection | _PositionProtectionState,
@@ -5103,7 +5123,17 @@ def rebase_acquisition_protection(
     )
 
 
-def create_acquisition_effect(
+def rebase_acquisition_protection(
+    state: AcquisitionControllerState,
+    refresh: _AcquisitionContextRefresh,
+    source: _AcquisitionProtectionRebaseProjection | _PositionProtectionState,
+) -> AcquisitionControllerTransition:
+    """Delegate the public boundary to the shared M2 reducer kernel."""
+
+    return _m2_rebase_acquisition_protection(state, refresh, source)
+
+
+def _m2_create_acquisition_effect(
     state: AcquisitionControllerState,
     refresh: _AcquisitionContextRefresh,
     protection: _PositionProtectionState | None,
@@ -5222,7 +5252,25 @@ def create_acquisition_effect(
     )
 
 
-def claim_acquisition_effect(
+def create_acquisition_effect(
+    state: AcquisitionControllerState,
+    refresh: _AcquisitionContextRefresh,
+    protection: _PositionProtectionState | None,
+    terms: AcquisitionEffectTerms,
+    input_id: _AuthorityInputId,
+) -> AcquisitionControllerTransition:
+    """Delegate the public boundary to the shared M2 reducer kernel."""
+
+    return _m2_create_acquisition_effect(
+        state,
+        refresh,
+        protection,
+        terms,
+        input_id,
+    )
+
+
+def _m2_claim_acquisition_effect(
     state: AcquisitionControllerState,
     refresh: _AcquisitionContextRefresh,
     protection: _PositionProtectionState | None,
@@ -5341,7 +5389,27 @@ def claim_acquisition_effect(
     )
 
 
-def begin_acquisition_preemption(
+def claim_acquisition_effect(
+    state: AcquisitionControllerState,
+    refresh: _AcquisitionContextRefresh,
+    protection: _PositionProtectionState | None,
+    effect_id: _EffectId,
+    claim_occurrence_id: _ClaimOccurrenceId,
+    input_id: _AuthorityInputId,
+) -> AcquisitionControllerTransition:
+    """Delegate the public boundary to the shared M2 reducer kernel."""
+
+    return _m2_claim_acquisition_effect(
+        state,
+        refresh,
+        protection,
+        effect_id,
+        claim_occurrence_id,
+        input_id,
+    )
+
+
+def _m2_begin_acquisition_preemption(
     state: AcquisitionControllerState,
     refresh: _AcquisitionContextRefresh,
     protection: _PositionProtectionState | None,
@@ -5524,6 +5592,22 @@ def begin_acquisition_preemption(
         authority=applied.state,
         receipt=receipt,
         created_effect_id=created_effect_id,
+    )
+
+
+def begin_acquisition_preemption(
+    state: AcquisitionControllerState,
+    refresh: _AcquisitionContextRefresh,
+    protection: _PositionProtectionState | None,
+    input_id: _AuthorityInputId,
+) -> AcquisitionControllerTransition:
+    """Delegate the public boundary to the shared M2 reducer kernel."""
+
+    return _m2_begin_acquisition_preemption(
+        state,
+        refresh,
+        protection,
+        input_id,
     )
 
 
