@@ -16,6 +16,7 @@ from typing import cast as _cast
 
 from .. import acquisition as _acquisition
 from .. import authority as _authority
+from .. import fills as _fills
 from .. import identity as _identity
 from .. import position as _position
 from .. import protection as _protection
@@ -215,6 +216,20 @@ class _RetainedTerminalInput:
     operation: _operations.M2Operation
     input_record: _records.DurableInputRecord
     outcome_record: _records.DurableInputOutcomeRecord
+
+
+@_dataclass(frozen=True, slots=True)
+class _SelectedScopeAuthority:
+    scope: _records.ScopeRecord
+    controller: _records.SymbolControllerRecord
+    generation: _records.AcquisitionGenerationRecord
+    protection: _records.ProtectionAuthorityRecord
+
+
+@_dataclass(frozen=True, slots=True)
+class _PersistedEffectClaim:
+    effect: _records.VenueEffectRecord
+    claim: _records.DispatchClaimRecord
 
 
 @_dataclass(frozen=True, slots=True)
@@ -495,6 +510,88 @@ def _next_semantic_key_created_ordinal(
     return _require_positive_int("next semantic-key ordinal", row[0])
 
 
+def _next_venue_effect_id(connection: _SQLiteConnectionProtocol) -> int:
+    row = connection.execute(
+        "SELECT COALESCE(MAX(effect_id), 0) + 1 FROM venue_effect"
+    ).fetchone()
+    if type(row) is not tuple or len(row) != 1:
+        raise _TechnicalRefusal("effect ID query returned the wrong shape")
+    return _require_positive_int("next effect ID", row[0])
+
+
+def _next_venue_effect_created_ordinal(
+    connection: _SQLiteConnectionProtocol,
+) -> int:
+    row = connection.execute(
+        "SELECT COALESCE(MAX(created_ordinal), 0) + 1 FROM venue_effect"
+    ).fetchone()
+    if type(row) is not tuple or len(row) != 1:
+        raise _TechnicalRefusal("effect ordinal query returned the wrong shape")
+    return _require_positive_int("next effect ordinal", row[0])
+
+
+def _next_acceptance_set_id(connection: _SQLiteConnectionProtocol) -> int:
+    row = connection.execute(
+        "SELECT COALESCE(MAX(acceptance_set_id), 0) + 1 FROM acceptance_set"
+    ).fetchone()
+    if type(row) is not tuple or len(row) != 1:
+        raise _TechnicalRefusal("acceptance-set ID query returned the wrong shape")
+    return _require_positive_int("next acceptance-set ID", row[0])
+
+
+def _next_dispatch_claim_id(connection: _SQLiteConnectionProtocol) -> int:
+    row = connection.execute(
+        "SELECT COALESCE(MAX(claim_id), 0) + 1 FROM dispatch_claim"
+    ).fetchone()
+    if type(row) is not tuple or len(row) != 1:
+        raise _TechnicalRefusal("claim ID query returned the wrong shape")
+    return _require_positive_int("next claim ID", row[0])
+
+
+def _next_dispatch_claim_ordinal(
+    connection: _SQLiteConnectionProtocol,
+) -> int:
+    row = connection.execute(
+        "SELECT COALESCE(MAX(claim_ordinal), 0) + 1 FROM dispatch_claim"
+    ).fetchone()
+    if type(row) is not tuple or len(row) != 1:
+        raise _TechnicalRefusal("claim ordinal query returned the wrong shape")
+    return _require_positive_int("next claim ordinal", row[0])
+
+
+def _next_acceptance_evidence_id(
+    connection: _SQLiteConnectionProtocol,
+) -> int:
+    row = connection.execute(
+        "SELECT COALESCE(MAX(evidence_id), 0) + 1 FROM acceptance_evidence"
+    ).fetchone()
+    if type(row) is not tuple or len(row) != 1:
+        raise _TechnicalRefusal("evidence ID query returned the wrong shape")
+    return _require_positive_int("next evidence ID", row[0])
+
+
+def _next_acceptance_evidence_ordinal(
+    connection: _SQLiteConnectionProtocol,
+) -> int:
+    row = connection.execute(
+        "SELECT COALESCE(MAX(evidence_ordinal), 0) + 1 FROM acceptance_evidence"
+    ).fetchone()
+    if type(row) is not tuple or len(row) != 1:
+        raise _TechnicalRefusal("evidence ordinal query returned the wrong shape")
+    return _require_positive_int("next evidence ordinal", row[0])
+
+
+def _next_broker_outbox_sequence(
+    connection: _SQLiteConnectionProtocol,
+) -> int:
+    row = connection.execute(
+        "SELECT COALESCE(MAX(outbox_sequence), 0) + 1 FROM broker_outbox"
+    ).fetchone()
+    if type(row) is not tuple or len(row) != 1:
+        raise _TechnicalRefusal("outbox sequence query returned the wrong shape")
+    return _require_positive_int("next outbox sequence", row[0])
+
+
 def _require_applied_repository_outcome(
     name: str,
     outcome: _records.RepositoryOutcome[object],
@@ -516,6 +613,175 @@ def _scope_execution(
         if retained_scope_id == scope_id:
             return execution
     raise _TechnicalRefusal("operation scope has no execution owner")
+
+
+def _selected_scope_authority(
+    prepared: _PreparedOperation,
+    effect_scope: _venue.VenueEffectScope,
+) -> _SelectedScopeAuthority:
+    selection = prepared.selection_proof._selection
+    venue_scope = prepared.context.venue.scope
+    if (
+        effect_scope.generation != prepared.application_generation_id
+        or effect_scope.broker != venue_scope.broker
+        or effect_scope.environment != venue_scope.environment
+        or effect_scope.account != venue_scope.account
+    ):
+        raise _TechnicalRefusal("effect scope is outside the selected application")
+    scopes = tuple(
+        record
+        for record in selection.scopes
+        if record.application_generation_id == prepared.application_generation_id
+        and record.execution_profile_id == prepared.execution_profile_id
+        and record.symbol == effect_scope.symbol_id
+    )
+    if len(scopes) != 1:
+        raise _TechnicalRefusal("effect scope does not select one durable scope")
+    scope = scopes[0]
+    controllers = tuple(
+        record for record in selection.controllers if record.scope_id == scope.scope_id
+    )
+    protections = tuple(
+        record
+        for record in selection.protection_authorities
+        if record.scope_id == scope.scope_id
+    )
+    if len(controllers) != 1 or len(protections) != 1:
+        raise _TechnicalRefusal("effect scope current authority is incomplete")
+    controller = controllers[0]
+    protection = protections[0]
+    generation_id = controller.live_acquisition_generation_id
+    generations = tuple(
+        record
+        for record in selection.live_generations
+        if record.scope_id == scope.scope_id
+        and record.acquisition_generation_id == generation_id
+    )
+    if (
+        generation_id is None
+        or len(generations) != 1
+        or protection.expected_controller_head_ordinal
+        != controller.currentness_head_ordinal
+    ):
+        raise _TechnicalRefusal("effect scope lacks exact live generation authority")
+    return _SelectedScopeAuthority(
+        scope,
+        controller,
+        generations[0],
+        protection,
+    )
+
+
+def _effect_target_order_id(
+    scope: _venue.VenueEffectScope,
+) -> _identity.OrderId | None:
+    target = scope.target_leg_key
+    if target is None:
+        return None
+    if (
+        target.broker != scope.broker
+        or target.environment != scope.environment
+        or target.account != scope.account
+    ):
+        raise _TechnicalRefusal("effect target leg is outside its account")
+    return target.order_id
+
+
+def _effect_matches_record(
+    effect: _venue.BrokerEffect,
+    record: _records.VenueEffectRecord,
+) -> bool:
+    scope = effect.scope
+    return bool(
+        record.effect_external == scope.effect_id
+        and record.application_generation_id == scope.generation
+        and record.request_occurrence_id == scope.request_occurrence_id
+        and record.mandate_id == scope.mandate_id
+        and record.effect_kind == scope.kind.value
+        and record.client_order_id == scope.client_order_id
+        and record.target_order_id == _effect_target_order_id(scope)
+        and record.side == scope.side.value
+        and record.quantity == scope.quantity
+        and record.economic_scope == scope.economic_scope
+        and record.lifecycle_state == effect.state.value
+        and record.disposition == effect.acceptance_set_state.value
+    )
+
+
+def _new_venue_effect_record(
+    connection: _SQLiteConnectionProtocol,
+    prepared: _PreparedOperation,
+    effect: _venue.BrokerEffect,
+) -> _records.VenueEffectRecord:
+    selected = _selected_scope_authority(prepared, effect.scope)
+    record = _records.VenueEffectRecord(
+        _next_venue_effect_id(connection),
+        effect.scope.effect_id,
+        selected.scope.scope_id,
+        selected.scope.application_generation_id,
+        selected.scope.execution_profile_id,
+        selected.generation.acquisition_generation_id,
+        selected.generation.mandate_commitment_sha256,
+        selected.controller.currentness_head_ordinal,
+        selected.protection.version_ordinal,
+        selected.protection.authority_class,
+        effect.scope.request_occurrence_id,
+        effect.scope.mandate_id,
+        effect.scope.kind.value,
+        effect.scope.client_order_id,
+        _effect_target_order_id(effect.scope),
+        effect.scope.side.value,
+        effect.scope.quantity,
+        effect.scope.economic_scope,
+        effect.state.value,
+        effect.acceptance_set_state.value,
+        None,
+        None,
+        None,
+        None,
+        _next_venue_effect_created_ordinal(connection),
+    )
+    if (
+        effect.state is not _venue.BrokerEffectState.REQUESTED
+        or effect.acceptance_set_state is not _venue.AcceptanceSetState.OPEN
+        or effect.acceptance_proof is not None
+        or not _effect_matches_record(effect, record)
+    ):
+        raise _TechnicalRefusal("new effect is not an exact open request")
+    return record
+
+
+def _selected_effects_by_external(
+    prepared: _PreparedOperation,
+) -> dict[_identity.EffectId, _records.VenueEffectRecord]:
+    result: dict[_identity.EffectId, _records.VenueEffectRecord] = {}
+    for record in prepared.selection_proof._selection.effects:
+        if record.effect_external in result:
+            raise _TechnicalRefusal("selected effects repeat an external identity")
+        result[record.effect_external] = record
+    return result
+
+
+def _selected_acceptance_by_effect(
+    prepared: _PreparedOperation,
+) -> dict[int, _records.AcceptanceSetRecord]:
+    result: dict[int, _records.AcceptanceSetRecord] = {}
+    for record in prepared.selection_proof._selection.acceptance_sets:
+        if record.effect_id in result:
+            raise _TechnicalRefusal("selected acceptance sets repeat an effect")
+        result[record.effect_id] = record
+    return result
+
+
+def _selected_claims_by_effect(
+    prepared: _PreparedOperation,
+) -> dict[int, _records.DispatchClaimRecord]:
+    result: dict[int, _records.DispatchClaimRecord] = {}
+    for record in prepared.selection_proof._selection.claims:
+        if record.effect_id in result:
+            raise _TechnicalRefusal("selected claims repeat an effect")
+        result[record.effect_id] = record
+    return result
 
 
 def _context_scope_rows(
@@ -904,6 +1170,396 @@ def _store_authority_manual_semantic_key(
     )
 
 
+def _authority_grant_key_bytes(
+    prepared: _PreparedOperation,
+    grant_id: _identity.EmergencyGrantId,
+) -> bytes:
+    return _operations.encode_m2_semantic_key(
+        _operations.InputSemanticKeyKind.AUTHORITY_EMERGENCY_GRANT_CONSUMPTION_V1,
+        (
+            prepared.application_generation_id.value,
+            prepared.execution_profile_id,
+            prepared.scope_id,
+        ),
+        ("emergency-grant-id", grant_id.value),
+    )
+
+
+def _authority_grant_observation(
+    connection: _SQLiteConnectionProtocol,
+    prepared: _PreparedOperation,
+    grant_id: _identity.EmergencyGrantId,
+) -> _authority._M2AuthorityGrantObservationProof:
+    key_bytes = _authority_grant_key_bytes(prepared, grant_id)
+    retained = _load_terminal_semantic_input(
+        connection,
+        prepared,
+        _operations.InputSemanticKeyKind.AUTHORITY_EMERGENCY_GRANT_CONSUMPTION_V1,
+        key_bytes,
+    )
+    if retained is None:
+        return _authority._m2_authority_grant_observation_from_direct_evidence(
+            prepared.context.authority,
+            grant_id,
+            retained_claim=None,
+            retained_input_bytes=None,
+            retained_outcome_bytes=None,
+        )
+    if (
+        type(retained.operation) is not _operations.AuthorityOperation
+        or type(retained.operation.command) is not _authority.ClaimEffect
+        or retained.outcome_record.owner_domain != "AUTHORITY"
+        or retained.outcome_record.owner_disposition != "APPLIED"
+    ):
+        raise _TechnicalRefusal("retained grant input is not an applied claim")
+    retained_claim = retained.operation.command
+    return _authority._m2_authority_grant_observation_from_direct_evidence(
+        prepared.context.authority,
+        grant_id,
+        retained_claim=retained_claim,
+        retained_input_bytes=retained.input_record.canonical_payload_bytes,
+        retained_outcome_bytes=retained.outcome_record.canonical_outcome_bytes,
+    )
+
+
+def _store_authority_grant_semantic_key(
+    connection: _SQLiteConnectionProtocol,
+    prepared: _PreparedOperation,
+    claimed: _records.DurableInputRecord,
+    grant_id: _identity.EmergencyGrantId,
+    capability: _repository._RuntimeWriteCapability,
+) -> None:
+    key_bytes = _authority_grant_key_bytes(prepared, grant_id)
+    record = _records.DurableInputSemanticKeyRecord(
+        _operations.InputSemanticKeyKind.AUTHORITY_EMERGENCY_GRANT_CONSUMPTION_V1,
+        prepared.application_generation_id,
+        prepared.execution_profile_id,
+        prepared.scope_id,
+        key_bytes,
+        _hashlib.sha256(key_bytes).hexdigest(),
+        claimed.application_generation_id,
+        claimed.input_domain,
+        claimed.input_identity_sha256,
+        _next_semantic_key_created_ordinal(connection),
+    )
+    _require_applied_repository_outcome(
+        "authority emergency-grant semantic key",
+        _repository.store_durable_input_semantic_key(
+            connection,
+            record,
+            capability=capability,
+        ),
+    )
+
+
+def _updated_venue_effect_record(
+    retained: _records.VenueEffectRecord,
+    effect: _venue.BrokerEffect,
+    *,
+    closure_proof_kind: str | None = None,
+    closure_proof_digest: str | None = None,
+    closure_proof_evidence_id: int | None = None,
+    closure_proof_claim_id: int | None = None,
+) -> _records.VenueEffectRecord:
+    updated = _replace(
+        retained,
+        lifecycle_state=effect.state.value,
+        disposition=effect.acceptance_set_state.value,
+        closure_proof_kind=closure_proof_kind,
+        closure_proof_digest=closure_proof_digest,
+        closure_proof_evidence_id=closure_proof_evidence_id,
+        closure_proof_claim_id=closure_proof_claim_id,
+    )
+    if not _effect_matches_record(effect, updated):
+        raise _TechnicalRefusal("resulting effect disagrees with durable authority")
+    return updated
+
+
+def _store_new_effect_with_acceptance(
+    connection: _SQLiteConnectionProtocol,
+    prepared: _PreparedOperation,
+    effect: _venue.BrokerEffect,
+    capability: _repository._RuntimeWriteCapability,
+) -> tuple[_records.VenueEffectRecord, _records.AcceptanceSetRecord]:
+    effect_record = _new_venue_effect_record(connection, prepared, effect)
+    _require_applied_repository_outcome(
+        "venue effect",
+        _repository.store_venue_effect(
+            connection,
+            effect_record,
+            capability=capability,
+        ),
+    )
+    acceptance = _records.AcceptanceSetRecord(
+        _next_acceptance_set_id(connection),
+        effect_record.effect_id,
+    )
+    _require_applied_repository_outcome(
+        "acceptance set",
+        _repository.store_acceptance_set(
+            connection,
+            acceptance,
+            capability=capability,
+        ),
+    )
+    return effect_record, acceptance
+
+
+def _persist_authority_venue_transitions(
+    connection: _SQLiteConnectionProtocol,
+    prepared: _PreparedOperation,
+    transitions: tuple[_venue.VenueRecoveryTransition, ...],
+    capability: _repository._RuntimeWriteCapability,
+) -> tuple[
+    tuple[_records.VenueEffectRecord, ...],
+    tuple[_PersistedEffectClaim, ...],
+]:
+    if not transitions:
+        return (), ()
+    effects = _selected_effects_by_external(prepared)
+    acceptance = _selected_acceptance_by_effect(prepared)
+    claims = _selected_claims_by_effect(prepared)
+    persisted_effects: list[_records.VenueEffectRecord] = []
+    persisted_claims: list[_PersistedEffectClaim] = []
+    expected_predecessor_commitment = _venue._protection_book_commitment(
+        prepared.context.venue
+    )
+    for transition in transitions:
+        try:
+            source = _venue._m2_venue_transition_source_item(transition)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise _TechnicalRefusal(
+                "venue transition source proof was refused"
+            ) from exc
+        proof = transition._protection_proof
+        if (
+            proof.predecessor_book_commitment != expected_predecessor_commitment
+            or transition.disposition is not _venue.VenueRecoveryDisposition.APPLIED
+        ):
+            raise _TechnicalRefusal("venue transition chain is not contiguous")
+        expected_predecessor_commitment = proof.book_commitment
+        if source is None or type(source) is _venue.CatchUpExecutionRegistry:
+            continue
+        if type(source) not in (
+            _venue.RequestedEffect,
+            _venue.RecordDispatchClaim,
+            _venue.CancelBeforeDispatch,
+            _venue.CloseAcceptanceSet,
+        ):
+            raise _TechnicalRefusal("authority venue transition source is not admitted")
+        effect_source = _cast(
+            _venue.RequestedEffect
+            | _venue.RecordDispatchClaim
+            | _venue.CancelBeforeDispatch
+            | _venue.CloseAcceptanceSet,
+            source,
+        )
+        effect = transition.book._current_effect(effect_source.effect_id)
+        if type(effect) is not _venue.BrokerEffect:
+            raise _TechnicalRefusal("venue transition omitted its resulting effect")
+        if type(source) is _venue.RequestedEffect:
+            if (
+                source.effect_id != effect.effect_id
+                or source.request_occurrence_id != effect.scope.request_occurrence_id
+                or source.mandate_id != effect.scope.mandate_id
+                or source.kind is not effect.scope.kind
+                or source.client_order_id != effect.scope.client_order_id
+                or source.symbol_id != effect.scope.symbol_id
+                or source.side is not effect.scope.side
+                or source.quantity != effect.scope.quantity
+                or source.economic_scope != effect.scope.economic_scope
+                or source.target_leg_key != effect.scope.target_leg_key
+                or source.effect_id in effects
+            ):
+                raise _TechnicalRefusal("requested effect result is not exact")
+            effect_record, acceptance_record = _store_new_effect_with_acceptance(
+                connection,
+                prepared,
+                effect,
+                capability,
+            )
+            effects[source.effect_id] = effect_record
+            acceptance[effect_record.effect_id] = acceptance_record
+            persisted_effects.append(effect_record)
+            continue
+        retained = effects.get(effect_source.effect_id)
+        if retained is None:
+            raise _TechnicalRefusal("venue transition effect is not selected")
+        if type(source) is _venue.RecordDispatchClaim:
+            if effect.claim_occurrence_id != source.claim_occurrence_id:
+                raise _TechnicalRefusal("dispatch transition claim is not exact")
+            if retained.effect_id in claims:
+                raise _TechnicalRefusal("dispatch transition repeats a retained claim")
+            claim = _records.DispatchClaimRecord(
+                _next_dispatch_claim_id(connection),
+                retained.effect_id,
+                retained.execution_profile_id,
+                source.claim_occurrence_id,
+                _next_dispatch_claim_ordinal(connection),
+            )
+            _require_applied_repository_outcome(
+                "dispatch claim",
+                _repository.store_dispatch_claim(
+                    connection,
+                    claim,
+                    capability=capability,
+                ),
+            )
+            updated = _updated_venue_effect_record(retained, effect)
+            # Dispatch-claim insertion is the accepted schema's sole owner of
+            # REQUESTED -> DISPATCH_CLAIMED. A second application-side CAS
+            # would observe the trigger's result and turn every claim into a
+            # false conflict.
+            claims[retained.effect_id] = claim
+            effects[source.effect_id] = updated
+            persisted_claims.append(_PersistedEffectClaim(updated, claim))
+            continue
+        if type(source) is _venue.CancelBeforeDispatch:
+            updated = _updated_venue_effect_record(retained, effect)
+            if (
+                updated.lifecycle_state
+                != _venue.BrokerEffectState.CANCELED_BEFORE_DISPATCH.value
+                or updated.disposition != _venue.AcceptanceSetState.OPEN.value
+            ):
+                raise _TechnicalRefusal("cancel transition did not remain open")
+            _require_applied_repository_outcome(
+                "canceled venue effect",
+                _repository.advance_venue_effect(
+                    connection,
+                    retained.lifecycle_state,
+                    retained.disposition,
+                    updated,
+                    capability=capability,
+                ),
+            )
+            effects[source.effect_id] = updated
+            continue
+        if type(source) is _venue.CloseAcceptanceSet:
+            accepted = acceptance.get(retained.effect_id)
+            if accepted is None:
+                raise _TechnicalRefusal("closure transition lacks its acceptance set")
+            proof_claim_id: int | None = None
+            if source.proof.claim_occurrence_id is not None:
+                retained_claim = claims.get(retained.effect_id)
+                if (
+                    retained_claim is None
+                    or retained_claim.claim_occurrence_id
+                    != source.proof.claim_occurrence_id
+                ):
+                    raise _TechnicalRefusal("closure transition lacks its exact claim")
+                proof_claim_id = retained_claim.claim_id
+            evidence = _records.AcceptanceEvidenceRecord(
+                _next_acceptance_evidence_id(connection),
+                accepted.acceptance_set_id,
+                retained.effect_id,
+                "CLOSURE_PROOF",
+                source.proof.kind.value,
+                source.proof.evidence_digest.hex(),
+                _next_acceptance_evidence_ordinal(connection),
+                None,
+                None,
+            )
+            _require_applied_repository_outcome(
+                "acceptance closure evidence",
+                _repository.store_acceptance_evidence(
+                    connection,
+                    evidence,
+                    capability=capability,
+                ),
+            )
+            updated = _updated_venue_effect_record(
+                retained,
+                effect,
+                closure_proof_kind=source.proof.kind.value,
+                closure_proof_digest=source.proof.evidence_digest.hex(),
+                closure_proof_evidence_id=evidence.evidence_id,
+                closure_proof_claim_id=proof_claim_id,
+            )
+            _require_applied_repository_outcome(
+                "closed venue effect",
+                _repository.advance_venue_effect(
+                    connection,
+                    retained.lifecycle_state,
+                    retained.disposition,
+                    updated,
+                    capability=capability,
+                ),
+            )
+            effects[source.effect_id] = updated
+            continue
+        raise _TechnicalRefusal("authority venue transition source is not admitted")
+    return tuple(persisted_effects), tuple(persisted_claims)
+
+
+def _broker_outbox_record(
+    connection: _SQLiteConnectionProtocol,
+    prepared: _PreparedOperation,
+    claimed: _records.DurableInputRecord,
+    persisted: _PersistedEffectClaim,
+) -> _records.BrokerOutboxRecord:
+    effect = persisted.effect
+    claim = persisted.claim
+    if (
+        claimed.input_domain is not _operations.OperationDomain.AUTHORITY
+        or effect.application_generation_id != prepared.application_generation_id
+        or effect.execution_profile_id != prepared.execution_profile_id
+        or effect.scope_id != prepared.scope_id
+        or claim.effect_id != effect.effect_id
+        or claim.execution_profile_id != effect.execution_profile_id
+        or effect.lifecycle_state != _venue.BrokerEffectState.DISPATCH_CLAIMED.value
+        or effect.disposition != _venue.AcceptanceSetState.OPEN.value
+    ):
+        raise _TechnicalRefusal("broker outbox claim coordinates are not exact")
+    sequence = _next_broker_outbox_sequence(connection)
+    document = [
+        1,
+        "m2.broker-outbox/v1",
+        sequence,
+        _operations._encode_m2_m1_atom(effect.application_generation_id),
+        effect.execution_profile_id,
+        effect.scope_id,
+        _operations._encode_m2_m1_atom(effect.acquisition_generation_id),
+        _operations._encode_m2_enum(claimed.input_domain),
+        claimed.input_identity_sha256,
+        effect.effect_id,
+        _operations._encode_m2_m1_atom(effect.effect_external),
+        _operations._encode_m2_m1_atom(effect.request_occurrence_id),
+        _operations._encode_m2_m1_atom(effect.mandate_id),
+        effect.generation_mandate_commitment_sha256,
+        effect.expected_controller_head_ordinal,
+        effect.expected_protection_version_ordinal,
+        effect.authority_class,
+        _operations._encode_m2_enum(_venue.EffectKind(effect.effect_kind)),
+        None
+        if effect.client_order_id is None
+        else _operations._encode_m2_m1_atom(effect.client_order_id),
+        None
+        if effect.target_order_id is None
+        else _operations._encode_m2_m1_atom(effect.target_order_id),
+        _operations._encode_m2_enum(_fills.ExecutionSide(effect.side)),
+        _operations._encode_m2_m1_atom(effect.quantity),
+        effect.economic_scope.hex(),
+        claim.claim_id,
+        _operations._encode_m2_m1_atom(claim.claim_occurrence_id),
+        claim.claim_ordinal,
+    ]
+    payload = _operations._encode_m2_document_kind(0x05, document)
+    return _records.BrokerOutboxRecord(
+        sequence,
+        effect.application_generation_id,
+        effect.execution_profile_id,
+        effect.scope_id,
+        effect.acquisition_generation_id,
+        claimed.input_domain,
+        claimed.input_identity_sha256,
+        effect.effect_id,
+        claim.claim_id,
+        payload,
+        len(payload),
+        _hashlib.sha256(payload).hexdigest(),
+    )
+
+
 def _complete_claimed_input(
     connection: _SQLiteConnectionProtocol,
     prepared: _PreparedOperation,
@@ -913,7 +1569,7 @@ def _complete_claimed_input(
     owner_disposition: str,
     successor_context: UnitOfWorkContext,
     checkpoint_changed: bool,
-    pending_effect: _PostCommitEffectCandidate | None,
+    pending_outbox: _records.BrokerOutboxRecord | None,
     capability: _repository._RuntimeWriteCapability,
 ) -> _TransactionDecision:
     if checkpoint_changed:
@@ -964,6 +1620,24 @@ def _complete_claimed_input(
             capability=capability,
         ),
     )
+    pending_effect: _PostCommitEffectCandidate | None = None
+    if pending_outbox is not None:
+        if type(pending_outbox) is not _records.BrokerOutboxRecord:
+            raise _TechnicalRefusal("pending broker outbox must be exact")
+        _require_applied_repository_outcome(
+            "broker outbox",
+            _repository.store_broker_outbox(
+                connection,
+                pending_outbox,
+                capability=capability,
+            ),
+        )
+        pending_effect = _PostCommitEffectCandidate(
+            pending_outbox.outbox_sequence,
+            pending_outbox.effect_id,
+            pending_outbox.claim_id,
+            pending_outbox.payload_sha256,
+        )
     finalized = _replace(claimed, technical_state=terminal_state)
     _require_applied_repository_outcome(
         "durable input finalization",
@@ -993,6 +1667,8 @@ def _execute_authority_operation(
     if type(operation) is not _operations.AuthorityOperation:
         raise _TechnicalRefusal("authority route received the wrong operation")
     if type(operation.command) not in (
+        _authority.CreateBrokerEffect,
+        _authority.ClaimEffect,
         _authority.EngageKill,
         _authority.ClaimBrokerQuery,
         _authority.BeginManualFlatten,
@@ -1019,21 +1695,56 @@ def _execute_authority_operation(
         if type(operation.command) is _authority.ClaimBrokerQuery
         else None
     )
+    if type(operation.command) is _authority.CreateBrokerEffect:
+        required_grant_id = operation.command.emergency_grant_id
+    elif type(operation.command) is _authority.ClaimEffect:
+        try:
+            required_grant_id = _authority._m2_authority_effect_emergency_grant_id(
+                prepared.context.authority,
+                operation.command.effect_id,
+            )
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise _TechnicalRefusal(
+                "claim effect authorization was not authenticated"
+            ) from exc
+    else:
+        required_grant_id = None
+    grant_observation = (
+        _authority_grant_observation(connection, prepared, required_grant_id)
+        if required_grant_id is not None
+        else None
+    )
     transition = _authority._m2_apply_execution_authority_input(
         prepared.context.authority,
         execution,
         operation.command,
         manual_observation=manual_observation,
         query_observation=query_observation,
+        grant_observation=grant_observation,
     )
-    if transition.created_effect_ids:
-        raise _TechnicalRefusal("authority transition emitted unwritten effects")
     if (
-        transition.venue_transitions
-        or transition.acquisition_receipt is not None
+        transition.acquisition_receipt is not None
         or transition.acquisition_claim_receipt is not None
     ):
         raise _TechnicalRefusal("authority transition emitted an unrelated derivative")
+    persisted_effects, persisted_claims = _persist_authority_venue_transitions(
+        connection,
+        prepared,
+        transition.venue_transitions,
+        capability,
+    )
+    if tuple(record.effect_external for record in persisted_effects) != (
+        transition.created_effect_ids
+    ):
+        raise _TechnicalRefusal(
+            "authority transition created-effect proof is incomplete"
+        )
+    if transition.venue_transitions:
+        if transition.venue_transitions[-1].book is not transition.state.venue:
+            raise _TechnicalRefusal("authority transition venue chain is incomplete")
+    elif transition.state.venue is not prepared.context.venue:
+        raise _TechnicalRefusal("authority changed venue without a transition proof")
+    pending_outbox: _records.BrokerOutboxRecord | None = None
     if type(operation.command) is _authority.ClaimBrokerQuery:
         if transition.disposition is _authority.AuthorityDisposition.APPLIED:
             fresh_query = transition.fresh_claim
@@ -1055,9 +1766,46 @@ def _execute_authority_operation(
             )
         elif transition.fresh_claim is not None:
             raise _TechnicalRefusal("non-applied query emitted a fresh claim")
+        if persisted_claims:
+            raise _TechnicalRefusal("query transition emitted a dispatch claim")
+    elif type(operation.command) is _authority.ClaimEffect:
+        if transition.disposition is _authority.AuthorityDisposition.APPLIED:
+            fresh_claim = transition.fresh_claim
+            if (
+                type(fresh_claim) is not _authority._FreshEffectClaim
+                or fresh_claim.effect_id != operation.command.effect_id
+                or fresh_claim.claim_occurrence_id
+                != operation.command.claim_occurrence_id
+                or fresh_claim.emergency_grant_id != required_grant_id
+                or len(persisted_claims) != 1
+                or persisted_claims[0].effect.effect_external != fresh_claim.effect_id
+                or persisted_claims[0].claim.claim_occurrence_id
+                != fresh_claim.claim_occurrence_id
+            ):
+                raise _TechnicalRefusal(
+                    "effect transition omitted its exact fresh claim"
+                )
+            if required_grant_id is not None:
+                _store_authority_grant_semantic_key(
+                    connection,
+                    prepared,
+                    claimed,
+                    required_grant_id,
+                    capability,
+                )
+            pending_outbox = _broker_outbox_record(
+                connection,
+                prepared,
+                claimed,
+                persisted_claims[0],
+            )
+        elif transition.fresh_claim is not None or persisted_claims:
+            raise _TechnicalRefusal("non-applied effect emitted a fresh claim")
     else:
         if transition.fresh_claim is not None:
             raise _TechnicalRefusal("authority transition emitted a fresh claim")
+        if persisted_claims:
+            raise _TechnicalRefusal("authority transition emitted an unrelated claim")
         if (
             type(operation.command) is _authority.BeginManualFlatten
             and transition.disposition is _authority.AuthorityDisposition.APPLIED
@@ -1089,7 +1837,7 @@ def _execute_authority_operation(
         owner_disposition=transition.disposition.value,
         successor_context=successor_context,
         checkpoint_changed=changed,
-        pending_effect=None,
+        pending_outbox=pending_outbox,
         capability=capability,
     )
 

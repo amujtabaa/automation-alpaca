@@ -2,20 +2,24 @@
 
 from __future__ import annotations
 
+from copy import copy
 from copy import deepcopy
 from dataclasses import replace
+from types import SimpleNamespace
 
 import pytest
 
 from app.execution_core import authority
 from app.execution_core import acquisition
 from app.execution_core import identity
+from app.execution_core import venue
 from app.execution_core.persistence import checkpoint_codec
 from app.execution_core.persistence import operations
 from app.execution_core.persistence import records
 from app.execution_core.persistence import unit_of_work
 import test_persistence_runtime_checkpoint_pure as checkpoint_fixtures
 import test_persistence_input_receipt as input_fixtures
+import test_authority as authority_fixtures
 
 
 @pytest.mark.parametrize(
@@ -346,6 +350,373 @@ def test_query_kernel_ignores_omitted_payload_equal_history() -> None:
     )
     assert direct_retained.disposition is authority.AuthorityDisposition.CONFLICT
     assert public_retained.disposition is authority.AuthorityDisposition.CONFLICT
+
+
+def _emergency_create_inputs() -> tuple[
+    authority.ExecutionAuthorityState,
+    object,
+    authority.CreateBrokerEffect,
+    identity.EmergencyGrantId,
+]:
+    execution = authority_fixtures._advanced_same_scope_execution(
+        label="uow-grant-proof"
+    )
+    base = authority_fixtures._forge_positive_predecessor(
+        authority,
+        mode="HALTED",
+        kill_engaged=True,
+        remaining=2,
+        reserve=1,
+    )
+    state, grant_id = authority_fixtures._forge_emergency_grant(
+        authority,
+        base,
+        label="uow-grant-proof",
+    )
+    command = authority_fixtures._create_command(
+        authority,
+        state,
+        label="uow-grant-proof",
+        side=authority_fixtures.ExecutionSide.SELL,
+        emergency_grant_id=grant_id,
+    )
+    assert type(state) is authority.ExecutionAuthorityState
+    assert type(command) is authority.CreateBrokerEffect
+    assert type(grant_id) is identity.EmergencyGrantId
+    return state, execution, command, grant_id
+
+
+def test_grant_kernel_ignores_omitted_consumed_map_with_direct_absence() -> None:
+    state, execution, command, grant_id = _emergency_create_inputs()
+    altered = deepcopy(state)
+    object.__setattr__(
+        altered,
+        "_consumed_grant_ids",
+        authority._inserted(
+            state._consumed_grant_ids,
+            authority._grant_key(grant_id),
+            True,
+        ),
+    )
+    clean_proof = authority._m2_authority_grant_observation_from_direct_evidence(
+        state,
+        grant_id,
+        retained_claim=None,
+        retained_input_bytes=None,
+        retained_outcome_bytes=None,
+    )
+    altered_proof = authority._m2_authority_grant_observation_from_direct_evidence(
+        altered,
+        grant_id,
+        retained_claim=None,
+        retained_input_bytes=None,
+        retained_outcome_bytes=None,
+    )
+
+    clean = authority._m2_apply_execution_authority_input(
+        state,
+        execution,
+        command,
+        manual_observation=None,
+        grant_observation=clean_proof,
+    )
+    direct = authority._m2_apply_execution_authority_input(
+        altered,
+        execution,
+        command,
+        manual_observation=None,
+        grant_observation=altered_proof,
+    )
+    reference = authority.apply_execution_authority_input(
+        altered,
+        execution,
+        command,
+    )
+
+    assert clean.disposition is authority.AuthorityDisposition.APPLIED
+    assert (direct.disposition, direct.reason, direct.created_effect_ids) == (
+        clean.disposition,
+        clean.reason,
+        clean.created_effect_ids,
+    )
+    assert reference.disposition is authority.AuthorityDisposition.REFUSED
+    assert reference.reason is authority.AuthorityReason.EMERGENCY_GRANT_MISMATCH
+
+
+def test_grant_direct_proof_requires_complete_terminal_claim_evidence() -> None:
+    state, execution, command, grant_id = _emergency_create_inputs()
+    retained_claim = authority.ClaimEffect(
+        identity.AuthorityInputId("retained-grant-claim-input"),
+        command.request.effect_id,
+        identity.ClaimOccurrenceId("retained-grant-claim"),
+    )
+    with pytest.raises(ValueError, match="retained grant evidence"):
+        authority._m2_authority_grant_observation_from_direct_evidence(
+            state,
+            grant_id,
+            retained_claim=retained_claim,
+            retained_input_bytes=b"retained-input",
+            retained_outcome_bytes=None,
+        )
+
+    consumed = authority._m2_authority_grant_observation_from_direct_evidence(
+        state,
+        grant_id,
+        retained_claim=retained_claim,
+        retained_input_bytes=b"retained-input",
+        retained_outcome_bytes=b"retained-terminal-outcome",
+    )
+    refused = authority._m2_apply_execution_authority_input(
+        state,
+        execution,
+        command,
+        manual_observation=None,
+        grant_observation=consumed,
+    )
+    assert refused.disposition is authority.AuthorityDisposition.REFUSED
+    assert refused.reason is authority.AuthorityReason.EMERGENCY_GRANT_MISMATCH
+    with pytest.raises(TypeError, match="owner-issued"):
+        authority._M2AuthorityGrantObservationProof()
+
+
+def test_venue_transition_source_is_bound_to_the_owner_proof() -> None:
+    state, execution, command, grant_id = _emergency_create_inputs()
+    proof = authority._m2_authority_grant_observation_from_direct_evidence(
+        state,
+        grant_id,
+        retained_claim=None,
+        retained_input_bytes=None,
+        retained_outcome_bytes=None,
+    )
+    created = authority._m2_apply_execution_authority_input(
+        state,
+        execution,
+        command,
+        manual_observation=None,
+        grant_observation=proof,
+    )
+    assert len(created.venue_transitions) == 1
+    transition = created.venue_transitions[0]
+    source = venue._m2_venue_transition_source_item(transition)
+    assert type(source) is venue.RequestedEffect
+    assert source.effect_id == command.request.effect_id
+
+    forged = copy(transition)
+    object.__setattr__(
+        forged,
+        "_source_item",
+        replace(source, effect_id=identity.EffectId("substituted-effect")),
+    )
+    with pytest.raises(ValueError, match="source does not match"):
+        venue._m2_venue_transition_source_item(forged)
+
+
+def _authority_effect_prepared(
+    state: authority.ExecutionAuthorityState,
+    execution: object,
+    *,
+    effects: tuple[records.VenueEffectRecord, ...] = (),
+    acceptance_sets: tuple[records.AcceptanceSetRecord, ...] = (),
+    claims: tuple[records.DispatchClaimRecord, ...] = (),
+) -> unit_of_work._PreparedOperation:
+    base = _prepared_primary_claim()
+    scope_id = 7
+    execution_profile_id = "11" * 32
+    generation_id = identity.AcquisitionGenerationId("ab" * 32)
+    symbol_id = execution.position.scope.symbol_id
+    selection = SimpleNamespace(
+        scopes=(
+            records.ScopeRecord(
+                scope_id,
+                state.venue.scope.generation,
+                execution_profile_id,
+                symbol_id,
+            ),
+        ),
+        controllers=(
+            records.SymbolControllerRecord(
+                scope_id,
+                state.venue.scope.generation,
+                execution_profile_id,
+                generation_id,
+                execution.position.raw_quantity,
+                "CONSISTENT",
+                7,
+                3,
+                "ee" * 32,
+            ),
+        ),
+        protection_authorities=(
+            records.ProtectionAuthorityRecord(
+                scope_id,
+                "EMERGENCY",
+                None,
+                generation_id,
+                "11" * 32,
+                None,
+                state.session_id,
+                None,
+                7,
+                "aa" * 32,
+                3,
+            ),
+        ),
+        live_generations=(
+            records.AcquisitionGenerationRecord(
+                generation_id,
+                scope_id,
+                "LIVE",
+                1,
+                None,
+                "11" * 32,
+                "ee" * 32,
+            ),
+        ),
+        effects=effects,
+        acceptance_sets=acceptance_sets,
+        claims=claims,
+    )
+    context = unit_of_work.UnitOfWorkContext(
+        base.context.expected_checkpoint,
+        state.venue,
+        state,
+        ((scope_id, None, execution, None),),
+    )
+    return replace(
+        base,
+        context=context,
+        application_generation_id=state.venue.scope.generation,
+        execution_profile_id=execution_profile_id,
+        scope_id=scope_id,
+        selection_proof=SimpleNamespace(_selection=selection),
+    )
+
+
+def test_authority_effect_and_claim_rows_follow_dependency_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state, execution, command, grant_id = _emergency_create_inputs()
+    available = authority._m2_authority_grant_observation_from_direct_evidence(
+        state,
+        grant_id,
+        retained_claim=None,
+        retained_input_bytes=None,
+        retained_outcome_bytes=None,
+    )
+    created = authority._m2_apply_execution_authority_input(
+        state,
+        execution,
+        command,
+        manual_observation=None,
+        grant_observation=available,
+    )
+    create_prepared = _authority_effect_prepared(state, execution)
+    create_events: list[tuple[str, object]] = []
+
+    def store_effect(
+        connection: object,
+        record: object,
+        *,
+        capability: object,
+    ) -> records.RepositoryOutcome[object]:
+        del connection, capability
+        create_events.append(("effect", record))
+        return records.RepositoryOutcome(records.RepositoryOutcomeKind.APPLIED)
+
+    def store_acceptance(
+        connection: object,
+        record: object,
+        *,
+        capability: object,
+    ) -> records.RepositoryOutcome[object]:
+        del connection, capability
+        create_events.append(("acceptance", record))
+        return records.RepositoryOutcome(records.RepositoryOutcomeKind.APPLIED)
+
+    monkeypatch.setattr(unit_of_work, "_next_venue_effect_id", lambda _: 11)
+    monkeypatch.setattr(
+        unit_of_work,
+        "_next_venue_effect_created_ordinal",
+        lambda _: 13,
+    )
+    monkeypatch.setattr(unit_of_work, "_next_acceptance_set_id", lambda _: 17)
+    monkeypatch.setattr(unit_of_work._repository, "store_venue_effect", store_effect)
+    monkeypatch.setattr(
+        unit_of_work._repository,
+        "store_acceptance_set",
+        store_acceptance,
+    )
+
+    created_effects, created_claims = unit_of_work._persist_authority_venue_transitions(
+        object(),
+        create_prepared,
+        created.venue_transitions,
+        object(),
+    )
+    assert [name for name, _ in create_events] == ["effect", "acceptance"]
+    assert len(created_effects) == 1
+    assert created_claims == ()
+    effect_record = created_effects[0]
+    acceptance_record = create_events[1][1]
+    assert type(acceptance_record) is records.AcceptanceSetRecord
+
+    claim_command = authority.ClaimEffect(
+        identity.AuthorityInputId("uow-grant-claim-input"),
+        command.request.effect_id,
+        identity.ClaimOccurrenceId("uow-grant-claim"),
+    )
+    claim_available = authority._m2_authority_grant_observation_from_direct_evidence(
+        created.state,
+        grant_id,
+        retained_claim=None,
+        retained_input_bytes=None,
+        retained_outcome_bytes=None,
+    )
+    claimed = authority._m2_apply_execution_authority_input(
+        created.state,
+        execution,
+        claim_command,
+        manual_observation=None,
+        grant_observation=claim_available,
+    )
+    claim_prepared = _authority_effect_prepared(
+        created.state,
+        execution,
+        effects=(effect_record,),
+        acceptance_sets=(acceptance_record,),
+    )
+    claim_events: list[tuple[str, object]] = []
+
+    def store_claim(
+        connection: object,
+        record: object,
+        *,
+        capability: object,
+    ) -> records.RepositoryOutcome[object]:
+        del connection, capability
+        claim_events.append(("claim", record))
+        return records.RepositoryOutcome(records.RepositoryOutcomeKind.APPLIED)
+
+    monkeypatch.setattr(unit_of_work, "_next_dispatch_claim_id", lambda _: 19)
+    monkeypatch.setattr(unit_of_work, "_next_dispatch_claim_ordinal", lambda _: 23)
+    monkeypatch.setattr(unit_of_work._repository, "store_dispatch_claim", store_claim)
+
+    claim_effects, persisted_claims = unit_of_work._persist_authority_venue_transitions(
+        object(),
+        claim_prepared,
+        claimed.venue_transitions,
+        object(),
+    )
+    assert claim_effects == ()
+    assert [name for name, _ in claim_events] == ["claim"]
+    assert len(persisted_claims) == 1
+    assert (
+        persisted_claims[0].effect.lifecycle_state
+        == venue.BrokerEffectState.DISPATCH_CLAIMED.value
+    )
+    assert persisted_claims[0].claim.claim_occurrence_id == (
+        claim_command.claim_occurrence_id
+    )
 
 
 class _TransactionConnection:
@@ -793,7 +1164,7 @@ def test_committed_no_change_decision_stores_coherent_receipt_outcome_then_final
         owner_disposition="REFUSED",
         successor_context=prepared.context,
         checkpoint_changed=False,
-        pending_effect=None,
+        pending_outbox=None,
         capability=object(),
     )
 
@@ -817,6 +1188,76 @@ def test_committed_no_change_decision_stores_coherent_receipt_outcome_then_final
     assert outcome.receipt_sha256 == receipt.receipt_sha256
     assert outcome.result_sha256 == receipt.result_sha256
     assert finalized.technical_state == "TERMINAL"
+
+
+def test_claim_completion_stores_outbox_after_outcome_before_finalization(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prepared = _prepared_primary_claim()
+    claimed = records.DurableInputRecord(
+        prepared.application_generation_id,
+        prepared.execution_profile_id,
+        prepared.scope_id,
+        prepared.input_domain,
+        prepared.session_id,
+        prepared.acquisition_generation_id,
+        prepared.market_source_profile_id,
+        prepared.stream_generation_id,
+        prepared.input_identity_sha256,
+        1,
+        prepared.canonical_payload_bytes,
+        unit_of_work._hashlib.sha256(prepared.canonical_payload_bytes).hexdigest(),
+        "CLAIMED",
+        3,
+    )
+    connection = _CompletionConnection()
+    outbox = input_fixtures._broker_outbox_record()
+    stored: list[object] = []
+
+    def applied(
+        target_connection: object,
+        record: object,
+        *,
+        capability: object,
+    ) -> records.RepositoryOutcome[object]:
+        del capability
+        assert target_connection is connection
+        stored.append(record)
+        return records.RepositoryOutcome(records.RepositoryOutcomeKind.APPLIED)
+
+    monkeypatch.setattr(unit_of_work._repository, "store_decision_receipt", applied)
+    monkeypatch.setattr(
+        unit_of_work._repository,
+        "store_durable_input_outcome",
+        applied,
+    )
+    monkeypatch.setattr(unit_of_work._repository, "store_broker_outbox", applied)
+    monkeypatch.setattr(unit_of_work._repository, "finalize_durable_input", applied)
+
+    decision = unit_of_work._complete_claimed_input(
+        connection,
+        prepared,
+        claimed,
+        owner_domain="VENUE_RECOVERY",
+        owner_disposition="APPLIED",
+        successor_context=prepared.context,
+        checkpoint_changed=False,
+        pending_outbox=outbox,
+        capability=object(),
+    )
+
+    assert tuple(type(item) for item in stored) == (
+        records.DecisionReceiptRecord,
+        records.DurableInputOutcomeRecord,
+        records.BrokerOutboxRecord,
+        records.DurableInputRecord,
+    )
+    assert decision.pending_effect == unit_of_work._PostCommitEffectCandidate(
+        outbox.outbox_sequence,
+        outbox.effect_id,
+        outbox.claim_id,
+        outbox.payload_sha256,
+    )
 
 
 def test_authority_engage_kill_route_uses_shared_kernel_and_common_completion(
@@ -858,12 +1299,14 @@ def test_authority_engage_kill_route_uses_shared_kernel_and_common_completion(
         *,
         manual_observation: object,
         query_observation: object,
+        grant_observation: object,
     ) -> authority.ExecutionAuthorityTransition:
         del execution
         assert state is prepared.context.authority
         assert item is command
         assert manual_observation is None
         assert query_observation is None
+        assert grant_observation is None
         owner_called.append(item)
         return authority.ExecutionAuthorityTransition(
             state,
@@ -885,11 +1328,11 @@ def test_authority_engage_kill_route_uses_shared_kernel_and_common_completion(
         owner_disposition: str,
         successor_context: object,
         checkpoint_changed: bool,
-        pending_effect: object,
+        pending_outbox: object,
         capability: object,
     ) -> unit_of_work._TransactionDecision:
         del connection, prepared_operation, claimed_record, successor_context
-        del pending_effect, capability
+        del pending_outbox, capability
         completed.append((owner_domain, owner_disposition, checkpoint_changed))
         return unit_of_work._TransactionDecision(
             True,
@@ -1006,6 +1449,7 @@ def test_authority_query_applied_claims_semantic_key_before_completion(
         1,
     )
     successor_state = deepcopy(prepared.context.authority)
+    object.__setattr__(successor_state, "venue", prepared.context.venue)
     observation = object()
     stored: list[records.DurableInputSemanticKeyRecord] = []
     completed: list[tuple[str, str, bool]] = []
@@ -1023,10 +1467,12 @@ def test_authority_query_applied_claims_semantic_key_before_completion(
         *,
         manual_observation: object,
         query_observation: object,
+        grant_observation: object,
     ) -> authority.ExecutionAuthorityTransition:
         del state, execution_state, manual_observation
         assert item is command
         assert query_observation is observation
+        assert grant_observation is None
         return authority.ExecutionAuthorityTransition(
             successor_state,
             authority.AuthorityDisposition.APPLIED,
@@ -1061,11 +1507,11 @@ def test_authority_query_applied_claims_semantic_key_before_completion(
         owner_disposition: str,
         successor_context: object,
         checkpoint_changed: bool,
-        pending_effect: object,
+        pending_outbox: object,
         capability: object,
     ) -> unit_of_work._TransactionDecision:
         del connection, prepared_operation, claimed_record, successor_context
-        del pending_effect, capability
+        del pending_outbox, capability
         completed.append((owner_domain, owner_disposition, checkpoint_changed))
         return unit_of_work._TransactionDecision(
             True,
@@ -1173,9 +1619,11 @@ def test_authority_manual_begin_uses_direct_proof_and_claims_semantic_key(
         *,
         manual_observation: object,
         query_observation: object,
+        grant_observation: object,
     ) -> authority.ExecutionAuthorityTransition:
         del state, execution_state
         owner_calls.append((manual_observation, query_observation))
+        assert grant_observation is None
         assert item is command
         return authority.ExecutionAuthorityTransition(
             prepared.context.authority,

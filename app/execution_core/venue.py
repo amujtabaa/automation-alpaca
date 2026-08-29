@@ -2901,6 +2901,7 @@ class VenueRecoveryTransition:
     execution: ExecutionSnapshot
     disposition: VenueRecoveryDisposition
     quantity_delta: int
+    _source_item: object | None
     _protection_proof: _ProtectionTransitionProof
     _protection_proof_commitment: bytes
     _acquisition_fact_proof: _AcquisitionFactProof | None
@@ -8317,6 +8318,7 @@ def _authority_rollover_acquisition_protection_cursor(
     object.__setattr__(result, "execution", execution)
     object.__setattr__(result, "disposition", VenueRecoveryDisposition.APPLIED)
     object.__setattr__(result, "quantity_delta", 0)
+    object.__setattr__(result, "_source_item", None)
     object.__setattr__(result, "_protection_proof", proof)
     object.__setattr__(result, "_protection_proof_commitment", proof.commitment)
     object.__setattr__(result, "_acquisition_fact_proof", None)
@@ -8777,6 +8779,37 @@ def _next_protection_cursor(
         execution_commitment=execution_commitment,
         execution_checkpoint=execution_checkpoint,
     )
+
+
+def _m2_venue_transition_source_item(
+    transition: object,
+) -> object | None:
+    """Return the exact owner input only for a complete authentic transition."""
+
+    if type(transition) is not VenueRecoveryTransition:
+        raise TypeError("venue transition must be exact")
+    exact = cast(VenueRecoveryTransition, transition)
+    proof = exact._protection_proof
+    if (
+        not _protection_transition_proof_is_authentic(proof)
+        or exact._protection_proof_commitment != proof.commitment
+        or exact.disposition is not proof.disposition
+        or exact.quantity_delta != proof.quantity_delta
+        or proof.book_commitment != _protection_book_commitment(exact.book)
+        or proof.execution_commitment != exact.execution.commitment
+    ):
+        raise ValueError("venue transition proof is not current")
+    source = exact._source_item
+    if source is None:
+        if (
+            proof.source_kind
+            is not _ProtectionTransitionSourceKind.SERIAL_SUCCESSOR_ROLLOVER
+        ):
+            raise ValueError("ordinary venue transition omitted its exact source")
+        return None
+    if _protection_command_commitment(source) != proof.command_commitment:
+        raise ValueError("venue transition source does not match its proof")
+    return source
 
 
 def _protection_transition_proof_is_authentic(
@@ -13470,6 +13503,7 @@ def _apply_venue_input(
         object.__setattr__(result, "execution", resulting_execution)
         object.__setattr__(result, "disposition", disposition)
         object.__setattr__(result, "quantity_delta", derived_delta)
+        object.__setattr__(result, "_source_item", item)
         object.__setattr__(result, "_protection_proof", protection_proof)
         object.__setattr__(
             result,
@@ -14303,6 +14337,7 @@ def _authority_bootstrap_unbound_target_pair_for_scope(
     object.__setattr__(result, "execution", target_execution)
     object.__setattr__(result, "disposition", VenueRecoveryDisposition.APPLIED)
     object.__setattr__(result, "quantity_delta", 0)
+    object.__setattr__(result, "_source_item", bootstrap_input)
     object.__setattr__(result, "_protection_proof", proof)
     object.__setattr__(result, "_protection_proof_commitment", proof.commitment)
     object.__setattr__(result, "_acquisition_fact_proof", None)

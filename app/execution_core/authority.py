@@ -601,6 +601,33 @@ class _M2AuthorityQueryObservationKind(str, Enum):
     ABSENT = "ABSENT"
 
 
+class _M2AuthorityGrantObservationKind(str, Enum):
+    """Closed direct-evidence partition for one emergency grant."""
+
+    AVAILABLE = "AVAILABLE"
+    CONSUMED = "CONSUMED"
+
+
+@dataclass(frozen=True, slots=True, init=False)
+class _M2AuthorityGrantObservationProof:
+    """Owner-sealed consumption proof for one operation-targeted grant."""
+
+    kind: _M2AuthorityGrantObservationKind
+    requested_grant_id: EmergencyGrantId
+    retained_claim: ClaimEffect | None
+    _evidence_commitment: bytes
+    _binding: bytes
+    _seal: bytes
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise TypeError("grant observation proof is owner-issued only")
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        del cls, kwargs
+        raise TypeError("grant observation proof cannot be subclassed")
+
+
 @dataclass(frozen=True, slots=True, init=False)
 class _M2AuthorityQueryObservationProof:
     """Owner-sealed retained/absence proof for one query command."""
@@ -648,6 +675,7 @@ class _FreshEffectClaim:
     effect_id: EffectId
     effect_scope: VenueEffectScope
     claim_occurrence_id: ClaimOccurrenceId
+    emergency_grant_id: EmergencyGrantId | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -7744,6 +7772,7 @@ def _venue_reason(
 def _grant_reason(
     state: ExecutionAuthorityState,
     item: CreateBrokerEffect,
+    observation: _M2AuthorityGrantObservationProof | None,
 ) -> AuthorityReason | None:
     request = item.request
     if request.side is not ExecutionSide.SELL:
@@ -7753,7 +7782,8 @@ def _grant_reason(
     grant = state._emergency_grant
     if grant is None or grant.grant_id != item.emergency_grant_id:
         return AuthorityReason.EMERGENCY_GRANT_MISMATCH
-    if state._grant_consumed(grant.grant_id):
+    proof = _m2_require_grant_observation(grant.grant_id, observation)
+    if proof.kind is _M2AuthorityGrantObservationKind.CONSUMED:
         return AuthorityReason.EMERGENCY_GRANT_MISMATCH
     if (
         grant.account != state.venue.scope.account
@@ -7768,6 +7798,7 @@ def _create_gate_reason(
     state: ExecutionAuthorityState,
     execution: ExecutionSnapshot,
     item: CreateBrokerEffect,
+    grant_observation: _M2AuthorityGrantObservationProof | None = None,
 ) -> AuthorityReason | None:
     request = item.request
     if item.emergency_grant_id is not None and not (
@@ -7787,7 +7818,7 @@ def _create_gate_reason(
         item.emergency_grant_id is not None or state._emergency_grant is not None
     )
     if emergency:
-        grant_reason = _grant_reason(state, item)
+        grant_reason = _grant_reason(state, item, grant_observation)
         if grant_reason is not None:
             return grant_reason
     elif request.side is ExecutionSide.BUY:
@@ -7813,6 +7844,7 @@ def _create_effect(
     state: ExecutionAuthorityState,
     execution: ExecutionSnapshot,
     item: CreateBrokerEffect,
+    grant_observation: _M2AuthorityGrantObservationProof | None,
 ) -> ExecutionAuthorityTransition:
     request = item.request
     request_scope = _position_scope(state, request.symbol_id)
@@ -7890,7 +7922,7 @@ def _create_effect(
                 AuthorityDisposition.REFUSED,
                 AuthorityReason.MANUAL_FLATTEN_INVALID,
             )
-    reason = _create_gate_reason(state, execution, item)
+    reason = _create_gate_reason(state, execution, item, grant_observation)
     if reason is not None:
         return _result(state, AuthorityDisposition.REFUSED, reason)
     if request.kind is EffectKind.CANCEL:
@@ -9380,6 +9412,7 @@ def _claim_gate_reason(
     state: ExecutionAuthorityState,
     execution: ExecutionSnapshot,
     authorization: _EffectAuthorization,
+    grant_observation: _M2AuthorityGrantObservationProof | None = None,
 ) -> AuthorityReason | None:
     request = authorization.request
     if authorization.emergency_grant_id is not None and not (
@@ -9402,7 +9435,7 @@ def _claim_gate_reason(
             manual_flatten_id=authorization.manual_flatten_id,
             emergency_grant_id=authorization.emergency_grant_id,
         )
-        grant_reason = _grant_reason(state, synthetic)
+        grant_reason = _grant_reason(state, synthetic, grant_observation)
         if grant_reason is not None:
             return grant_reason
     elif request.side is ExecutionSide.BUY:
@@ -9426,6 +9459,7 @@ def _claim_effect(
     state: ExecutionAuthorityState,
     execution: ExecutionSnapshot,
     item: ClaimEffect,
+    grant_observation: _M2AuthorityGrantObservationProof | None,
 ) -> ExecutionAuthorityTransition:
     if _acquisition_effect_descriptor_is_authentic(
         state._acquisition_descriptor_by_effect.get(_effect_key(item.effect_id))
@@ -9448,7 +9482,12 @@ def _claim_effect(
         return _result(
             state, AuthorityDisposition.REFUSED, AuthorityReason.EFFECT_UNKNOWN
         )
-    reason = _claim_gate_reason(state, execution, authorization)
+    reason = _claim_gate_reason(
+        state,
+        execution,
+        authorization,
+        grant_observation,
+    )
     if reason is not None:
         return _result(state, AuthorityDisposition.REFUSED, reason)
     request = authorization.request
@@ -9525,6 +9564,7 @@ def _claim_effect(
             effect_id=item.effect_id,
             effect_scope=_scope_from_request(state, request),
             claim_occurrence_id=item.claim_occurrence_id,
+            emergency_grant_id=authorization.emergency_grant_id,
         ),
         venue_transitions=(venue_transition,),
     )
@@ -9606,6 +9646,195 @@ def _engage_kill(
         AuthorityDisposition.APPLIED,
         venue_transitions=venue_transitions,
     )
+
+
+def _m2_grant_observation_binding(
+    proof: _M2AuthorityGrantObservationProof,
+) -> bytes:
+    if type(proof) is not _M2AuthorityGrantObservationProof:
+        raise TypeError("grant observation proof must be exact")
+    if type(proof.kind) is not _M2AuthorityGrantObservationKind:
+        raise TypeError("grant observation kind must be exact")
+    _require("requested_grant_id", proof.requested_grant_id, EmergencyGrantId)
+    if (
+        type(proof._evidence_commitment) is not bytes
+        or len(proof._evidence_commitment) != 32
+    ):
+        raise ValueError("grant observation evidence commitment is malformed")
+    if proof.kind is _M2AuthorityGrantObservationKind.AVAILABLE:
+        if proof.retained_claim is not None:
+            raise ValueError("available grant observation cannot retain a claim")
+        retained_binding = b""
+    else:
+        if proof.retained_claim is not None:
+            _require("retained_claim", proof.retained_claim, ClaimEffect)
+            retained_binding = _value_commitment(proof.retained_claim)
+        else:
+            retained_binding = b""
+    return _commit_parts(
+        b"execution-core/m2-authority/grant-observation/v1",
+        proof.kind.value.encode("utf-8"),
+        proof.requested_grant_id.value.encode("utf-8"),
+        retained_binding,
+        proof._evidence_commitment,
+    )
+
+
+def _m2_grant_observation_is_authentic(value: object) -> bool:
+    if type(value) is not _M2AuthorityGrantObservationProof:
+        return False
+    try:
+        binding = _m2_grant_observation_binding(value)
+        return bool(
+            value._binding == binding
+            and value._seal
+            == _commit_parts(
+                b"execution-core/m2-authority/grant-observation-seal/v1",
+                binding,
+            )
+        )
+    except (AttributeError, TypeError, ValueError):
+        return False
+
+
+def _m2_issue_grant_observation(
+    state: ExecutionAuthorityState,
+    grant_id: EmergencyGrantId,
+    *,
+    consumed: bool,
+    retained_claim: ClaimEffect | None,
+    evidence_commitment: bytes,
+) -> _M2AuthorityGrantObservationProof:
+    _validate_authority_state(state)
+    _require("grant_id", grant_id, EmergencyGrantId)
+    if type(consumed) is not bool:
+        raise TypeError("consumed must be exact bool")
+    if retained_claim is not None:
+        _require("retained_claim", retained_claim, ClaimEffect)
+    if not consumed and retained_claim is not None:
+        raise ValueError("available grant observation cannot retain a claim")
+    if type(evidence_commitment) is not bytes or len(evidence_commitment) != 32:
+        raise ValueError("grant retained evidence commitment is malformed")
+    result = object.__new__(_M2AuthorityGrantObservationProof)
+    for name, value in (
+        (
+            "kind",
+            _M2AuthorityGrantObservationKind.CONSUMED
+            if consumed
+            else _M2AuthorityGrantObservationKind.AVAILABLE,
+        ),
+        ("requested_grant_id", grant_id),
+        ("retained_claim", retained_claim),
+        ("_evidence_commitment", evidence_commitment),
+    ):
+        object.__setattr__(result, name, value)
+    binding = _m2_grant_observation_binding(result)
+    object.__setattr__(result, "_binding", binding)
+    object.__setattr__(
+        result,
+        "_seal",
+        _commit_parts(
+            b"execution-core/m2-authority/grant-observation-seal/v1",
+            binding,
+        ),
+    )
+    return result
+
+
+def _m2_authority_grant_observation_from_reference(
+    state: ExecutionAuthorityState,
+    grant_id: EmergencyGrantId,
+) -> _M2AuthorityGrantObservationProof:
+    """Bind the public route to the reference owner's consumed-grant index."""
+
+    state = _validate_authority_state(state)
+    _require("grant_id", grant_id, EmergencyGrantId)
+    evidence = _commit_parts(
+        b"execution-core/m2-authority/grant-reference-evidence/v1",
+        state._input_by_id.commitment,
+        state._consumed_grant_ids.commitment,
+    )
+    return _m2_issue_grant_observation(
+        state,
+        grant_id,
+        consumed=state._grant_consumed(grant_id),
+        retained_claim=None,
+        evidence_commitment=evidence,
+    )
+
+
+def _m2_authority_grant_observation_from_direct_evidence(
+    state: ExecutionAuthorityState,
+    grant_id: EmergencyGrantId,
+    *,
+    retained_claim: ClaimEffect | None,
+    retained_input_bytes: bytes | None,
+    retained_outcome_bytes: bytes | None,
+) -> _M2AuthorityGrantObservationProof:
+    """Bind the UOW route to complete retained consumption evidence or absence."""
+
+    state = _validate_authority_state(state)
+    _require("grant_id", grant_id, EmergencyGrantId)
+    evidence_members = (
+        retained_claim,
+        retained_input_bytes,
+        retained_outcome_bytes,
+    )
+    if all(member is None for member in evidence_members):
+        consumed = False
+        evidence = _commit_parts(b"execution-core/m2-authority/grant-direct-absence/v1")
+    elif any(member is None for member in evidence_members):
+        raise ValueError("retained grant evidence requires input and outcome bytes")
+    else:
+        exact_claim = cast(ClaimEffect, retained_claim)
+        exact_input = cast(bytes, retained_input_bytes)
+        exact_outcome = cast(bytes, retained_outcome_bytes)
+        _require("retained_claim", exact_claim, ClaimEffect)
+        if type(exact_input) is not bytes or not exact_input:
+            raise ValueError("retained grant input bytes are malformed")
+        if type(exact_outcome) is not bytes or not exact_outcome:
+            raise ValueError("retained grant outcome bytes are malformed")
+        consumed = True
+        evidence = _commit_parts(
+            b"execution-core/m2-authority/grant-direct-evidence/v1",
+            exact_input,
+            exact_outcome,
+        )
+    return _m2_issue_grant_observation(
+        state,
+        grant_id,
+        consumed=consumed,
+        retained_claim=retained_claim,
+        evidence_commitment=evidence,
+    )
+
+
+def _m2_require_grant_observation(
+    grant_id: EmergencyGrantId,
+    proof: object,
+) -> _M2AuthorityGrantObservationProof:
+    if not _m2_grant_observation_is_authentic(proof):
+        raise ValueError("grant observation proof is not authentic")
+    exact = cast(_M2AuthorityGrantObservationProof, proof)
+    if exact.requested_grant_id != grant_id:
+        raise ValueError("grant observation proof has wrong identity")
+    return exact
+
+
+def _m2_authority_effect_emergency_grant_id(
+    state: ExecutionAuthorityState,
+    effect_id: EffectId,
+) -> EmergencyGrantId | None:
+    """Return a retained effect's checkpoint-authenticated grant coordinate."""
+
+    state = _validate_authority_state(state)
+    _require("effect_id", effect_id, EffectId)
+    authorization = state._effect_authority_by_id.get(_effect_key(effect_id))
+    if type(authorization) is not _EffectAuthorization:
+        return None
+    if authorization.request.effect_id != effect_id:
+        raise ValueError("effect authorization has the wrong identity")
+    return authorization.emergency_grant_id
 
 
 def _m2_manual_observation_binding(
@@ -10303,6 +10532,7 @@ def _m2_apply_execution_authority_input(
     *,
     manual_observation: _M2AuthorityManualObservationProof | None,
     query_observation: _M2AuthorityQueryObservationProof | None = None,
+    grant_observation: _M2AuthorityGrantObservationProof | None = None,
 ) -> ExecutionAuthorityTransition:
     """Apply one exact semantic branch after technical dedupe is complete."""
 
@@ -10334,6 +10564,24 @@ def _m2_apply_execution_authority_input(
         if query_observation is not None:
             raise ValueError("query observation is not admitted for this command")
         query_proof = None
+    if type(command) is CreateBrokerEffect:
+        required_grant_id = command.emergency_grant_id
+    elif type(command) is ClaimEffect:
+        required_grant_id = _m2_authority_effect_emergency_grant_id(
+            state,
+            command.effect_id,
+        )
+    else:
+        required_grant_id = None
+    if required_grant_id is not None:
+        grant_proof = _m2_require_grant_observation(
+            required_grant_id,
+            grant_observation,
+        )
+    else:
+        if grant_observation is not None:
+            raise ValueError("grant observation is not admitted for this command")
+        grant_proof = None
     if type(command) is RegisterAcquisitionCurrentness:
         if _register_canonical_fact_currentness_command_is_authentic(command):
             return _register_canonical_fact_currentness(state, execution, command)
@@ -10345,7 +10593,7 @@ def _m2_apply_execution_authority_input(
             AuthorityReason.VENUE_UNCERTAIN,
         )
     if type(item) is CreateBrokerEffect:
-        return _create_effect(state, execution, item)
+        return _create_effect(state, execution, item, grant_proof)
     if type(item) is CreateAcquisitionEffect:
         return _create_acquisition_effect(state, execution, item)
     if type(item) is ClaimAcquisitionEffect:
@@ -10355,7 +10603,7 @@ def _m2_apply_execution_authority_input(
     if type(item) is CreateAcquisitionProtectionExit:
         return _create_acquisition_protection_exit(state, execution, item)
     if type(item) is ClaimEffect:
-        return _claim_effect(state, execution, item)
+        return _claim_effect(state, execution, item, grant_proof)
     if type(item) is ClaimBrokerQuery:
         return _claim_query(
             state,
@@ -10399,6 +10647,7 @@ def apply_execution_authority_input(
             command,
             manual_observation=None,
             query_observation=None,
+            grant_observation=None,
         )
     replay = _replay_or_conflict(state, command)
     if replay is not None:
@@ -10420,12 +10669,27 @@ def apply_execution_authority_input(
         if type(command) is ClaimBrokerQuery
         else None
     )
+    if type(command) is CreateBrokerEffect:
+        required_grant_id = command.emergency_grant_id
+    elif type(command) is ClaimEffect:
+        required_grant_id = _m2_authority_effect_emergency_grant_id(
+            state,
+            command.effect_id,
+        )
+    else:
+        required_grant_id = None
+    grant_observation = (
+        _m2_authority_grant_observation_from_reference(state, required_grant_id)
+        if required_grant_id is not None
+        else None
+    )
     return _m2_apply_execution_authority_input(
         state,
         execution,
         command,
         manual_observation=manual_observation,
         query_observation=query_observation,
+        grant_observation=grant_observation,
     )
 
 
