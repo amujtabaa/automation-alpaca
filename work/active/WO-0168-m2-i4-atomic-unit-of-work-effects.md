@@ -399,6 +399,18 @@ Four compile-valid syntax mutants use the same detector. All 2,181 execution-cor
 type checks passed; application and DDL remain unchanged. `request-r3.md` is the final narrow check
 of this exact syntax gap.
 
+R3 reproduced the syntax controls but retained one P1: a post-definition wrapper could catch an
+after-write exception and rebind an operation handler while returning a structurally valid commit
+decision. Because this was the third non-zero correction round, WO-0168 re-gated the assurance
+model instead of extending Python syntax enumeration. Exact root correction
+`f637295e42be8430edb14be03c0dd23d24bef394`, tree
+`2f9e3b9cf72c8cb28154a55e6c7c14baad7bae23`, makes transaction decisions factory-issued, sealed,
+and identity-bound to the active runtime write capability; the outer coordinator authenticates
+them before commit. The exact rebound wrapper, structural forgery, and cross-lease decision now
+all roll back through exported runtime behavior. All 258 focused and 2,184 ordinary
+execution-core tests plus static/import/conformance/governance gates passed. `request-r4.md` is one
+finite enforcement-layer verification; it expressly forbids another open-ended syntax search.
+
 ## Done
 
 Focused pure and fresh-file fault suites, full `tests/execution_core`, Ruff check/format, mypy,
