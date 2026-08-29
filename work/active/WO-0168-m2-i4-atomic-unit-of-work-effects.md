@@ -13,6 +13,7 @@ predecessor: WO-0168d canonical flag-false closeout 25aca36956d68db014df37696786
 branch: codex/m2-wo0168-atomic-uow-r1
 preflight_review_id: REV-0113
 implementation_review_id: REV-0114
+closeout_review_id: REV-0115
 execution_authority: >
   Ameen Mujtabaa's recorded serial-M2 authority in
   work/queue/M2-EXECUTION-2026-08-21/34-M2-COMPLETION-DRIVE.md and his 2026-08-28
@@ -54,6 +55,7 @@ allowed_paths:
   - work/completed/keep/WO-0168-m2-i4-atomic-unit-of-work-effects.md
   - work/review/REV-0113/**
   - work/review/REV-0114/**
+  - work/review/REV-0115/**
   - work/queue/M2-EXECUTION-2026-08-21/05-POST-I3-PREFLIGHT-AND-M2-COMPLETION-MAP.md
   - work/ledger.jsonl
 forbidden_paths: []
@@ -316,6 +318,29 @@ weakening DDL would add risk without changing the invariant. The root correction
 the direct controller-authority refusal and proves that all six dormant coordinates, checkpoint
 head, commitment, and version remain unchanged after the rejected update. It changes one held test
 and governance only; schema bytes, expected digest, and the exact `False` flag remain unchanged.
+
+### REV-0114 executable closeout
+
+Fresh correction review r2 accepted exact candidate
+`7a41daaadbf7d87bbbc095829aef6b7d8b5762a3`, tree
+`789ca0016eb9e5a1300285caf0cdf73483180283`, with P0=0/P1=0/P2=0. The new flag-only execution
+branch `codex/m2-wo0168-ddl-execution-r3` then published unlock commit
+`3582b46b56290da229c62eb0759a3b88144569b1`, tree
+`b16d9e58166d60fc777514ca96443c70c8272486`, from that exact source. It changed only the human
+flag from `False` to `True`; DDL remained 190,705 bytes at the approved digest.
+
+The exact five-suite command ran once against the previously absent
+`.codex-ddl-gate-run/rev-0114-r2-attempt-1` pytest path and exited zero at 100%: all 381 tests
+passed. The canonical branch remains flag-false and is the only implementation predecessor. The
+complete ordinary `tests/execution_core` suite then reran on that canonical state and exited zero
+at 100% (1,985 tests). Ruff check/format passed on all 17 changed Python files, mypy passed all 96
+application source files, and ledger/disposition/PKL/version/scope/diff checks passed.
+
+REV-0114 intentionally reviewed the changed DDL and its correction rounds. REV-0115 is one bounded
+whole-work-order closeout review over the exact predecessor-to-candidate implementation diff, so
+the full unit-of-work implementation—not merely the DDL delta—receives independent acceptance.
+It has one remediation/re-review maximum and may not reopen accepted taste or alternate-design
+questions without a contract clause or demonstrated failure.
 
 ### Static remediation identity
 
