@@ -3349,6 +3349,7 @@ def _venue_composite_transition_for_operation(
         acquisition,
         execution,
         protection,
+        require_cursor=protection is not None,
     )
     try:
         relation = transition.book.project_acquisition_fact(transition).fact_relation()
@@ -4161,6 +4162,8 @@ def _selected_acquisition_authority(
     acquisition: _acquisition.AcquisitionControllerState,
     execution: _position.ExecutionSnapshot,
     protection: _protection.PositionProtectionState | None,
+    *,
+    require_cursor: bool = True,
 ) -> _SelectedAcquisitionAuthority:
     return _selected_acquisition_authority_for_coordinates(
         prepared.selection_proof,
@@ -4171,6 +4174,7 @@ def _selected_acquisition_authority(
         acquisition,
         execution,
         protection,
+        require_cursor=require_cursor,
     )
 
 

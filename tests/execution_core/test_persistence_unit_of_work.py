@@ -25,6 +25,7 @@ from app.execution_core.persistence import operations
 from app.execution_core.persistence import records
 from app.execution_core.persistence import unit_of_work
 import test_persistence_runtime_checkpoint_pure as checkpoint_fixtures
+import test_persistence_startup_hydration as hydration_fixtures
 import test_persistence_input_receipt as input_fixtures
 import test_authority as authority_fixtures
 import test_acquisition as acquisition_fixtures
@@ -2042,33 +2043,89 @@ def test_venue_operation_composes_the_direct_owner_with_acquisition_currentness(
 def test_acknowledged_venue_write_defers_delta_check_to_fresh_checkpoint_proof(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _, _, claimed = acquisition_fixtures._r8_claimed_first_effect()
-    assert claimed.fresh_claim is not None
+    source_proof, book, authority_state, owners = (
+        hydration_fixtures._active_claimed_projection_inputs()
+    )
+    owner = owners[0]
+    assert owner.acquisition is not None
+    assert owner.protection is None
+    assert source_proof._selection.cursors == ()
+    selected_effect = source_proof._selection.effects[0]
+    assert selected_effect.lifecycle_state == "DISPATCH_CLAIMED"
+    source_envelope = checkpoint_codec._project_runtime_checkpoint(
+        source_proof,
+        book,
+        authority_state,  # type: ignore[arg-type]
+        owners,
+    )
+    predecessor = records.KernelCheckpointRecord(
+        source_envelope.application_generation_id,
+        source_envelope.currentness_head_ordinal,
+        source_envelope.payload_sha256,
+        source_envelope.checkpoint_version_ordinal,
+    )
+    context = unit_of_work.UnitOfWorkContext(
+        predecessor,
+        book,
+        authority_state,  # type: ignore[arg-type]
+        tuple(
+            (item.scope_id, item.acquisition, item.execution, item.protection)
+            for item in owners
+        ),
+    )
+    effect_id = selected_effect.effect_external
     item = venue.RecordTransportOutcome(
         venue.VenueInputId("uow-o2-acknowledged-fresh-proof"),
-        claimed.fresh_claim.effect_id,
+        effect_id,
         venue.BrokerEffectState.ACKNOWLEDGED,
     )
     transition, observation = _apply_direct_venue_observation(
-        claimed.venue,
-        claimed.execution,
+        book,
+        owner.execution,
         item,
     )
     operation = operations.VenueRecoveryOperation(
         operations.VenueOperationCoordinates(
-            claimed.state.application_generation_id,
-            "ep",
-            7,
-            claimed.state._mandate.session_id,
+            source_proof.request.application_generation_id,
+            source_proof.request.execution_profile_id,
+            owner.scope_id,
+            source_proof._selection.streams[0].session_id,
         ),
         item,
     )
-    prepared = _prepared_acquisition_operation(operation, claimed)
+    payload = operations.encode_m2_operation(operation)
+    (
+        domain,
+        application_generation_id,
+        execution_profile_id,
+        scope_id,
+        session_id,
+        acquisition_generation_id,
+        market_source_profile_id,
+        stream_generation_id,
+        input_identity_sha256,
+    ) = operations._derive_m2_durable_input_projection(operation)
+    prepared = unit_of_work._PreparedOperation(
+        operation,
+        context,
+        payload,
+        domain,
+        application_generation_id,
+        execution_profile_id,
+        scope_id,
+        session_id,
+        acquisition_generation_id,
+        market_source_profile_id,
+        stream_generation_id,
+        input_identity_sha256,
+        source_proof,
+        source_envelope,
+    )
     monkeypatch.setattr(
         unit_of_work,
         "_venue_direct_observation",
         lambda *args: (
-            venue._m2_venue_state_from_book(claimed.venue),
+            venue._m2_venue_state_from_book(book),
             observation,
         ),
     )
@@ -2097,54 +2154,107 @@ def test_acknowledged_venue_write_defers_delta_check_to_fresh_checkpoint_proof(
         "_persist_authority_venue_transitions",
         lambda *args, **kwargs: ((), ()),
     )
+    selected_controller = source_proof._selection.controllers[0]
+    selected_protection = source_proof._selection.protection_authorities[0]
+    fresh_selection = replace(
+        source_proof._selection,
+        controllers=(
+            replace(
+                selected_controller,
+                currentness_head_ordinal=(
+                    selected_controller.currentness_head_ordinal + 1
+                ),
+                controller_version_ordinal=(
+                    selected_controller.controller_version_ordinal + 1
+                ),
+            ),
+        ),
+        protection_authorities=(
+            replace(
+                selected_protection,
+                expected_controller_head_ordinal=(
+                    selected_protection.expected_controller_head_ordinal + 1
+                ),
+                version_ordinal=selected_protection.version_ordinal + 1,
+            ),
+        ),
+        effects=(replace(selected_effect, lifecycle_state="ACKNOWLEDGED"),),
+    )
+    fresh_proof = records._issue_runtime_checkpoint_selection_proof(
+        records.RuntimeCheckpointSelectionRequest(
+            source_proof.request.application_generation_id,
+            source_proof.request.execution_profile_id,
+            source_proof.request.market_source_profile_id,
+            predecessor,
+        ),
+        source_proof.application_generation,
+        source_proof.execution_profile,
+        source_proof.market_source_profile,
+        predecessor,
+        predecessor.currentness_head_ordinal + 1,
+        predecessor.checkpoint_version_ordinal + 1,
+        fresh_selection,
+    )
+    monkeypatch.setattr(
+        unit_of_work._repository,
+        "select_runtime_checkpoint",
+        lambda *args: records.RepositoryOutcome(
+            records.RepositoryOutcomeKind.FOUND,
+            fresh_proof,
+        ),
+    )
+    project = checkpoint_codec._project_runtime_checkpoint
+    projected_with: list[records.RuntimeCheckpointSelectionProof] = []
 
-    def stale_proof_check(*args: object) -> bool:
-        del args
-        raise AssertionError("venue successor was checked against stale proof")
+    def project_with_fresh_proof(
+        proof: records.RuntimeCheckpointSelectionProof,
+        *args: object,
+    ) -> checkpoint_codec.RuntimeCheckpointEnvelope:
+        assert proof is fresh_proof
+        projected_with.append(proof)
+        return project(proof, *args)  # type: ignore[arg-type]
 
     monkeypatch.setattr(
-        unit_of_work,
-        "_bounded_context_changed",
-        stale_proof_check,
+        unit_of_work._checkpoint_codec,
+        "_project_runtime_checkpoint",
+        project_with_fresh_proof,
     )
-    completed: list[tuple[object, bool]] = []
-    expected = object()
+    stored_with: list[records.RuntimeCheckpointSelectionProof] = []
 
-    def complete(
+    def stop_after_projection(
         connection: object,
-        prepared_operation: object,
-        claimed_record: object,
+        proof: records.RuntimeCheckpointSelectionProof,
+        envelope: checkpoint_codec.RuntimeCheckpointEnvelope,
         *,
-        owner_domain: str,
-        owner_disposition: str,
-        successor_context: object,
-        checkpoint_changed: bool,
-        pending_outbox: object,
         capability: object,
-    ) -> object:
-        del connection, prepared_operation, claimed_record, pending_outbox, capability
-        assert owner_domain == "VENUE_RECOVERY"
-        assert owner_disposition == "APPLIED"
-        completed.append((successor_context, checkpoint_changed))
-        return expected
+    ) -> records.RepositoryOutcome[object]:
+        del connection, capability
+        assert proof is fresh_proof
+        assert (
+            envelope.canonical_payload_bytes != source_envelope.canonical_payload_bytes
+        )
+        stored_with.append(proof)
+        return records.RepositoryOutcome(records.RepositoryOutcomeKind.CONFLICT)
 
-    monkeypatch.setattr(unit_of_work, "_complete_claimed_input", complete)
-
-    actual = unit_of_work._execute_venue_operation(
-        object(),
-        prepared,
-        object(),
-        object(),
+    monkeypatch.setattr(
+        unit_of_work._repository,
+        "store_runtime_checkpoint",
+        stop_after_projection,
     )
 
-    assert actual is expected
-    assert len(completed) == 1
-    successor_context, checkpoint_changed = completed[0]
-    assert type(successor_context) is unit_of_work.UnitOfWorkContext
-    assert checkpoint_changed is True
-    effect = successor_context.venue._current_effect(item.effect_id)
-    assert effect is not None
-    assert effect.state is venue.BrokerEffectState.ACKNOWLEDGED
+    with pytest.raises(
+        unit_of_work._TechnicalRefusal,
+        match="successor checkpoint was not stored exactly",
+    ):
+        unit_of_work._execute_venue_operation(
+            object(),
+            prepared,
+            object(),
+            object(),
+        )
+
+    assert projected_with == [fresh_proof]
+    assert stored_with == [fresh_proof]
 
 
 def test_fresh_venue_input_emits_only_its_owner_proven_semantic_key(
@@ -4247,7 +4357,9 @@ def test_acquisition_current_proof_rejects_dormant_count_and_class_splices() -> 
         )
 
 
-def test_acquisition_current_proof_rejects_active_count_and_class_splices() -> None:
+def test_acquisition_current_proof_rejects_active_count_class_and_cursor_splices() -> (
+    None
+):
     _, _, claimed, filled = acquisition_fixtures._r8_current_generation_fill_transition(
         acknowledged=True,
         prefill_needs_review=False,
@@ -4293,6 +4405,21 @@ def test_acquisition_current_proof_rejects_active_count_and_class_splices() -> N
     with pytest.raises(
         unit_of_work._TechnicalRefusal,
         match="active protection authority",
+    ):
+        unit_of_work._selected_acquisition_authority(
+            prepared,
+            current.state,
+            current.execution,
+            current.protection,
+        )
+
+    selection.protection_authorities = original_protection
+    original_cursors = selection.cursors
+    assert len(original_cursors) == 1
+    selection.cursors = ()
+    with pytest.raises(
+        unit_of_work._TechnicalRefusal,
+        match="acquisition market cursor is not singular",
     ):
         unit_of_work._selected_acquisition_authority(
             prepared,
@@ -5241,6 +5368,17 @@ def test_successor_checkpoint_requires_a_delta_under_its_fresh_proof(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     context, proof, envelope = _cold_cutover_fixture()
+    fresh_proof = records._issue_runtime_checkpoint_selection_proof(
+        proof.request,
+        proof.application_generation,
+        proof.execution_profile,
+        proof.market_source_profile,
+        proof.predecessor_checkpoint,
+        proof.target_currentness_head_ordinal,
+        proof.target_checkpoint_version_ordinal,
+        proof._selection,
+    )
+    assert fresh_proof is not proof
     prepared = SimpleNamespace(
         application_generation_id=proof.request.application_generation_id,
         execution_profile_id=proof.request.execution_profile_id,
@@ -5250,17 +5388,26 @@ def test_successor_checkpoint_requires_a_delta_under_its_fresh_proof(
     )
     selected = records.RepositoryOutcome(
         records.RepositoryOutcomeKind.FOUND,
-        proof,
+        fresh_proof,
     )
     monkeypatch.setattr(
         unit_of_work._repository,
         "select_runtime_checkpoint",
         lambda *args: selected,
     )
+
+    def project_with_fresh_proof(
+        selected_proof: records.RuntimeCheckpointSelectionProof,
+        *args: object,
+    ) -> checkpoint_codec.RuntimeCheckpointEnvelope:
+        del args
+        assert selected_proof is fresh_proof
+        return envelope
+
     monkeypatch.setattr(
         unit_of_work._checkpoint_codec,
         "_project_runtime_checkpoint",
-        lambda *args: envelope,
+        project_with_fresh_proof,
     )
 
     def stale_store(*args: object, **kwargs: object) -> object:

@@ -521,3 +521,24 @@ order occurred. DDL remains 190,705 bytes at
 `d4df1aaa0a7fed6002c8a55923fb3a35ba948055779dac99bf82e70b6a804c18`; the flag remains exact
 `False`, and the held-test SHA-256 remains
 `f8081a38d2b5bc5fd073a0dbe79a47a8d4e2e1de2defc7323bea34ab4d992aca`.
+
+## REV-0117 R4 review correction
+
+R4 returned `ACCEPT-WITH-CHANGES`, P0=0/P1=1/P2=0. The result is preserved unchanged in
+`result-r4.md`. The accepted P1 showed that the original controls did not prove the checkpoint
+projector received the distinct post-write proof: they could pass if projection regressed to the
+pre-transaction proof.
+
+Replacing that mock boundary with the real completion/checkpoint path exposed an earlier refusal
+in the same held scenario. A dormant acquisition owner, before any protection is active, correctly
+has no market cursor; the venue-recovery route nevertheless required one before persisting
+`DISPATCH_CLAIMED -> ACKNOWLEDGED`. The bounded root correction now permits an absent cursor only
+for a dormant owner on this venue route. Active protection still requires exactly one cursor, with
+an explicit negative mutant control.
+
+The integrated regression uses authentic predecessor and distinct post-write selection proofs,
+drives the venue route through `_complete_claimed_input` and `_store_successor_checkpoint`, and
+asserts both projection and storage consume only the fresh proof. The separate no-delta control
+also uses a distinct fresh proof and proves an unchanged payload cannot reach storage. One finite
+correction-only R5 review by the same independent reviewer must confirm zero open P0/P1 before a
+new fresh-file execution packet is prepared. No SQLite or held test ran during this correction.
