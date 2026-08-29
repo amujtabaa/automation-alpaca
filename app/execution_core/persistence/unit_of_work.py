@@ -274,6 +274,199 @@ class _TransactionDecision:
             )
 
 
+@_dataclass(frozen=True, slots=True)
+class _M2OrderedWriteFamily:
+    """One exact repository-call subsequence in the frozen C6 plan."""
+
+    name: str
+    repository_calls: tuple[str, ...]
+
+
+_M2_REPOSITORY_WRITE_CALLS = (
+    "advance_market_cursor",
+    "advance_protection_authority",
+    "advance_symbol_controller",
+    "advance_venue_effect",
+    "claim_durable_input",
+    "finalize_durable_input",
+    "retire_acquisition_generation",
+    "store_acceptance_evidence",
+    "store_acceptance_set",
+    "store_acquisition_generation",
+    "store_acquisition_root_route",
+    "store_broker_outbox",
+    "store_closure",
+    "store_decision_receipt",
+    "store_dispatch_claim",
+    "store_durable_input_outcome",
+    "store_durable_input_semantic_key",
+    "store_execution_fact",
+    "store_market_cursor",
+    "store_market_stream_authority",
+    "store_root_fill",
+    "store_runtime_checkpoint",
+    "store_venue_effect",
+    "store_venue_identity_owner",
+)
+
+_M2_VENUE_DERIVATIVE_WRITES = _M2OrderedWriteFamily(
+    "venue-derivatives",
+    (
+        "store_venue_effect",
+        "store_acceptance_set",
+        "store_dispatch_claim",
+        "advance_venue_effect",
+        "store_acceptance_evidence",
+        "advance_venue_effect",
+    ),
+)
+_M2_ACQUISITION_CURRENTNESS_WRITES = _M2OrderedWriteFamily(
+    "acquisition-currentness",
+    (
+        "advance_market_cursor",
+        "advance_symbol_controller",
+        "advance_protection_authority",
+    ),
+)
+_M2_ROOT_ROUTE_FACT_WRITES = _M2OrderedWriteFamily(
+    "root-route-fact",
+    (
+        "store_root_fill",
+        "store_acquisition_root_route",
+        "store_execution_fact",
+    ),
+)
+
+# This is the contract-required row-specific implementation table.  It names
+# repository methods, not conceptual table families.  In O1/O2 the route is
+# physically retained before store_execution_fact because that one repository
+# call atomically owns fact/head and trigger-owned controller/current advances.
+# Optional branches may skip entries, but cannot introduce or reorder a call.
+_M2_C6_WRITE_TABLE: tuple[tuple[str, tuple[_M2OrderedWriteFamily, ...]], ...] = (
+    (
+        "O1",
+        (
+            _M2_ROOT_ROUTE_FACT_WRITES,
+            _M2OrderedWriteFamily(
+                "broker-protection-currentness",
+                ("advance_protection_authority",),
+            ),
+            _M2_VENUE_DERIVATIVE_WRITES,
+        ),
+    ),
+    (
+        "O2",
+        (
+            _M2OrderedWriteFamily(
+                "venue-semantic-keys",
+                ("store_durable_input_semantic_key",),
+            ),
+            _M2OrderedWriteFamily(
+                "effect-owner-evidence",
+                (
+                    "advance_venue_effect",
+                    "advance_venue_effect",
+                    "store_venue_identity_owner",
+                    "store_acceptance_evidence",
+                ),
+            ),
+            _M2OrderedWriteFamily("terminal-closure", ("store_closure",)),
+            _M2_ROOT_ROUTE_FACT_WRITES,
+            _M2_ACQUISITION_CURRENTNESS_WRITES,
+            _M2_VENUE_DERIVATIVE_WRITES,
+        ),
+    ),
+    (
+        "O3",
+        (
+            _M2_VENUE_DERIVATIVE_WRITES,
+            _M2OrderedWriteFamily(
+                "authority-semantic-key",
+                ("store_durable_input_semantic_key",),
+            ),
+        ),
+    ),
+    (
+        "O4",
+        (
+            _M2OrderedWriteFamily(
+                "generation-cutover",
+                (
+                    "advance_protection_authority",
+                    "advance_symbol_controller",
+                    "advance_protection_authority",
+                    "retire_acquisition_generation",
+                    "store_acquisition_generation",
+                    "store_market_stream_authority",
+                    "store_market_cursor",
+                    "advance_symbol_controller",
+                    "advance_protection_authority",
+                ),
+            ),
+        ),
+    ),
+    (
+        "O5",
+        (_M2_ACQUISITION_CURRENTNESS_WRITES, _M2_VENUE_DERIVATIVE_WRITES),
+    ),
+    (
+        "O6",
+        (_M2_VENUE_DERIVATIVE_WRITES, _M2_ACQUISITION_CURRENTNESS_WRITES),
+    ),
+    (
+        "O7",
+        (_M2_ACQUISITION_CURRENTNESS_WRITES, _M2_VENUE_DERIVATIVE_WRITES),
+    ),
+    (
+        "O8",
+        (_M2_ACQUISITION_CURRENTNESS_WRITES, _M2_VENUE_DERIVATIVE_WRITES),
+    ),
+)
+
+_M2_COMMON_WRITE_TABLE = (
+    _M2OrderedWriteFamily("primary-claim", ("claim_durable_input",)),
+    _M2OrderedWriteFamily("checkpoint", ("store_runtime_checkpoint",)),
+    _M2OrderedWriteFamily("receipt", ("store_decision_receipt",)),
+    _M2OrderedWriteFamily("outcome", ("store_durable_input_outcome",)),
+    _M2OrderedWriteFamily("outbox", ("store_broker_outbox",)),
+    _M2OrderedWriteFamily("input-finalization", ("finalize_durable_input",)),
+)
+
+
+def _m2_write_table_is_exact(candidate: object) -> bool:
+    """Return whether a candidate is the literal closed O1-O8 call table."""
+
+    if type(candidate) is not tuple or candidate != _M2_C6_WRITE_TABLE:
+        return False
+    allowed_calls = frozenset(_M2_REPOSITORY_WRITE_CALLS)
+    seen_rows: list[str] = []
+    for row in candidate:
+        if type(row) is not tuple or len(row) != 2:
+            return False
+        row_id, families = row
+        if type(row_id) is not str or type(families) is not tuple or not families:
+            return False
+        seen_rows.append(row_id)
+        seen_families: set[str] = set()
+        for family in families:
+            if type(family) is not _M2OrderedWriteFamily:
+                return False
+            if (
+                not family.name
+                or family.name in seen_families
+                or type(family.repository_calls) is not tuple
+                or not family.repository_calls
+            ):
+                return False
+            seen_families.add(family.name)
+            if any(
+                type(call) is not str or call not in allowed_calls or "*" in call
+                for call in family.repository_calls
+            ):
+                return False
+    return seen_rows == [f"O{ordinal}" for ordinal in range(1, 9)]
+
+
 class _TechnicalRefusal(Exception):
     pass
 
@@ -2143,10 +2336,25 @@ def _authority_manual_key_bytes(
 def _authority_manual_observation(
     connection: _SQLiteConnectionProtocol,
     prepared: _PreparedOperation,
-    command: _authority.BeginManualFlatten | _authority.AdvanceManualFlatten,
+    command: _authority._M2ManualObservationCommand,
 ) -> _authority._M2AuthorityManualObservationProof:
     execution = _scope_execution(prepared.context, prepared.scope_id)
-    key_bytes = _authority_manual_key_bytes(prepared, command)
+    if type(command) is _authority.CreateBrokerEffect:
+        if command.manual_flatten_id is None:
+            raise _TechnicalRefusal("manual effect has no flatten identity")
+        return _authority._m2_authority_manual_observation_from_direct_evidence(
+            prepared.context.authority,
+            command,
+            active_symbol_id=execution.position.scope.symbol_id,
+            retained_command=None,
+            retained_input_bytes=None,
+            retained_outcome_bytes=None,
+        )
+    manual_command = _cast(
+        _authority.BeginManualFlatten | _authority.AdvanceManualFlatten,
+        command,
+    )
+    key_bytes = _authority_manual_key_bytes(prepared, manual_command)
     retained = _load_terminal_semantic_input(
         connection,
         prepared,
@@ -2156,7 +2364,7 @@ def _authority_manual_observation(
     if retained is None:
         return _authority._m2_authority_manual_observation_from_direct_evidence(
             prepared.context.authority,
-            command,
+            manual_command,
             active_symbol_id=execution.position.scope.symbol_id,
             retained_command=None,
             retained_input_bytes=None,
@@ -2165,12 +2373,12 @@ def _authority_manual_observation(
     if (
         type(retained.operation) is not _operations.AuthorityOperation
         or type(retained.operation.command) is not _authority.BeginManualFlatten
-        or retained.operation.command.flatten_id != command.flatten_id
+        or retained.operation.command.flatten_id != manual_command.flatten_id
     ):
         raise _TechnicalRefusal("retained manual input has the wrong owner identity")
     return _authority._m2_authority_manual_observation_from_direct_evidence(
         prepared.context.authority,
-        command,
+        manual_command,
         active_symbol_id=execution.position.scope.symbol_id,
         retained_command=retained.operation.command,
         retained_input_bytes=retained.input_record.canonical_payload_bytes,
@@ -2746,11 +2954,18 @@ def _execute_authority_operation(
     execution = _scope_execution(prepared.context, prepared.scope_id)
     manual_command = (
         _cast(
-            _authority.BeginManualFlatten | _authority.AdvanceManualFlatten,
+            _authority._M2ManualObservationCommand,
             operation.command,
         )
         if type(operation.command)
-        in (_authority.BeginManualFlatten, _authority.AdvanceManualFlatten)
+        in (
+            _authority.BeginManualFlatten,
+            _authority.AdvanceManualFlatten,
+        )
+        or (
+            type(operation.command) is _authority.CreateBrokerEffect
+            and operation.command.manual_flatten_id is not None
+        )
         else None
     )
     manual_observation = (
@@ -5022,7 +5237,6 @@ def _execute_broker_execution_operation(
                 _fills.BrokerTradeCorrectFact,
                 _fills.BrokerTradeBustFact,
             }
-            or predecessor_route is None
             or predecessor_fact is None
         ):
             raise _TechnicalRefusal("broker revision proof is incomplete")

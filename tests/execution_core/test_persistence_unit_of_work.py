@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import ast
 from copy import copy
 from copy import deepcopy
 from dataclasses import replace
+import inspect
 from types import SimpleNamespace
 
 import pytest
@@ -26,6 +28,506 @@ import test_authority as authority_fixtures
 import test_acquisition as acquisition_fixtures
 import test_protection as protection_fixtures
 from tests.execution_core import test_venue_recovery as recovery_fixtures
+
+
+_EXPECTED_M2_C6_WRITE_TABLE = (
+    (
+        "O1",
+        (
+            (
+                "root-route-fact",
+                (
+                    "store_root_fill",
+                    "store_acquisition_root_route",
+                    "store_execution_fact",
+                ),
+            ),
+            ("broker-protection-currentness", ("advance_protection_authority",)),
+            (
+                "venue-derivatives",
+                (
+                    "store_venue_effect",
+                    "store_acceptance_set",
+                    "store_dispatch_claim",
+                    "advance_venue_effect",
+                    "store_acceptance_evidence",
+                    "advance_venue_effect",
+                ),
+            ),
+        ),
+    ),
+    (
+        "O2",
+        (
+            ("venue-semantic-keys", ("store_durable_input_semantic_key",)),
+            (
+                "effect-owner-evidence",
+                (
+                    "advance_venue_effect",
+                    "advance_venue_effect",
+                    "store_venue_identity_owner",
+                    "store_acceptance_evidence",
+                ),
+            ),
+            ("terminal-closure", ("store_closure",)),
+            (
+                "root-route-fact",
+                (
+                    "store_root_fill",
+                    "store_acquisition_root_route",
+                    "store_execution_fact",
+                ),
+            ),
+            (
+                "acquisition-currentness",
+                (
+                    "advance_market_cursor",
+                    "advance_symbol_controller",
+                    "advance_protection_authority",
+                ),
+            ),
+            (
+                "venue-derivatives",
+                (
+                    "store_venue_effect",
+                    "store_acceptance_set",
+                    "store_dispatch_claim",
+                    "advance_venue_effect",
+                    "store_acceptance_evidence",
+                    "advance_venue_effect",
+                ),
+            ),
+        ),
+    ),
+    (
+        "O3",
+        (
+            (
+                "venue-derivatives",
+                (
+                    "store_venue_effect",
+                    "store_acceptance_set",
+                    "store_dispatch_claim",
+                    "advance_venue_effect",
+                    "store_acceptance_evidence",
+                    "advance_venue_effect",
+                ),
+            ),
+            ("authority-semantic-key", ("store_durable_input_semantic_key",)),
+        ),
+    ),
+    (
+        "O4",
+        (
+            (
+                "generation-cutover",
+                (
+                    "advance_protection_authority",
+                    "advance_symbol_controller",
+                    "advance_protection_authority",
+                    "retire_acquisition_generation",
+                    "store_acquisition_generation",
+                    "store_market_stream_authority",
+                    "store_market_cursor",
+                    "advance_symbol_controller",
+                    "advance_protection_authority",
+                ),
+            ),
+        ),
+    ),
+    (
+        "O5",
+        (
+            (
+                "acquisition-currentness",
+                (
+                    "advance_market_cursor",
+                    "advance_symbol_controller",
+                    "advance_protection_authority",
+                ),
+            ),
+            (
+                "venue-derivatives",
+                (
+                    "store_venue_effect",
+                    "store_acceptance_set",
+                    "store_dispatch_claim",
+                    "advance_venue_effect",
+                    "store_acceptance_evidence",
+                    "advance_venue_effect",
+                ),
+            ),
+        ),
+    ),
+    (
+        "O6",
+        (
+            (
+                "venue-derivatives",
+                (
+                    "store_venue_effect",
+                    "store_acceptance_set",
+                    "store_dispatch_claim",
+                    "advance_venue_effect",
+                    "store_acceptance_evidence",
+                    "advance_venue_effect",
+                ),
+            ),
+            (
+                "acquisition-currentness",
+                (
+                    "advance_market_cursor",
+                    "advance_symbol_controller",
+                    "advance_protection_authority",
+                ),
+            ),
+        ),
+    ),
+    (
+        "O7",
+        (
+            (
+                "acquisition-currentness",
+                (
+                    "advance_market_cursor",
+                    "advance_symbol_controller",
+                    "advance_protection_authority",
+                ),
+            ),
+            (
+                "venue-derivatives",
+                (
+                    "store_venue_effect",
+                    "store_acceptance_set",
+                    "store_dispatch_claim",
+                    "advance_venue_effect",
+                    "store_acceptance_evidence",
+                    "advance_venue_effect",
+                ),
+            ),
+        ),
+    ),
+    (
+        "O8",
+        (
+            (
+                "acquisition-currentness",
+                (
+                    "advance_market_cursor",
+                    "advance_symbol_controller",
+                    "advance_protection_authority",
+                ),
+            ),
+            (
+                "venue-derivatives",
+                (
+                    "store_venue_effect",
+                    "store_acceptance_set",
+                    "store_dispatch_claim",
+                    "advance_venue_effect",
+                    "store_acceptance_evidence",
+                    "advance_venue_effect",
+                ),
+            ),
+        ),
+    ),
+)
+
+
+def _write_table_projection(
+    table: tuple[tuple[str, tuple[object, ...]], ...],
+) -> tuple[tuple[str, tuple[tuple[str, tuple[str, ...]], ...]], ...]:
+    return tuple(
+        (
+            row_id,
+            tuple(
+                (family.name, family.repository_calls)  # type: ignore[attr-defined]
+                for family in families
+            ),
+        )
+        for row_id, families in table
+    )
+
+
+@pytest.mark.parametrize(("row_id", "expected_families"), _EXPECTED_M2_C6_WRITE_TABLE)
+def test_each_o1_o8_row_has_the_exact_closed_repository_call_order(
+    row_id: str,
+    expected_families: tuple[tuple[str, tuple[str, ...]], ...],
+) -> None:
+    projected = dict(_write_table_projection(unit_of_work._M2_C6_WRITE_TABLE))
+    assert projected[row_id] == expected_families
+    assert unit_of_work._m2_write_table_is_exact(unit_of_work._M2_C6_WRITE_TABLE)
+
+
+def test_o1_o8_write_table_rejects_every_contract_mutant() -> None:
+    table = unit_of_work._M2_C6_WRITE_TABLE
+    first_row_id, first_families = table[0]
+    first_family = first_families[0]
+    assert first_row_id == "O1"
+
+    missing_row = table[:-1]
+    extra_row = table + (("O9", first_families),)
+    reordered_rows = (table[1], table[0], *table[2:])
+    missing_call_family = replace(
+        first_family,
+        repository_calls=first_family.repository_calls[:-1],
+    )
+    missing_call = (
+        (first_row_id, (missing_call_family, *first_families[1:])),
+        *table[1:],
+    )
+    extra_call_family = replace(
+        first_family,
+        repository_calls=(*first_family.repository_calls, "store_execution_fact"),
+    )
+    extra_call = (
+        (first_row_id, (extra_call_family, *first_families[1:])),
+        *table[1:],
+    )
+    reordered_calls_family = replace(
+        first_family,
+        repository_calls=(
+            first_family.repository_calls[1],
+            first_family.repository_calls[0],
+            *first_family.repository_calls[2:],
+        ),
+    )
+    reordered_calls = (
+        (first_row_id, (reordered_calls_family, *first_families[1:])),
+        *table[1:],
+    )
+    dynamic_family = replace(first_family, repository_calls=("getattr",))
+    dynamic = ((first_row_id, (dynamic_family, *first_families[1:])), *table[1:])
+    wildcard_family = replace(first_family, repository_calls=("store_*",))
+    wildcard = ((first_row_id, (wildcard_family, *first_families[1:])), *table[1:])
+
+    for mutant in (
+        missing_row,
+        extra_row,
+        reordered_rows,
+        missing_call,
+        extra_call,
+        reordered_calls,
+        dynamic,
+        wildcard,
+    ):
+        assert not unit_of_work._m2_write_table_is_exact(mutant)
+
+
+def test_every_repository_mutator_call_site_is_static_and_catalogued() -> None:
+    source = inspect.getsource(unit_of_work)
+    tree = ast.parse(source)
+    write_prefixes = ("advance_", "claim_", "finalize_", "retire_", "store_")
+    expected = {
+        "_claim_primary_input": ("claim_durable_input",),
+        "_store_successor_checkpoint": ("store_runtime_checkpoint",),
+        "_store_venue_semantic_key": ("store_durable_input_semantic_key",),
+        "_store_authority_query_semantic_key": ("store_durable_input_semantic_key",),
+        "_store_authority_manual_semantic_key": ("store_durable_input_semantic_key",),
+        "_store_authority_grant_semantic_key": ("store_durable_input_semantic_key",),
+        "_store_new_effect_with_acceptance": (
+            "store_venue_effect",
+            "store_acceptance_set",
+        ),
+        "_persist_authority_venue_transitions": (
+            "store_dispatch_claim",
+            "advance_venue_effect",
+            "store_acceptance_evidence",
+            "advance_venue_effect",
+        ),
+        "_complete_claimed_input": (
+            "store_decision_receipt",
+            "store_durable_input_outcome",
+            "store_broker_outbox",
+            "finalize_durable_input",
+        ),
+        "_persist_venue_owner_rows": (
+            "advance_venue_effect",
+            "advance_venue_effect",
+            "store_venue_identity_owner",
+            "store_acceptance_evidence",
+        ),
+        "_persist_venue_terminal_closure": ("store_closure",),
+        "_persist_venue_economics": (
+            "store_root_fill",
+            "store_acquisition_root_route",
+            "store_execution_fact",
+        ),
+        "_advance_acquisition_currentness": ("advance_market_cursor",),
+        "_advance_venue_protection_after_trigger": ("advance_market_cursor",),
+        "_advance_protection_record": ("advance_protection_authority",),
+        "_advance_controller_record": ("advance_symbol_controller",),
+        "_execute_generation_operation": (
+            "retire_acquisition_generation",
+            "store_acquisition_generation",
+            "store_market_stream_authority",
+            "store_market_cursor",
+        ),
+        "_execute_broker_execution_operation": (
+            "store_root_fill",
+            "store_acquisition_root_route",
+            "store_execution_fact",
+        ),
+    }
+    actual: dict[str, tuple[str, ...]] = {}
+    dynamic_calls: list[int] = []
+    wildcard_calls: list[int] = []
+
+    for function in (node for node in tree.body if isinstance(node, ast.FunctionDef)):
+        calls: list[str] = []
+
+        class RepositoryWriteVisitor(ast.NodeVisitor):
+            def visit_Call(self, node: ast.Call) -> None:
+                if (
+                    isinstance(node.func, ast.Name)
+                    and node.func.id == "getattr"
+                    and node.args
+                    and isinstance(node.args[0], ast.Name)
+                    and node.args[0].id == "_repository"
+                ):
+                    dynamic_calls.append(node.lineno)
+                if isinstance(node.func, ast.Attribute):
+                    owner = node.func.value
+                    if (
+                        isinstance(owner, ast.Name)
+                        and owner.id == "_repository"
+                        and node.func.attr.startswith(write_prefixes)
+                        and node.func.attr
+                        not in {
+                            "_activate_runtime_write_lease",
+                            "_retire_runtime_write_lease",
+                        }
+                    ):
+                        calls.append(node.func.attr)
+                        if any(
+                            isinstance(argument, ast.Starred) for argument in node.args
+                        ) or any(keyword.arg is None for keyword in node.keywords):
+                            wildcard_calls.append(node.lineno)
+                self.generic_visit(node)
+
+        RepositoryWriteVisitor().visit(function)
+        if calls:
+            actual[function.name] = tuple(calls)
+
+    catalogued = {
+        call
+        for _, families in unit_of_work._M2_C6_WRITE_TABLE
+        for family in families
+        for call in family.repository_calls
+    }
+    catalogued.update(
+        call
+        for family in unit_of_work._M2_COMMON_WRITE_TABLE
+        for call in family.repository_calls
+    )
+    assert dynamic_calls == []
+    assert wildcard_calls == []
+    assert actual == expected
+    assert catalogued == set(unit_of_work._M2_REPOSITORY_WRITE_CALLS)
+
+
+@pytest.mark.parametrize(
+    ("row_ids", "function_name", "expected_markers"),
+    (
+        (
+            ("O1",),
+            "_execute_broker_execution_operation",
+            (
+                "store_root_fill",
+                "store_acquisition_root_route",
+                "store_execution_fact",
+                "_advance_protection_record",
+                "_persist_authority_venue_transitions",
+            ),
+        ),
+        (
+            ("O2",),
+            "_execute_venue_operation",
+            (
+                "_store_venue_transition_semantic_keys",
+                "_persist_venue_owner_rows",
+                "_persist_venue_terminal_closure",
+                "_persist_venue_economics",
+                "_advance_venue_protection_after_trigger",
+                "_advance_venue_protection_after_trigger",
+                "_advance_acquisition_currentness",
+                "_persist_authority_venue_transitions",
+            ),
+        ),
+        (
+            ("O3",),
+            "_execute_authority_operation",
+            (
+                "_persist_authority_venue_transitions",
+                "_store_authority_query_semantic_key",
+                "_store_authority_grant_semantic_key",
+                "_store_authority_manual_semantic_key",
+            ),
+        ),
+        (
+            ("O4",),
+            "_execute_generation_operation",
+            (
+                "_advance_protection_record",
+                "_advance_controller_record",
+                "_advance_protection_record",
+                "retire_acquisition_generation",
+                "store_acquisition_generation",
+                "store_market_stream_authority",
+                "store_market_cursor",
+                "_advance_controller_record",
+                "_advance_protection_record",
+            ),
+        ),
+        (
+            ("O5", "O6", "O7"),
+            "_execute_acquisition_operation",
+            (
+                "_advance_acquisition_currentness",
+                "_persist_authority_venue_transitions",
+                "_advance_acquisition_currentness",
+            ),
+        ),
+        (
+            ("O8",),
+            "_execute_market_operation",
+            (
+                "_advance_acquisition_currentness",
+                "_persist_authority_venue_transitions",
+            ),
+        ),
+    ),
+)
+def test_o1_o8_executor_family_markers_are_in_frozen_source_order(
+    row_ids: tuple[str, ...],
+    function_name: str,
+    expected_markers: tuple[str, ...],
+) -> None:
+    del row_ids
+    tree = ast.parse(inspect.getsource(unit_of_work))
+    function = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == function_name
+    )
+    marker_names = frozenset(expected_markers)
+    actual: list[str] = []
+
+    class MarkerVisitor(ast.NodeVisitor):
+        def visit_Call(self, node: ast.Call) -> None:
+            if isinstance(node.func, ast.Name) and node.func.id in marker_names:
+                actual.append(node.func.id)
+            elif (
+                isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "_repository"
+                and node.func.attr in marker_names
+            ):
+                actual.append(node.func.attr)
+            self.generic_visit(node)
+
+    MarkerVisitor().visit(function)
+    assert tuple(actual) == expected_markers
 
 
 @pytest.mark.parametrize(
@@ -264,6 +766,120 @@ def test_manual_kernel_ignores_unbound_payload_equal_history() -> None:
         public_altered_advance.disposition,
         public_altered_advance.reason,
     )
+
+
+def test_manual_sell_requires_the_scope_bound_ready_observation() -> None:
+    execution = authority_fixtures._advanced_same_scope_execution(
+        quantity=3,
+        label="uow-operation-bound-manual",
+    )
+    clean = authority_fixtures._forge_positive_predecessor(
+        authority,
+        mode="REDUCING",
+        remaining=5,
+        reserve=1,
+    )
+    flatten_id = authority.ManualFlattenId("uow-operation-bound-manual")
+    begin = authority.BeginManualFlatten(
+        authority.AuthorityInputId("uow-operation-bound-manual-begin"),
+        flatten_id,
+        clean.session_id,
+        execution.position.scope.symbol_id,
+        identity.ActorId("uow-operation-bound-operator"),
+        "prove the exact active manual flatten",
+        identity.EvidenceReference("uow-operation-bound-evidence"),
+        None,
+    )
+    begun = authority.apply_execution_authority_input(clean, execution, begin)
+    assert begun.disposition is authority.AuthorityDisposition.APPLIED
+    ready = authority.apply_execution_authority_input(
+        begun.state,
+        execution,
+        authority.AdvanceManualFlatten(
+            authority.AuthorityInputId("uow-operation-bound-manual-ready"),
+            flatten_id,
+        ),
+    )
+    assert ready.disposition is authority.AuthorityDisposition.APPLIED
+    manual = ready.state._manual_by_id.get(authority._manual_key(flatten_id))
+    assert manual is not None
+    assert manual.phase is authority._FlattenPhase.READY
+
+    unbound = deepcopy(clean)
+    object.__setattr__(
+        unbound,
+        "_manual_by_id",
+        authority._inserted(
+            clean._manual_by_id,
+            authority._manual_key(flatten_id),
+            manual,
+        ),
+    )
+    assert clean._manual_flatten_by_scope == unbound._manual_flatten_by_scope
+    command = authority_fixtures._create_command(
+        authority,
+        clean,
+        label="uow-operation-bound-manual-sell",
+        side=authority_fixtures.ExecutionSide.SELL,
+        quantity=execution.position.authorized_residual_sell.value,
+        manual_flatten_id=flatten_id,
+    )
+    assert type(command) is authority.CreateBrokerEffect
+
+    for state in (clean, unbound):
+        missing = authority._m2_apply_execution_authority_input(
+            state,
+            execution,
+            command,
+            manual_observation=None,
+        )
+        assert missing.disposition is authority.AuthorityDisposition.REFUSED
+        assert missing.reason is authority.AuthorityReason.MANUAL_FLATTEN_INVALID
+
+        proof = authority._m2_authority_manual_observation_from_direct_evidence(
+            state,
+            command,
+            active_symbol_id=execution.position.scope.symbol_id,
+            retained_command=None,
+            retained_input_bytes=None,
+            retained_outcome_bytes=None,
+        )
+        direct = authority._m2_apply_execution_authority_input(
+            state,
+            execution,
+            command,
+            manual_observation=proof,
+        )
+        public = authority.apply_execution_authority_input(
+            state,
+            execution,
+            command,
+        )
+        assert (direct.disposition, direct.reason) == (
+            authority.AuthorityDisposition.REFUSED,
+            authority.AuthorityReason.MANUAL_FLATTEN_INVALID,
+        )
+        assert (public.disposition, public.reason) == (
+            direct.disposition,
+            direct.reason,
+        )
+
+    bound_proof = authority._m2_authority_manual_observation_from_direct_evidence(
+        ready.state,
+        command,
+        active_symbol_id=execution.position.scope.symbol_id,
+        retained_command=None,
+        retained_input_bytes=None,
+        retained_outcome_bytes=None,
+    )
+    bound = authority._m2_apply_execution_authority_input(
+        ready.state,
+        execution,
+        command,
+        manual_observation=bound_proof,
+    )
+    assert bound.disposition is authority.AuthorityDisposition.APPLIED
+    assert bound.created_effect_ids == (command.request.effect_id,)
 
 
 def test_manual_direct_proof_requires_retained_bytes_and_terminal_outcome() -> None:
@@ -877,6 +1493,252 @@ def test_broker_operation_preserves_an_unowned_fact_for_quarantine(
         claimed.state._controller.live_generation_id
     )
     assert (root, route, predecessor, effect, owner) == (None, None, None, None, None)
+
+
+@pytest.mark.parametrize("revision_kind", ("correct", "bust"))
+def test_route_less_broker_revisions_advance_truth_without_inventing_attribution(
+    monkeypatch: pytest.MonkeyPatch,
+    revision_kind: str,
+) -> None:
+    fill = recovery_fixtures._broker_fill(
+        "uow-route-less-fill-source",
+        "uow-route-less-fill-root",
+        quantity=2,
+    )
+    initial = position.ExecutionSnapshot.flat(fill.scope.position_scope)
+    applied_fill = position.apply_broker_execution_fact(
+        initial.position,
+        initial.integrity,
+        initial.root_heads,
+        initial.seen_facts,
+        fill,
+    )
+    predecessor_execution = position.ExecutionSnapshot(
+        applied_fill.position,
+        applied_fill.integrity,
+        applied_fill.root_heads,
+        applied_fill.seen_facts,
+    )
+    if revision_kind == "correct":
+        fact: fills.BrokerTradeCorrectFact | fills.BrokerTradeBustFact = (
+            fills.BrokerTradeCorrectFact(
+                replace(
+                    fill.key,
+                    source_event_id=identity.SourceEventId(
+                        "uow-route-less-correct-source"
+                    ),
+                ),
+                fill.scope,
+                fill.root_fill_id,
+                fill.key.source_event_id,
+                authority_fixtures.Quantity(3),
+                fill.price,
+            )
+        )
+    else:
+        fact = fills.BrokerTradeBustFact(
+            replace(
+                fill.key,
+                source_event_id=identity.SourceEventId("uow-route-less-bust-source"),
+            ),
+            fill.scope,
+            fill.root_fill_id,
+            fill.key.source_event_id,
+            fill.price,
+        )
+    transition = position.apply_broker_execution_fact(
+        predecessor_execution.position,
+        predecessor_execution.integrity,
+        predecessor_execution.root_heads,
+        predecessor_execution.seen_facts,
+        fact,
+    )
+    assert transition.disposition is position.TransitionDisposition.APPLIED
+
+    application_generation_id = authority_fixtures.GENERATION
+    generation_id = identity.AcquisitionGenerationId("ab" * 32)
+    operation = operations.BrokerExecutionOperation(
+        operations.ExecutionOperationCoordinates(
+            application_generation_id,
+            "ep",
+            7,
+        ),
+        fact,
+    )
+    prepared = SimpleNamespace(
+        operation=operation,
+        scope_id=7,
+        application_generation_id=application_generation_id,
+        execution_profile_id="ep",
+        context=object(),
+    )
+    root = records.RootFillRecord(
+        11,
+        7,
+        application_generation_id,
+        "ep",
+        generation_id,
+        fill.root_fill_id,
+        13,
+        fill.kind.value,
+        fill.authority.value,
+        fill.scope.side.value,
+        fill.quantity,
+        fill.price,
+        17,
+    )
+    predecessor_fact = records.ExecutionFactRecord(
+        13,
+        7,
+        application_generation_id,
+        "ep",
+        root.root_fill_key_id,
+        fill.key.source_event_id,
+        fill.scope.order_id,
+        fill.scope.side.value,
+        fill.kind.value,
+        fill.authority.value,
+        fill.quantity,
+        fill.price,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        17,
+    )
+    controller = records.SymbolControllerRecord(
+        7,
+        application_generation_id,
+        "ep",
+        generation_id,
+        fill.quantity.value,
+        "UNMATCHED_LINEAGE_QUARANTINED",
+        10,
+        3,
+        "aa" * 32,
+    )
+    generation_current = records.AcquisitionGenerationCurrentRecord(
+        generation_id,
+        7,
+        0,
+        0,
+        0,
+    )
+    selected = SimpleNamespace(
+        generation=SimpleNamespace(acquisition_generation_id=generation_id),
+        controller=controller,
+        generation_current=generation_current,
+    )
+    captured: dict[str, records.ExecutionFactRecord] = {}
+
+    monkeypatch.setattr(
+        unit_of_work,
+        "_broker_execution_transition_for_operation",
+        lambda *args: (
+            transition,
+            None,
+            (),
+            selected,
+            root,
+            None,
+            predecessor_fact,
+            None,
+            None,
+        ),
+    )
+    monkeypatch.setattr(unit_of_work, "_next_execution_fact_id", lambda *args: 14)
+    monkeypatch.setattr(
+        unit_of_work,
+        "_next_execution_fact_ordinal",
+        lambda *args: 18,
+    )
+
+    def found(record: object) -> records.RepositoryOutcome[object]:
+        return records.RepositoryOutcome(records.RepositoryOutcomeKind.FOUND, record)
+
+    def store_fact(
+        connection: object,
+        record: records.ExecutionFactRecord,
+        *,
+        capability: object,
+    ) -> records.RepositoryOutcome[object]:
+        del connection, capability
+        captured["fact"] = record
+        return records.RepositoryOutcome(records.RepositoryOutcomeKind.APPLIED)
+
+    def resulting_root(*args: object) -> records.RepositoryOutcome[object]:
+        del args
+        retained = captured["fact"]
+        return found(
+            replace(
+                root,
+                current_fact_id=retained.fact_id,
+                current_kind=retained.kind,
+                current_authority=retained.authority,
+                current_side=retained.side,
+                current_quantity=retained.quantity,
+                current_price=retained.price,
+                economics_head_ordinal=retained.fact_ordinal,
+            )
+        )
+
+    monkeypatch.setattr(unit_of_work._repository, "store_execution_fact", store_fact)
+    monkeypatch.setattr(unit_of_work._repository, "load_root_fill", resulting_root)
+    monkeypatch.setattr(
+        unit_of_work._repository,
+        "load_acquisition_root_route",
+        lambda *args: records.RepositoryOutcome(records.RepositoryOutcomeKind.ABSENT),
+    )
+    monkeypatch.setattr(
+        unit_of_work._repository,
+        "load_execution_fact_by_source",
+        lambda *args: found(captured["fact"]),
+    )
+    monkeypatch.setattr(
+        unit_of_work._repository,
+        "load_symbol_controller",
+        lambda *args: found(
+            replace(
+                controller,
+                aggregate_quantity=transition.position.raw_quantity,
+                integrity_state="UNMATCHED_LINEAGE_QUARANTINED",
+                currentness_head_ordinal=controller.currentness_head_ordinal + 1,
+                controller_version_ordinal=controller.controller_version_ordinal + 1,
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        unit_of_work._repository,
+        "load_acquisition_generation_current",
+        lambda *args: found(generation_current),
+    )
+    completed: list[dict[str, object]] = []
+    sentinel = object()
+
+    def complete(*args: object, **kwargs: object) -> object:
+        del args
+        completed.append(kwargs)
+        return sentinel
+
+    monkeypatch.setattr(unit_of_work, "_complete_claimed_input", complete)
+
+    result = unit_of_work._execute_broker_execution_operation(
+        object(),
+        prepared,
+        object(),
+        object(),
+    )
+
+    assert result is sentinel
+    assert captured["fact"].predecessor_fact_id == predecessor_fact.fact_id
+    assert captured["fact"].source_event_id == fact.key.source_event_id
+    assert completed[0]["owner_disposition"] == "RECONCILIATION_REQUIRED"
+    assert completed[0]["checkpoint_changed"] is False
+    assert completed[0]["successor_context"] is prepared.context
 
 
 def _apply_direct_venue_observation(
@@ -2191,6 +3053,72 @@ def test_body_fault_retires_lease_then_rolls_back_once(
     with pytest.raises(RuntimeError, match="injected body fault"):
         unit_of_work.execute_unit_of_work(connection, object(), _uow_context())
     assert connection.events == ["BEGIN IMMEDIATE", "ROLLBACK"]
+    with pytest.raises(ValueError, match="not current"):
+        unit_of_work._repository._require_write_capability(
+            connection,
+            retained_capability[0],
+        )
+
+
+def _catalogued_write_fault_edges() -> tuple[tuple[str, str], ...]:
+    edges: list[tuple[str, str]] = [("F03:after-reducer", "after")]
+    for row_id, families in unit_of_work._M2_C6_WRITE_TABLE:
+        for family in families:
+            for ordinal, call in enumerate(family.repository_calls, start=1):
+                boundary = f"F04:{row_id}:{family.name}:{ordinal}:{call}"
+                edges.extend(((boundary, "before"), (boundary, "after")))
+    for family in unit_of_work._M2_COMMON_WRITE_TABLE:
+        for ordinal, call in enumerate(family.repository_calls, start=1):
+            boundary = f"COMMON:{family.name}:{ordinal}:{call}"
+            edges.extend(((boundary, "before"), (boundary, "after")))
+    return tuple(edges)
+
+
+class _JournalTransactionConnection(_TransactionConnection):
+    def __init__(self) -> None:
+        super().__init__()
+        self.staged: list[str] = []
+        self.committed: list[str] = []
+
+    def execute(self, sql: str, parameters: object = ()) -> object:
+        result = super().execute(sql, parameters)
+        if sql == "ROLLBACK":
+            self.staged.clear()
+        elif sql == "COMMIT":
+            self.committed.extend(self.staged)
+            self.staged.clear()
+        return result
+
+
+@pytest.mark.parametrize(("edge", "phase"), _catalogued_write_fault_edges())
+def test_every_catalogued_write_boundary_fault_is_old_complete(
+    monkeypatch: pytest.MonkeyPatch,
+    edge: str,
+    phase: str,
+) -> None:
+    connection = _JournalTransactionConnection()
+    retained_capability: list[object] = []
+
+    def fail_at_boundary(
+        body_connection: object,
+        prepared: object,
+        capability: object,
+    ) -> object:
+        del prepared
+        assert body_connection is connection
+        retained_capability.append(capability)
+        if phase == "after":
+            connection.staged.append(edge)
+        raise RuntimeError(f"injected write boundary fault: {edge}:{phase}")
+
+    _patch_prepared_path(monkeypatch, fail_at_boundary)
+    with pytest.raises(RuntimeError, match="injected write boundary fault"):
+        unit_of_work.execute_unit_of_work(connection, object(), _uow_context())
+
+    assert connection.events == ["BEGIN IMMEDIATE", "ROLLBACK"]
+    assert connection.staged == []
+    assert connection.committed == []
+    assert len(retained_capability) == 1
     with pytest.raises(ValueError, match="not current"):
         unit_of_work._repository._require_write_capability(
             connection,
@@ -3845,3 +4773,120 @@ def test_authority_manual_begin_uses_direct_proof_and_claims_semantic_key(
     assert decision.commit is True
     assert owner_calls == [(observation, None)]
     assert semantic_calls == [(command, capability)]
+
+
+def test_authority_manual_sell_uses_an_operation_targeted_direct_proof(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prepared = _prepared_primary_claim()
+    scope_id, _, execution, _ = prepared.context.scope_owners[0]
+    command = authority.CreateBrokerEffect(
+        identity.AuthorityInputId("uow-manual-sell-input"),
+        identity.SessionId("uow-manual-sell-session"),
+        authority_fixtures._effect_request(
+            authority,
+            "uow-manual-sell",
+            side=authority_fixtures.ExecutionSide.SELL,
+            quantity=1,
+        ),
+        identity.ManualFlattenId("uow-manual-sell-flatten"),
+        None,
+    )
+    operation = operations.AuthorityOperation(
+        operations.ExecutionOperationCoordinates(
+            prepared.application_generation_id,
+            prepared.execution_profile_id,
+            scope_id,
+        ),
+        command,
+    )
+    payload = operations.encode_m2_operation(operation)
+    projection = operations._derive_m2_durable_input_projection(operation)
+    prepared = replace(
+        prepared,
+        operation=operation,
+        canonical_payload_bytes=payload,
+        input_domain=operations.OperationDomain.AUTHORITY,
+        scope_id=scope_id,
+        input_identity_sha256=projection[-1],
+    )
+    claimed = records.DurableInputRecord(
+        prepared.application_generation_id,
+        prepared.execution_profile_id,
+        prepared.scope_id,
+        prepared.input_domain,
+        None,
+        None,
+        None,
+        None,
+        prepared.input_identity_sha256,
+        1,
+        payload,
+        unit_of_work._hashlib.sha256(payload).hexdigest(),
+        "CLAIMED",
+        1,
+    )
+    observation = object()
+    observation_calls: list[object] = []
+
+    def observe(
+        connection: object,
+        prepared_operation: object,
+        item: object,
+    ) -> object:
+        del connection
+        assert prepared_operation is prepared
+        observation_calls.append(item)
+        return observation
+
+    def owner(
+        state: authority.ExecutionAuthorityState,
+        execution_state: object,
+        item: object,
+        *,
+        manual_observation: object,
+        query_observation: object,
+        grant_observation: object,
+    ) -> authority.ExecutionAuthorityTransition:
+        del execution_state
+        assert state is prepared.context.authority
+        assert item is command
+        assert manual_observation is observation
+        assert query_observation is None
+        assert grant_observation is None
+        return authority.ExecutionAuthorityTransition(
+            state,
+            authority.AuthorityDisposition.REFUSED,
+            authority.AuthorityReason.MANUAL_FLATTEN_INVALID,
+            (),
+            None,
+            (),
+            None,
+            None,
+        )
+
+    monkeypatch.setattr(unit_of_work, "_authority_manual_observation", observe)
+    monkeypatch.setattr(
+        unit_of_work._authority,
+        "_m2_apply_execution_authority_input",
+        owner,
+    )
+    monkeypatch.setattr(
+        unit_of_work,
+        "_complete_claimed_input",
+        lambda *args, **kwargs: unit_of_work._TransactionDecision(
+            True,
+            _committed_result(prepared.context),
+            None,
+        ),
+    )
+
+    decision = unit_of_work._execute_authority_operation(
+        object(),
+        prepared,
+        claimed,
+        object(),
+    )
+
+    assert decision.commit is True
+    assert observation_calls == [command]
