@@ -2241,6 +2241,202 @@ def _controller_state_is_authentic(value: object) -> bool:
         return False
 
 
+def _m2_restore_compact_acquisition_controller(
+    *,
+    controller: SymbolAcquisitionController,
+    mandate: AcquisitionMandate,
+    generation_records: tuple[GenerationRecordView, ...],
+    stream_routes: tuple[
+        tuple[_MarketStreamGenerationId, _AcquisitionGenerationId], ...
+    ],
+    lineage_routes: tuple[
+        tuple[GenerationRouteKind, object, _AcquisitionGenerationId], ...
+    ],
+) -> AcquisitionControllerState:
+    """Rebuild one bounded controller from decoded, already selected members.
+
+    This is deliberately private and accepts domain values rather than bytes.  The
+    checkpoint boundary remains responsible for proving that every member came from
+    one canonical C0 row and one repository-authentic selection proof.  This owner
+    constructor then restores only the bounded registry and direct lineage routes
+    present in that proof; it never invents omitted history.
+    """
+
+    if not _controller_is_authentic(controller):
+        raise ValueError("compact acquisition controller is not authentic")
+    if not _acquisition_mandate_is_authentic(mandate):
+        raise ValueError("compact acquisition mandate is not authentic")
+    if type(generation_records) is not tuple:
+        raise TypeError("compact generation records must be an exact tuple")
+    if type(stream_routes) is not tuple:
+        raise TypeError("compact stream routes must be an exact tuple")
+    if type(lineage_routes) is not tuple:
+        raise TypeError("compact lineage routes must be an exact tuple")
+    if not generation_records or len(generation_records) != len(stream_routes):
+        raise ValueError("compact generation registry is incomplete")
+
+    records: _PersistentKeyMap[GenerationRecordView] = _PersistentKeyMap.empty()
+    records_by_id: dict[_AcquisitionGenerationId, GenerationRecordView] = {}
+    for record in generation_records:
+        if not _generation_record_is_authentic(record):
+            raise ValueError("compact generation record is not authentic")
+        generation_id = record.binding.generation_id
+        if generation_id in records_by_id:
+            raise ValueError("compact generation record is duplicated")
+        records_by_id[generation_id] = record
+        records = records.insert_new(
+            _generation_registry_key(generation_id),
+            record,
+            record._seal,
+        )
+
+    market_stream_routes: _PersistentKeyMap[_MarketStreamGenerationRoute] = (
+        _PersistentKeyMap.empty()
+    )
+    routed_generations: set[_AcquisitionGenerationId] = set()
+    for item in stream_routes:
+        if type(item) is not tuple or len(item) != 2:
+            raise TypeError("compact stream route must be an exact pair")
+        stream_generation, generation_id = item
+        if not _market_identity_is_canonical(stream_generation):
+            raise ValueError("compact stream generation is not canonical")
+        if not _acquisition_generation_id_is_canonical(generation_id):
+            raise ValueError("compact routed generation is not canonical")
+        binding_record = records_by_id.get(generation_id)
+        if binding_record is None or generation_id in routed_generations:
+            raise ValueError("compact stream route has no unique generation")
+        stream_route = object.__new__(_MarketStreamGenerationRoute)
+        object.__setattr__(stream_route, "stream_generation", stream_generation)
+        object.__setattr__(stream_route, "binding", binding_record.binding)
+        object.__setattr__(
+            stream_route,
+            "_seal",
+            _market_stream_generation_route_seal(
+                stream_generation,
+                binding_record.binding,
+            ),
+        )
+        market_stream_routes = market_stream_routes.insert_new(
+            _market_stream_route_key(stream_generation),
+            stream_route,
+            stream_route._seal,
+        )
+        routed_generations.add(generation_id)
+    if routed_generations != set(records_by_id):
+        raise ValueError("compact generation routes are not total")
+
+    registry = object.__new__(GenerationRegistry)
+    object.__setattr__(registry, "_records", records)
+    object.__setattr__(registry, "_market_stream_routes", market_stream_routes)
+    object.__setattr__(
+        registry,
+        "_seal",
+        _registry_seal(records, market_stream_routes),
+    )
+
+    request_routes: _PersistentKeyMap[GenerationRouteView] = _PersistentKeyMap.empty()
+    effect_routes: _PersistentKeyMap[GenerationRouteView] = _PersistentKeyMap.empty()
+    owner_routes: _PersistentKeyMap[GenerationRouteView] = _PersistentKeyMap.empty()
+    root_routes: _PersistentKeyMap[GenerationRouteView] = _PersistentKeyMap.empty()
+    fact_routes: _PersistentKeyMap[GenerationRouteView] = _PersistentKeyMap.empty()
+    for lineage_item in lineage_routes:
+        if type(lineage_item) is not tuple or len(lineage_item) != 3:
+            raise TypeError("compact lineage route must be an exact triple")
+        route_kind, source, generation_id = lineage_item
+        _require_exact("compact lineage route kind", route_kind, GenerationRouteKind)
+        if generation_id not in records_by_id:
+            raise ValueError("compact lineage route leaves the generation registry")
+        source_key = _lineage_source_key(route_kind, source)
+        lineage_route = _new_generation_route_view(
+            route_kind=route_kind,
+            source_commitment=_commit_parts(
+                b"execution-core/acquisition/lineage-source/v1",
+                source_key,
+            ),
+            generation_id=generation_id,
+        )
+        if route_kind is GenerationRouteKind.REQUEST:
+            request_routes = request_routes.insert_new(
+                source_key, lineage_route, lineage_route._seal
+            )
+        elif route_kind is GenerationRouteKind.EFFECT:
+            effect_routes = effect_routes.insert_new(
+                source_key, lineage_route, lineage_route._seal
+            )
+        elif route_kind is GenerationRouteKind.OWNER:
+            owner_routes = owner_routes.insert_new(
+                source_key, lineage_route, lineage_route._seal
+            )
+        elif route_kind is GenerationRouteKind.ROOT:
+            root_routes = root_routes.insert_new(
+                source_key, lineage_route, lineage_route._seal
+            )
+        else:
+            fact_routes = fact_routes.insert_new(
+                source_key, lineage_route, lineage_route._seal
+            )
+    lineage = _new_acquisition_lineage_index(
+        request_routes=request_routes,
+        effect_routes=effect_routes,
+        owner_routes=owner_routes,
+        root_routes=root_routes,
+        fact_routes=fact_routes,
+    )
+    restored = _new_acquisition_controller_state(
+        controller=controller,
+        mandate=mandate,
+        registry=registry,
+        lineage=lineage,
+    )
+    if not _controller_state_is_authentic(restored):
+        raise ValueError("compact acquisition owner is not authentic")
+    return restored
+
+
+def _m2_rebind_compact_acquisition_controller(
+    state: AcquisitionControllerState,
+    *,
+    scope_execution_commitment: bytes,
+    venue_commitment: bytes,
+    protection_commitment: bytes | None,
+) -> AcquisitionControllerState:
+    """Bind one authenticated C0 owner to its compact current owner context."""
+
+    if not _controller_state_is_authentic(state):
+        raise ValueError("compact acquisition source owner is not authentic")
+    _require_exact_digest("scope_execution_commitment", scope_execution_commitment)
+    _require_exact_digest("venue_commitment", venue_commitment)
+    if protection_commitment is not None:
+        _require_exact_digest("protection_commitment", protection_commitment)
+    source = state._controller
+    live_generation_id = source.live_generation_id
+    if live_generation_id is None:
+        raise ValueError("compact acquisition source has no live generation")
+    rebound = _new_symbol_acquisition_controller(
+        application_generation_id=source.application_generation_id,
+        position_scope=source.position_scope,
+        controller_head=source.controller_head,
+        successor_ordinal=source.successor_ordinal,
+        live_generation_id=live_generation_id,
+        recovery_class=source.recovery_class,
+        scope_execution_commitment=scope_execution_commitment,
+        venue_commitment=venue_commitment,
+        authority_context_commitment=source.authority_context_commitment,
+        protection_commitment=protection_commitment,
+        binding_commitment=source._binding_commitment,
+        compatibility_commitment=source._compatibility_commitment,
+    )
+    result = _new_acquisition_controller_state(
+        controller=rebound,
+        mandate=state._mandate,
+        registry=state.registry,
+        lineage=state.lineage,
+    )
+    if not _controller_state_is_authentic(result):
+        raise ValueError("compact rebound acquisition owner is not authentic")
+    return result
+
+
 @_dataclass(frozen=True, slots=True, init=False)
 class AcquisitionControllerStatus:
     """Bounded immutable read projection with no authority or action surface."""

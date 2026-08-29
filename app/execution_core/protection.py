@@ -2824,6 +2824,64 @@ def _m2_position_protection_from_checkpoint(
     return state
 
 
+def _m2_rebind_compact_protection_execution(
+    state: PositionProtectionState,
+    execution: _ExecutionSnapshot,
+) -> PositionProtectionState:
+    """Rebind authenticated protection semantics to one compact execution owner.
+
+    The loaded C0 commitment remains the proof of the decoded source state.  This
+    private cutover constructor changes only the execution-owner commitment after
+    requiring exact scope and quantity agreement; volatile market invalidation is a
+    separate transition owned by the startup unit-of-work bridge.
+    """
+
+    if type(state) is not PositionProtectionState or not _state_is_authentic(state):
+        raise ValueError("compact protection source owner is not authentic")
+    if type(execution) is not _ExecutionSnapshot:
+        raise TypeError("compact protection execution must be exact ExecutionSnapshot")
+    if (
+        execution.position.scope != state.mandate.position_scope
+        or execution.position.raw_quantity != state.raw_quantity
+    ):
+        raise ValueError("compact protection execution semantics do not agree")
+    rebound = _rebuild_state(
+        state.policy,
+        state.mandate,
+        state.raw_quantity,
+        execution.commitment,
+        state.formula_available,
+        state.armed_hard_bail_trigger,
+        state.activation_price,
+        state.high_watermark,
+        state.trail,
+        state.waiting_buy_resolution,
+        state._cursor_ordinal,
+        state._cursor_head,
+        state._market_occurrence_epoch,
+        state._market_committed_epoch,
+        state._market_expected_epoch,
+        state._market_source_sequence,
+        state._market_source_time,
+        state._market_evaluation_time,
+        state._market_occurrence_identity,
+        state._market_halted,
+        state._market_baseline_required,
+        state._market_exhausted,
+        state._market_last_primary,
+        state._hard_bid_identity,
+        state._hard_bid_source_time,
+        state._trade_identity,
+        state._trade_source_time,
+        state._trail_bid_identity,
+        state._trail_bid_source_time,
+        state._exit_provenance,
+    )
+    if not _state_is_authentic(rebound):
+        raise ValueError("compact rebound protection owner is not authentic")
+    return rebound
+
+
 def _m2_protection_checkpoint_is_authentic(checkpoint: object) -> bool:
     """Return whether one fixed checkpoint reconstitutes an authentic state.
 

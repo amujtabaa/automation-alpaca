@@ -3072,6 +3072,7 @@ class _ProtectionTransitionSourceKind(str, Enum):
 
     ORDINARY = "ORDINARY"
     SERIAL_SUCCESSOR_ROLLOVER = "SERIAL_SUCCESSOR_ROLLOVER"
+    COMPACT_RESTORE = "COMPACT_RESTORE"
 
 
 _ORDINARY_PROTECTION_TRANSITION_SOURCE_BINDING = _commit_parts(
@@ -3351,6 +3352,35 @@ class _BootstrapBoundTargetRecord:
     def __init_subclass__(cls, **kwargs: object) -> None:
         del cls, kwargs
         raise TypeError("bootstrap-bound target records cannot be subclassed")
+
+
+@dataclass(frozen=True, slots=True)
+class _M2CompactBootstrapCheckpointEvidence:
+    """Private direct evidence for one history-independent bootstrap cutover.
+
+    The external checkpoint input remains unchanged.  This value only lets the
+    compact owner retain the already-authenticated input identity and command
+    commitment without pretending that omitted ``CatchUpExecutionRegistry``
+    history was reconstructed.
+    """
+
+    input_id: VenueInputId
+    position_scope: PositionScope
+    command_commitment: bytes
+    source_binding: bytes
+
+    def __post_init__(self) -> None:
+        _require("compact bootstrap input_id", self.input_id, VenueInputId)
+        _require(
+            "compact bootstrap position_scope",
+            self.position_scope,
+            PositionScope,
+        )
+        _require_digest(
+            "compact bootstrap command commitment",
+            self.command_commitment,
+        )
+        _require_digest("compact bootstrap source binding", self.source_binding)
 
 
 def _bootstrap_target_registry_input_commitment(
@@ -7530,29 +7560,54 @@ class VenueRecoveryBook:
             )
             or _SymbolAuthoritySummary()
         )
-        exact_checkpoint: _BootstrapTargetRegistryInput | CatchUpExecutionRegistry
+        exact_checkpoint: (
+            _BootstrapTargetRegistryInput
+            | CatchUpExecutionRegistry
+            | _M2CompactBootstrapCheckpointEvidence
+        )
+        exact_command_commitment: bytes
         if type(checkpoint_input) is _BootstrapTargetRegistryInput:
             exact_checkpoint = checkpoint_input
             if (
                 exact_checkpoint.input_id != record.bootstrap_input_id
                 or exact_checkpoint.commitment != record.bootstrap_input_commitment
-                or record.target_execution_commitment
-                != record.bootstrap_target_execution_commitment
-                or record.account_registry_count
-                != record.bootstrap_account_registry_count
-                or record.account_registry_commitment
-                != record.bootstrap_account_registry_commitment
-                or record.reconciliation_transition_count
-                != record.bootstrap_reconciliation_transition_count
-                or record.reconciliation_transition_head
-                != record.bootstrap_reconciliation_transition_head
-                or proof != record._bootstrap_neutral_checkpoint_proof
+                or (
+                    proof.source_kind
+                    is not _ProtectionTransitionSourceKind.COMPACT_RESTORE
+                    and (
+                        record.target_execution_commitment
+                        != record.bootstrap_target_execution_commitment
+                        or record.account_registry_count
+                        != record.bootstrap_account_registry_count
+                        or record.account_registry_commitment
+                        != record.bootstrap_account_registry_commitment
+                        or record.reconciliation_transition_count
+                        != record.bootstrap_reconciliation_transition_count
+                        or record.reconciliation_transition_head
+                        != record.bootstrap_reconciliation_transition_head
+                        or proof != record._bootstrap_neutral_checkpoint_proof
+                    )
+                )
             ):
                 return False
+            exact_command_commitment = _protection_command_commitment(exact_checkpoint)
         elif type(checkpoint_input) is CatchUpExecutionRegistry:
             exact_checkpoint = checkpoint_input
             if exact_checkpoint.target_scope != position_scope:
                 return False
+            exact_command_commitment = _protection_command_commitment(exact_checkpoint)
+        elif type(checkpoint_input) is _M2CompactBootstrapCheckpointEvidence:
+            exact_checkpoint = checkpoint_input
+            if (
+                exact_checkpoint.position_scope != position_scope
+                or exact_checkpoint.command_commitment
+                != record.checkpoint_command_commitment
+                or exact_checkpoint.source_binding != proof.source_binding
+                or proof.source_kind
+                is not _ProtectionTransitionSourceKind.COMPACT_RESTORE
+            ):
+                return False
+            exact_command_commitment = exact_checkpoint.command_commitment
         else:
             return False
         return bool(
@@ -7560,8 +7615,7 @@ class VenueRecoveryBook:
             and snapshot == execution
             and type(cursor) is _ProtectionCursor
             and exact_checkpoint.input_id == record.checkpoint_input_id
-            and _protection_command_commitment(exact_checkpoint)
-            == record.checkpoint_command_commitment
+            and exact_command_commitment == record.checkpoint_command_commitment
             and proof.position_scope == position_scope
             and proof.cursor == cursor
             and proof.execution_commitment == execution.commitment
@@ -8401,6 +8455,405 @@ def _protection_genesis_cursor() -> _ProtectionCursor:
     )
 
 
+def _m2_restore_compact_bootstrap_targets(
+    book: VenueRecoveryBook,
+    bootstrap_targets: tuple[object, ...],
+) -> VenueRecoveryBook:
+    """Restore selected bootstrap authority without replaying omitted history.
+
+    Active targets receive one private compact-cutover proof when their current
+    owner commitments changed.  Already compact targets replay exactly.  A
+    consumed target is immutable provenance and is retained unchanged.
+    """
+
+    if type(book) is not VenueRecoveryBook:
+        raise TypeError("compact bootstrap owner must be exact VenueRecoveryBook")
+    if type(bootstrap_targets) is not tuple:
+        raise TypeError("compact bootstrap targets must be an exact tuple")
+
+    retained: _PersistentKeyMap[_BootstrapBoundTargetValue] = _PersistentKeyMap.empty()
+    input_ledger: _PersistentSequence[VenueInputRecord] = _PersistentSequence.empty()
+    input_by_id: _PersistentKeyMap[VenueInputRecord] = _PersistentKeyMap.empty()
+    direct_inputs: _PersistentKeyMap[VenueInputRecord] = _PersistentKeyMap.empty()
+    first_inputs: _PersistentKeyMap[VenueInputRecord] = _PersistentKeyMap.empty()
+    pending: list[
+        tuple[
+            _BootstrapBoundTargetRecord,
+            _BootstrapTargetRegistryInput,
+            ExecutionSnapshot,
+            VenueExecutionBinding,
+            bytes,
+        ]
+    ] = []
+    seen_scopes: set[PositionScope] = set()
+
+    def retain_input(item: object, *, compact: bool = False) -> None:
+        nonlocal input_ledger, input_by_id, direct_inputs
+        input_id = _require_input_id(
+            "compact bootstrap input_id", getattr(item, "input_id", None)
+        )
+        key = _input_index_key(input_id)
+        existing = input_by_id.get(key)
+        if existing is not None:
+            if existing.item != item:
+                raise ValueError("compact bootstrap input identity is duplicated")
+            return
+        record = VenueInputRecord(input_id, item)
+        commitment = (
+            _commit_parts(
+                b"execution-core/m2-compact-bootstrap-input-record/v1",
+                _canonical_value_commitment(record),
+            )
+            if compact
+            else _input_record_commitment(record)
+        )
+        input_ledger = input_ledger.append(record, commitment)
+        input_by_id = input_by_id.insert_new(key, record, commitment)
+        if not compact:
+            semantic_key = _semantic_input_key(item)
+            if direct_inputs.get(semantic_key) is None:
+                direct_inputs = direct_inputs.insert_new(
+                    semantic_key,
+                    record,
+                    commitment,
+                )
+
+    def bootstrap_input_for(
+        active: _BootstrapBoundTargetRecord,
+    ) -> _BootstrapTargetRegistryInput:
+        bootstrap_input = _new_bootstrap_target_registry_input(
+            application_generation_id=active.application_generation_id,
+            source_kind=active.source_kind,
+            position_scope=active.position_scope,
+            source_execution_commitment=active.source_execution_commitment,
+            target_genesis_execution_commitment=(
+                active.target_genesis_execution_commitment
+            ),
+            target_execution_commitment=(active.bootstrap_target_execution_commitment),
+            prior_account_registry_count=active.bootstrap_account_registry_count,
+            prior_account_registry_commitment=(
+                active.bootstrap_account_registry_commitment
+            ),
+            reconciliation_transition_count=(
+                active.bootstrap_reconciliation_transition_count
+            ),
+            reconciliation_transition_head=(
+                active.bootstrap_reconciliation_transition_head
+            ),
+        )
+        if (
+            bootstrap_input.input_id != active.bootstrap_input_id
+            or bootstrap_input.commitment != active.bootstrap_input_commitment
+        ):
+            raise ValueError("compact bootstrap provenance is stale or spliced")
+        return bootstrap_input
+
+    for target in bootstrap_targets:
+        consumed: _ConsumedBootstrapBoundTargetRecord | None = None
+        if type(target) is _BootstrapBoundTargetRecord:
+            active = target
+            if not _bootstrap_bound_target_record_is_authentic(active):
+                raise ValueError("compact active bootstrap target is not authentic")
+        elif type(target) is _ConsumedBootstrapBoundTargetRecord:
+            consumed = target
+            if not _consumed_bootstrap_bound_target_record_is_authentic(consumed):
+                raise ValueError("compact consumed bootstrap target is not authentic")
+            active = consumed.active_record
+        else:
+            raise TypeError("compact bootstrap target has an unadmitted exact type")
+        position_scope = active.position_scope
+        key = _position_scope_index_key(position_scope)
+        if (
+            position_scope in seen_scopes
+            or active.application_generation_id != book.scope.generation
+            or position_scope.broker != book.scope.broker
+            or position_scope.environment != book.scope.environment
+            or position_scope.account != book.scope.account
+        ):
+            raise ValueError("compact bootstrap target is duplicated or spliced")
+        seen_scopes.add(position_scope)
+        bootstrap_input = bootstrap_input_for(active)
+        retain_input(bootstrap_input)
+
+        if consumed is not None:
+            current = book._effect_by_id.get(_effect_index_key(consumed.effect_id))
+            effect = current.effect if type(current) is _EffectCurrent else None
+            if (
+                type(effect) is not BrokerEffect
+                or effect.scope.position_scope != position_scope
+                or effect.scope.request_occurrence_id != consumed.request_occurrence_id
+                or _canonical_value_commitment(effect.scope)
+                != consumed.effect_scope_commitment
+            ):
+                raise ValueError(
+                    "compact consumed bootstrap effect is absent or spliced"
+                )
+            request = RequestedEffect(
+                consumed.request_input_id,
+                effect.effect_id,
+                effect.scope.request_occurrence_id,
+                effect.scope.mandate_id,
+                effect.scope.kind,
+                effect.scope.client_order_id,
+                effect.scope.symbol_id,
+                effect.scope.side,
+                effect.scope.quantity,
+                effect.scope.economic_scope,
+                effect.scope.target_leg_key,
+            )
+            retain_input(request)
+            retained = retained.insert_new(
+                key,
+                consumed,
+                _bootstrap_record_value_commitment(consumed),
+            )
+            continue
+
+        snapshot = book._execution_snapshot_by_scope.get(key)
+        binding = book._binding_by_scope.get(key)
+        source_proof = active._neutral_checkpoint_proof
+        if (
+            type(snapshot) is not ExecutionSnapshot
+            or type(binding) is not VenueExecutionBinding
+            or snapshot.position.raw_quantity != 0
+            or snapshot.position.root_count != 0
+            or snapshot.integrity is not PositionIntegrity.CONSISTENT
+            or snapshot.account_reconciliation_required
+            or binding != _execution_binding_for_snapshot(snapshot)
+            or source_proof.position_scope != position_scope
+            or source_proof.cursor != book._protection_cursor_by_scope.get(key)
+            or source_proof.execution_commitment != active.target_execution_commitment
+            or source_proof.execution_checkpoint.position_scope != position_scope
+            or source_proof.binding != active.binding
+            or source_proof.command_commitment != active.checkpoint_command_commitment
+            or source_proof.disposition is not VenueRecoveryDisposition.APPLIED
+            or source_proof.quantity_delta != 0
+            or not source_proof.lineage_is_authentic
+        ):
+            raise ValueError("compact active bootstrap target contradicts its source")
+        summary = book._authority_summary_by_scope.get(key) or _SymbolAuthoritySummary()
+        binding_matches = _binding_matches_execution(binding, snapshot)
+        reconciliation_clear = not book._has_unresolved_execution_reconciliation(
+            position_scope
+        )
+        if (
+            source_proof.summary != summary
+            or source_proof.binding != binding
+            or source_proof.execution_binding_matches != binding_matches
+            or source_proof.account_reconciliation_clear != reconciliation_clear
+        ):
+            raise ValueError("compact bootstrap current authority changed semantics")
+        source_binding = (
+            source_proof.source_binding
+            if source_proof.source_kind
+            is _ProtectionTransitionSourceKind.COMPACT_RESTORE
+            else _m2_compact_restore_source_binding(
+                position_scope,
+                source_proof.cursor,
+                active.target_execution_commitment,
+                snapshot.commitment,
+                active.checkpoint_command_commitment,
+            )
+        )
+        if active.checkpoint_input_id != active.bootstrap_input_id:
+            retain_input(
+                _M2CompactBootstrapCheckpointEvidence(
+                    active.checkpoint_input_id,
+                    position_scope,
+                    active.checkpoint_command_commitment,
+                    source_binding,
+                ),
+                compact=True,
+            )
+        map_seal = _bootstrap_bound_target_record_map_seal(
+            application_generation_id=active.application_generation_id,
+            position_scope=position_scope,
+            source_kind=active.source_kind,
+            source_execution_commitment=active.source_execution_commitment,
+            target_genesis_execution_commitment=(
+                active.target_genesis_execution_commitment
+            ),
+            target_execution_commitment=snapshot.commitment,
+            binding=binding,
+            account_registry_count=snapshot.seen_facts.count,
+            account_registry_commitment=snapshot.seen_facts.commitment,
+            reconciliation_transition_count=(snapshot.reconciliation_transition_count),
+            reconciliation_transition_head=(snapshot.reconciliation_transition_head),
+            bootstrap_input_id=active.bootstrap_input_id,
+            bootstrap_input_commitment=active.bootstrap_input_commitment,
+            bootstrap_target_execution_commitment=(
+                active.bootstrap_target_execution_commitment
+            ),
+            bootstrap_account_registry_count=(active.bootstrap_account_registry_count),
+            bootstrap_account_registry_commitment=(
+                active.bootstrap_account_registry_commitment
+            ),
+            bootstrap_reconciliation_transition_count=(
+                active.bootstrap_reconciliation_transition_count
+            ),
+            bootstrap_reconciliation_transition_head=(
+                active.bootstrap_reconciliation_transition_head
+            ),
+            checkpoint_input_id=active.checkpoint_input_id,
+            checkpoint_command_commitment=active.checkpoint_command_commitment,
+        )
+        retained = retained.insert_new(
+            key,
+            map_seal,
+            _bootstrap_record_map_value_commitment(map_seal),
+        )
+        pending.append((active, bootstrap_input, snapshot, binding, source_binding))
+
+    staged = _copy_book_with_bootstrap_values(
+        book,
+        _bootstrap_bound_target_by_scope=retained,
+        _input_ledger=input_ledger,
+        _input_by_id=input_by_id,
+        _direct_input_by_semantic=direct_inputs,
+        _first_input_by_fact=first_inputs,
+    )
+    compact_book_commitment = _protection_book_commitment(staged)
+    cursors = staged._protection_cursor_by_scope
+    for active, bootstrap_input, snapshot, binding, source_binding in pending:
+        position_scope = active.position_scope
+        key = _position_scope_index_key(position_scope)
+        source_proof = active._neutral_checkpoint_proof
+        summary = (
+            staged._authority_summary_by_scope.get(key) or _SymbolAuthoritySummary()
+        )
+        binding_matches = _binding_matches_execution(binding, snapshot)
+        reconciliation_clear = not staged._has_unresolved_execution_reconciliation(
+            position_scope
+        )
+        exact_replay = bool(
+            source_proof.source_kind is _ProtectionTransitionSourceKind.COMPACT_RESTORE
+            and active.target_execution_commitment == snapshot.commitment
+            and active.account_registry_count == snapshot.seen_facts.count
+            and active.account_registry_commitment == snapshot.seen_facts.commitment
+            and active.reconciliation_transition_count
+            == snapshot.reconciliation_transition_count
+            and active.reconciliation_transition_head
+            == snapshot.reconciliation_transition_head
+            and source_proof.book_commitment == compact_book_commitment
+            and source_proof.source_binding == source_binding
+        )
+        if exact_replay:
+            record = active
+            cursor = source_proof.cursor
+        else:
+            cursor = _next_protection_cursor(
+                source_proof.cursor,
+                position_scope,
+                source_proof.cursor.mandate_id,
+                book.scope,
+                book.scope,
+                source_proof.book_commitment,
+                compact_book_commitment,
+                active.target_execution_commitment,
+                snapshot.commitment,
+                source_proof.execution_checkpoint,
+                VenueExecutionCheckpoint.from_execution(snapshot),
+                summary,
+                summary,
+                binding,
+                binding,
+                binding_matches,
+                binding_matches,
+                reconciliation_clear,
+                reconciliation_clear,
+                active.checkpoint_command_commitment,
+                VenueRecoveryDisposition.APPLIED,
+                0,
+                _ProtectionTransitionSourceKind.COMPACT_RESTORE,
+                source_binding,
+            )
+            proof = _ProtectionTransitionProof(
+                position_scope,
+                source_proof.cursor,
+                cursor,
+                book.scope,
+                book.scope,
+                source_proof.book_commitment,
+                compact_book_commitment,
+                active.target_execution_commitment,
+                snapshot.commitment,
+                source_proof.execution_checkpoint,
+                VenueExecutionCheckpoint.from_execution(snapshot),
+                summary,
+                summary,
+                binding,
+                binding,
+                binding_matches,
+                binding_matches,
+                reconciliation_clear,
+                reconciliation_clear,
+                active.checkpoint_command_commitment,
+                VenueRecoveryDisposition.APPLIED,
+                0,
+                _ProtectionTransitionSourceKind.COMPACT_RESTORE,
+                source_binding,
+            )
+            if not proof.lineage_is_authentic:
+                raise ValueError("compact bootstrap cutover proof is not authentic")
+            record = _new_bootstrap_bound_target_record(
+                application_generation_id=active.application_generation_id,
+                position_scope=position_scope,
+                source_kind=active.source_kind,
+                source_execution_commitment=active.source_execution_commitment,
+                target_genesis_execution_commitment=(
+                    active.target_genesis_execution_commitment
+                ),
+                target_execution_commitment=snapshot.commitment,
+                binding=binding,
+                account_registry_count=snapshot.seen_facts.count,
+                account_registry_commitment=snapshot.seen_facts.commitment,
+                reconciliation_transition_count=(
+                    snapshot.reconciliation_transition_count
+                ),
+                reconciliation_transition_head=(
+                    snapshot.reconciliation_transition_head
+                ),
+                bootstrap_input=bootstrap_input,
+                neutral_checkpoint_proof=proof,
+                bootstrap_neutral_checkpoint_proof=(
+                    active._bootstrap_neutral_checkpoint_proof
+                ),
+                checkpoint_input_id=active.checkpoint_input_id,
+                checkpoint_command_commitment=(active.checkpoint_command_commitment),
+            )
+        staged_value = retained.get(key)
+        if type(staged_value) is not bytes or staged_value != record._map_seal:
+            raise ValueError("compact bootstrap map seal changed during finalization")
+        retained = retained.replace_existing(
+            key,
+            record,
+            _bootstrap_record_value_commitment(record),
+        )
+        cursors = _set_protection_cursor(cursors, position_scope, cursor)
+
+    result = object.__new__(VenueRecoveryBook)
+    for retained_field in fields(staged):
+        value = (
+            cursors
+            if retained_field.name == "_protection_cursor_by_scope"
+            else (
+                retained
+                if retained_field.name == "_bootstrap_bound_target_by_scope"
+                else getattr(staged, retained_field.name)
+            )
+        )
+        object.__setattr__(result, retained_field.name, value)
+    if _protection_book_commitment(result) != compact_book_commitment:
+        raise ValueError("compact bootstrap finalization changed its book commitment")
+    for active, _, snapshot, _, _ in pending:
+        if not result._bootstrap_bound_target_pair_matches(
+            snapshot,
+            active.position_scope,
+        ):
+            raise ValueError("compact bootstrap target is not current after cutover")
+    return result
+
+
 def _m2_restore_compact_venue_book(
     *,
     scope: VenueScope,
@@ -8410,10 +8863,23 @@ def _m2_restore_compact_venue_book(
     execution_registry_commitment: bytes | None,
     registry_transition_head_commitment: bytes | None,
     authority_epochs: tuple[tuple[PositionScope, int], ...],
-    effects: tuple[
-        tuple[_EffectCurrent, tuple[AcceptanceContradiction, ...]], ...
-    ],
+    effects: tuple[tuple[_EffectCurrent, tuple[AcceptanceContradiction, ...]], ...],
     claims: tuple[DispatchClaim, ...],
+    owners: tuple[tuple[VenueIdentityOwner, VenueAttempt | None], ...],
+    acquisition_correlations: tuple[_AcquisitionCorrelationEntry, ...],
+    closure_heads: tuple[VenueTerminalClosure, ...],
+    economic_high_waters: tuple[tuple[VenueLegKey, int], ...],
+    human_coverages: tuple[object, ...],
+    broker_coverages: tuple[object, ...],
+    coverage_provenances: tuple[tuple[PositionScope, _CoverageProvenance], ...],
+    reconciliations: tuple[object, ...],
+    execution_reconciliations: tuple[
+        _ResolvedRegistryProjectionOutcome
+        | _UnresolvedRegistryAdvanceOutcome
+        | _AttributedRegistryAdvanceOutcome,
+        ...,
+    ],
+    bootstrap_targets: tuple[object, ...],
     execution_snapshots: tuple[ExecutionSnapshot, ...],
     protection_cursors: tuple[tuple[PositionScope, _ProtectionCursor], ...],
 ) -> VenueRecoveryBook:
@@ -8435,12 +8901,8 @@ def _m2_restore_compact_venue_book(
         ),
     ):
         if type(scalar_value) is not int or scalar_value < 0:
-            raise ValueError(
-                f"{scalar_name} must be a non-negative exact integer"
-            )
-    if (execution_registry_count is None) != (
-        execution_registry_commitment is None
-    ):
+            raise ValueError(f"{scalar_name} must be a non-negative exact integer")
+    if (execution_registry_count is None) != (execution_registry_commitment is None):
         raise ValueError("compact venue registry coordinates must be wholly present")
     if execution_registry_count is not None and (
         type(execution_registry_count) is not int or execution_registry_count < 0
@@ -8459,11 +8921,31 @@ def _m2_restore_compact_venue_book(
         ("authority_epochs", authority_epochs),
         ("effects", effects),
         ("claims", claims),
+        ("owners", owners),
+        ("acquisition_correlations", acquisition_correlations),
+        ("closure_heads", closure_heads),
+        ("economic_high_waters", economic_high_waters),
+        ("human_coverages", human_coverages),
+        ("broker_coverages", broker_coverages),
+        ("coverage_provenances", coverage_provenances),
+        ("reconciliations", reconciliations),
+        ("execution_reconciliations", execution_reconciliations),
+        ("bootstrap_targets", bootstrap_targets),
         ("execution_snapshots", execution_snapshots),
         ("protection_cursors", protection_cursors),
     ):
         if type(tuple_value) is not tuple:
             raise TypeError(f"compact venue {tuple_name} must be an exact tuple")
+
+    active_bootstrap_source_cursor_by_scope: dict[PositionScope, _ProtectionCursor] = {}
+    for target in bootstrap_targets:
+        if type(target) is not _BootstrapBoundTargetRecord:
+            continue
+        if target.position_scope in active_bootstrap_source_cursor_by_scope:
+            raise ValueError("compact active bootstrap target scope is duplicated")
+        active_bootstrap_source_cursor_by_scope[target.position_scope] = (
+            target._neutral_checkpoint_proof.cursor
+        )
 
     authority_epoch_by_scope: _PersistentKeyMap[int] = _PersistentKeyMap.empty()
     seen_epoch_scopes: set[PositionScope] = set()
@@ -8546,8 +9028,7 @@ def _m2_restore_compact_venue_book(
             _effect_index_key(current.effect.effect_id)
         )
         if (
-            current.effect.claim_occurrence_id is None
-            and retained_claim is not None
+            current.effect.claim_occurrence_id is None and retained_claim is not None
         ) or (
             current.effect.claim_occurrence_id is not None
             and (
@@ -8557,6 +9038,270 @@ def _m2_restore_compact_venue_book(
             )
         ):
             raise ValueError("compact venue effect and claim current rows disagree")
+
+    owner_order = base._owner_order
+    owner_by_leg = base._owner_by_leg
+    leg_current_by_leg = base._leg_current_by_leg
+    leg_summary_by_effect = base._leg_summary_by_effect
+    owner_by_key: dict[VenueLegKey, VenueIdentityOwner] = {}
+    for owner, attempt in owners:
+        if (
+            type(owner) is not VenueIdentityOwner
+            or (attempt is not None and type(attempt) is not VenueAttempt)
+            or owner.leg_key in owner_by_key
+            or owner.effect_id
+            not in {current.effect.effect_id for current, _ in effects}
+            or (attempt is not None and attempt.leg_key != owner.leg_key)
+        ):
+            raise ValueError("compact venue owner is duplicated or spliced")
+        retained_effect = effect_by_id.get(_effect_index_key(owner.effect_id))
+        if (
+            retained_effect is None
+            or retained_effect.effect.scope != owner.effect_scope
+        ):
+            raise ValueError("compact venue owner does not bind its current effect")
+        owner_by_key[owner.leg_key] = owner
+        encoded_leg = _leg_index_key(owner.leg_key)
+        owner_order = owner_order.append(
+            owner.leg_key,
+            _leg_value_commitment(owner.leg_key),
+        )
+        owner_by_leg = owner_by_leg.insert_new(
+            encoded_leg,
+            owner,
+            _owner_value_commitment(owner),
+        )
+        leg_current = _LegCurrent(attempt)
+        leg_current_by_leg = leg_current_by_leg.insert_new(
+            encoded_leg,
+            leg_current,
+            leg_current.commitment,
+        )
+        prior_summary = (
+            leg_summary_by_effect.get(_effect_index_key(owner.effect_id))
+            or _EffectLegSummary()
+        )
+        cancellable, cancel_pending = (
+            ((), ()) if attempt is None else _attempt_authority_membership(attempt)
+        )
+        leg_summary_by_effect = _set_effect_leg_summary(
+            leg_summary_by_effect,
+            owner.effect_id,
+            replace(
+                prior_summary,
+                owner_count=prior_summary.owner_count + 1,
+                active_count=prior_summary.active_count + (1 if attempt else 0),
+                active_leg_keys=(
+                    prior_summary.active_leg_keys
+                    + ((owner.leg_key,) if attempt is not None else ())
+                ),
+                known_cancellable_leg_keys=(
+                    prior_summary.known_cancellable_leg_keys + cancellable
+                ),
+                known_cancel_pending_leg_keys=(
+                    prior_summary.known_cancel_pending_leg_keys + cancel_pending
+                ),
+            ),
+        )
+
+    acquisition_correlation_by_root = base._acquisition_correlation_by_root
+    for entry in acquisition_correlations:
+        if type(entry) is not _AcquisitionCorrelationEntry:
+            raise TypeError("compact venue acquisition correlation must be exact")
+        expected = _acquisition_correlation_entry_for(
+            scope,
+            effect_by_request,
+            effect_by_id,
+            owner_by_leg,
+            effect_id=entry.effect_id,
+            leg_key=entry.leg_key,
+            root_key=entry.root_key,
+        )
+        if entry != expected:
+            raise ValueError("compact venue acquisition correlation is spliced")
+        acquisition_correlation_by_root = _append_acquisition_correlation(
+            acquisition_correlation_by_root,
+            entry,
+        )
+
+    closure_by_id = base._closure_by_id
+    closure_head_by_leg = base._closure_head_by_leg
+    closure_by_leg: dict[VenueLegKey, VenueTerminalClosure] = {}
+    for closure in closure_heads:
+        if (
+            type(closure) is not VenueTerminalClosure
+            or closure.leg_key in closure_by_leg
+            or closure.leg_key not in owner_by_key
+        ):
+            raise ValueError("compact venue closure is duplicated or unowned")
+        closure_by_leg[closure.leg_key] = closure
+        commitment = _closure_commitment(closure)
+        closure_by_id = closure_by_id.insert_new(
+            _closure_index_key(closure.closure_id),
+            closure,
+            commitment,
+        )
+        closure_head_by_leg = closure_head_by_leg.insert_new(
+            _leg_index_key(closure.leg_key),
+            closure,
+            commitment,
+        )
+
+    economic_high_water_by_leg = base._economic_high_water_by_leg
+    seen_high_water_legs: set[VenueLegKey] = set()
+    for leg_key, high_water in economic_high_waters:
+        if (
+            type(leg_key) is not VenueLegKey
+            or leg_key in seen_high_water_legs
+            or leg_key not in owner_by_key
+            or type(high_water) is not int
+            or high_water < 0
+        ):
+            raise ValueError("compact venue economic high water is spliced")
+        seen_high_water_legs.add(leg_key)
+        economic_high_water_by_leg = economic_high_water_by_leg.insert_new(
+            _leg_index_key(leg_key),
+            high_water,
+            _commit_parts(
+                b"execution-core/venue-economic-high-water/v1",
+                _encode_text(str(high_water)),
+            ),
+        )
+
+    from .recovery import HumanCoverage, _BrokerCoverage
+
+    human_coverage_ledger: _PersistentSequence[Any] = _PersistentSequence.empty()
+    human_coverage_by_root: _PersistentKeyMap[int] = _PersistentKeyMap.empty()
+    for coverage in human_coverages:
+        if type(coverage) is not HumanCoverage:
+            raise TypeError("compact venue human coverage must be exact")
+        human_coverage_ledger, human_coverage_by_root = _append_coverage_value(
+            human_coverage_ledger,
+            human_coverage_by_root,
+            coverage,
+        )
+    broker_coverage_ledger: _PersistentSequence[Any] = _PersistentSequence.empty()
+    broker_coverage_by_root: _PersistentKeyMap[int] = _PersistentKeyMap.empty()
+    for coverage in broker_coverages:
+        if type(coverage) is not _BrokerCoverage:
+            raise TypeError("compact venue broker coverage must be exact")
+        broker_coverage_ledger, broker_coverage_by_root = _append_coverage_value(
+            broker_coverage_ledger,
+            broker_coverage_by_root,
+            coverage,
+        )
+    (
+        coverage_current_by_leg,
+        coverage_total_by_effect,
+        attributed_broker_root_count_by_scope,
+        human_interval_index,
+        human_broker_fact_index,
+    ) = _audit_build_coverage_current_indexes(
+        cast(tuple[HumanCoverage, ...], human_coverages),
+        cast(tuple[_BrokerCoverage, ...], broker_coverages),
+    )
+    coverage_provenance_by_scope = base._coverage_provenance_by_scope
+    seen_provenance_scopes: set[PositionScope] = set()
+    for position_scope, provenance in coverage_provenances:
+        if (
+            type(position_scope) is not PositionScope
+            or type(provenance) is not _CoverageProvenance
+            or position_scope in seen_provenance_scopes
+            or position_scope.broker != scope.broker
+            or position_scope.environment != scope.environment
+            or position_scope.account != scope.account
+        ):
+            raise ValueError("compact venue coverage provenance is spliced")
+        seen_provenance_scopes.add(position_scope)
+        coverage_provenance_by_scope = _set_coverage_provenance(
+            coverage_provenance_by_scope,
+            position_scope,
+            provenance,
+        )
+
+    reconciliation_ledger: _PersistentSequence[Any] = _PersistentSequence.empty()
+    reconciliation_by_input: _PersistentKeyMap[Any] = _PersistentKeyMap.empty()
+    unresolved_reconciliation_count_by_leg: _PersistentKeyMap[int] = (
+        _PersistentKeyMap.empty()
+    )
+    reconciliation_count_by_effect: _PersistentKeyMap[int] = _PersistentKeyMap.empty()
+    canonical_revision_count_by_leg: _PersistentKeyMap[int] = _PersistentKeyMap.empty()
+    for reconciliation in reconciliations:
+        (
+            reconciliation_ledger,
+            reconciliation_by_input,
+            unresolved_reconciliation_count_by_leg,
+            reconciliation_count_by_effect,
+            canonical_revision_count_by_leg,
+            coverage_current_by_leg,
+            coverage_total_by_effect,
+        ) = _append_reconciliation_value(
+            reconciliation_ledger,
+            reconciliation_by_input,
+            unresolved_reconciliation_count_by_leg,
+            reconciliation_count_by_effect,
+            canonical_revision_count_by_leg,
+            coverage_current_by_leg,
+            coverage_total_by_effect,
+            reconciliation,
+        )
+
+    execution_reconciliation_ledger: _PersistentSequence[Any] = (
+        _PersistentSequence.empty()
+    )
+    execution_reconciliation_by_input: _PersistentKeyMap[Any] = (
+        _PersistentKeyMap.empty()
+    )
+    unresolved_execution_reconciliation_count_by_scope: _PersistentKeyMap[int] = (
+        _PersistentKeyMap.empty()
+    )
+    selected_unresolved_account_count = 0
+    for reconciliation in execution_reconciliations:
+        (
+            execution_reconciliation_ledger,
+            execution_reconciliation_by_input,
+            unresolved_execution_reconciliation_count_by_scope,
+        ) = _append_execution_reconciliation_value(
+            execution_reconciliation_ledger,
+            execution_reconciliation_by_input,
+            unresolved_execution_reconciliation_count_by_scope,
+            reconciliation,
+        )
+        if not reconciliation.attribution_resolved:
+            selected_unresolved_account_count += 1
+    if (
+        selected_unresolved_account_count
+        > unresolved_account_execution_reconciliation_count
+    ):
+        raise ValueError(
+            "compact venue selected unresolved execution count exceeds its current scalar"
+        )
+
+    for leg_key, closure in closure_by_leg.items():
+        owner = owner_by_key[leg_key]
+        retained_effect = effect_by_id.get(_effect_index_key(owner.effect_id))
+        current_coverage = (
+            coverage_current_by_leg.get(_leg_index_key(leg_key))
+            or _CoverageLegCurrent()
+        )
+        if retained_effect is None or not _closure_is_finalization_ready(
+            retained_effect.effect,
+            closure,
+            current_coverage.canonical_total,
+        ):
+            continue
+        prior_summary = (
+            leg_summary_by_effect.get(_effect_index_key(owner.effect_id))
+            or _EffectLegSummary()
+        )
+        leg_summary_by_effect = _set_effect_leg_summary(
+            leg_summary_by_effect,
+            owner.effect_id,
+            replace(
+                prior_summary,
+                finalization_ready_count=prior_summary.finalization_ready_count + 1,
+            ),
+        )
 
     binding_order = base._binding_order
     binding_by_scope = base._binding_by_scope
@@ -8570,7 +9315,9 @@ def _m2_restore_compact_venue_book(
             or snapshot.position.scope.environment != scope.environment
             or snapshot.position.scope.account != scope.account
         ):
-            raise ValueError("compact venue execution snapshot is duplicated or spliced")
+            raise ValueError(
+                "compact venue execution snapshot is duplicated or spliced"
+            )
         seen_snapshot_scopes.add(snapshot.position.scope)
         binding_order, binding_by_scope = _upsert_binding_value(
             binding_order,
@@ -8599,9 +9346,17 @@ def _m2_restore_compact_venue_book(
                 cursor.execution_checkpoint is not None
                 and (
                     retained_snapshot is None
-                    or cursor.execution_commitment != retained_snapshot.commitment
-                    or cursor.execution_checkpoint
-                    != VenueExecutionCheckpoint.from_execution(retained_snapshot)
+                    or (
+                        (
+                            cursor.execution_commitment != retained_snapshot.commitment
+                            or cursor.execution_checkpoint
+                            != VenueExecutionCheckpoint.from_execution(
+                                retained_snapshot
+                            )
+                        )
+                        and active_bootstrap_source_cursor_by_scope.get(position_scope)
+                        != cursor
+                    )
                 )
             )
         ):
@@ -8624,14 +9379,44 @@ def _m2_restore_compact_venue_book(
         "_claim_order": claim_order,
         "_claim_by_effect": claim_by_effect,
         "_claim_by_occurrence": claim_by_occurrence,
+        "_owner_order": owner_order,
+        "_owner_by_leg": owner_by_leg,
+        "_acquisition_correlation_by_root": acquisition_correlation_by_root,
+        "_leg_current_by_leg": leg_current_by_leg,
+        "_leg_summary_by_effect": leg_summary_by_effect,
+        "_closure_by_id": closure_by_id,
+        "_closure_head_by_leg": closure_head_by_leg,
+        "_economic_high_water_by_leg": economic_high_water_by_leg,
+        "_human_coverage_ledger": human_coverage_ledger,
+        "_human_coverage_by_root": human_coverage_by_root,
+        "_broker_coverage_ledger": broker_coverage_ledger,
+        "_broker_coverage_by_root": broker_coverage_by_root,
+        "_coverage_provenance_by_scope": coverage_provenance_by_scope,
+        "_coverage_current_by_leg": coverage_current_by_leg,
+        "_coverage_total_by_effect": coverage_total_by_effect,
+        "_attributed_broker_root_count_by_scope": (
+            attributed_broker_root_count_by_scope
+        ),
+        "_human_interval_index": human_interval_index,
+        "_human_broker_fact_index": human_broker_fact_index,
+        "_reconciliation_ledger": reconciliation_ledger,
+        "_reconciliation_by_input": reconciliation_by_input,
+        "_unresolved_reconciliation_count_by_leg": (
+            unresolved_reconciliation_count_by_leg
+        ),
+        "_reconciliation_count_by_effect": reconciliation_count_by_effect,
+        "_canonical_revision_count_by_leg": canonical_revision_count_by_leg,
+        "_execution_reconciliation_ledger": execution_reconciliation_ledger,
+        "_execution_reconciliation_by_input": execution_reconciliation_by_input,
+        "_unresolved_execution_reconciliation_count_by_scope": (
+            unresolved_execution_reconciliation_count_by_scope
+        ),
         "_unresolved_account_execution_reconciliation_count": (
             unresolved_account_execution_reconciliation_count
         ),
         "execution_registry_count": execution_registry_count,
         "execution_registry_commitment": execution_registry_commitment,
-        "_registry_transition_head_commitment": (
-            registry_transition_head_commitment
-        ),
+        "_registry_transition_head_commitment": (registry_transition_head_commitment),
         "_binding_order": binding_order,
         "_binding_by_scope": binding_by_scope,
         "_execution_snapshot_by_scope": snapshot_by_scope,
@@ -8657,7 +9442,7 @@ def _m2_restore_compact_venue_book(
         "_cancel_target_reservation_by_leg",
         _rebuild_cancel_target_reservations(result),
     )
-    return result
+    return _m2_restore_compact_bootstrap_targets(result, bootstrap_targets)
 
 
 def _protection_book_commitment(book: VenueRecoveryBook) -> bytes:
@@ -9435,6 +10220,35 @@ def _serial_successor_rollover_command_commitment(
     )
 
 
+def _m2_compact_restore_source_binding(
+    position_scope: PositionScope,
+    predecessor_cursor: _ProtectionCursor,
+    predecessor_execution_commitment: bytes,
+    execution_commitment: bytes,
+    command_commitment: bytes,
+) -> bytes:
+    """Derive the non-caller source seal for one compact bootstrap cutover."""
+
+    if type(position_scope) is not PositionScope:
+        raise TypeError("compact restore position scope must be exact")
+    if type(predecessor_cursor) is not _ProtectionCursor:
+        raise TypeError("compact restore predecessor cursor must be exact")
+    for name, value in (
+        ("compact restore predecessor execution", predecessor_execution_commitment),
+        ("compact restore execution", execution_commitment),
+        ("compact restore command", command_commitment),
+    ):
+        _require_digest(name, value)
+    return _commit_parts(
+        b"execution-core/protection-transition-source/compact-restore/v1",
+        _position_scope_index_key(position_scope),
+        predecessor_cursor.commitment,
+        predecessor_execution_commitment,
+        execution_commitment,
+        command_commitment,
+    )
+
+
 def _next_protection_cursor(
     predecessor: _ProtectionCursor,
     position_scope: PositionScope,
@@ -9669,7 +10483,7 @@ def _protection_transition_proof_is_authentic(
             or mandate_changed
         ):
             return False
-    else:
+    elif proof.source_kind is _ProtectionTransitionSourceKind.SERIAL_SUCCESSOR_ROLLOVER:
         if not (
             mandate_changed
             and predecessor.mandate_id is not None
@@ -9694,6 +10508,28 @@ def _protection_transition_proof_is_authentic(
                 predecessor.mandate_id,
                 cursor.mandate_id,
                 proof.source_binding,
+            )
+        ):
+            return False
+    else:
+        if not (
+            proof.source_kind is _ProtectionTransitionSourceKind.COMPACT_RESTORE
+            and not mandate_changed
+            and proof.disposition is VenueRecoveryDisposition.APPLIED
+            and proof.quantity_delta == 0
+            and proof.predecessor_summary == proof.summary
+            and proof.predecessor_binding == proof.binding
+            and proof.predecessor_execution_binding_matches
+            == proof.execution_binding_matches
+            and proof.predecessor_account_reconciliation_clear
+            == proof.account_reconciliation_clear
+            and proof.source_binding
+            == _m2_compact_restore_source_binding(
+                proof.position_scope,
+                predecessor,
+                proof.predecessor_execution_commitment,
+                proof.execution_commitment,
+                proof.command_commitment,
             )
         ):
             return False

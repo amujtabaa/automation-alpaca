@@ -3609,6 +3609,8 @@ def _referenced_execution_reconciliation_inputs(
             position_scope,
             required=(
                 anchor_record.checkpoint_input_id != anchor_record.bootstrap_input_id
+                and anchor_record._neutral_checkpoint_proof.source_kind
+                is not _venue._ProtectionTransitionSourceKind.COMPACT_RESTORE
             ),
         )
     return tuple(ordered.values())
@@ -5940,9 +5942,7 @@ def _decode_compact_venue_effect_scope(value: object) -> _venue.VenueEffectScope
         _operations._decode_m2_m1_as(
             "venue effect account", fields[3], _identity.AccountId
         ),
-        _operations._decode_m2_m1_as(
-            "venue effect id", fields[4], _identity.EffectId
-        ),
+        _operations._decode_m2_m1_as("venue effect id", fields[4], _identity.EffectId),
         _operations._decode_m2_m1_as(
             "venue effect request occurrence",
             fields[5],
@@ -6025,9 +6025,7 @@ def _decode_compact_venue_acceptance_proof(
             fields[3],
             _identity.EvidenceReference,
         ),
-        _operations._decode_m2_bytes(
-            "venue acceptance proof digest", fields[4]
-        ),
+        _operations._decode_m2_bytes("venue acceptance proof digest", fields[4]),
     )
     if (
         _operations._decode_m2_m1_as(
@@ -6057,9 +6055,7 @@ def _decode_compact_venue_effect_row(
         9,
     )
     if (
-        _operations._require_exact_int(
-            "venue effect checkpoint ordinal", fields[0]
-        )
+        _operations._require_exact_int("venue effect checkpoint ordinal", fields[0])
         != checkpoint_ordinal
     ):
         raise ValueError("venue effect checkpoint ordinals are not dense")
@@ -6163,9 +6159,7 @@ def _decode_compact_venue_effect_row(
         checkpoint_ordinal,
         _encode_runtime_checkpoint_venue_effect_scope(scope),
         _checkpoint_enum("m1.venue.BrokerEffectState", effect.state),
-        _checkpoint_enum(
-            "m1.venue.AcceptanceSetState", effect.acceptance_set_state
-        ),
+        _checkpoint_enum("m1.venue.AcceptanceSetState", effect.acceptance_set_state),
         (
             None
             if claim_occurrence_id is None
@@ -6213,15 +6207,9 @@ def _decode_compact_venue_execution_checkpoint(
     checkpoint = _venue.VenueExecutionCheckpoint(
         _operations._decode_m2_position_scope(fields[0]),
         registry_count,
-        _operations._decode_m2_bytes(
-            "venue execution registry commitment", fields[2]
-        ),
-        _operations._decode_m2_bytes(
-            "venue execution position commitment", fields[3]
-        ),
-        _operations._decode_m2_bytes(
-            "venue execution root-head commitment", fields[4]
-        ),
+        _operations._decode_m2_bytes("venue execution registry commitment", fields[2]),
+        _operations._decode_m2_bytes("venue execution position commitment", fields[3]),
+        _operations._decode_m2_bytes("venue execution root-head commitment", fields[4]),
         integrity_bits,
         fields[6],
         transition_count,
@@ -6232,6 +6220,543 @@ def _decode_compact_venue_execution_checkpoint(
     if _encode_runtime_checkpoint_venue_execution_checkpoint(checkpoint) != value:
         raise ValueError("venue execution checkpoint is not compact-canonical")
     return checkpoint
+
+
+def _decode_compact_venue_scope(value: object) -> _venue.VenueScope:
+    fields = _operations._require_m2_aggregate(value, "m2.venue.Scope/v1", 4)
+    scope = _venue.VenueScope(
+        _operations._decode_m2_m1_as(
+            "venue scope application", fields[0], _identity.ApplicationGenerationId
+        ),
+        _operations._decode_m2_m1_as(
+            "venue scope broker", fields[1], _identity.BrokerId
+        ),
+        _operations._decode_m2_m1_as(
+            "venue scope environment", fields[2], _identity.EnvironmentId
+        ),
+        _operations._decode_m2_m1_as(
+            "venue scope account", fields[3], _identity.AccountId
+        ),
+    )
+    if _encode_runtime_checkpoint_venue_scope(scope) != value:
+        raise ValueError("venue scope is not compact-canonical")
+    return scope
+
+
+def _decode_compact_venue_execution_binding(
+    value: object,
+) -> _venue.VenueExecutionBinding:
+    fields = _operations._require_m2_aggregate(value, "m2.venue.ExecutionBinding/v1", 4)
+    integrity_bits = _operations._require_exact_int(
+        "venue execution binding integrity bits", fields[3]
+    )
+    if integrity_bits < 0:
+        raise ValueError("venue execution binding integrity bits must be non-negative")
+    binding = _venue.VenueExecutionBinding(
+        _operations._decode_m2_position_scope(fields[0]),
+        _operations._decode_m2_bytes(
+            "venue execution binding position commitment", fields[1]
+        ),
+        _operations._decode_m2_bytes(
+            "venue execution binding root-head commitment", fields[2]
+        ),
+        integrity_bits,
+    )
+    if _encode_runtime_checkpoint_venue_execution_binding(binding) != value:
+        raise ValueError("venue execution binding is not compact-canonical")
+    return binding
+
+
+def _decode_compact_venue_transition_cursor(
+    value: object,
+) -> _venue._ProtectionCursor:
+    fields = _operations._require_m2_aggregate(
+        value,
+        "m2.venue.ProtectionTransitionCursor/v1",
+        5,
+    )
+    ordinal = _operations._require_exact_int(
+        "venue transition cursor ordinal", fields[0]
+    )
+    if ordinal < 0:
+        raise ValueError("venue transition cursor ordinal must be non-negative")
+    execution_commitment = _decode_optional_checkpoint_digest(
+        "venue transition cursor execution commitment", fields[3]
+    )
+    execution_checkpoint = (
+        None
+        if fields[4] is None
+        else _decode_compact_venue_execution_checkpoint(fields[4])
+    )
+    if (execution_commitment is None) != (execution_checkpoint is None):
+        raise ValueError("venue transition cursor execution seal is partial")
+    cursor = _venue._ProtectionCursor(
+        ordinal,
+        _operations._decode_m2_bytes("venue transition cursor head", fields[1]),
+        (
+            None
+            if fields[2] is None
+            else _operations._decode_m2_m1_as(
+                "venue transition cursor mandate",
+                fields[2],
+                _identity.MandateId,
+            )
+        ),
+        execution_commitment,
+        execution_checkpoint,
+    )
+    if _encode_runtime_checkpoint_venue_transition_cursor(cursor) != value:
+        raise ValueError("venue transition cursor is not compact-canonical")
+    return cursor
+
+
+def _decode_compact_venue_atom_tuple(
+    value: object,
+    *,
+    tag: str,
+    subject: str,
+    expected: type[_Any],
+) -> tuple[_Any, ...]:
+    rows = _decode_checkpoint_collection_rows(value, tag)
+    decoded = tuple(
+        _operations._decode_m2_m1_as(subject, row, expected) for row in rows
+    )
+    if len(set(decoded)) != len(decoded):
+        raise ValueError(f"{subject} retains a duplicate member")
+    if (
+        _encode_runtime_checkpoint_venue_atom_tuple(
+            tag,
+            _cast(tuple[_durable_codec._OwningValue, ...], decoded),
+            subject,
+        )
+        != value
+    ):
+        raise ValueError(f"{subject} is not compact-canonical")
+    return decoded
+
+
+def _decode_compact_venue_symbol_authority_summary(
+    value: object,
+) -> _venue._SymbolAuthoritySummary:
+    fields = _operations._require_m2_aggregate(
+        value,
+        "m2.venue.SymbolAuthoritySummary/v1",
+        9,
+    )
+    counts = tuple(
+        _operations._require_exact_int(name, candidate)
+        for name, candidate in (
+            ("venue summary effect count", fields[0]),
+            ("venue summary blocking effect count", fields[1]),
+            ("venue summary blocking buy count", fields[2]),
+            ("venue summary stand-downable buy count", fields[3]),
+            ("venue summary waiting buy parent count", fields[7]),
+            ("venue summary unknown buy effect count", fields[8]),
+        )
+    )
+    if min(counts) < 0:
+        raise ValueError("venue summary counts must be non-negative")
+    summary = _venue._SymbolAuthoritySummary(
+        effect_count=counts[0],
+        blocking_effect_count=counts[1],
+        blocking_buy_effect_count=counts[2],
+        stand_downable_buy_count=counts[3],
+        stand_downable_buy_effect_ids=_cast(
+            tuple[_identity.EffectId, ...],
+            _decode_compact_venue_atom_tuple(
+                fields[4],
+                tag="m2.venue.StandDownEffects/v1",
+                subject="venue summary stand-down effects",
+                expected=_identity.EffectId,
+            ),
+        ),
+        known_cancellable_buy_leg_keys=_cast(
+            tuple[_identity.VenueLegKey, ...],
+            _decode_compact_venue_atom_tuple(
+                fields[5],
+                tag="m2.venue.CancellableBuyLegs/v1",
+                subject="venue summary cancellable buy legs",
+                expected=_identity.VenueLegKey,
+            ),
+        ),
+        known_cancel_pending_buy_leg_keys=_cast(
+            tuple[_identity.VenueLegKey, ...],
+            _decode_compact_venue_atom_tuple(
+                fields[6],
+                tag="m2.venue.CancelPendingBuyLegs/v1",
+                subject="venue summary cancel-pending buy legs",
+                expected=_identity.VenueLegKey,
+            ),
+        ),
+        waiting_buy_parent_count=counts[4],
+        unknown_buy_effect_count=counts[5],
+    )
+    if _encode_runtime_checkpoint_venue_symbol_authority_summary(summary) != value:
+        raise ValueError("venue symbol authority summary is not compact-canonical")
+    return summary
+
+
+def _decode_compact_venue_transition_proof(
+    value: object,
+) -> _venue._ProtectionTransitionProof:
+    fields = _operations._require_m2_aggregate(
+        value,
+        "m2.venue.ProtectionTransitionProof/v1",
+        24,
+    )
+    flags = fields[15:19]
+    if any(type(flag) is not bool for flag in flags):
+        raise TypeError("venue transition proof flags must be exact bools")
+    quantity_delta = _operations._require_exact_int(
+        "venue transition proof quantity delta", fields[21]
+    )
+    proof = _venue._ProtectionTransitionProof(
+        _operations._decode_m2_position_scope(fields[0]),
+        _decode_compact_venue_transition_cursor(fields[1]),
+        _decode_compact_venue_transition_cursor(fields[2]),
+        _decode_compact_venue_scope(fields[3]),
+        _decode_compact_venue_scope(fields[4]),
+        _operations._decode_m2_bytes(
+            "venue transition predecessor book commitment", fields[5]
+        ),
+        _operations._decode_m2_bytes("venue transition book commitment", fields[6]),
+        _operations._decode_m2_bytes(
+            "venue transition predecessor execution commitment", fields[7]
+        ),
+        _operations._decode_m2_bytes(
+            "venue transition execution commitment", fields[8]
+        ),
+        _decode_compact_venue_execution_checkpoint(fields[9]),
+        _decode_compact_venue_execution_checkpoint(fields[10]),
+        _decode_compact_venue_symbol_authority_summary(fields[11]),
+        _decode_compact_venue_symbol_authority_summary(fields[12]),
+        (
+            None
+            if fields[13] is None
+            else _decode_compact_venue_execution_binding(fields[13])
+        ),
+        (
+            None
+            if fields[14] is None
+            else _decode_compact_venue_execution_binding(fields[14])
+        ),
+        _cast(bool, flags[0]),
+        _cast(bool, flags[1]),
+        _cast(bool, flags[2]),
+        _cast(bool, flags[3]),
+        _operations._decode_m2_bytes("venue transition command commitment", fields[19]),
+        _decode_checkpoint_enum_value(
+            "venue transition disposition",
+            fields[20],
+            "m1.venue.VenueRecoveryDisposition",
+            _venue.VenueRecoveryDisposition,
+        ),
+        quantity_delta,
+        _decode_checkpoint_enum_value(
+            "venue transition source kind",
+            fields[22],
+            "m1.venue.ProtectionTransitionSourceKind",
+            _venue._ProtectionTransitionSourceKind,
+        ),
+        _operations._decode_m2_bytes("venue transition source binding", fields[23]),
+    )
+    if (
+        not proof.lineage_is_authentic
+        or _encode_runtime_checkpoint_venue_transition_proof(proof) != value
+    ):
+        raise ValueError("venue transition proof is not authentic and canonical")
+    return proof
+
+
+def _decode_compact_venue_execution_reconciliation_row(
+    value: object,
+) -> (
+    _venue._ResolvedRegistryProjectionOutcome | _venue._UnresolvedRegistryAdvanceOutcome
+):
+    if type(value) is not list or not value or type(value[0]) is not str:
+        raise ValueError("venue execution reconciliation row is malformed")
+    reason: object
+    if value[0] == "m2.venue.ResolvedRegistryProjection/v1":
+        fields = _operations._require_m2_aggregate(
+            value,
+            "m2.venue.ResolvedRegistryProjection/v1",
+            8,
+        )
+        reason = fields[6]
+        if type(reason) is not str:
+            raise TypeError("venue resolved projection reason must be exact text")
+        count = _operations._require_exact_int(
+            "venue resolved projection registry count", fields[4]
+        )
+        if count < 0:
+            raise ValueError("venue resolved projection count must be non-negative")
+        result: (
+            _venue._ResolvedRegistryProjectionOutcome
+            | _venue._UnresolvedRegistryAdvanceOutcome
+        ) = _venue._ResolvedRegistryProjectionOutcome(
+            _operations._decode_m2_m1_as(
+                "venue resolved projection input", fields[0], _identity.VenueInputId
+            ),
+            _operations._decode_m2_bytes(
+                "venue resolved projection command", fields[1]
+            ),
+            _decode_compact_venue_execution_checkpoint(fields[2]),
+            _decode_compact_venue_execution_binding(fields[3]),
+            count,
+            _operations._decode_m2_bytes(
+                "venue resolved projection registry commitment", fields[5]
+            ),
+            reason,
+            _decode_checkpoint_enum_value(
+                "venue resolved projection kind",
+                fields[7],
+                "m1.venue.ResolvedProjectionKind",
+                _venue._ResolvedProjectionKind,
+            ),
+        )
+    elif value[0] == "m2.venue.UnresolvedRegistryAdvance/v1":
+        fields = _operations._require_m2_aggregate(
+            value,
+            "m2.venue.UnresolvedRegistryAdvance/v1",
+            10,
+        )
+        prior_count = _operations._require_exact_int(
+            "venue unresolved prior account registry count", fields[3]
+        )
+        resulting_count = _operations._require_exact_int(
+            "venue unresolved resulting registry count", fields[7]
+        )
+        reason = fields[9]
+        if min(prior_count, resulting_count) < 0 or type(reason) is not str:
+            raise ValueError("venue unresolved registry outcome is malformed")
+        result = _venue._UnresolvedRegistryAdvanceOutcome(
+            _operations._decode_m2_m1_as(
+                "venue unresolved projection input", fields[0], _identity.VenueInputId
+            ),
+            _operations._decode_m2_bytes(
+                "venue unresolved projection command", fields[1]
+            ),
+            _decode_compact_venue_execution_checkpoint(fields[2]),
+            prior_count,
+            _operations._decode_m2_bytes(
+                "venue unresolved prior registry commitment", fields[4]
+            ),
+            _decode_compact_venue_execution_binding(fields[5]),
+            _decode_compact_venue_execution_binding(fields[6]),
+            resulting_count,
+            _operations._decode_m2_bytes(
+                "venue unresolved resulting registry commitment", fields[8]
+            ),
+            reason,
+        )
+    else:
+        raise ValueError("venue execution reconciliation variant is not admitted")
+    if _encode_runtime_checkpoint_venue_execution_reconciliation_row(result) != value:
+        raise ValueError("venue execution reconciliation is not compact-canonical")
+    return result
+
+
+def _decode_compact_venue_bootstrap_active(
+    value: object,
+) -> _venue._BootstrapBoundTargetRecord:
+    fields = _operations._require_m2_aggregate(
+        value,
+        "m2.venue.BootstrapTargetActive/v1",
+        24,
+    )
+    application_generation_id = _operations._decode_m2_m1_as(
+        "venue bootstrap application", fields[0], _identity.ApplicationGenerationId
+    )
+    position_scope = _operations._decode_m2_position_scope(fields[1])
+    source_kind = _decode_checkpoint_enum_value(
+        "venue bootstrap source kind",
+        fields[2],
+        "m1.venue.BootstrapSourceKind",
+        _venue._BootstrapSourceKind,
+    )
+    current_count = _operations._require_exact_int(
+        "venue bootstrap current registry count", fields[7]
+    )
+    current_reconciliation_count = _operations._require_exact_int(
+        "venue bootstrap current reconciliation count", fields[9]
+    )
+    bootstrap_count = _operations._require_exact_int(
+        "venue bootstrap origin registry count", fields[14]
+    )
+    bootstrap_reconciliation_count = _operations._require_exact_int(
+        "venue bootstrap origin reconciliation count", fields[16]
+    )
+    if (
+        min(
+            current_count,
+            current_reconciliation_count,
+            bootstrap_count,
+            bootstrap_reconciliation_count,
+        )
+        < 0
+    ):
+        raise ValueError("venue bootstrap counts must be non-negative")
+    bootstrap_input = _venue._new_bootstrap_target_registry_input(
+        application_generation_id=application_generation_id,
+        source_kind=source_kind,
+        position_scope=position_scope,
+        source_execution_commitment=_operations._decode_m2_bytes(
+            "venue bootstrap source execution", fields[3]
+        ),
+        target_genesis_execution_commitment=_operations._decode_m2_bytes(
+            "venue bootstrap target genesis", fields[4]
+        ),
+        target_execution_commitment=_operations._decode_m2_bytes(
+            "venue bootstrap origin target execution", fields[13]
+        ),
+        prior_account_registry_count=bootstrap_count,
+        prior_account_registry_commitment=_operations._decode_m2_bytes(
+            "venue bootstrap origin registry commitment", fields[15]
+        ),
+        reconciliation_transition_count=bootstrap_reconciliation_count,
+        reconciliation_transition_head=_operations._decode_m2_bytes(
+            "venue bootstrap origin reconciliation head", fields[17]
+        ),
+    )
+    retained_bootstrap_input_id = _operations._decode_m2_m1_as(
+        "venue bootstrap input", fields[11], _identity.VenueInputId
+    )
+    retained_bootstrap_input_commitment = _operations._decode_m2_bytes(
+        "venue bootstrap input commitment", fields[12]
+    )
+    if (
+        bootstrap_input.input_id != retained_bootstrap_input_id
+        or bootstrap_input.commitment != retained_bootstrap_input_commitment
+    ):
+        raise ValueError("venue bootstrap private input is stale or spliced")
+    bootstrap_proof = _decode_compact_venue_transition_proof(fields[19])
+    current_proof = _decode_compact_venue_transition_proof(fields[23])
+    bootstrap_proof_commitment = _operations._decode_m2_bytes(
+        "venue bootstrap anchor proof commitment", fields[18]
+    )
+    current_proof_commitment = _operations._decode_m2_bytes(
+        "venue bootstrap current proof commitment", fields[22]
+    )
+    if (
+        bootstrap_proof.commitment != bootstrap_proof_commitment
+        or current_proof.commitment != current_proof_commitment
+    ):
+        raise ValueError("venue bootstrap proof commitment is stale or spliced")
+    if fields[19] == fields[23]:
+        current_proof = bootstrap_proof
+    binding = _decode_compact_venue_execution_binding(fields[6])
+    target_execution_commitment = _operations._decode_m2_bytes(
+        "venue bootstrap current target execution", fields[5]
+    )
+    account_registry_commitment = _operations._decode_m2_bytes(
+        "venue bootstrap current registry commitment", fields[8]
+    )
+    reconciliation_transition_head = _operations._decode_m2_bytes(
+        "venue bootstrap current reconciliation head", fields[10]
+    )
+    checkpoint_input_id = _operations._decode_m2_m1_as(
+        "venue bootstrap checkpoint input", fields[20], _identity.VenueInputId
+    )
+    checkpoint_command_commitment = _operations._decode_m2_bytes(
+        "venue bootstrap checkpoint command", fields[21]
+    )
+    current_checkpoint = current_proof.execution_checkpoint
+    if (
+        current_proof.position_scope != position_scope
+        or current_proof.execution_commitment != target_execution_commitment
+        or current_proof.binding != binding
+        or current_proof.command_commitment != checkpoint_command_commitment
+        or current_proof.disposition is not _venue.VenueRecoveryDisposition.APPLIED
+        or current_proof.quantity_delta != 0
+        or current_checkpoint.position_scope != position_scope
+        or current_checkpoint.registry_count != current_count
+        or current_checkpoint.registry_commitment != account_registry_commitment
+        or current_checkpoint.position_commitment != binding.position_commitment
+        or current_checkpoint.root_heads_commitment != binding.root_heads_commitment
+        or current_checkpoint.integrity_bits != binding.integrity_bits
+        or current_checkpoint.reconciliation_transition_count
+        != current_reconciliation_count
+        or current_checkpoint.reconciliation_transition_head
+        != reconciliation_transition_head
+        or bootstrap_proof.position_scope != position_scope
+        or bootstrap_proof.execution_commitment
+        != bootstrap_input.target_execution_commitment
+        or bootstrap_proof.command_commitment
+        != _venue._protection_command_commitment(bootstrap_input)
+    ):
+        raise ValueError("venue bootstrap proof contradicts its current row")
+    record = _venue._new_bootstrap_bound_target_record(
+        application_generation_id=application_generation_id,
+        position_scope=position_scope,
+        source_kind=source_kind,
+        source_execution_commitment=bootstrap_input.source_execution_commitment,
+        target_genesis_execution_commitment=(
+            bootstrap_input.target_genesis_execution_commitment
+        ),
+        target_execution_commitment=target_execution_commitment,
+        binding=binding,
+        account_registry_count=current_count,
+        account_registry_commitment=account_registry_commitment,
+        reconciliation_transition_count=current_reconciliation_count,
+        reconciliation_transition_head=reconciliation_transition_head,
+        bootstrap_input=bootstrap_input,
+        neutral_checkpoint_proof=current_proof,
+        bootstrap_neutral_checkpoint_proof=bootstrap_proof,
+        checkpoint_input_id=checkpoint_input_id,
+        checkpoint_command_commitment=checkpoint_command_commitment,
+    )
+    if _encode_runtime_checkpoint_venue_bootstrap_active(record) != value:
+        raise ValueError("venue bootstrap active row is not compact-canonical")
+    return record
+
+
+def _decode_compact_venue_bootstrap_target(
+    value: object,
+    *,
+    effects_by_id: dict[_identity.EffectId, _venue.BrokerEffect],
+) -> object:
+    if type(value) is not list or not value or type(value[0]) is not str:
+        raise ValueError("venue bootstrap target row is malformed")
+    if value[0] == "m2.venue.BootstrapTargetActive/v1":
+        return _decode_compact_venue_bootstrap_active(value)
+    if value[0] != "m2.venue.BootstrapTargetConsumed/v1":
+        raise ValueError("venue bootstrap target variant is not admitted")
+    fields = _operations._require_m2_aggregate(
+        value,
+        "m2.venue.BootstrapTargetConsumed/v1",
+        5,
+    )
+    active = _decode_compact_venue_bootstrap_active(fields[0])
+    effect_id = _operations._decode_m2_m1_as(
+        "venue consumed bootstrap effect", fields[1], _identity.EffectId
+    )
+    request_occurrence_id = _operations._decode_m2_m1_as(
+        "venue consumed bootstrap request occurrence",
+        fields[2],
+        _identity.RequestOccurrenceId,
+    )
+    request_input_id = _operations._decode_m2_m1_as(
+        "venue consumed bootstrap request input", fields[3], _identity.VenueInputId
+    )
+    effect_scope_commitment = _operations._decode_m2_bytes(
+        "venue consumed bootstrap effect scope", fields[4]
+    )
+    effect = effects_by_id.get(effect_id)
+    if (
+        type(effect) is not _venue.BrokerEffect
+        or effect.scope.request_occurrence_id != request_occurrence_id
+        or _venue._canonical_value_commitment(effect.scope) != effect_scope_commitment
+    ):
+        raise ValueError("venue consumed bootstrap effect is absent or spliced")
+    consumed = _venue._new_consumed_bootstrap_bound_target_record(
+        active_record=active,
+        effect=effect,
+        request_input_id=request_input_id,
+    )
+    encoded, _ = _encode_runtime_checkpoint_venue_bootstrap_target(consumed)
+    if encoded != value:
+        raise ValueError("venue consumed bootstrap target is not compact-canonical")
+    return consumed
 
 
 def _venue_checkpoint_matches_execution_state(
@@ -6324,9 +6849,7 @@ def _decode_compact_venue_checkpoint(
             2,
         )
         position_scope = _operations._decode_m2_position_scope(epoch_fields[0])
-        epoch = _operations._require_exact_int(
-            "venue authority epoch", epoch_fields[1]
-        )
+        epoch = _operations._require_exact_int("venue authority epoch", epoch_fields[1])
         if epoch < 0:
             raise ValueError("venue authority epoch must be non-negative")
         expected_epoch_row = [
@@ -6338,16 +6861,12 @@ def _decode_compact_venue_checkpoint(
             raise ValueError("venue authority epoch row is not canonical")
         authority_epochs.append((position_scope, epoch))
 
-    effect_rows = _decode_checkpoint_collection_rows(
-        fields[7], "m2.venue.Effects/v1"
-    )
+    effect_rows = _decode_checkpoint_collection_rows(fields[7], "m2.venue.Effects/v1")
     effects = tuple(
         _decode_compact_venue_effect_row(row, checkpoint_ordinal=ordinal)
         for ordinal, row in enumerate(effect_rows)
     )
-    effects_by_id = {
-        current.effect.effect_id: current for current, _ in effects
-    }
+    effects_by_id = {current.effect.effect_id: current for current, _ in effects}
     if len(effects_by_id) != len(effects):
         raise ValueError("venue effect current rows retain a duplicate identity")
     claim_rows = _decode_checkpoint_collection_rows(fields[8], "m2.venue.Claims/v1")
@@ -6380,21 +6899,710 @@ def _decode_compact_venue_checkpoint(
             raise ValueError("venue dispatch claim row is not canonical")
         claims.append(claim)
 
-    unsupported_collections = (
-        (9, "m2.venue.OwnerAttempts/v1"),
-        (10, "m2.venue.AcquisitionCorrelations/v1"),
-        (11, "m2.venue.ClosureHeads/v1"),
-        (12, "m2.venue.EconomicHighWaters/v1"),
-        (13, "m2.venue.HumanCoverages/v1"),
-        (14, "m2.venue.BrokerCoverages/v1"),
-        (15, "m2.venue.CoverageProvenances/v1"),
-        (16, "m2.venue.Reconciliations/v1"),
-        (17, "m2.venue.ExecutionReconciliations/v1"),
-        (19, "m2.venue.BootstrapTargets/v1"),
+    owner_rows = _decode_checkpoint_collection_rows(
+        fields[9], "m2.venue.OwnerAttempts/v1"
     )
-    for index, tag in unsupported_collections:
-        if _decode_checkpoint_collection_rows(fields[index], tag):
-            raise ValueError(f"compact venue restoration does not yet admit {tag}")
+    owners: list[tuple[_venue.VenueIdentityOwner, _venue.VenueAttempt | None]] = []
+    for ordinal, row in enumerate(owner_rows):
+        owner_fields = _operations._require_m2_aggregate(
+            row,
+            "m2.venue.OwnerAttempt/v1",
+            5,
+        )
+        if (
+            _operations._require_exact_int(
+                "venue owner checkpoint ordinal", owner_fields[0]
+            )
+            != ordinal
+        ):
+            raise ValueError("venue owner checkpoint ordinals are not dense")
+        leg_key = _operations._decode_m2_m1_as(
+            "venue owner leg", owner_fields[1], _identity.VenueLegKey
+        )
+        effect_id = _operations._decode_m2_m1_as(
+            "venue owner effect", owner_fields[2], _identity.EffectId
+        )
+        current = effects_by_id.get(effect_id)
+        if current is None:
+            raise ValueError("venue owner names an absent current effect")
+        observation_id = _operations._decode_m2_m1_as(
+            "venue owner observation",
+            owner_fields[3],
+            _identity.VenueObservationId,
+        )
+        owner = _venue.VenueIdentityOwner(
+            leg_key,
+            current.effect.scope,
+            observation_id,
+        )
+        attempt: _venue.VenueAttempt | None = None
+        if owner_fields[4] is not None:
+            attempt_fields = _operations._require_m2_aggregate(
+                owner_fields[4],
+                "m2.venue.Attempt/v1",
+                5,
+            )
+            attempt = _venue.VenueAttempt(
+                _operations._decode_m2_m1_as(
+                    "venue attempt leg",
+                    attempt_fields[0],
+                    _identity.VenueLegKey,
+                ),
+                _decode_checkpoint_enum_value(
+                    "venue attempt state",
+                    attempt_fields[1],
+                    "m1.venue.VenueAttemptState",
+                    _venue.VenueAttemptState,
+                ),
+                (
+                    None
+                    if attempt_fields[2] is None
+                    else _decode_checkpoint_enum_value(
+                        "venue pending operation",
+                        attempt_fields[2],
+                        "m1.venue.PendingVenueOperation",
+                        _venue.PendingVenueOperation,
+                    )
+                ),
+                _operations._decode_m2_m1_as(
+                    "venue attempt cumulative quantity",
+                    attempt_fields[3],
+                    _values.Quantity,
+                ),
+                _operations._decode_m2_m1_as(
+                    "venue attempt observation",
+                    attempt_fields[4],
+                    _identity.VenueObservationId,
+                ),
+            )
+            if attempt.leg_key != leg_key:
+                raise ValueError("venue attempt does not own its current leg")
+        expected_attempt = (
+            None
+            if attempt is None
+            else [
+                "m2.venue.Attempt/v1",
+                _operations._encode_m2_m1_atom(attempt.leg_key),
+                _checkpoint_enum("m1.venue.VenueAttemptState", attempt.status),
+                (
+                    None
+                    if attempt.pending_operation is None
+                    else _checkpoint_enum(
+                        "m1.venue.PendingVenueOperation",
+                        attempt.pending_operation,
+                    )
+                ),
+                _operations._encode_m2_m1_atom(attempt.cumulative_quantity),
+                _operations._encode_m2_m1_atom(attempt.last_observation_id),
+            ]
+        )
+        if [
+            "m2.venue.OwnerAttempt/v1",
+            ordinal,
+            _operations._encode_m2_m1_atom(leg_key),
+            _operations._encode_m2_m1_atom(effect_id),
+            _operations._encode_m2_m1_atom(observation_id),
+            expected_attempt,
+        ] != row:
+            raise ValueError("venue owner current row is not canonical")
+        owners.append((owner, attempt))
+
+    correlation_rows = _decode_checkpoint_collection_rows(
+        fields[10], "m2.venue.AcquisitionCorrelations/v1"
+    )
+    acquisition_correlations: list[_venue._AcquisitionCorrelationEntry] = []
+    for row in correlation_rows:
+        correlation_fields = _operations._require_m2_aggregate(
+            row,
+            "m2.venue.AcquisitionCorrelation/v1",
+            6,
+        )
+        entry = _venue._AcquisitionCorrelationEntry(
+            _operations._decode_m2_m1_as(
+                "venue correlation application generation",
+                correlation_fields[0],
+                _identity.ApplicationGenerationId,
+            ),
+            _operations._decode_m2_position_scope(correlation_fields[1]),
+            _operations._decode_m2_m1_as(
+                "venue correlation request occurrence",
+                correlation_fields[2],
+                _identity.RequestOccurrenceId,
+            ),
+            _operations._decode_m2_m1_as(
+                "venue correlation effect",
+                correlation_fields[3],
+                _identity.EffectId,
+            ),
+            _operations._decode_m2_m1_as(
+                "venue correlation leg",
+                correlation_fields[4],
+                _identity.VenueLegKey,
+            ),
+            _operations._decode_m2_m1_as(
+                "venue correlation root",
+                correlation_fields[5],
+                _identity.RootFillKey,
+            ),
+        )
+        if [
+            "m2.venue.AcquisitionCorrelation/v1",
+            _operations._encode_m2_m1_atom(entry.application_generation_id),
+            _operations._encode_m2_position_scope(entry.position_scope),
+            _operations._encode_m2_m1_atom(entry.request_occurrence_id),
+            _operations._encode_m2_m1_atom(entry.effect_id),
+            _operations._encode_m2_m1_atom(entry.leg_key),
+            _operations._encode_m2_m1_atom(entry.root_key),
+        ] != row:
+            raise ValueError("venue acquisition correlation row is not canonical")
+        acquisition_correlations.append(entry)
+
+    closure_rows = _decode_checkpoint_collection_rows(
+        fields[11], "m2.venue.ClosureHeads/v1"
+    )
+    closure_heads: list[_venue.VenueTerminalClosure] = []
+    for row in closure_rows:
+        closure_fields = _operations._require_m2_aggregate(
+            row,
+            "m2.venue.TerminalClosure/v1",
+            16,
+        )
+        closure_ordinal = _operations._require_exact_int(
+            "venue closure ordinal", closure_fields[2]
+        )
+        if closure_ordinal < 0:
+            raise ValueError("venue closure ordinal must be non-negative")
+        reason = closure_fields[14]
+        if reason is not None and type(reason) is not str:
+            raise TypeError("venue closure reason must be exact text or None")
+        closure = _venue.VenueTerminalClosure(
+            _operations._decode_m2_m1_as(
+                "venue closure leg", closure_fields[0], _identity.VenueLegKey
+            ),
+            _operations._decode_m2_m1_as(
+                "venue closure id", closure_fields[1], _identity.ClosureId
+            ),
+            closure_ordinal,
+            (
+                None
+                if closure_fields[3] is None
+                else _operations._decode_m2_m1_as(
+                    "venue closure predecessor",
+                    closure_fields[3],
+                    _identity.ClosureId,
+                )
+            ),
+            _decode_checkpoint_enum_value(
+                "venue closure state",
+                closure_fields[4],
+                "m1.venue.VenueAttemptState",
+                _venue.VenueAttemptState,
+            ),
+            _operations._decode_m2_m1_as(
+                "venue closure cumulative quantity",
+                closure_fields[5],
+                _values.Quantity,
+            ),
+            _operations._decode_m2_m1_as(
+                "venue closure observed cumulative quantity",
+                closure_fields[6],
+                _values.Quantity,
+            ),
+            _operations._decode_m2_m1_as(
+                "venue closure evidence",
+                closure_fields[7],
+                _identity.EvidenceReference,
+            ),
+            _decode_checkpoint_enum_value(
+                "venue closure kind",
+                closure_fields[8],
+                "m1.venue.VenueClosureKind",
+                _venue.VenueClosureKind,
+            ),
+            _operations._decode_m2_m1_as(
+                "venue closure source input",
+                closure_fields[9],
+                _identity.VenueInputId,
+            ),
+            (
+                None
+                if closure_fields[10] is None
+                else _operations._decode_m2_m1_as(
+                    "venue closure observation",
+                    closure_fields[10],
+                    _identity.VenueObservationId,
+                )
+            ),
+            (
+                None
+                if closure_fields[11] is None
+                else _operations._decode_m2_m1_as(
+                    "venue closure source event",
+                    closure_fields[11],
+                    _identity.SourceEventId,
+                )
+            ),
+            (
+                None
+                if closure_fields[12] is None
+                else _decode_checkpoint_enum_value(
+                    "venue closure broker terminal state",
+                    closure_fields[12],
+                    "m1.venue.VenueAttemptState",
+                    _venue.VenueAttemptState,
+                )
+            ),
+            (
+                None
+                if closure_fields[13] is None
+                else _operations._decode_m2_m1_as(
+                    "venue closure actor", closure_fields[13], _identity.ActorId
+                )
+            ),
+            reason,
+            _decode_optional_checkpoint_digest(
+                "venue closure evidence digest", closure_fields[15]
+            ),
+        )
+        closure_heads.append(closure)
+
+    high_water_rows = _decode_checkpoint_collection_rows(
+        fields[12], "m2.venue.EconomicHighWaters/v1"
+    )
+    economic_high_waters: list[tuple[_identity.VenueLegKey, int]] = []
+    for row in high_water_rows:
+        high_water_fields = _operations._require_m2_aggregate(
+            row,
+            "m2.venue.EconomicHighWater/v1",
+            2,
+        )
+        high_water = _operations._require_exact_int(
+            "venue economic high water", high_water_fields[1]
+        )
+        if high_water < 0:
+            raise ValueError("venue economic high water must be non-negative")
+        economic_high_waters.append(
+            (
+                _operations._decode_m2_m1_as(
+                    "venue economic high-water leg",
+                    high_water_fields[0],
+                    _identity.VenueLegKey,
+                ),
+                high_water,
+            )
+        )
+
+    human_coverage_rows = _decode_checkpoint_collection_rows(
+        fields[13], "m2.venue.HumanCoverages/v1"
+    )
+    human_coverages: list[_recovery.HumanCoverage] = []
+    for row in human_coverage_rows:
+        coverage_fields = _operations._require_m2_aggregate(
+            row,
+            "m2.venue.HumanCoverage/v1",
+            8,
+        )
+        if type(coverage_fields[4]) is not bool:
+            raise TypeError("venue human corroboration flag must be exact bool")
+        human_coverage = _recovery.HumanCoverage(
+            _operations._decode_m2_m1_as(
+                "venue human coverage effect",
+                coverage_fields[0],
+                _identity.EffectId,
+            ),
+            _operations._decode_m2_m1_as(
+                "venue human coverage leg",
+                coverage_fields[1],
+                _identity.VenueLegKey,
+            ),
+            _operations._decode_m2_human_attested_fill_fact(coverage_fields[2]),
+            _operations._decode_m2_m1_as(
+                "venue human coverage source input",
+                coverage_fields[3],
+                _identity.VenueInputId,
+            ),
+            coverage_fields[4],
+            (
+                None
+                if coverage_fields[5] is None
+                else _operations._decode_m2_broker_fill_fact(coverage_fields[5])
+            ),
+            _decode_optional_checkpoint_digest(
+                "venue human broker evidence digest", coverage_fields[6]
+            ),
+            (
+                None
+                if coverage_fields[7] is None
+                else _operations._decode_m2_m1_as(
+                    "venue human broker source input",
+                    coverage_fields[7],
+                    _identity.VenueInputId,
+                )
+            ),
+        )
+        human_coverages.append(human_coverage)
+
+    broker_coverage_rows = _decode_checkpoint_collection_rows(
+        fields[14], "m2.venue.BrokerCoverages/v1"
+    )
+    broker_coverages: list[_recovery._BrokerCoverage] = []
+    for row in broker_coverage_rows:
+        coverage_fields = _operations._require_m2_aggregate(
+            row,
+            "m2.venue.BrokerCoverage/v1",
+            11,
+        )
+        if type(coverage_fields[10]) is not bool:
+            raise TypeError("venue broker mapping flag must be exact bool")
+        broker_coverage = _recovery._BrokerCoverage(
+            _operations._decode_m2_m1_as(
+                "venue broker coverage effect",
+                coverage_fields[0],
+                _identity.EffectId,
+            ),
+            _operations._decode_m2_m1_as(
+                "venue broker coverage leg",
+                coverage_fields[1],
+                _identity.VenueLegKey,
+            ),
+            _operations._decode_m2_m1_as(
+                "venue broker prior cumulative quantity",
+                coverage_fields[2],
+                _values.Quantity,
+            ),
+            _operations._decode_m2_m1_as(
+                "venue broker resulting cumulative quantity",
+                coverage_fields[3],
+                _values.Quantity,
+            ),
+            _operations._decode_m2_broker_fill_fact(coverage_fields[4]),
+            _operations._decode_m2_bytes(
+                "venue broker evidence digest", coverage_fields[5]
+            ),
+            _operations._decode_m2_m1_as(
+                "venue broker root source input",
+                coverage_fields[6],
+                _identity.VenueInputId,
+            ),
+            _operations._decode_m2_broker_execution_fact(coverage_fields[7]),
+            _operations._decode_m2_bytes(
+                "venue broker head evidence digest", coverage_fields[8]
+            ),
+            _operations._decode_m2_m1_as(
+                "venue broker head source input",
+                coverage_fields[9],
+                _identity.VenueInputId,
+            ),
+            coverage_fields[10],
+        )
+        broker_coverages.append(broker_coverage)
+
+    provenance_rows = _decode_checkpoint_collection_rows(
+        fields[15], "m2.venue.CoverageProvenances/v1"
+    )
+    coverage_provenances: list[
+        tuple[_fills.PositionScope, _venue._CoverageProvenance]
+    ] = []
+    for row in provenance_rows:
+        provenance_fields = _operations._require_m2_aggregate(
+            row,
+            "m2.venue.CoverageProvenance/v1",
+            3,
+        )
+        position_scope = _operations._decode_m2_position_scope(provenance_fields[0])
+        covered_rows = _decode_checkpoint_collection_rows(
+            provenance_fields[1],
+            "m2.venue.CoveredRoots/v1",
+        )
+        covered_roots: _fills._PersistentKeyMap[bytes] = (
+            _fills._PersistentKeyMap.empty()
+        )
+        expected_covered_rows: list[object] = []
+        for covered_row in covered_rows:
+            covered_fields = _operations._require_m2_aggregate(
+                covered_row,
+                "m2.venue.CoveredRoot/v1",
+                2,
+            )
+            root_key = _operations._decode_m2_m1_as(
+                "venue covered root", covered_fields[0], _identity.RootFillKey
+            )
+            fact_commitment = _operations._decode_m2_bytes(
+                "venue covered fact commitment", covered_fields[1]
+            )
+            covered_roots = covered_roots.insert_new(
+                _venue._coverage_root_index_key(root_key),
+                fact_commitment,
+                fact_commitment,
+            )
+            expected_covered_rows.append(
+                [
+                    "m2.venue.CoveredRoot/v1",
+                    _operations._encode_m2_m1_atom(root_key),
+                    _operations._encode_m2_bytes(fact_commitment),
+                ]
+            )
+        old_root_heads_commitment = _decode_optional_checkpoint_digest(
+            "venue coverage root-head commitment", provenance_fields[2]
+        )
+        source_state = source_execution_state_by_scope.get(position_scope)
+        compact_execution = compact_execution_by_scope.get(position_scope)
+        if old_root_heads_commitment is not None and (
+            source_state is None
+            or compact_execution is None
+            or old_root_heads_commitment != source_state.root_heads_commitment
+        ):
+            raise ValueError("venue coverage provenance is stale or spliced")
+        if old_root_heads_commitment is not None:
+            assert compact_execution is not None
+        normalized_root_heads_commitment = (
+            None
+            if compact_execution is None or old_root_heads_commitment is None
+            else compact_execution.root_heads.commitment
+        )
+        if [
+            "m2.venue.CoverageProvenance/v1",
+            _operations._encode_m2_position_scope(position_scope),
+            _checkpoint_collection("m2.venue.CoveredRoots/v1", expected_covered_rows),
+            (
+                None
+                if old_root_heads_commitment is None
+                else _operations._encode_m2_bytes(old_root_heads_commitment)
+            ),
+        ] != row:
+            raise ValueError("venue coverage provenance row is not canonical")
+        coverage_provenances.append(
+            (
+                position_scope,
+                _venue._CoverageProvenance(
+                    covered_roots,
+                    normalized_root_heads_commitment,
+                ),
+            )
+        )
+
+    reconciliation_rows = _decode_checkpoint_collection_rows(
+        fields[16], "m2.venue.Reconciliations/v1"
+    )
+    reconciliations: list[
+        _recovery.ReconciliationRecord | _recovery.RevisionReconciliationRecord
+    ] = []
+    for row in reconciliation_rows:
+        if type(row) is not list or not row or type(row[0]) is not str:
+            raise ValueError("venue reconciliation row is malformed")
+        if row[0] == "m2.venue.FillReconciliation/v1":
+            reconciliation_fields = _operations._require_m2_aggregate(
+                row,
+                "m2.venue.FillReconciliation/v1",
+                8,
+            )
+            reason = reconciliation_fields[7]
+            if type(reason) is not str:
+                raise TypeError("venue fill reconciliation reason must be exact text")
+            reconciliation: (
+                _recovery.ReconciliationRecord | _recovery.RevisionReconciliationRecord
+            ) = _recovery.ReconciliationRecord(
+                _operations._decode_m2_m1_as(
+                    "venue fill reconciliation input",
+                    reconciliation_fields[0],
+                    _identity.VenueInputId,
+                ),
+                _operations._decode_m2_m1_as(
+                    "venue fill reconciliation effect",
+                    reconciliation_fields[1],
+                    _identity.EffectId,
+                ),
+                _operations._decode_m2_m1_as(
+                    "venue fill reconciliation leg",
+                    reconciliation_fields[2],
+                    _identity.VenueLegKey,
+                ),
+                _operations._decode_m2_m1_as(
+                    "venue fill reconciliation prior cumulative quantity",
+                    reconciliation_fields[3],
+                    _values.Quantity,
+                ),
+                _operations._decode_m2_m1_as(
+                    "venue fill reconciliation resulting cumulative quantity",
+                    reconciliation_fields[4],
+                    _values.Quantity,
+                ),
+                _operations._decode_m2_broker_fill_fact(reconciliation_fields[5]),
+                _operations._decode_m2_bytes(
+                    "venue fill reconciliation evidence digest",
+                    reconciliation_fields[6],
+                ),
+                reason,
+            )
+        elif row[0] == "m2.venue.RevisionReconciliation/v1":
+            reconciliation_fields = _operations._require_m2_aggregate(
+                row,
+                "m2.venue.RevisionReconciliation/v1",
+                10,
+            )
+            encoded_fact = reconciliation_fields[6]
+            if type(encoded_fact) is not list or not encoded_fact:
+                raise ValueError("venue revision reconciliation fact is malformed")
+            if encoded_fact[0] == "m1.fills.BrokerTradeCorrectFact/v1":
+                revision_fact: (
+                    _fills.BrokerTradeCorrectFact | _fills.BrokerTradeBustFact
+                ) = _operations._decode_m2_broker_trade_correct_fact(encoded_fact)
+            elif encoded_fact[0] == "m1.fills.BrokerTradeBustFact/v1":
+                revision_fact = _operations._decode_m2_broker_trade_bust_fact(
+                    encoded_fact
+                )
+            else:
+                raise ValueError("venue revision reconciliation fact is not admitted")
+            canonical_applied = reconciliation_fields[8]
+            reason = reconciliation_fields[9]
+            if type(canonical_applied) is not bool or type(reason) is not str:
+                raise TypeError("venue revision reconciliation flags are not exact")
+            reconciliation = _recovery.RevisionReconciliationRecord(
+                _operations._decode_m2_m1_as(
+                    "venue revision reconciliation input",
+                    reconciliation_fields[0],
+                    _identity.VenueInputId,
+                ),
+                _operations._decode_m2_m1_as(
+                    "venue revision reconciliation effect",
+                    reconciliation_fields[1],
+                    _identity.EffectId,
+                ),
+                _operations._decode_m2_m1_as(
+                    "venue revision reconciliation leg",
+                    reconciliation_fields[2],
+                    _identity.VenueLegKey,
+                ),
+                _operations._decode_m2_m1_as(
+                    "venue revision prior root quantity",
+                    reconciliation_fields[3],
+                    _values.Quantity,
+                ),
+                _operations._decode_m2_m1_as(
+                    "venue revision prior venue cumulative quantity",
+                    reconciliation_fields[4],
+                    _values.Quantity,
+                ),
+                _operations._decode_m2_m1_as(
+                    "venue revision resulting venue cumulative quantity",
+                    reconciliation_fields[5],
+                    _values.Quantity,
+                ),
+                revision_fact,
+                _operations._decode_m2_bytes(
+                    "venue revision reconciliation evidence digest",
+                    reconciliation_fields[7],
+                ),
+                canonical_applied,
+                reason,
+            )
+        else:
+            raise ValueError("venue reconciliation variant is not admitted")
+        if _encode_runtime_checkpoint_venue_reconciliation_row(reconciliation) != row:
+            raise ValueError("venue reconciliation row is not compact-canonical")
+        reconciliations.append(reconciliation)
+
+    execution_reconciliation_rows = _decode_checkpoint_collection_rows(
+        fields[17], "m2.venue.ExecutionReconciliations/v1"
+    )
+    execution_reconciliations: list[
+        _venue._ResolvedRegistryProjectionOutcome
+        | _venue._UnresolvedRegistryAdvanceOutcome
+    ] = []
+    reconciliation_by_input: dict[
+        _identity.VenueInputId,
+        _venue._ResolvedRegistryProjectionOutcome
+        | _venue._UnresolvedRegistryAdvanceOutcome,
+    ] = {}
+    for row in execution_reconciliation_rows:
+        execution_reconciliation = _decode_compact_venue_execution_reconciliation_row(
+            row
+        )
+        if execution_reconciliation.input_id in reconciliation_by_input:
+            raise ValueError("venue execution reconciliation input is duplicated")
+        reconciliation_by_input[execution_reconciliation.input_id] = (
+            execution_reconciliation
+        )
+        execution_reconciliations.append(execution_reconciliation)
+
+    broker_effects_by_id = {
+        current.effect.effect_id: current.effect for current, _ in effects
+    }
+    if len(broker_effects_by_id) != len(effects):
+        raise ValueError("venue current effects contain a duplicate identity")
+    bootstrap_rows = _decode_checkpoint_collection_rows(
+        fields[19], "m2.venue.BootstrapTargets/v1"
+    )
+    bootstrap_targets: list[object] = []
+    bootstrap_scopes: set[_fills.PositionScope] = set()
+    active_bootstrap_scopes: set[_fills.PositionScope] = set()
+    references: dict[_identity.VenueInputId, tuple[_fills.PositionScope, bool]] = {}
+
+    def retain_reference(
+        input_id: _identity.VenueInputId,
+        position_scope: _fills.PositionScope,
+        *,
+        required: bool,
+    ) -> None:
+        existing = references.get(input_id)
+        if existing is None:
+            references[input_id] = (position_scope, required)
+        elif existing[0] != position_scope:
+            raise ValueError("venue bootstrap input is referenced by two scopes")
+        elif required and not existing[1]:
+            references[input_id] = (position_scope, True)
+
+    for row in bootstrap_rows:
+        target = _decode_compact_venue_bootstrap_target(
+            row,
+            effects_by_id=broker_effects_by_id,
+        )
+        active = (
+            target
+            if type(target) is _venue._BootstrapBoundTargetRecord
+            else _cast(_venue._ConsumedBootstrapBoundTargetRecord, target).active_record
+        )
+        if (
+            type(active) is not _venue._BootstrapBoundTargetRecord
+            or active.position_scope in bootstrap_scopes
+            or active.application_generation_id != application_generation_id
+            or active.position_scope not in source_execution_state_by_scope
+        ):
+            raise ValueError("venue bootstrap target is duplicated or unselected")
+        bootstrap_scopes.add(active.position_scope)
+        if type(target) is _venue._BootstrapBoundTargetRecord:
+            active_bootstrap_scopes.add(active.position_scope)
+            source_state = source_execution_state_by_scope[active.position_scope]
+            if not _venue_checkpoint_matches_execution_state(
+                active._neutral_checkpoint_proof.execution_checkpoint,
+                source_state,
+            ):
+                raise ValueError("venue active bootstrap target is stale or spliced")
+        retain_reference(
+            active.bootstrap_input_id,
+            active.position_scope,
+            required=False,
+        )
+        retain_reference(
+            active.checkpoint_input_id,
+            active.position_scope,
+            required=(
+                active.checkpoint_input_id != active.bootstrap_input_id
+                and active._neutral_checkpoint_proof.source_kind
+                is not _venue._ProtectionTransitionSourceKind.COMPACT_RESTORE
+            ),
+        )
+        bootstrap_targets.append(target)
+
+    for input_id, execution_reconciliation in reconciliation_by_input.items():
+        reference = references.get(input_id)
+        if reference is None or execution_reconciliation.position_scope != reference[0]:
+            raise ValueError(
+                "venue execution reconciliation is unreferenced or cross-scope"
+            )
+    for input_id, (_, required) in references.items():
+        if required and input_id not in reconciliation_by_input:
+            raise ValueError("required venue execution reconciliation is absent")
 
     execution_rows = _decode_checkpoint_collection_rows(
         fields[18], "m2.venue.ExecutionScopes/v1"
@@ -6408,9 +7616,7 @@ def _decode_compact_venue_checkpoint(
             2,
         )
         state = _decode_m2_execution_checkpoint_state(execution_fields[0])
-        old_checkpoint = _decode_compact_venue_execution_checkpoint(
-            execution_fields[1]
-        )
+        old_checkpoint = _decode_compact_venue_execution_checkpoint(execution_fields[1])
         compact_execution = compact_execution_by_scope.get(state.scope)
         if (
             state.scope in reached_execution_scopes
@@ -6432,6 +7638,7 @@ def _decode_compact_venue_checkpoint(
         fields[20], "m2.venue.ProtectionCursors/v1"
     )
     cursors: list[tuple[_fills.PositionScope, _venue._ProtectionCursor]] = []
+    source_cursors: dict[_fills.PositionScope, _venue._ProtectionCursor] = {}
     for row in cursor_rows:
         cursor_fields = _operations._require_m2_aggregate(
             row,
@@ -6464,9 +7671,7 @@ def _decode_compact_venue_checkpoint(
             if cursor_fields[5] is None
             else _decode_compact_venue_execution_checkpoint(cursor_fields[5])
         )
-        if (old_execution_commitment is None) != (
-            old_execution_checkpoint is None
-        ):
+        if (old_execution_commitment is None) != (old_execution_checkpoint is None):
             raise ValueError("venue protection cursor execution seal is partial")
         cursor_source_state = source_execution_state_by_scope.get(position_scope)
         compact_execution = compact_execution_by_scope.get(position_scope)
@@ -6510,8 +7715,14 @@ def _decode_compact_venue_checkpoint(
         ]
         if expected_old_cursor != row:
             raise ValueError("venue protection cursor row is not canonical")
+        if position_scope in source_cursors:
+            raise ValueError("venue protection cursor scope is duplicated")
+        source_cursors[position_scope] = old_cursor
         normalized_cursor = old_cursor
-        if old_execution_checkpoint is not None:
+        if (
+            old_execution_checkpoint is not None
+            and position_scope not in active_bootstrap_scopes
+        ):
             assert compact_execution is not None
             normalized_cursor = _venue._ProtectionCursor(
                 ordinal,
@@ -6521,6 +7732,19 @@ def _decode_compact_venue_checkpoint(
                 _venue.VenueExecutionCheckpoint.from_execution(compact_execution),
             )
         cursors.append((position_scope, normalized_cursor))
+
+    for target in bootstrap_targets:
+        active = (
+            target
+            if type(target) is _venue._BootstrapBoundTargetRecord
+            else _cast(_venue._ConsumedBootstrapBoundTargetRecord, target).active_record
+        )
+        if (
+            type(target) is _venue._BootstrapBoundTargetRecord
+            and source_cursors.get(active.position_scope)
+            != active._neutral_checkpoint_proof.cursor
+        ):
+            raise ValueError("venue active bootstrap cursor is stale or spliced")
 
     normalized_registry_count = old_registry_count
     normalized_registry_commitment = old_registry_commitment
@@ -6547,16 +7771,49 @@ def _decode_compact_venue_checkpoint(
         authority_epochs=tuple(authority_epochs),
         effects=effects,
         claims=tuple(claims),
+        owners=tuple(owners),
+        acquisition_correlations=tuple(acquisition_correlations),
+        closure_heads=tuple(closure_heads),
+        economic_high_waters=tuple(economic_high_waters),
+        human_coverages=tuple(human_coverages),
+        broker_coverages=tuple(broker_coverages),
+        coverage_provenances=tuple(coverage_provenances),
+        reconciliations=tuple(reconciliations),
+        execution_reconciliations=tuple(execution_reconciliations),
+        bootstrap_targets=tuple(bootstrap_targets),
         execution_snapshots=tuple(execution_snapshots),
         protection_cursors=tuple(cursors),
     )
+    normalized_bootstrap_rows = _encode_runtime_checkpoint_venue_bootstrap_target_rows(
+        restored,
+        selection,
+    )
+    if normalized_bootstrap_rows[1] != len(bootstrap_rows):
+        raise ValueError("venue compact bootstrap target cardinality changed")
     if (
         _encode_runtime_checkpoint_venue_authority_epoch_rows(restored, selection)
         != fields[6]
         or _encode_runtime_checkpoint_venue_effect_rows(restored, selection)
         != fields[7]
-        or _encode_runtime_checkpoint_venue_claim_rows(restored, selection)
-        != fields[8]
+        or _encode_runtime_checkpoint_venue_claim_rows(restored, selection) != fields[8]
+        or _encode_runtime_checkpoint_venue_owner_attempt_rows(restored, selection)
+        != fields[9]
+        or _encode_runtime_checkpoint_venue_correlation_rows(restored, selection)
+        != fields[10]
+        or _encode_runtime_checkpoint_venue_closure_head_rows(restored, selection)
+        != fields[11]
+        or _encode_runtime_checkpoint_venue_high_water_rows(restored, selection)
+        != fields[12]
+        or _encode_runtime_checkpoint_venue_human_coverage_rows(restored, selection)
+        != fields[13]
+        or _encode_runtime_checkpoint_venue_broker_coverage_rows(restored, selection)
+        != fields[14]
+        or _encode_runtime_checkpoint_venue_reconciliation_rows(restored, selection)
+        != fields[16]
+        or _encode_runtime_checkpoint_venue_execution_reconciliation_rows(
+            restored, selection
+        )
+        != fields[17]
     ):
         raise ValueError("venue current rows disagree with the repository selection")
     expected_commitment = _checkpoint_row_commitment(
@@ -7312,8 +8569,7 @@ def _restore_compact_execution_from_selected_rows(
         if (
             root.scope_id != scope_id
             or fact.scope_id != scope_id
-            or root.application_generation_id
-            != fact.application_generation_id
+            or root.application_generation_id != fact.application_generation_id
             or root.execution_profile_id != fact.execution_profile_id
             or root.current_fact_id != fact.fact_id
             or root.economics_head_ordinal != fact.fact_ordinal
@@ -7362,6 +8618,439 @@ def _restore_compact_execution_from_selected_rows(
         state,
         restored_heads,
         _fills.SeenFactIndex.empty(position_scope),
+    )
+
+
+def _decode_compact_acquisition_generation(
+    value: object,
+) -> _acquisition.GenerationRecordView:
+    fields = _operations._require_m2_aggregate(
+        value,
+        "m2.acquisition.Generation/v1",
+        11,
+    )
+    binding = _acquisition._new_generation_binding_view(
+        generation_id=_operations._decode_m2_m1_as(
+            "acquisition generation id",
+            fields[0],
+            _identity.AcquisitionGenerationId,
+        ),
+        application_generation_id=_operations._decode_m2_m1_as(
+            "acquisition generation application",
+            fields[1],
+            _identity.ApplicationGenerationId,
+        ),
+        position_scope=_operations._decode_m2_position_scope(fields[2]),
+        successor_ordinal=_operations._require_exact_int(
+            "acquisition generation successor ordinal",
+            fields[3],
+        ),
+        dual_mandate_binding_commitment=_operations._decode_m2_bytes(
+            "acquisition generation mandate commitment",
+            fields[4],
+        ),
+        predecessor_or_genesis_head_commitment=_operations._decode_m2_bytes(
+            "acquisition generation predecessor commitment",
+            fields[5],
+        ),
+        emergency_recovery_compatibility_commitment=_operations._decode_m2_bytes(
+            "acquisition generation compatibility commitment",
+            fields[6],
+        ),
+    )
+    record = _acquisition._new_generation_record_view(
+        binding=binding,
+        economics_head_commitment=_operations._decode_m2_bytes(
+            "acquisition generation economics commitment",
+            fields[7],
+        ),
+        serving_class=_decode_checkpoint_enum_value(
+            "acquisition generation serving class",
+            fields[8],
+            "m1.acquisition.GenerationServingClass",
+            _acquisition.GenerationServingClass,
+        ),
+        closure_summary_commitment=_operations._decode_m2_bytes(
+            "acquisition generation closure commitment",
+            fields[9],
+        ),
+    )
+    if (
+        _operations._decode_m2_bytes(
+            "acquisition generation record commitment",
+            fields[10],
+        )
+        != _acquisition._generation_record_view_commitment(
+            record.binding,
+            record.economics_head_commitment,
+            record.serving_class,
+            record.closure_summary_commitment,
+        )
+        or _encode_runtime_checkpoint_generation(record) != value
+    ):
+        raise ValueError("acquisition generation record is not canonical")
+    return record
+
+
+def _decode_compact_acquisition_controller(
+    value: object,
+) -> _acquisition.SymbolAcquisitionController:
+    fields = _operations._require_m2_aggregate(
+        value,
+        "m2.acquisition.Controller/v1",
+        13,
+    )
+    live_generation_id = _operations._decode_m2_m1_as(
+        "acquisition controller live generation",
+        fields[4],
+        _identity.AcquisitionGenerationId,
+    )
+    controller = _acquisition._new_symbol_acquisition_controller(
+        application_generation_id=_operations._decode_m2_m1_as(
+            "acquisition controller application",
+            fields[0],
+            _identity.ApplicationGenerationId,
+        ),
+        position_scope=_operations._decode_m2_position_scope(fields[1]),
+        controller_head=_operations._decode_m2_bytes(
+            "acquisition controller head",
+            fields[2],
+        ),
+        successor_ordinal=_operations._require_exact_int(
+            "acquisition controller successor ordinal",
+            fields[3],
+        ),
+        live_generation_id=live_generation_id,
+        recovery_class=_decode_checkpoint_enum_value(
+            "acquisition controller recovery class",
+            fields[5],
+            "m1.acquisition.AcquisitionRecoveryClass",
+            _acquisition.AcquisitionRecoveryClass,
+        ),
+        scope_execution_commitment=_operations._decode_m2_bytes(
+            "acquisition controller execution commitment",
+            fields[6],
+        ),
+        venue_commitment=_operations._decode_m2_bytes(
+            "acquisition controller venue commitment",
+            fields[7],
+        ),
+        authority_context_commitment=_operations._decode_m2_bytes(
+            "acquisition controller authority commitment",
+            fields[8],
+        ),
+        protection_commitment=(
+            None
+            if fields[9] is None
+            else _operations._decode_m2_bytes(
+                "acquisition controller protection commitment",
+                fields[9],
+            )
+        ),
+        binding_commitment=_operations._decode_m2_bytes(
+            "acquisition controller binding commitment",
+            fields[10],
+        ),
+        compatibility_commitment=_operations._decode_m2_bytes(
+            "acquisition controller compatibility commitment",
+            fields[11],
+        ),
+    )
+    if (
+        _operations._decode_m2_bytes(
+            "acquisition controller commitment",
+            fields[12],
+        )
+        != controller.commitment
+    ):
+        raise ValueError("acquisition controller commitment does not match")
+    return controller
+
+
+def _decode_compact_acquisition_stream_route(
+    value: object,
+    records_by_id: dict[
+        _identity.AcquisitionGenerationId,
+        _acquisition.GenerationRecordView,
+    ],
+) -> tuple[_identity.MarketStreamGenerationId, _identity.AcquisitionGenerationId]:
+    fields = _operations._require_m2_aggregate(
+        value,
+        "m2.acquisition.MarketStreamRoute/v1",
+        3,
+    )
+    stream_generation = _operations._decode_m2_m1_as(
+        "acquisition stream generation",
+        fields[0],
+        _identity.MarketStreamGenerationId,
+    )
+    generation_id = _operations._decode_m2_m1_as(
+        "acquisition stream owner generation",
+        fields[1],
+        _identity.AcquisitionGenerationId,
+    )
+    record = records_by_id.get(generation_id)
+    if record is None:
+        raise ValueError("acquisition stream route leaves the bounded registry")
+    if _operations._decode_m2_bytes(
+        "acquisition stream route commitment",
+        fields[2],
+    ) != _acquisition._market_stream_generation_route_commitment(
+        stream_generation,
+        record.binding,
+    ):
+        raise ValueError("acquisition stream route commitment does not match")
+    return stream_generation, generation_id
+
+
+def _decode_compact_acquisition_lineage_route(
+    value: object,
+) -> tuple[
+    _acquisition.GenerationRouteKind,
+    object,
+    _identity.AcquisitionGenerationId,
+]:
+    fields = _operations._require_m2_aggregate(
+        value,
+        "m2.acquisition.LineageRoute/v1",
+        5,
+    )
+    route_kind = _decode_checkpoint_enum_value(
+        "acquisition lineage route kind",
+        fields[0],
+        "m1.acquisition.GenerationRouteKind",
+        _acquisition.GenerationRouteKind,
+    )
+    source = _operations._decode_m2_m1_atom(fields[1])
+    generation_id = _operations._decode_m2_m1_as(
+        "acquisition lineage generation",
+        fields[2],
+        _identity.AcquisitionGenerationId,
+    )
+    source_key = _acquisition._lineage_source_key(route_kind, source)
+    route = _acquisition._new_generation_route_view(
+        route_kind=route_kind,
+        source_commitment=_acquisition._commit_parts(
+            b"execution-core/acquisition/lineage-source/v1",
+            source_key,
+        ),
+        generation_id=generation_id,
+    )
+    if _operations._decode_m2_bytes(
+        "acquisition lineage route commitment",
+        fields[4],
+    ) != _acquisition._generation_route_commitment(
+        route.route_kind,
+        route.source_commitment,
+        route.generation_id,
+    ):
+        raise ValueError("acquisition lineage route commitment does not match")
+    return route_kind, source, generation_id
+
+
+def _decode_source_acquisition_checkpoint(
+    value: list[object],
+    *,
+    selection_proof: _records.RuntimeCheckpointSelectionProof,
+    scope_id: int,
+) -> _acquisition.AcquisitionControllerState:
+    """Authenticate one active C0 owner before any compact-context rebind."""
+
+    fields = _operations._require_m2_aggregate(
+        value,
+        _M2_ACQUISITION_STATE_TAG,
+        16,
+    )
+    controller = _decode_compact_acquisition_controller(fields[6])
+    mandate = _operations._decode_m2_acquisition_mandate(fields[7])
+    live = _decode_compact_acquisition_generation(fields[8])
+    unresolved_rows = _decode_checkpoint_collection_rows(
+        fields[10],
+        "m2.acquisition.UnresolvedGenerations/v1",
+    )
+    generations = (live,) + tuple(
+        _decode_compact_acquisition_generation(row) for row in unresolved_rows
+    )
+    records_by_id = {row.binding.generation_id: row for row in generations}
+    if len(records_by_id) != len(generations):
+        raise ValueError("acquisition bounded generation is duplicated")
+    unresolved_route_rows = _decode_checkpoint_collection_rows(
+        fields[11],
+        "m2.acquisition.UnresolvedMarketStreamRoutes/v1",
+    )
+    stream_routes = (
+        _decode_compact_acquisition_stream_route(fields[9], records_by_id),
+    ) + tuple(
+        _decode_compact_acquisition_stream_route(row, records_by_id)
+        for row in unresolved_route_rows
+    )
+    lineage_rows = _decode_checkpoint_collection_rows(
+        fields[12],
+        "m2.acquisition.LineageRoutes/v1",
+    )
+    lineage_routes = tuple(
+        _decode_compact_acquisition_lineage_route(row) for row in lineage_rows
+    )
+    restored = _acquisition._m2_restore_compact_acquisition_controller(
+        controller=controller,
+        mandate=mandate,
+        generation_records=generations,
+        stream_routes=stream_routes,
+        lineage_routes=lineage_routes,
+    )
+    selection = selection_proof._selection
+    selected_controller = tuple(
+        row for row in selection.controllers if row.scope_id == scope_id
+    )
+    selected_live = tuple(
+        row for row in selection.live_generations if row.scope_id == scope_id
+    )
+    selected_live_current = tuple(
+        row for row in selection.live_generation_current if row.scope_id == scope_id
+    )
+    selected_stream = tuple(
+        row
+        for row in selection.streams
+        if row.scope_id == scope_id
+        and row.stream_generation_id
+        == mandate.protection_mandate.evidence_policy.stream_generation
+    )
+    if (
+        len(selected_controller) != 1
+        or len(selected_live) != 1
+        or len(selected_live_current) != 1
+        or len(selected_stream) != 1
+    ):
+        raise ValueError("active acquisition current proof is incomplete")
+    selected_controller_row = selected_controller[0]
+    selected_live_row = selected_live[0]
+    selected_live_current_row = selected_live_current[0]
+    selected_stream_row = selected_stream[0]
+    if (
+        restored.application_generation_id
+        != selection_proof.request.application_generation_id
+        or restored.position_scope != mandate.position_scope
+        or controller.live_generation_id
+        != selected_controller_row.live_acquisition_generation_id
+        or controller.live_generation_id != selected_live_row.acquisition_generation_id
+        or selected_live_current_row.acquisition_generation_id
+        != selected_live_row.acquisition_generation_id
+        or selected_live_row.status != live.serving_class.value
+        or selected_live_row.successor_ordinal != live.binding.successor_ordinal
+        or selected_live_row.mandate_commitment_sha256
+        != live.binding.dual_mandate_binding_commitment.hex()
+        or selected_live_row.emergency_compatibility_sha256
+        != live.binding.emergency_recovery_compatibility_commitment.hex()
+        or selected_controller_row.emergency_compatibility_sha256
+        != controller._compatibility_commitment.hex()
+        or selected_stream_row.application_generation_id
+        != selection_proof.request.application_generation_id
+        or selected_stream_row.acquisition_generation_id
+        != selected_live_row.acquisition_generation_id
+        or selected_stream_row.generation_mandate_commitment_sha256
+        != selected_live_row.mandate_commitment_sha256
+        or selected_stream_row.source_profile_id
+        != selection_proof.request.market_source_profile_id
+        or selected_stream_row.session_id != mandate.session_id
+        or selected_stream_row.sequence_mode
+        != mandate.protection_mandate.evidence_policy.sequence_mode.value
+    ):
+        raise ValueError("active acquisition checkpoint is spliced from current proof")
+    reencoded, _ = _encode_runtime_checkpoint_acquisition(
+        restored,
+        selection,
+        scope_id,
+    )
+    if reencoded != value:
+        raise ValueError("active acquisition checkpoint is not canonical current state")
+    return restored
+
+
+def _decode_source_protection_checkpoint(
+    value: list[object],
+    *,
+    selection_proof: _records.RuntimeCheckpointSelectionProof,
+    scope_id: int,
+    position_scope: _fills.PositionScope,
+    compact_execution: _position.ExecutionSnapshot,
+) -> _protection.PositionProtectionState:
+    """Authenticate one active C0 protection owner, then compact-rebind it."""
+
+    checkpoint = _decode_m2_protection_checkpoint_component(value)
+    selection = selection_proof._selection
+    controllers = tuple(
+        row for row in selection.controllers if row.scope_id == scope_id
+    )
+    authorities = tuple(
+        row for row in selection.protection_authorities if row.scope_id == scope_id
+    )
+    if len(controllers) != 1 or len(authorities) != 1:
+        raise ValueError("active protection current proof is incomplete")
+    controller = controllers[0]
+    authority = authorities[0]
+    active_stream_generation_id = authority.active_stream_generation_id
+    active_acquisition_generation_id = authority.active_acquisition_generation_id
+    active_mandate_commitment = authority.active_generation_mandate_commitment_sha256
+    active_source_profile_id = authority.active_source_profile_id
+    active_session_id = authority.active_session_id
+    active_sequence_mode = authority.active_sequence_mode
+    if (
+        type(active_stream_generation_id) is not _identity.MarketStreamGenerationId
+        or type(active_acquisition_generation_id)
+        is not _identity.AcquisitionGenerationId
+        or type(active_mandate_commitment) is not str
+        or type(active_source_profile_id) is not str
+        or type(active_session_id) is not _identity.SessionId
+        or type(active_sequence_mode) is not str
+    ):
+        raise ValueError("active protection authority coordinates are partial")
+    streams = tuple(
+        row
+        for row in selection.streams
+        if row.scope_id == scope_id
+        and row.stream_generation_id == active_stream_generation_id
+    )
+    if len(streams) != 1:
+        raise ValueError("active protection stream proof is incomplete")
+    stream = streams[0]
+    if (
+        stream.application_generation_id
+        != selection_proof.request.application_generation_id
+        or stream.acquisition_generation_id != active_acquisition_generation_id
+        or stream.generation_mandate_commitment_sha256 != active_mandate_commitment
+        or stream.source_profile_id != active_source_profile_id
+        or stream.session_id != active_session_id
+        or stream.sequence_mode != active_sequence_mode
+    ):
+        raise ValueError("active protection stream proof is spliced")
+    authority_proof = _protection._m2_issue_protection_authority_proof(
+        _protection._M2ProtectionAuthorityProof,
+        selection_proof.request.application_generation_id,
+        selection_proof.request.execution_profile_id,
+        selection_proof.request.market_source_profile_id,
+        scope_id,
+        position_scope,
+        controller.currentness_head_ordinal,
+        controller.live_acquisition_generation_id,
+        authority.authority_class,
+        active_stream_generation_id,
+        active_acquisition_generation_id,
+        active_mandate_commitment,
+        active_source_profile_id,
+        active_session_id,
+        _protection.MarketSequenceMode(active_sequence_mode),
+        authority.expected_controller_head_ordinal,
+        authority.state_commitment_sha256,
+        authority.version_ordinal,
+        checkpoint.mandate.evidence_policy.source_id,
+    )
+    source = _protection._m2_position_protection_from_checkpoint(
+        checkpoint,
+        authority_proof,
+    )
+    return _protection._m2_rebind_compact_protection_execution(
+        source,
+        compact_execution,
     )
 
 
@@ -7448,6 +9137,11 @@ def _restore_compact_runtime_checkpoint(
     source_execution_state_by_scope: dict[
         _fills.PositionScope, _position._M2ExecutionState
     ] = {}
+    position_scope_by_id: dict[int, _fills.PositionScope] = {}
+    source_acquisition_by_id: dict[
+        int, _acquisition.AcquisitionControllerState | None
+    ] = {}
+    compact_protection_by_id: dict[int, _protection.PositionProtectionState | None] = {}
     for candidate in checkpoint.scopes:
         selected = selected_scopes[candidate.scope_id]
         controller = controllers[candidate.scope_id]
@@ -7487,8 +9181,7 @@ def _restore_compact_runtime_checkpoint(
         scope_fact_heads = tuple(
             row
             for row in selection.fact_heads
-            if row.root_fill_key_id
-            in {root.root_fill_key_id for root in scope_roots}
+            if row.root_fill_key_id in {root.root_fill_key_id for root in scope_roots}
         )
         scope_facts = tuple(
             row for row in selection.current_facts if row.scope_id == candidate.scope_id
@@ -7507,44 +9200,69 @@ def _restore_compact_runtime_checkpoint(
             raise ValueError("compact hydration position scope is duplicated")
         compact_execution_by_scope[position_scope] = execution
         source_execution_state_by_scope[position_scope] = execution_state
+        position_scope_by_id[candidate.scope_id] = position_scope
 
         acquisition_wire = _decode_canonical_json(candidate.acquisition.canonical_bytes)
-        if (
-            type(acquisition_wire) is not list
-            or not acquisition_wire
-            or acquisition_wire[0] != _M2_DORMANT_ACQUISITION_TAG
-        ):
-            raise ValueError("compact active acquisition restoration is incomplete")
-        expected_acquisition_wire, _ = _encode_dormant_acquisition(
-            selection,
-            controller,
-            position_scope,
-            selection_proof._binding,
-        )
-        if expected_acquisition_wire != acquisition_wire:
-            raise ValueError("dormant acquisition checkpoint is spliced")
+        if type(acquisition_wire) is not list or not acquisition_wire:
+            raise ValueError("acquisition checkpoint component is not an exact row")
+        if controller.live_acquisition_generation_id is None:
+            if acquisition_wire[0] != _M2_DORMANT_ACQUISITION_TAG:
+                raise ValueError("dormant acquisition checkpoint shape is spliced")
+            expected_acquisition_wire, _ = _encode_dormant_acquisition(
+                selection,
+                controller,
+                position_scope,
+                selection_proof._binding,
+            )
+            if expected_acquisition_wire != acquisition_wire:
+                raise ValueError("dormant acquisition checkpoint is spliced")
+            source_acquisition_by_id[candidate.scope_id] = None
+        else:
+            if acquisition_wire[0] != _M2_ACQUISITION_STATE_TAG:
+                raise ValueError("active acquisition checkpoint shape is spliced")
+            source_acquisition_by_id[candidate.scope_id] = (
+                _decode_source_acquisition_checkpoint(
+                    acquisition_wire,
+                    selection_proof=selection_proof,
+                    scope_id=candidate.scope_id,
+                )
+            )
 
         protection_wire = _decode_canonical_json(candidate.protection.canonical_bytes)
-        if (
-            type(protection_wire) is not list
-            or not protection_wire
-            or protection_wire[0] != _M2_DORMANT_PROTECTION_TAG
-        ):
-            raise ValueError("compact active protection restoration is incomplete")
-        expected_protection_wire, _ = _encode_dormant_protection(
-            protection_authority,
-            selection_proof._binding,
+        if type(protection_wire) is not list or not protection_wire:
+            raise ValueError("protection checkpoint component is not an exact row")
+        active_protection_coordinates = (
+            protection_authority.active_stream_generation_id,
+            protection_authority.active_acquisition_generation_id,
+            protection_authority.active_generation_mandate_commitment_sha256,
+            protection_authority.active_source_profile_id,
+            protection_authority.active_session_id,
+            protection_authority.active_sequence_mode,
         )
-        if expected_protection_wire != protection_wire:
-            raise ValueError("dormant protection checkpoint is spliced")
-        scope_owners.append(
-            _RuntimeCheckpointScopeOwners(
-                candidate.scope_id,
-                None,
-                execution,
-                None,
+        if all(value is None for value in active_protection_coordinates):
+            if protection_wire[0] != _M2_DORMANT_PROTECTION_TAG:
+                raise ValueError("dormant protection checkpoint shape is spliced")
+            expected_protection_wire, _ = _encode_dormant_protection(
+                protection_authority,
+                selection_proof._binding,
             )
-        )
+            if expected_protection_wire != protection_wire:
+                raise ValueError("dormant protection checkpoint is spliced")
+            compact_protection_by_id[candidate.scope_id] = None
+        else:
+            if any(value is None for value in active_protection_coordinates):
+                raise ValueError("active protection authority coordinates are partial")
+            if protection_wire[0] != _M2_PROTECTION_CHECKPOINT_TAG:
+                raise ValueError("active protection checkpoint shape is spliced")
+            compact_protection_by_id[candidate.scope_id] = (
+                _decode_source_protection_checkpoint(
+                    protection_wire,
+                    selection_proof=selection_proof,
+                    scope_id=candidate.scope_id,
+                    position_scope=position_scope,
+                    compact_execution=execution,
+                )
+            )
 
     restored_venue = _decode_compact_venue_checkpoint(
         venue_wire,
@@ -7553,6 +9271,42 @@ def _restore_compact_runtime_checkpoint(
         compact_execution_by_scope=compact_execution_by_scope,
         source_execution_state_by_scope=source_execution_state_by_scope,
     )
+    for candidate in checkpoint.scopes:
+        position_scope = position_scope_by_id[candidate.scope_id]
+        execution = compact_execution_by_scope[position_scope]
+        protection = compact_protection_by_id[candidate.scope_id]
+        source_acquisition = source_acquisition_by_id[candidate.scope_id]
+        acquisition: _acquisition.AcquisitionControllerState | None
+        if source_acquisition is None:
+            acquisition = None
+        else:
+            venue_context = restored_venue.project_acquisition_context(
+                execution,
+                position_scope,
+            )
+            if not venue_context.matches_current(
+                restored_venue,
+                execution,
+                checkpoint.application_generation_id,
+                position_scope,
+            ):
+                raise ValueError("compact acquisition venue context is not current")
+            acquisition = _acquisition._m2_rebind_compact_acquisition_controller(
+                source_acquisition,
+                scope_execution_commitment=(venue_context.scope_execution_commitment),
+                venue_commitment=venue_context.commitment,
+                protection_commitment=(
+                    None if protection is None else protection.commitment
+                ),
+            )
+        scope_owners.append(
+            _RuntimeCheckpointScopeOwners(
+                candidate.scope_id,
+                acquisition,
+                execution,
+                protection,
+            )
+        )
     authority_wire = _decode_canonical_json(checkpoint.authority.canonical_bytes)
     if type(authority_wire) is not list:
         raise ValueError("authority checkpoint component is not an exact row")
