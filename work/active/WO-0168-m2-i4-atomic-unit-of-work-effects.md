@@ -19,9 +19,12 @@ execution_authority: >
   instruction "You may proceed with the remaining sequence" authorize ordinary reversible
   implementation, fresh-file verification against the already-approved unchanged DDL, governance,
   commits, pushes, bounded fresh review, root-cause fixes, and successor preparation through M2
-  closeout. This order does not authorize DDL-byte changes, configured or in-memory databases,
-  migration, runtime composition, credentials, broker/network calls, orders, promotion, master
-  merge, history rewrite, M2-I5+, or M3 implementation.
+  closeout. That serial authority did not authorize DDL-byte changes. Ameen Mujtabaa's separate
+  2026-08-29 bounded changed-DDL authorization recorded below permits only the consolidated
+  corrections in this order and static exact-head review. Configured or in-memory databases,
+  SQLite connection, DDL installation, held-suite execution, migration, runtime composition,
+  credentials, broker/network calls, orders, promotion, master merge, history rewrite, M2-I5+,
+  and M3 implementation remain unauthorized.
 allowed_paths:
   - app/execution_core/position.py
   - app/execution_core/venue.py
@@ -33,6 +36,7 @@ allowed_paths:
   - app/execution_core/persistence/checkpoint_codec.py
   - app/execution_core/persistence/records.py
   - app/execution_core/persistence/repository.py
+  - app/execution_core/persistence/schema.py
   - app/execution_core/persistence/unit_of_work.py
   - app/execution_core/persistence/outbox.py
   - tests/execution_core/test_persistence_operations.py
@@ -51,8 +55,7 @@ allowed_paths:
   - work/review/REV-0114/**
   - work/queue/M2-EXECUTION-2026-08-21/05-POST-I3-PREFLIGHT-AND-M2-COMPLETION-MAP.md
   - work/ledger.jsonl
-forbidden_paths:
-  - app/execution_core/persistence/schema.py
+forbidden_paths: []
 ---
 
 # WO-0168 — atomic unit of work and effect eligibility
@@ -240,9 +243,10 @@ correction; do not split it into independent trigger exceptions:
    maintenance remains unconditional.
 5. Add one UPDATE-only NORMAL protection-currentness branch for an exact
    `UNRESOLVED_VENUE_QUARANTINED` final controller head when the active coordinates and authority
-   class are unchanged and a retained late owner has matching INVALIDATION evidence against the
-   INVALIDATED effect in that scope. Do not relax protection INSERT, stale heads, coordinate
-   transfer, or any other quarantine class.
+   class are unchanged, at least one retained late owner has matching INVALIDATION evidence
+   against the INVALIDATED effect in that scope, and no retained late owner in the scope remains
+   without its own exact matching evidence. Do not relax protection INSERT, stale heads,
+   coordinate transfer, or any other quarantine class.
 
 The failure-capable fresh-file controls are staged, but not executed, in
 `tests_gated/execution_core/test_persistence_unit_of_work_sqlite.py`. They require rootless routing
@@ -250,14 +254,45 @@ to succeed, prebound-root mismatch to fail, flat dormant effect plus claim to su
 stale dormant admission to fail, first positive activation to succeed while negative activation
 and positive transfer still fail, flat consistent transfer/release to remain accepted, and each
 first/later late owner to advance exactly once with dormant and active protection catching up only
-after matching invalidation evidence at the exact final controller head. The DDL remains
-byte-for-byte unchanged and the human
-execution flag remains `False` until a separately authorized schema candidate is produced, freshly
-reviewed, hash-bound, and explicitly approved for fresh-file execution.
+after matching invalidation evidence at the exact final controller head. At source commit
+`bedb1105fc7165da799c3fd025f3291af8bb69cd`, the DDL remained byte-for-byte unchanged and the human
+execution flag remained `False`; the authorization below permits this exact consolidated
+changed-DDL candidate but still does not permit execution.
+
+### Human authorization recorded 2026-08-29
+
+> I authorize one bounded WO-0168 changed-DDL remediation from source commit
+> `bedb1105fc7165da799c3fd025f3291af8bb69cd`, tree
+> `6c15f5420b873e746753ae0783131a00e45532c2`. It may implement only the consolidated schema
+> corrections recorded in the active work order, update the expected DDL digest while keeping
+> `DDL_EXECUTION_AUTHORIZED_BY_AMEEN` exactly `False`, complete the directly necessary held tests
+> and compact governance records, and obtain one fresh static exact-head review with zero open
+> P0/P1. Return the new commit, tree, DDL byte count, SHA-256, schema blob, manifest, and exact
+> fresh-file commands for separate execution approval. No SQLite connection, database creation,
+> DDL installation, held-suite execution, migration, later work order, promotion, or merge is
+> authorized.
+
+This authority changes schema bytes but does not authorize their execution. The expected digest is
+an identity pin only. `DDL_EXECUTION_AUTHORIZED_BY_AMEEN` remains the exact boolean `False` through
+this candidate and its static review.
+
+### Static remediation identity
+
+- `SCHEMA_DDL`: 190,705 UTF-8 bytes at SHA-256
+  `d4df1aaa0a7fed6002c8a55923fb3a35ba948055779dac99bf82e70b6a804c18`.
+- `schema.py` blob: `164de10ad9fef6ce37324840aff59b5b68c07d2a`; file SHA-256
+  `cde0e1e33b7c78e22a854c192ea4b3b83d64c5d11dd538b3ccf23a6e234dc60d`.
+- Held WO-0168 fresh-file test blob: `6057cc263677735201ad8e59105444c796e0613f`; file
+  SHA-256 `05a9b10e691a9979902d0ea939819326dcb4c3da96dbfe6cce923936c4f8fd5f`.
+- Static manifest: `work/review/REV-0114/ddl-static-manifest.md`; SHA-256
+  `c855b1ee04c6c4a60bdfb25123dba66677161123b1650feb3d75bbbed3ceec41`.
+- The manifest records 28 tables, 30 indexes, 152 triggers, zero views, and the exact proposed
+  five-suite fresh-file commands. Candidate commit/tree are bound in the review request after
+  commit creation.
 
 ## Done
 
 Focused pure and fresh-file fault suites, full `tests/execution_core`, Ruff check/format, mypy,
 import boundaries, governance/scope checks, and `git diff --check` pass. REV-0114 returns zero open
-P0/P1. Closeout records exact commit/tree, unchanged DDL identity, test evidence, residuals, and
+P0/P1. Closeout records exact commit/tree, exact DDL identity, test evidence, residuals, and
 the WO-0169 activation handoff.

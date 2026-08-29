@@ -638,6 +638,12 @@ def test_each_late_owner_advances_controller_once_and_protection_catches_up(
         "SELECT currentness_head_ordinal, controller_version_ordinal"
         " FROM symbol_controller WHERE scope_id = 1"
     ).fetchone() == (second_head, int(original_version) + 2)
+    with pytest.raises(
+        sqlite3.IntegrityError,
+        match="protection update requires matching current controller authority",
+    ):
+        _advance_protection_to_controller_head(connection, state_seed=205)
+
     _insert_invalidation(
         connection,
         evidence_id=101,

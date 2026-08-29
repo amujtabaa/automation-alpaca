@@ -49,7 +49,7 @@ from typing import Sequence as _Sequence
 SCHEMA_VERSION = 2
 
 EXPECTED_EXECUTION_DDL_SHA256: _Final[str] = (
-    "75d68e53a110b01e1b1030d30e089166765ea34c5883a1c07ed9257685ec72d4"
+    "d4df1aaa0a7fed6002c8a55923fb3a35ba948055779dac99bf82e70b6a804c18"
 )
 DDL_EXECUTION_AUTHORIZED_BY_AMEEN: _Final[bool] = False
 
@@ -758,6 +758,10 @@ CREATE TABLE acquisition_root_route (
         execution_profile_id
     ),
     UNIQUE (root_fill_key_id, acquisition_generation_id),
+    UNIQUE (
+        effect_id, owner_external, observation_external, scope_id,
+        execution_profile_id, acquisition_generation_id
+    ),
     FOREIGN KEY (
         root_fill_key_id, scope_id, application_generation_id,
         execution_profile_id, acquisition_generation_id
@@ -766,11 +770,11 @@ CREATE TABLE acquisition_root_route (
         execution_profile_id, owner_generation_id
     ),
     FOREIGN KEY (
-        effect_id, owner_external, observation_external, root_fill_key_id,
-        scope_id, execution_profile_id, acquisition_generation_id
+        effect_id, owner_external, observation_external, scope_id,
+        execution_profile_id, acquisition_generation_id
     ) REFERENCES venue_identity_owner (
-        effect_id, owner_external, observation_external, root_fill_key_id,
-        scope_id, execution_profile_id, owner_generation_id
+        effect_id, owner_external, observation_external, scope_id,
+        execution_profile_id, owner_generation_id
     )
 );
 
@@ -784,6 +788,12 @@ CREATE INDEX ix_acquisition_root_route_generation
     ON acquisition_root_route (
         acquisition_generation_id, root_fill_key_id
     );
+
+CREATE INDEX ix_venue_owner_late_scope_evidence
+    ON venue_identity_owner (
+        scope_id, effect_id, owner_external, observation_external
+    )
+    WHERE admitted_after_effect_closed = 1;
 
 CREATE TABLE dispatch_claim (
     claim_id INTEGER PRIMARY KEY,
@@ -1237,6 +1247,48 @@ CREATE TRIGGER trg_acquisition_root_route_no_conflict_replace
         )
 BEGIN
     SELECT RAISE (ABORT, 'acquisition root route is already retained');
+END;
+
+CREATE TRIGGER trg_acquisition_root_route_owner_single_binding
+    BEFORE INSERT ON acquisition_root_route
+    FOR EACH ROW
+    WHEN EXISTS (
+            SELECT 1
+              FROM acquisition_root_route AS retained
+             WHERE retained.effect_id = NEW.effect_id
+               AND retained.owner_external = NEW.owner_external
+               AND retained.observation_external = NEW.observation_external
+               AND retained.scope_id = NEW.scope_id
+               AND retained.execution_profile_id = NEW.execution_profile_id
+               AND retained.acquisition_generation_id =
+                    NEW.acquisition_generation_id
+        )
+BEGIN
+    SELECT RAISE (ABORT, 'acquisition route owner is already bound');
+END;
+
+CREATE TRIGGER trg_acquisition_root_route_requires_exact_owner_root
+    BEFORE INSERT ON acquisition_root_route
+    FOR EACH ROW
+    WHEN NOT EXISTS (
+            SELECT 1
+              FROM venue_identity_owner AS owner
+             WHERE owner.effect_id = NEW.effect_id
+               AND owner.owner_external = NEW.owner_external
+               AND owner.observation_external = NEW.observation_external
+               AND owner.scope_id = NEW.scope_id
+               AND owner.execution_profile_id = NEW.execution_profile_id
+               AND owner.owner_generation_id = NEW.acquisition_generation_id
+               AND (
+                    owner.root_fill_key_id IS NULL
+                    OR owner.root_fill_key_id = NEW.root_fill_key_id
+               )
+        )
+BEGIN
+    SELECT RAISE (
+        ABORT,
+        'acquisition route must match the retained owner root'
+    );
 END;
 
 CREATE TRIGGER trg_acquisition_root_route_advances_generation_head
@@ -2811,16 +2863,35 @@ CREATE TRIGGER trg_venue_effect_requires_current_controller
                               FROM protection_authority AS protection
                              WHERE protection.scope_id = NEW.scope_id
                                AND protection.authority_class = 'NORMAL'
-                               AND protection.active_stream_generation_id
-                                    IS NOT NULL
                                AND protection.expected_controller_head_ordinal =
                                     NEW.expected_controller_head_ordinal
                                AND protection.version_ordinal =
                                     NEW.expected_protection_version_ordinal
-                               AND protection.active_acquisition_generation_id =
-                                    NEW.acquisition_generation_id
-                               AND protection.active_generation_mandate_commitment_sha256 =
-                                    NEW.generation_mandate_commitment_sha256
+                               AND (
+                                    (
+                                        protection.active_stream_generation_id
+                                            IS NOT NULL
+                                        AND protection.active_acquisition_generation_id =
+                                            NEW.acquisition_generation_id
+                                        AND protection.active_generation_mandate_commitment_sha256 =
+                                            NEW.generation_mandate_commitment_sha256
+                                    )
+                                    OR (
+                                        controller.aggregate_quantity = 0
+                                        AND protection.active_stream_generation_id
+                                            IS NULL
+                                        AND protection.active_acquisition_generation_id
+                                            IS NULL
+                                        AND protection.active_generation_mandate_commitment_sha256
+                                            IS NULL
+                                        AND protection.active_source_profile_id
+                                            IS NULL
+                                        AND protection.active_session_external
+                                            IS NULL
+                                        AND protection.active_sequence_mode
+                                            IS NULL
+                                    )
+                               )
                         )
                     )
                     OR (
@@ -3203,16 +3274,35 @@ CREATE TRIGGER trg_dispatch_claim_requires_current_controller
                               FROM protection_authority AS protection
                              WHERE protection.scope_id = effect.scope_id
                                AND protection.authority_class = 'NORMAL'
-                               AND protection.active_stream_generation_id
-                                    IS NOT NULL
                                AND protection.expected_controller_head_ordinal =
                                     effect.expected_controller_head_ordinal
                                AND protection.version_ordinal =
                                     effect.expected_protection_version_ordinal
-                               AND protection.active_acquisition_generation_id =
-                                    effect.acquisition_generation_id
-                               AND protection.active_generation_mandate_commitment_sha256 =
-                                    effect.generation_mandate_commitment_sha256
+                               AND (
+                                    (
+                                        protection.active_stream_generation_id
+                                            IS NOT NULL
+                                        AND protection.active_acquisition_generation_id =
+                                            effect.acquisition_generation_id
+                                        AND protection.active_generation_mandate_commitment_sha256 =
+                                            effect.generation_mandate_commitment_sha256
+                                    )
+                                    OR (
+                                        controller.aggregate_quantity = 0
+                                        AND protection.active_stream_generation_id
+                                            IS NULL
+                                        AND protection.active_acquisition_generation_id
+                                            IS NULL
+                                        AND protection.active_generation_mandate_commitment_sha256
+                                            IS NULL
+                                        AND protection.active_source_profile_id
+                                            IS NULL
+                                        AND protection.active_session_external
+                                            IS NULL
+                                        AND protection.active_sequence_mode
+                                            IS NULL
+                                    )
+                               )
                         )
                     )
                     OR (
@@ -3361,7 +3451,17 @@ BEGIN
               FROM acceptance_evidence AS evidence
              WHERE evidence.effect_id = NEW.effect_id
                AND evidence.evidence_kind = 'INVALIDATION'
-       ) = 1;
+       ) = 1
+       AND NOT EXISTS (
+            SELECT 1
+              FROM venue_identity_owner AS owner
+             WHERE owner.effect_id = NEW.effect_id
+               AND owner.owner_external =
+                    NEW.contradiction_owner_external
+               AND owner.observation_external =
+                    NEW.contradiction_observation_external
+               AND owner.admitted_after_effect_closed = 1
+       );
 
     INSERT INTO closure_chain (
         closure_id, scope_id, owner_external, ordinal, effect_id,
@@ -3550,12 +3650,36 @@ CREATE TRIGGER trg_protection_authority_no_nonflat_transfer
         )
      AND EXISTS (
             SELECT 1
-             FROM symbol_controller AS controller
+              FROM symbol_controller AS controller
              WHERE controller.scope_id = NEW.scope_id
                AND (
                     controller.aggregate_quantity <> 0
                     OR controller.integrity_state
                         <> 'CONSISTENT'
+               )
+               AND NOT (
+                    OLD.authority_class = 'NORMAL'
+                    AND NEW.authority_class = 'NORMAL'
+                    AND OLD.active_stream_generation_id IS NULL
+                    AND OLD.active_acquisition_generation_id IS NULL
+                    AND OLD.active_generation_mandate_commitment_sha256
+                        IS NULL
+                    AND OLD.active_source_profile_id IS NULL
+                    AND OLD.active_session_external IS NULL
+                    AND OLD.active_sequence_mode IS NULL
+                    AND NEW.active_stream_generation_id IS NOT NULL
+                    AND NEW.active_acquisition_generation_id IS NOT NULL
+                    AND NEW.active_generation_mandate_commitment_sha256
+                        IS NOT NULL
+                    AND NEW.active_source_profile_id IS NOT NULL
+                    AND NEW.active_session_external IS NOT NULL
+                    AND NEW.active_sequence_mode IS NOT NULL
+                    AND controller.aggregate_quantity > 0
+                    AND controller.integrity_state = 'CONSISTENT'
+                    AND controller.live_acquisition_generation_id =
+                        NEW.active_acquisition_generation_id
+                    AND controller.currentness_head_ordinal =
+                        NEW.expected_controller_head_ordinal
                )
         )
 BEGIN
@@ -3624,6 +3748,68 @@ CREATE TRIGGER trg_protection_authority_update_requires_current_controller
                         controller.integrity_state =
                             'MIXED_GENERATION_RECOVERY'
                         AND NEW.authority_class = 'HARD_BAIL'
+                    )
+                    OR (
+                        controller.integrity_state =
+                            'UNRESOLVED_VENUE_QUARANTINED'
+                        AND OLD.authority_class = 'NORMAL'
+                        AND NEW.authority_class = 'NORMAL'
+                        AND NEW.active_stream_generation_id
+                            IS OLD.active_stream_generation_id
+                        AND NEW.active_acquisition_generation_id
+                            IS OLD.active_acquisition_generation_id
+                        AND NEW.active_generation_mandate_commitment_sha256
+                            IS OLD.active_generation_mandate_commitment_sha256
+                        AND NEW.active_source_profile_id
+                            IS OLD.active_source_profile_id
+                        AND NEW.active_session_external
+                            IS OLD.active_session_external
+                        AND NEW.active_sequence_mode
+                            IS OLD.active_sequence_mode
+                        AND EXISTS (
+                            SELECT 1
+                              FROM venue_identity_owner AS owner
+                              JOIN venue_effect AS effect
+                                ON effect.effect_id = owner.effect_id
+                               AND effect.scope_id = owner.scope_id
+                              JOIN acceptance_evidence AS evidence
+                                ON evidence.effect_id = owner.effect_id
+                               AND evidence.evidence_kind = 'INVALIDATION'
+                               AND evidence.contradiction_owner_external =
+                                    owner.owner_external
+                               AND evidence.contradiction_observation_external =
+                                    owner.observation_external
+                             WHERE owner.scope_id = NEW.scope_id
+                               AND owner.admitted_after_effect_closed = 1
+                               AND effect.disposition = 'INVALIDATED'
+                        )
+                        AND NOT EXISTS (
+                            SELECT 1
+                              FROM venue_identity_owner AS outstanding_owner
+                              JOIN venue_effect AS outstanding_effect
+                                ON outstanding_effect.effect_id =
+                                    outstanding_owner.effect_id
+                               AND outstanding_effect.scope_id =
+                                    outstanding_owner.scope_id
+                             WHERE outstanding_owner.scope_id = NEW.scope_id
+                               AND outstanding_owner.admitted_after_effect_closed = 1
+                               AND (
+                                    outstanding_effect.disposition <>
+                                        'INVALIDATED'
+                                    OR NOT EXISTS (
+                                        SELECT 1
+                                          FROM acceptance_evidence AS evidence
+                                         WHERE evidence.effect_id =
+                                                outstanding_owner.effect_id
+                                           AND evidence.evidence_kind =
+                                                'INVALIDATION'
+                                           AND evidence.contradiction_owner_external =
+                                                outstanding_owner.owner_external
+                                           AND evidence.contradiction_observation_external =
+                                                outstanding_owner.observation_external
+                                    )
+                               )
+                        )
                     )
                )
                AND controller.currentness_head_ordinal =
