@@ -1,12 +1,12 @@
 ---
 type: Work Order
 title: M2-I4 atomic unit of work and post-commit effect eligibility
-status: ACTIVE
+status: CLOSED
 work_order_id: WO-0168
 wave: M2-I4
 model_tier: strong
 risk: critical
-disposition: []
+disposition: [RESULT_SUMMARY_KEPT, ARCHIVED]
 owner: Codex implementation seat; fresh-context review seats REV-0113 and REV-0114
 created: 2026-08-28
 predecessor: WO-0168d canonical flag-false closeout 25aca36956d68db014df3769678699597e9be56a
@@ -417,3 +417,43 @@ Focused pure and fresh-file fault suites, full `tests/execution_core`, Ruff chec
 import boundaries, governance/scope checks, and `git diff --check` pass. REV-0114 returns zero open
 P0/P1. Closeout records exact commit/tree, exact DDL identity, test evidence, residuals, and
 the WO-0169 activation handoff.
+
+## Terminal acceptance and completion disposition
+
+Fresh finite `REV-0115/result-r4.md` accepted exact source
+`f637295e42be8430edb14be03c0dd23d24bef394`, tree
+`2f9e3b9cf72c8cb28154a55e6c7c14baad7bae23`, with P0=0/P1=0/P2=0. The
+reviewer-owned result is preserved unchanged at SHA-256
+`615cd5a3491ea522f70fb224a16195fb866bf1eed6d6b324f0bd89c3aa2f981b`. It reproduced
+the exact rebound-wrapper negative control and verified that factory/seal removal fails, all 258
+pure UOW tests pass, and structural and cross-lease decisions roll back before commit.
+
+The terminal accepted source keeps the DDL at 190,705 UTF-8 bytes with SHA-256
+`d4df1aaa0a7fed6002c8a55923fb3a35ba948055779dac99bf82e70b6a804c18`, schema blob
+`164de10ad9fef6ce37324840aff59b5b68c07d2a`, and human execution flag exact `False`. Author
+evidence passed all 2,184 ordinary execution-core tests, Ruff/format, mypy over 96 application
+files, Import Linter 6/0, R2 oracle 61, governance, scope, and whitespace. No configured/in-memory
+database, credentials, broker/network call, order, promotion, master merge, or M3 implementation
+occurred.
+
+## Completion disposition
+
+- [x] `RESULT_SUMMARY_KEPT`
+- [x] `ARCHIVED`
+- [x] PKL/ADR update not required: the implementation realizes accepted ADR-020 through ADR-023
+  and the reviewed WO-0168 contract without changing an accepted architecture claim.
+
+```yaml
+fable_done:
+  status: VERIFIED
+  evidence: "REV-0115 R4 ACCEPT P0=0/P1=0/P2=0; exact wrapper/forgery controls, 258 focused and 2184 execution-core tests, static, import, conformance, governance, scope, and unchanged-DDL gates passed."
+  command: "See work/review/REV-0115/result-r4.md and disposition-r4.md."
+  terminal_state: "WO-0168 CLOSED — WO-0169 NOT YET ACTIVATED"
+```
+
+## Distillation decision
+
+Keep this work order and the complete REV-0113/REV-0114/REV-0115 chain as durable contract,
+changed-DDL, execution, negative-review, circuit-breaker, and terminal acceptance evidence. Delete
+no source, test, ADR, PKL, or review history. WO-0169 starts only from the exact published WO-0168
+closeout predecessor on a fresh branch.
