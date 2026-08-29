@@ -8401,6 +8401,265 @@ def _protection_genesis_cursor() -> _ProtectionCursor:
     )
 
 
+def _m2_restore_compact_venue_book(
+    *,
+    scope: VenueScope,
+    account_authority_epoch: int,
+    unresolved_account_execution_reconciliation_count: int,
+    execution_registry_count: int | None,
+    execution_registry_commitment: bytes | None,
+    registry_transition_head_commitment: bytes | None,
+    authority_epochs: tuple[tuple[PositionScope, int], ...],
+    effects: tuple[
+        tuple[_EffectCurrent, tuple[AcceptanceContradiction, ...]], ...
+    ],
+    claims: tuple[DispatchClaim, ...],
+    execution_snapshots: tuple[ExecutionSnapshot, ...],
+    protection_cursors: tuple[tuple[PositionScope, _ProtectionCursor], ...],
+) -> VenueRecoveryBook:
+    """Construct one non-serving venue owner from complete compact current rows.
+
+    This is deliberately not audit hydration.  The caller has already authenticated
+    the inert checkpoint and its repository selection proof; this owner keeps only
+    current rows which can be checked without omitted history.  All derived indexes
+    are rebuilt from those rows, and all append-only ledgers remain empty.
+    """
+
+    if type(scope) is not VenueScope:
+        raise TypeError("compact venue scope must be exact VenueScope")
+    for scalar_name, scalar_value in (
+        ("account authority epoch", account_authority_epoch),
+        (
+            "unresolved account execution reconciliation count",
+            unresolved_account_execution_reconciliation_count,
+        ),
+    ):
+        if type(scalar_value) is not int or scalar_value < 0:
+            raise ValueError(
+                f"{scalar_name} must be a non-negative exact integer"
+            )
+    if (execution_registry_count is None) != (
+        execution_registry_commitment is None
+    ):
+        raise ValueError("compact venue registry coordinates must be wholly present")
+    if execution_registry_count is not None and (
+        type(execution_registry_count) is not int or execution_registry_count < 0
+    ):
+        raise ValueError("compact venue registry count must be non-negative")
+    if execution_registry_commitment is not None:
+        _require_digest(
+            "compact venue registry commitment", execution_registry_commitment
+        )
+    if registry_transition_head_commitment is not None:
+        _require_digest(
+            "compact venue registry transition head",
+            registry_transition_head_commitment,
+        )
+    for tuple_name, tuple_value in (
+        ("authority_epochs", authority_epochs),
+        ("effects", effects),
+        ("claims", claims),
+        ("execution_snapshots", execution_snapshots),
+        ("protection_cursors", protection_cursors),
+    ):
+        if type(tuple_value) is not tuple:
+            raise TypeError(f"compact venue {tuple_name} must be an exact tuple")
+
+    authority_epoch_by_scope: _PersistentKeyMap[int] = _PersistentKeyMap.empty()
+    seen_epoch_scopes: set[PositionScope] = set()
+    for position_scope, epoch in authority_epochs:
+        if (
+            type(position_scope) is not PositionScope
+            or position_scope in seen_epoch_scopes
+            or position_scope.broker != scope.broker
+            or position_scope.environment != scope.environment
+            or position_scope.account != scope.account
+            or type(epoch) is not int
+            or epoch < 0
+        ):
+            raise ValueError("compact venue authority epoch is duplicated or spliced")
+        seen_epoch_scopes.add(position_scope)
+        authority_epoch_by_scope = _set_int_index(
+            authority_epoch_by_scope,
+            _position_scope_index_key(position_scope),
+            epoch,
+            domain=b"execution-core/venue-authority-epoch/v1",
+        )
+
+    base = VenueRecoveryBook.empty(scope)
+    effect_order = base._effect_order
+    effect_by_id = base._effect_by_id
+    effect_by_request = base._effect_by_request_occurrence
+    effect_by_client = base._effect_by_client_order
+    contradiction_by_effect = base._contradiction_order_by_effect
+    for current, contradictions in effects:
+        if type(current) is not _EffectCurrent or type(contradictions) is not tuple:
+            raise TypeError("compact venue effect row has an invalid exact type")
+        effect = current.effect
+        if (
+            type(effect) is not BrokerEffect
+            or effect.contradiction_evidence
+            or effect.scope.generation != scope.generation
+            or effect.scope.broker != scope.broker
+            or effect.scope.environment != scope.environment
+            or effect.scope.account != scope.account
+        ):
+            raise ValueError("compact venue effect leaves its venue owner")
+        (
+            effect_order,
+            effect_by_id,
+            effect_by_request,
+            effect_by_client,
+        ) = _append_effect_value(
+            effect_order,
+            effect_by_id,
+            effect_by_request,
+            effect_by_client,
+            authority_epoch_by_scope,
+            account_authority_epoch,
+            replace(effect, contradiction_evidence=contradictions),
+        )
+        if effect_by_id.get(_effect_index_key(effect.effect_id)) != current:
+            raise ValueError("compact venue effect epochs are stale or spliced")
+        for contradiction in contradictions:
+            contradiction_by_effect = _append_contradiction_value(
+                contradiction_by_effect,
+                effect.effect_id,
+                contradiction,
+            )
+
+    claim_order = base._claim_order
+    claim_by_effect = base._claim_by_effect
+    claim_by_occurrence = base._claim_by_occurrence
+    for claim in claims:
+        claim_order, claim_by_effect, claim_by_occurrence = _append_claim_value(
+            claim_order,
+            claim_by_effect,
+            claim_by_occurrence,
+            claim,
+        )
+        retained = effect_by_id.get(_effect_index_key(claim.effect_id))
+        if retained is None or retained.effect.scope != claim.effect_scope:
+            raise ValueError("compact venue claim is not bound to its current effect")
+    for current, _ in effects:
+        retained_claim = claim_by_effect.get(
+            _effect_index_key(current.effect.effect_id)
+        )
+        if (
+            current.effect.claim_occurrence_id is None
+            and retained_claim is not None
+        ) or (
+            current.effect.claim_occurrence_id is not None
+            and (
+                retained_claim is None
+                or retained_claim.claim_occurrence_id
+                != current.effect.claim_occurrence_id
+            )
+        ):
+            raise ValueError("compact venue effect and claim current rows disagree")
+
+    binding_order = base._binding_order
+    binding_by_scope = base._binding_by_scope
+    snapshot_by_scope = base._execution_snapshot_by_scope
+    seen_snapshot_scopes: set[PositionScope] = set()
+    for snapshot in execution_snapshots:
+        if (
+            type(snapshot) is not ExecutionSnapshot
+            or snapshot.position.scope in seen_snapshot_scopes
+            or snapshot.position.scope.broker != scope.broker
+            or snapshot.position.scope.environment != scope.environment
+            or snapshot.position.scope.account != scope.account
+        ):
+            raise ValueError("compact venue execution snapshot is duplicated or spliced")
+        seen_snapshot_scopes.add(snapshot.position.scope)
+        binding_order, binding_by_scope = _upsert_binding_value(
+            binding_order,
+            binding_by_scope,
+            _execution_binding_for_snapshot(snapshot),
+        )
+        snapshot_by_scope = _upsert_execution_snapshot_value(
+            snapshot_by_scope,
+            snapshot,
+        )
+
+    cursor_by_scope = base._protection_cursor_by_scope
+    seen_cursor_scopes: set[PositionScope] = set()
+    for position_scope, cursor in protection_cursors:
+        retained_snapshot = snapshot_by_scope.get(
+            _position_scope_index_key(position_scope)
+        )
+        if (
+            type(position_scope) is not PositionScope
+            or type(cursor) is not _ProtectionCursor
+            or position_scope in seen_cursor_scopes
+            or position_scope.broker != scope.broker
+            or position_scope.environment != scope.environment
+            or position_scope.account != scope.account
+            or (
+                cursor.execution_checkpoint is not None
+                and (
+                    retained_snapshot is None
+                    or cursor.execution_commitment != retained_snapshot.commitment
+                    or cursor.execution_checkpoint
+                    != VenueExecutionCheckpoint.from_execution(retained_snapshot)
+                )
+            )
+        ):
+            raise ValueError("compact venue protection cursor is duplicated or spliced")
+        seen_cursor_scopes.add(position_scope)
+        cursor_by_scope = _set_protection_cursor(
+            cursor_by_scope,
+            position_scope,
+            cursor,
+        )
+
+    replacements: dict[str, object] = {
+        "_effect_order": effect_order,
+        "_effect_by_id": effect_by_id,
+        "_effect_by_request_occurrence": effect_by_request,
+        "_effect_by_client_order": effect_by_client,
+        "_authority_epoch_by_scope": authority_epoch_by_scope,
+        "_account_authority_epoch": account_authority_epoch,
+        "_contradiction_order_by_effect": contradiction_by_effect,
+        "_claim_order": claim_order,
+        "_claim_by_effect": claim_by_effect,
+        "_claim_by_occurrence": claim_by_occurrence,
+        "_unresolved_account_execution_reconciliation_count": (
+            unresolved_account_execution_reconciliation_count
+        ),
+        "execution_registry_count": execution_registry_count,
+        "execution_registry_commitment": execution_registry_commitment,
+        "_registry_transition_head_commitment": (
+            registry_transition_head_commitment
+        ),
+        "_binding_order": binding_order,
+        "_binding_by_scope": binding_by_scope,
+        "_execution_snapshot_by_scope": snapshot_by_scope,
+        "_protection_cursor_by_scope": cursor_by_scope,
+    }
+    result = object.__new__(VenueRecoveryBook)
+    for book_field in fields(base):
+        object.__setattr__(
+            result,
+            book_field.name,
+            replacements.get(book_field.name, getattr(base, book_field.name)),
+        )
+    (
+        contributions,
+        summaries,
+        unclaimed,
+    ) = _rebuild_authority_indexes(result)
+    object.__setattr__(result, "_authority_contribution_by_effect", contributions)
+    object.__setattr__(result, "_authority_summary_by_scope", summaries)
+    object.__setattr__(result, "_account_unclaimed_requested_effect_ids", unclaimed)
+    object.__setattr__(
+        result,
+        "_cancel_target_reservation_by_leg",
+        _rebuild_cancel_target_reservations(result),
+    )
+    return result
+
+
 def _protection_book_commitment(book: VenueRecoveryBook) -> bytes:
     """Commit compact book roots while excluding derived protection proofs.
 

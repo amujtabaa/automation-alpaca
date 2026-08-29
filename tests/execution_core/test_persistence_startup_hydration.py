@@ -4,6 +4,7 @@ import pytest
 
 from app.execution_core import identity
 from app.execution_core import position
+from app.execution_core import venue
 from app.execution_core.persistence import checkpoint_codec
 from app.execution_core.persistence import records
 import test_persistence_runtime_checkpoint_pure as checkpoint_fixtures
@@ -154,6 +155,43 @@ def test_compact_authority_restores_selected_effect_authorization_and_claim() ->
     assert reencoded == authority_wire
 
 
+def test_compact_venue_restores_selected_effect_claim_execution_and_cursor() -> None:
+    state, _ = checkpoint_fixtures._authority_state_with_effects()
+    selection = checkpoint_fixtures._venue_claim_selection()
+    venue_wire, _, _ = checkpoint_codec._encode_runtime_checkpoint_venue(
+        state.venue,
+        selection,
+    )
+    position_scope = checkpoint_fixtures._DORMANT_POSITION_SCOPE
+    execution = state.venue._execution_snapshot_by_scope.get(
+        venue._position_scope_index_key(position_scope)
+    )
+    assert execution is not None
+    execution_state = position._m2_execution_state_from_snapshot(execution)
+
+    restored = checkpoint_codec._decode_compact_venue_checkpoint(
+        venue_wire,
+        selection=selection,
+        application_generation_id=checkpoint_fixtures._APPLICATION,
+        compact_execution_by_scope={position_scope: execution},
+        source_execution_state_by_scope={position_scope: execution_state},
+    )
+
+    reencoded, _, _ = checkpoint_codec._encode_runtime_checkpoint_venue(
+        restored,
+        selection,
+    )
+    assert reencoded == venue_wire
+    with pytest.raises(ValueError, match="execution scope"):
+        checkpoint_codec._decode_compact_venue_checkpoint(
+            venue_wire,
+            selection=selection,
+            application_generation_id=checkpoint_fixtures._APPLICATION,
+            compact_execution_by_scope={},
+            source_execution_state_by_scope={position_scope: execution_state},
+        )
+
+
 @pytest.mark.parametrize("inactive", (False, True))
 def test_compact_authority_restores_acquisition_slot_variants(inactive: bool) -> None:
     state, effect_ids = checkpoint_fixtures._authority_state_with_effects()
@@ -193,17 +231,14 @@ def test_compact_authority_restores_acquisition_slot_variants(inactive: bool) ->
     assert reencoded == authority_wire
 
 
-def _selected_execution_rows() -> tuple[
+def _selected_execution_rows_from(
+    source: position.ExecutionSnapshot,
+) -> tuple[
     position._M2ExecutionState,
     tuple[records.RootFillRecord, ...],
     tuple[records.ExecutionFactHeadRecord, ...],
     tuple[records.ExecutionFactRecord, ...],
 ]:
-    source = checkpoint_fixtures._advanced_execution(
-        identity.SymbolId("AAPL"),
-        9,
-        "compact-hydration",
-    )
     state = position._m2_execution_state_from_snapshot(source)
     head = source.root_heads.entries[0]
     fact = source.seen_facts.entries[0].fact
@@ -248,6 +283,21 @@ def _selected_execution_rows() -> tuple[
     return state, (root,), (records.ExecutionFactHeadRecord(1, 1, 1),), (current,)
 
 
+def _selected_execution_rows() -> tuple[
+    position._M2ExecutionState,
+    tuple[records.RootFillRecord, ...],
+    tuple[records.ExecutionFactHeadRecord, ...],
+    tuple[records.ExecutionFactRecord, ...],
+]:
+    return _selected_execution_rows_from(
+        checkpoint_fixtures._advanced_execution(
+            identity.SymbolId("AAPL"),
+            9,
+            "compact-hydration",
+        )
+    )
+
+
 def test_compact_execution_restores_current_roots_without_seen_history() -> None:
     state, roots, heads, facts = _selected_execution_rows()
 
@@ -275,3 +325,4 @@ def test_compact_execution_restores_current_roots_without_seen_history() -> None
             fact_heads=heads,
             current_facts=(),
         )
+
