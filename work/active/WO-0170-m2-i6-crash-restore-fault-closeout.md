@@ -1,18 +1,44 @@
 ---
 type: Work Order
 title: M2-I6 crash, restore, fault, and boundedness closeout
-status: READY
+status: ACTIVE
 work_order_id: WO-0170
 wave: M2-I6
 model_tier: strong
 risk: critical
 disposition: []
-owner: unassigned local coding LLM; Codex checkpoint governor
+owner: Codex implementation seat; fresh-context review seats REV-0118 and REV-0119
 created: 2026-08-21
-predecessor: WO-0169 exact accepted head
-branch: TO_ASSIGN_ON_ACTIVATION
-review_id: TO_ASSIGN_ON_ACTIVATION
-execution_authority: NOT_ACTIVE; requires accepted M2-I5 and separate activation.
+predecessor: WO-0169 closeout 0e9c5aadf003aae7dc66cf6df497b1a1d1d6d130 / tree b5f1042247804ad9fde4347c8729d5bde29a172d
+branch: codex/m2-wo0170-crash-restore-closeout-r1
+review_id: REV-0118; terminal M2/M3-preparation review REV-0119
+execution_authority: >
+  Ameen Mujtabaa's recorded serial-M2 authority, his instruction "You may proceed with the
+  remaining sequence", and his current instruction to complete WO-0170 and all necessary work
+  self-directedly authorize ordinary reversible implementation, exact fresh pytest-owned file-
+  database fault/restore/boundedness tests, deterministic short soak smoke, governance, commits,
+  pushes, bounded fresh review, root correction, WO-0170 closeout, terminal M2 evidence assembly,
+  and documentation-only M3 entry preparation. The mandatory 24-hour soak remains NOT_RUN unless
+  it actually completes uninterrupted. No DDL-byte change, configured or in-memory database,
+  migration, runtime composition, credential, broker/network call, order, promotion, master merge,
+  history rewrite, or M3 implementation is authorized.
+allowed_paths:
+  - tests/execution_core/test_persistence_fault_matrix.py
+  - tests/execution_core/test_persistence_restore.py
+  - tests/execution_core/test_persistence_boundedness.py
+  - tests/performance/m2_persistence_budget.py
+  - harness/m2/**
+  - work/queue/WO-0170-m2-i6-crash-restore-fault-closeout.md
+  - work/active/WO-0170-m2-i6-crash-restore-fault-closeout.md
+  - work/completed/keep/WO-0170-m2-i6-crash-restore-fault-closeout.md
+  - work/queue/WO-0171-m3-p1-deterministic-simulator-tape-clock.md
+  - work/queue/WO-0172-m3-p2-semantic-replay-regression-corpus.md
+  - work/queue/M2-EXECUTION-2026-08-21/01-M2-M3-EXECUTION-MAP.md
+  - work/queue/M2-EXECUTION-2026-08-21/39-M2-TERMINAL-CLOSEOUT-AND-M3-ENTRY.md
+  - work/review/REV-0118/**
+  - work/review/REV-0119/**
+  - work/ledger.jsonl
+forbidden_paths: []
 ---
 
 # Work Order: M2-I6 fault and restore closeout
@@ -21,7 +47,7 @@ execution_authority: NOT_ACTIVE; requires accepted M2-I5 and separate activation
 
 **Date:** 2026-08-21
 
-**Status:** Ready specification — not implementation authority
+**Status:** Active from exact accepted WO-0169 closeout
 
 `[FABLE • FULL • verification-heavy closeout • no promotion gain]`
 
@@ -105,7 +131,7 @@ Then the evidence reproduces with P0=0/P1=0 or M2 remains unclosed
 - EC-3: A production correction discovered by closeout stops at an exact scope amendment; the
   harness cannot silently edit an unlisted production path.
 
-## Proposed allowed paths on activation
+## Activated path boundary
 
 ```yaml
 allowed_paths:
@@ -116,11 +142,19 @@ allowed_paths:
   - harness/m2/**
   - work/active/WO-0170-m2-i6-crash-restore-fault-closeout.md
   - work/completed/keep/WO-0170-m2-i6-crash-restore-fault-closeout.md
+  - work/queue/WO-0171-m3-p1-deterministic-simulator-tape-clock.md
+  - work/queue/WO-0172-m3-p2-semantic-replay-regression-corpus.md
+  - work/queue/M2-EXECUTION-2026-08-21/01-M2-M3-EXECUTION-MAP.md
+  - work/queue/M2-EXECUTION-2026-08-21/39-M2-TERMINAL-CLOSEOUT-AND-M3-ENTRY.md
+  - work/review/REV-0118/**
+  - work/review/REV-0119/**
   - work/ledger.jsonl
 ```
 
-Any production correction needs an exact scope amendment naming the M2 file and defect before edit.
-Activation also appends one exact review path and reconciles all paths against the accepted I5 head.
+Any production correction needs an additive exact scope amendment naming the owning M2 file and
+demonstrated defect before edit. The two review paths are finite: REV-0118 owns the WO-0170 green
+candidate and at most one correction re-review; REV-0119 owns the terminal combined M2 and M3-entry
+preparation review.
 
 ## Out of scope and completion
 
