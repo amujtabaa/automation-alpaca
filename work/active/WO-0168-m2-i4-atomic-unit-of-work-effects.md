@@ -299,6 +299,24 @@ This remediation changes held tests and governance only. `schema.py`, DDL bytes/
 digest, and exact `False` human flag remain unchanged. A fresh static correction review must return
 zero open P0/P1 before a new flag-only execution branch and fresh attempt path may be used.
 
+### REV-0114 corrected-run test assertion remediation
+
+The accepted correction candidate was unlocked only on
+`codex/m2-wo0168-ddl-execution-r2` at
+`01b404994b42bf2481727a03a1620806f80f37b2`. The exact corrected five-suite command ran once
+against the new `rev-0114-r1-attempt-1` pytest file-database path. It reached every test and stopped
+with one failure: the negative-controller activation control expected the overlapping
+`nonflat or quarantined protection authority cannot transfer` message, while the database correctly
+refused the same forbidden update through the more direct
+`protection update requires matching current controller authority` guard.
+
+The contract requires the activation to fail, not one overlapping trigger to win. Positive
+active-to-active and active-to-dormant controls already pin the no-transfer guard. Reordering or
+weakening DDL would add risk without changing the invariant. The root correction therefore pins
+the direct controller-authority refusal and proves that all six dormant coordinates, checkpoint
+head, commitment, and version remain unchanged after the rejected update. It changes one held test
+and governance only; schema bytes, expected digest, and the exact `False` flag remain unchanged.
+
 ### Static remediation identity
 
 - `SCHEMA_DDL`: 190,705 UTF-8 bytes at SHA-256

@@ -458,7 +458,7 @@ def test_negative_controller_cannot_activate_dormant_protection(
 
     with pytest.raises(
         sqlite3.IntegrityError,
-        match="nonflat or quarantined protection authority cannot transfer",
+        match="protection update requires matching current controller authority",
     ):
         connection.execute(
             """
@@ -481,6 +481,14 @@ def test_negative_controller_cannot_activate_dormant_protection(
                 "a4" * 32,
             ),
         )
+
+    assert connection.execute(
+        "SELECT active_stream_generation_id, active_acquisition_generation_id,"
+        " active_generation_mandate_commitment_sha256, active_source_profile_id,"
+        " active_session_external, active_sequence_mode,"
+        " expected_controller_head_ordinal, state_commitment_sha256, version_ordinal"
+        " FROM protection_authority WHERE scope_id = 1"
+    ).fetchone() == (None, None, None, None, None, None, 0, "a1" * 32, 1)
 
 
 def test_non_late_invalidation_still_advances_controller(
