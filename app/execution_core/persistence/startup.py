@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable as _Iterable
 from dataclasses import dataclass as _dataclass
 from enum import Enum as _Enum
 
@@ -415,6 +416,30 @@ def _source_is_current(
         return False
 
 
+def _retained_sources_refusal(
+    owner_lock: _owner_lock.OwnerLockPort,
+    evidence: _owner_lock.OwnerLeaseEvidence,
+    source: _market_recovery.MarketSourcePort,
+    retained: _Iterable[
+        tuple[
+            _market_recovery.MarketSubscriptionEvidence,
+            _market_recovery.MarketFenceEvidence,
+        ]
+    ],
+) -> StartupRefusalCode | None:
+    """Fence every source-currentness call with the process owner lease."""
+
+    for subscription, fence in retained:
+        if not _owner_is_current(owner_lock, evidence):
+            return StartupRefusalCode.OWNER_LOST
+        source_current = _source_is_current(source, subscription, fence)
+        if not _owner_is_current(owner_lock, evidence):
+            return StartupRefusalCode.OWNER_LOST
+        if not source_current:
+            return StartupRefusalCode.BASELINE_FAILURE
+    return None
+
+
 def start_startup(
     request: StartupRequest,
     *,
@@ -485,17 +510,17 @@ def start_startup(
                 evidence,
                 connection,
             )
-        initial_refusal = _cutover_refusal_code(initial_cutover)
-        if initial_refusal is not None:
+        if not _owner_is_current(owner_lock, evidence):
             return _stop_startup(
-                initial_refusal,
+                StartupRefusalCode.OWNER_LOST,
                 owner_lock,
                 evidence,
                 connection,
             )
-        if not _owner_is_current(owner_lock, evidence):
+        initial_refusal = _cutover_refusal_code(initial_cutover)
+        if initial_refusal is not None:
             return _stop_startup(
-                StartupRefusalCode.OWNER_LOST,
+                initial_refusal,
                 owner_lock,
                 evidence,
                 connection,
@@ -580,6 +605,13 @@ def start_startup(
                     evidence,
                     connection,
                 )
+            if not _owner_is_current(owner_lock, evidence):
+                return _stop_startup(
+                    StartupRefusalCode.OWNER_LOST,
+                    owner_lock,
+                    evidence,
+                    connection,
+                )
             result = _unit_of_work.execute_unit_of_work(
                 connection,
                 query_result.operation,
@@ -616,6 +648,13 @@ def start_startup(
                     connection,
                 )
 
+        if not _owner_is_current(owner_lock, evidence):
+            return _stop_startup(
+                StartupRefusalCode.OWNER_LOST,
+                owner_lock,
+                evidence,
+                connection,
+            )
         try:
             context, proof = _unit_of_work._m2_reread_cold_context(
                 connection,
@@ -646,6 +685,13 @@ def start_startup(
                 connection,
             )
 
+        if not _owner_is_current(owner_lock, evidence):
+            return _stop_startup(
+                StartupRefusalCode.OWNER_LOST,
+                owner_lock,
+                evidence,
+                connection,
+            )
         try:
             final_cutover = _unit_of_work._m2_cold_compact_cutover(
                 connection,
@@ -660,17 +706,17 @@ def start_startup(
                 evidence,
                 connection,
             )
-        final_refusal = _cutover_refusal_code(final_cutover)
-        if final_refusal is not None:
+        if not _owner_is_current(owner_lock, evidence):
             return _stop_startup(
-                final_refusal,
+                StartupRefusalCode.OWNER_LOST,
                 owner_lock,
                 evidence,
                 connection,
             )
-        if not _owner_is_current(owner_lock, evidence):
+        final_refusal = _cutover_refusal_code(final_cutover)
+        if final_refusal is not None:
             return _stop_startup(
-                StartupRefusalCode.OWNER_LOST,
+                final_refusal,
                 owner_lock,
                 evidence,
                 connection,
@@ -748,6 +794,13 @@ def start_startup(
                 )
             assert type(subscription) is _market_recovery.MarketSubscriptionEvidence
 
+            if not _owner_is_current(owner_lock, evidence):
+                return _stop_startup(
+                    StartupRefusalCode.OWNER_LOST,
+                    owner_lock,
+                    evidence,
+                    connection,
+                )
             fence = market_source.post_ack_fence(subscription)
             if not _owner_is_current(owner_lock, evidence):
                 return _stop_startup(
@@ -780,6 +833,13 @@ def start_startup(
                     connection,
                 )
 
+            if not _owner_is_current(owner_lock, evidence):
+                return _stop_startup(
+                    StartupRefusalCode.OWNER_LOST,
+                    owner_lock,
+                    evidence,
+                    connection,
+                )
             baseline = market_source.baseline_at_fence(
                 subscription,
                 fence,
@@ -827,6 +887,13 @@ def start_startup(
                 ),
                 baseline.occurrence,
             )
+            if not _owner_is_current(owner_lock, evidence):
+                return _stop_startup(
+                    StartupRefusalCode.OWNER_LOST,
+                    owner_lock,
+                    evidence,
+                    connection,
+                )
             result = _unit_of_work.execute_unit_of_work(
                 connection,
                 operation,
@@ -863,6 +930,13 @@ def start_startup(
                     connection,
                 )
 
+            if not _owner_is_current(owner_lock, evidence):
+                return _stop_startup(
+                    StartupRefusalCode.OWNER_LOST,
+                    owner_lock,
+                    evidence,
+                    connection,
+                )
             try:
                 context, proof = _unit_of_work._m2_reread_cold_context(
                     connection,
@@ -874,6 +948,13 @@ def start_startup(
             except Exception:
                 return _stop_startup(
                     StartupRefusalCode.CURRENT_PROOF_FAILURE,
+                    owner_lock,
+                    evidence,
+                    connection,
+                )
+            if not _owner_is_current(owner_lock, evidence):
+                return _stop_startup(
+                    StartupRefusalCode.OWNER_LOST,
                     owner_lock,
                     evidence,
                     connection,
@@ -900,22 +981,28 @@ def start_startup(
                     evidence,
                     connection,
                 )
-            if not _source_is_current(market_source, subscription, fence):
+            source_refusal = _retained_sources_refusal(
+                owner_lock,
+                evidence,
+                market_source,
+                ((subscription, fence),),
+            )
+            if source_refusal is not None:
                 return _stop_startup(
-                    StartupRefusalCode.BASELINE_FAILURE,
-                    owner_lock,
-                    evidence,
-                    connection,
-                )
-            if not _owner_is_current(owner_lock, evidence):
-                return _stop_startup(
-                    StartupRefusalCode.OWNER_LOST,
+                    source_refusal,
                     owner_lock,
                     evidence,
                     connection,
                 )
             retained_subscriptions.append((subscription, fence))
 
+        if not _owner_is_current(owner_lock, evidence):
+            return _stop_startup(
+                StartupRefusalCode.OWNER_LOST,
+                owner_lock,
+                evidence,
+                connection,
+            )
         if not _close_connection(connection):
             connection = None
             return _stop_startup(
@@ -925,14 +1012,6 @@ def start_startup(
                 connection,
             )
         connection = None
-        for subscription, fence in retained_subscriptions:
-            if not _source_is_current(market_source, subscription, fence):
-                return _stop_startup(
-                    StartupRefusalCode.BASELINE_FAILURE,
-                    owner_lock,
-                    evidence,
-                    connection,
-                )
         if not _owner_is_current(owner_lock, evidence):
             return _stop_startup(
                 StartupRefusalCode.OWNER_LOST,
@@ -940,14 +1019,32 @@ def start_startup(
                 evidence,
                 connection,
             )
-        for subscription, fence in retained_subscriptions:
-            if not _source_is_current(market_source, subscription, fence):
-                return _stop_startup(
-                    StartupRefusalCode.BASELINE_FAILURE,
-                    owner_lock,
-                    evidence,
-                    connection,
-                )
+        source_refusal = _retained_sources_refusal(
+            owner_lock,
+            evidence,
+            market_source,
+            retained_subscriptions,
+        )
+        if source_refusal is not None:
+            return _stop_startup(
+                source_refusal,
+                owner_lock,
+                evidence,
+                connection,
+            )
+        source_refusal = _retained_sources_refusal(
+            owner_lock,
+            evidence,
+            market_source,
+            retained_subscriptions,
+        )
+        if source_refusal is not None:
+            return _stop_startup(
+                source_refusal,
+                owner_lock,
+                evidence,
+                connection,
+            )
         if not _owner_is_current(owner_lock, evidence):
             return _stop_startup(
                 StartupRefusalCode.OWNER_LOST,

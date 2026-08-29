@@ -677,6 +677,106 @@ def test_source_currentness_loss_at_final_edge_is_non_serving(
     assert owner.released
 
 
+def test_post_baseline_reread_owner_loss_stops_before_source_currentness(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context, state, selected = _active_context()
+    _dormant, proof = _dormant_context()
+    holder: dict[str, object] = {"context": context}
+    events: list[str] = []
+    owner = _Owner(events)
+    _patch_recovery_boundary(monkeypatch, holder, proof, events)
+    _patch_active_runtime(monkeypatch, holder, selected)
+    reread_count = 0
+
+    def reread(*args: object) -> tuple[object, object]:
+        nonlocal reread_count
+        del args
+        reread_count += 1
+        events.append(f"reread-{reread_count}")
+        if reread_count == 2:
+            owner.released = True
+            events.append("lease-lost")
+        return holder["context"], proof
+
+    monkeypatch.setattr(unit_of_work, "_m2_reread_cold_context", reread)
+    source = _MarketSource(state, fence_ordinal=0)
+
+    result = startup.start_startup(
+        _request(proof),
+        owner_lock=owner,
+        datastore=_Datastore(events),
+        effect_queries=_NoEffectQueries(),
+        market_source=source,
+    )
+
+    assert result.refusal_code is startup.StartupRefusalCode.OWNER_LOST
+    assert reread_count == 2
+    assert source.events == ["subscribe", "fence", "baseline"]
+    assert owner.released
+
+
+def test_retained_source_fence_stops_before_a_second_call_on_owner_loss(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    owner = _Owner(events, lose_on_check=2)
+    evidence = owner.acquire()
+    calls: list[tuple[object, object]] = []
+
+    def source_current(
+        source: object,
+        subscription: object,
+        fence: object,
+    ) -> bool:
+        del source
+        calls.append((subscription, fence))
+        return True
+
+    monkeypatch.setattr(startup, "_source_is_current", source_current)
+    retained = ((object(), object()), (object(), object()))
+
+    refusal = startup._retained_sources_refusal(
+        owner,
+        evidence,
+        _NoMarketSource(),
+        retained,  # type: ignore[arg-type]
+    )
+
+    assert refusal is startup.StartupRefusalCode.OWNER_LOST
+    assert calls == [retained[0]]
+
+
+def test_owner_loss_during_connection_close_cannot_publish_serving(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context, proof = _dormant_context()
+    events: list[str] = []
+    holder: dict[str, object] = {"context": context}
+    _patch_recovery_boundary(monkeypatch, holder, proof, events)
+    owner = _Owner(events)
+    datastore = _Datastore(events)
+
+    def close_and_lose_owner() -> None:
+        events.append("close")
+        datastore.connection.closed = True
+        owner.released = True
+
+    datastore.connection.close = close_and_lose_owner  # type: ignore[method-assign]
+
+    result = startup.start_startup(
+        _request(proof),
+        owner_lock=owner,
+        datastore=datastore,
+        effect_queries=_NoEffectQueries(),
+        market_source=_NoMarketSource(),
+    )
+
+    assert result.refusal_code is startup.StartupRefusalCode.OWNER_LOST
+    assert datastore.connection.closed
+    assert owner.released
+
+
 @pytest.mark.parametrize(
     ("variant", "expected_code", "expected_events"),
     (

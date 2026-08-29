@@ -429,7 +429,7 @@ def test_m2_execution_checkpoint_component_round_trips_canonically(
         malformed[member_index] = replacement
         with pytest.raises(
             ValueError,
-            match="^direct proof state commitment does not match state$",
+            match="^execution state is not authentic$",
         ):
             checkpoint_codec._decode_m2_execution_state_component(malformed, proof)
 
@@ -449,7 +449,7 @@ def test_m2_execution_checkpoint_component_round_trips_canonically(
     ]
     with pytest.raises(
         ValueError,
-        match="^direct proof state commitment does not match state$",
+        match="^execution state is not authentic$",
     ):
         checkpoint_codec._decode_m2_execution_state_component(
             integrity_order_mutant,

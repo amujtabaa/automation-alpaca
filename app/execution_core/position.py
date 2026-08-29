@@ -1256,10 +1256,11 @@ def _m2_restore_compact_execution_snapshot(
             or tail.position_scope != state.scope
             or tail.prefix_count != state.root_count - 1
             or state.root_count < 1
-            or root_heads._root_sequence.get(state.root_count - 1)
-            != tail.tail_root_key
+            or root_heads._root_sequence.get(state.root_count - 1) != tail.tail_root_key
         ):
-            raise ValueError("current root proof does not reproduce the tail basis proof")
+            raise ValueError(
+                "current root proof does not reproduce the tail basis proof"
+            )
     position = PositionState.from_materialized(
         scope=state.scope,
         raw_quantity=state.raw_quantity,

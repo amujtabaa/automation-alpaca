@@ -39,7 +39,10 @@ allowed_paths:
   - tests/execution_core/test_persistence_startup_hydration.py
   - tests/execution_core/test_persistence_runtime_checkpoint_pure.py
   - tests/execution_core/test_persistence_unit_of_work.py
+  - tests/execution_core/test_persistence_write_capability.py
   - tests/execution_core/test_import_boundary.py
+  - tests/execution_core/test_position.py
+  - tests/execution_core/test_sqlite_boundary.py
   - tests_gated/execution_core/test_persistence_cold_recovery_sqlite.py
   - work/queue/WO-0169-m2-i5-startup-reconciliation-cold-recovery.md
   - work/active/WO-0169-m2-i5-startup-reconciliation-cold-recovery.md
@@ -347,7 +350,10 @@ allowed_paths:
   - tests/execution_core/test_persistence_runtime_checkpoint_pure.py
   - app/execution_core/persistence/unit_of_work.py
   - tests/execution_core/test_persistence_unit_of_work.py
+  - tests/execution_core/test_persistence_write_capability.py
   - tests/execution_core/test_import_boundary.py
+  - tests/execution_core/test_position.py
+  - tests/execution_core/test_sqlite_boundary.py
   - tests_gated/execution_core/test_persistence_cold_recovery_sqlite.py
   - work/queue/WO-0169-m2-i5-startup-reconciliation-cold-recovery.md
   - work/active/WO-0169-m2-i5-startup-reconciliation-cold-recovery.md
@@ -413,3 +419,14 @@ open P0/P1.
 REV-0116 R3 returned `ACCEPT`, P0=0/P1=0/P2=0, `Unverified: NONE`, against exact corrected
 candidate `47306fe81fb9f279e6190f00ae5241eef7f9203a`, tree
 `448cc6aabce8674e5e77f9b26521fc1894b222f6`. The hydration/cutover source hold is released.
+
+## REV-0117 round-one implementation review
+
+Fresh whole-work-order review returned `BLOCK`, P0=1/P1=3/P2=0. The exact result is preserved in
+`work/review/REV-0117/result.md`; `disposition.md` accepts and bounds all four corrections. The
+single remediation round fixes owner fencing around post-baseline reread, source currentness, and
+connection close; explicitly reconciles the held test's two frozen boundary inventories; updates
+the stale first-layer checkpoint-authenticity oracle without weakening the separate direct-proof
+pin; and corrects the complete Python-format inventory. The historical blank EOF in reviewer-owned
+`REV-0116/result.md` remains immutable and is disclosed rather than rewritten. One correction-only
+exact-head review with zero open P0/P1 is required before any SQLite gate may open.

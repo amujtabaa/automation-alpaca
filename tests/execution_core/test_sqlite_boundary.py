@@ -39,6 +39,9 @@ _TOKEN_ALLOWLIST = {
     ),
     "tests/execution_core/test_sqlite_boundary.py": "this control and its canaries",
     "tests_gated/execution_core/test_persistence_directness.py": "held SQLite proof",
+    "tests_gated/execution_core/test_persistence_cold_recovery_sqlite.py": (
+        "held cold-start SQLite proof"
+    ),
     "tests_gated/execution_core/test_persistence_repository.py": "held SQLite proof",
     "tests_gated/execution_core/test_persistence_runtime_checkpoint_sqlite.py": (
         "held SQLite proof"

@@ -221,6 +221,7 @@ def test_setup_support_importers_have_the_frozen_direction() -> None:
         "tests/execution_core/test_persistence_input_receipt.py",
         "tests/execution_core/test_persistence_write_capability.py",
         "tests_gated/execution_core/test_persistence_directness.py",
+        "tests_gated/execution_core/test_persistence_cold_recovery_sqlite.py",
         "tests_gated/execution_core/test_persistence_repository.py",
         "tests_gated/execution_core/test_persistence_runtime_checkpoint_sqlite.py",
     }
