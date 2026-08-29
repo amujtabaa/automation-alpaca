@@ -115,3 +115,77 @@ def test_compact_hydration_restores_payload_owned_manual_authority() -> None:
         restored.scope_owners,
     )
     assert projected.authority.canonical_bytes == loaded.authority.canonical_bytes
+
+
+def test_compact_authority_restores_selected_effect_authorization_and_claim() -> None:
+    state, effect_ids = checkpoint_fixtures._authority_state_with_effects()
+    selection = checkpoint_fixtures._venue_claim_selection()
+    venue_wire, venue_commitment, _ = checkpoint_codec._encode_runtime_checkpoint_venue(
+        state.venue, selection
+    )
+    authority_wire, _, _ = checkpoint_codec._encode_runtime_checkpoint_authority(
+        state,
+        venue_commitment,
+        checkpoint_fixtures._APPLICATION,
+        (checkpoint_fixtures._DORMANT_POSITION_SCOPE,),
+        effect_ids,
+    )
+
+    restored = checkpoint_codec._decode_compact_authority_checkpoint(
+        authority_wire,
+        venue=state.venue,
+        venue_commitment=venue_commitment,
+        application_generation_id=checkpoint_fixtures._APPLICATION,
+        selected_position_scopes=(checkpoint_fixtures._DORMANT_POSITION_SCOPE,),
+        selected_effect_ids=effect_ids,
+    )
+
+    reencoded, _, _ = checkpoint_codec._encode_runtime_checkpoint_authority(
+        restored,
+        checkpoint_codec._checkpoint_row_commitment(
+            b"execution-core/m2-venue/state/v1", venue_wire[:-1]
+        ),
+        checkpoint_fixtures._APPLICATION,
+        (checkpoint_fixtures._DORMANT_POSITION_SCOPE,),
+        effect_ids,
+    )
+    assert reencoded == authority_wire
+
+
+@pytest.mark.parametrize("inactive", (False, True))
+def test_compact_authority_restores_acquisition_slot_variants(inactive: bool) -> None:
+    state, effect_ids = checkpoint_fixtures._authority_state_with_effects()
+    state = checkpoint_fixtures._state_with_acquisition_slot(
+        state,
+        inactive=inactive,
+    )
+    selection = checkpoint_fixtures._venue_claim_selection()
+    _, venue_commitment, _ = checkpoint_codec._encode_runtime_checkpoint_venue(
+        state.venue,
+        selection,
+    )
+    authority_wire, _, _ = checkpoint_codec._encode_runtime_checkpoint_authority(
+        state,
+        venue_commitment,
+        checkpoint_fixtures._APPLICATION,
+        (checkpoint_fixtures._DORMANT_POSITION_SCOPE,),
+        effect_ids,
+    )
+
+    restored = checkpoint_codec._decode_compact_authority_checkpoint(
+        authority_wire,
+        venue=state.venue,
+        venue_commitment=venue_commitment,
+        application_generation_id=checkpoint_fixtures._APPLICATION,
+        selected_position_scopes=(checkpoint_fixtures._DORMANT_POSITION_SCOPE,),
+        selected_effect_ids=effect_ids,
+    )
+
+    reencoded, _, _ = checkpoint_codec._encode_runtime_checkpoint_authority(
+        restored,
+        venue_commitment,
+        checkpoint_fixtures._APPLICATION,
+        (checkpoint_fixtures._DORMANT_POSITION_SCOPE,),
+        effect_ids,
+    )
+    assert reencoded == authority_wire

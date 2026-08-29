@@ -6194,13 +6194,114 @@ def _m2_restore_compact_authority_state(
     session_id: SessionId | None,
     budget: RequestBudget,
     venue: VenueRecoveryBook,
+    effect_authorizations: tuple[
+        tuple[
+            _EffectAuthorization,
+            ClaimEffect | ClaimAcquisitionEffect | None,
+        ],
+        ...,
+    ],
+    acquisition_descriptors: tuple[_AcquisitionEffectDescriptor, ...],
+    acquisition_slots: tuple[
+        tuple[
+            _AcquisitionCurrentnessEntry,
+            _AcquisitionEffectDescriptor | _AcquisitionInactiveSlot | None,
+            _AcquisitionActiveEffect | _AcquisitionInactiveSlot | None,
+        ],
+        ...,
+    ],
     manuals: tuple[_ManualFlatten, ...],
     emergency_grant: _EmergencyGrant | None,
 ) -> ExecutionAuthorityState:
     """Restore checkpoint-owned current authority state without input history."""
 
-    if type(manuals) is not tuple:
-        raise TypeError("manuals must be an exact tuple")
+    if (
+        type(effect_authorizations) is not tuple
+        or type(acquisition_descriptors) is not tuple
+        or type(acquisition_slots) is not tuple
+        or type(manuals) is not tuple
+    ):
+        raise TypeError("compact authority rows must be exact tuples")
+    effect_by_id: _PersistentKeyMap[_EffectAuthorization] = _PersistentKeyMap.empty()
+    claim_by_effect: _PersistentKeyMap[ClaimEffect | ClaimAcquisitionEffect] = (
+        _PersistentKeyMap.empty()
+    )
+    claim_by_occurrence: _PersistentKeyMap[ClaimEffect | ClaimAcquisitionEffect] = (
+        _PersistentKeyMap.empty()
+    )
+    for authorization, claim in effect_authorizations:
+        if (
+            type(authorization) is not _EffectAuthorization
+            or type(authorization.request) is not BrokerEffectRequest
+        ):
+            raise TypeError("effect authorization checkpoint row must be exact")
+        effect_id = authorization.request.effect_id
+        effect_key = _effect_key(effect_id)
+        effect_by_id = _inserted(effect_by_id, effect_key, authorization)
+        if claim is None:
+            continue
+        if (
+            type(claim) not in {ClaimEffect, ClaimAcquisitionEffect}
+            or claim.effect_id != effect_id
+        ):
+            raise ValueError("checkpoint claim does not own its authorization")
+        claim_by_effect = _inserted(claim_by_effect, effect_key, claim)
+        claim_by_occurrence = _inserted(
+            claim_by_occurrence,
+            _claim_key(claim.claim_occurrence_id),
+            claim,
+        )
+    descriptor_by_effect: _PersistentKeyMap[_AcquisitionEffectDescriptor] = (
+        _PersistentKeyMap.empty()
+    )
+    for retained_descriptor in acquisition_descriptors:
+        if (
+            type(retained_descriptor) is not _AcquisitionEffectDescriptor
+            or not _acquisition_effect_descriptor_is_authentic(retained_descriptor)
+        ):
+            raise ValueError("acquisition descriptor checkpoint row is not authentic")
+        descriptor_by_effect = _inserted(
+            descriptor_by_effect,
+            _effect_key(retained_descriptor.permit.effect_id),
+            retained_descriptor,
+        )
+    currentness_by_scope: _PersistentKeyMap[_AcquisitionCurrentnessEntry] = (
+        _PersistentKeyMap.empty()
+    )
+    descriptor_by_scope: _PersistentKeyMap[
+        _AcquisitionEffectDescriptor | _AcquisitionInactiveSlot
+    ] = _PersistentKeyMap.empty()
+    active_by_scope: _PersistentKeyMap[
+        _AcquisitionActiveEffect | _AcquisitionInactiveSlot
+    ] = _PersistentKeyMap.empty()
+    for currentness, slot_descriptor, active in acquisition_slots:
+        if (
+            type(currentness) is not _AcquisitionCurrentnessEntry
+            or not _acquisition_currentness_entry_is_authentic(currentness)
+        ):
+            raise ValueError("acquisition slot currentness is not authentic")
+        if (slot_descriptor is None) != (active is None):
+            raise ValueError("acquisition slot is partial")
+        slot_key = _acquisition_scope_key(
+            currentness.application_generation_id,
+            currentness.position_scope,
+        )
+        currentness_by_scope = _inserted(
+            currentness_by_scope,
+            slot_key,
+            currentness,
+        )
+        if slot_descriptor is not None and active is not None:
+            descriptor_by_scope = _inserted(
+                descriptor_by_scope,
+                slot_key,
+                slot_descriptor,
+            )
+            active_by_scope = _inserted(
+                active_by_scope,
+                slot_key,
+                active,
+            )
     manual_by_id: _PersistentKeyMap[_ManualFlatten] = _PersistentKeyMap.empty()
     manual_by_scope: _PersistentKeyMap[ManualFlattenId] = _PersistentKeyMap.empty()
     application_generation_id = venue.scope.generation
@@ -6235,17 +6336,17 @@ def _m2_restore_compact_authority_state(
         budget=budget,
         venue=venue,
         _input_by_id=_PersistentKeyMap.empty(),
-        _effect_authority_by_id=_PersistentKeyMap.empty(),
-        _claim_by_effect=_PersistentKeyMap.empty(),
-        _claim_by_occurrence=_PersistentKeyMap.empty(),
+        _effect_authority_by_id=effect_by_id,
+        _claim_by_effect=claim_by_effect,
+        _claim_by_occurrence=claim_by_occurrence,
         _query_by_id=_PersistentKeyMap.empty(),
         _manual_by_id=manual_by_id,
         _manual_flatten_by_scope=manual_by_scope,
         _consumed_grant_ids=_PersistentKeyMap.empty(),
-        _acquisition_currentness_by_scope=_PersistentKeyMap.empty(),
-        _acquisition_descriptor_by_scope=_PersistentKeyMap.empty(),
-        _acquisition_descriptor_by_effect=_PersistentKeyMap.empty(),
-        _acquisition_active_by_scope=_PersistentKeyMap.empty(),
+        _acquisition_currentness_by_scope=currentness_by_scope,
+        _acquisition_descriptor_by_scope=descriptor_by_scope,
+        _acquisition_descriptor_by_effect=descriptor_by_effect,
+        _acquisition_active_by_scope=active_by_scope,
         _emergency_grant=emergency_grant,
     )
 

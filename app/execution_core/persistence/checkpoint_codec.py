@@ -5919,6 +5919,97 @@ def _decode_checkpoint_collection_rows(
     return tuple(value[2])
 
 
+def _decode_compact_effect_authorization_row(
+    value: object,
+) -> tuple[
+    _authority._EffectAuthorization,
+    _authority.ClaimEffect | _authority.ClaimAcquisitionEffect | None,
+]:
+    fields = _operations._require_m2_aggregate(
+        value,
+        "m2.authority.EffectAuthorization/v1",
+        5,
+    )
+    authorization = _authority._EffectAuthorization(
+        _operations._decode_m2_broker_effect_request(fields[0]),
+        _operations._decode_m2_m1_as(
+            "effect authorization session", fields[1], _identity.SessionId
+        ),
+        (
+            None
+            if fields[2] is None
+            else _operations._decode_m2_m1_as(
+                "effect authorization manual flatten",
+                fields[2],
+                _identity.ManualFlattenId,
+            )
+        ),
+        (
+            None
+            if fields[3] is None
+            else _operations._decode_m2_m1_as(
+                "effect authorization emergency grant",
+                fields[3],
+                _identity.EmergencyGrantId,
+            )
+        ),
+    )
+    claim: _authority.ClaimEffect | _authority.ClaimAcquisitionEffect | None = None
+    if fields[4] is not None:
+        if type(fields[4]) is not list or not fields[4]:
+            raise ValueError("effect claim checkpoint row is malformed")
+        claim_tag = fields[4][0]
+        if claim_tag == "m2.authority.ClaimEffect/v1":
+            claim_fields = _operations._require_m2_aggregate(
+                fields[4],
+                "m2.authority.ClaimEffect/v1",
+                3,
+            )
+            claim = _authority.ClaimEffect(
+                _operations._decode_m2_m1_as(
+                    "effect claim input", claim_fields[0], _identity.AuthorityInputId
+                ),
+                _operations._decode_m2_m1_as(
+                    "effect claim id", claim_fields[1], _identity.EffectId
+                ),
+                _operations._decode_m2_m1_as(
+                    "effect claim occurrence",
+                    claim_fields[2],
+                    _identity.ClaimOccurrenceId,
+                ),
+            )
+        elif claim_tag == "m2.authority.ClaimAcquisitionEffect/v1":
+            claim_fields = _operations._require_m2_aggregate(
+                fields[4],
+                "m2.authority.ClaimAcquisitionEffect/v1",
+                4,
+            )
+            claim = _authority.ClaimAcquisitionEffect(
+                _operations._decode_m2_m1_as(
+                    "acquisition claim input",
+                    claim_fields[0],
+                    _identity.AuthorityInputId,
+                ),
+                _operations._decode_m2_m1_as(
+                    "acquisition claim effect", claim_fields[1], _identity.EffectId
+                ),
+                _operations._decode_m2_m1_as(
+                    "acquisition claim occurrence",
+                    claim_fields[2],
+                    _identity.ClaimOccurrenceId,
+                ),
+                _decode_compact_acquisition_claim_permit(claim_fields[3]),
+            )
+        else:
+            raise ValueError("effect claim checkpoint variant is not admitted")
+    if (
+        _encode_runtime_checkpoint_effect_authorization_row(authorization, claim)
+        != value
+    ):
+        raise ValueError("effect authorization checkpoint row is not canonical")
+    return authorization, claim
+
+
 def _decode_compact_manual_row(value: object) -> _authority._ManualFlatten:
     fields = _operations._require_m2_aggregate(
         value,
@@ -5997,6 +6088,407 @@ def _decode_compact_emergency_grant(
     if _encode_runtime_checkpoint_emergency_grant(decoded) != value:
         raise ValueError("emergency grant checkpoint row is not canonical")
     return decoded
+
+
+def _decode_optional_checkpoint_digest(name: str, value: object) -> bytes | None:
+    return None if value is None else _operations._decode_m2_bytes(name, value)
+
+
+def _decode_compact_acquisition_claim_permit(
+    value: object,
+) -> _authority.AcquisitionClaimPermit:
+    fields = _operations._require_m2_aggregate(
+        value,
+        "m2.authority.AcquisitionClaimPermit/v1",
+        21,
+    )
+    decoded = _authority._new_acquisition_claim_permit(
+        input_id=_operations._decode_m2_m1_as(
+            "acquisition claim permit input", fields[0], _identity.AuthorityInputId
+        ),
+        application_generation_id=_operations._decode_m2_m1_as(
+            "acquisition claim permit application",
+            fields[1],
+            _identity.ApplicationGenerationId,
+        ),
+        position_scope=_operations._decode_m2_position_scope(fields[2]),
+        session_id=_operations._decode_m2_m1_as(
+            "acquisition claim permit session", fields[3], _identity.SessionId
+        ),
+        generation_id=_operations._decode_m2_m1_as(
+            "acquisition claim permit generation",
+            fields[4],
+            _identity.AcquisitionGenerationId,
+        ),
+        acquisition_mandate_id=_operations._decode_m2_m1_as(
+            "acquisition claim permit mandate",
+            fields[5],
+            _identity.AcquisitionMandateId,
+        ),
+        protection_mandate_id=_operations._decode_m2_m1_as(
+            "acquisition claim permit protection mandate",
+            fields[6],
+            _identity.MandateId,
+        ),
+        binding_commitment=_operations._decode_m2_bytes(
+            "acquisition claim permit binding", fields[7]
+        ),
+        emergency_recovery_compatibility_commitment=_operations._decode_m2_bytes(
+            "acquisition claim permit emergency compatibility", fields[8]
+        ),
+        controller_head=_operations._decode_m2_bytes(
+            "acquisition claim permit controller", fields[9]
+        ),
+        successor_ordinal=_operations._require_exact_int(
+            "acquisition claim permit successor ordinal", fields[10]
+        ),
+        execution_snapshot_commitment=_operations._decode_m2_bytes(
+            "acquisition claim permit execution", fields[11]
+        ),
+        scope_execution_commitment=_operations._decode_m2_bytes(
+            "acquisition claim permit scope execution", fields[12]
+        ),
+        venue_commitment=_operations._decode_m2_bytes(
+            "acquisition claim permit venue", fields[13]
+        ),
+        authority_context_commitment=_operations._decode_m2_bytes(
+            "acquisition claim permit authority", fields[14]
+        ),
+        protection_commitment=_decode_optional_checkpoint_digest(
+            "acquisition claim permit protection", fields[15]
+        ),
+        effect_id=_operations._decode_m2_m1_as(
+            "acquisition claim permit effect", fields[16], _identity.EffectId
+        ),
+        claim_occurrence_id=_operations._decode_m2_m1_as(
+            "acquisition claim permit occurrence",
+            fields[17],
+            _identity.ClaimOccurrenceId,
+        ),
+        currentness_commitment=_operations._decode_m2_bytes(
+            "acquisition claim permit currentness", fields[18]
+        ),
+        descriptor_commitment=_operations._decode_m2_bytes(
+            "acquisition claim permit descriptor", fields[19]
+        ),
+        active_commitment=_operations._decode_m2_bytes(
+            "acquisition claim permit active", fields[20]
+        ),
+    )
+    if _encode_runtime_checkpoint_claim_permit(decoded) != value:
+        raise ValueError("acquisition claim permit is not canonical")
+    return decoded
+
+
+def _decode_compact_acquisition_effect_permit(
+    value: object,
+) -> _authority.AcquisitionEffectPermit:
+    fields = _operations._require_m2_aggregate(
+        value,
+        "m2.authority.AcquisitionEffectPermit/v1",
+        21,
+    )
+    decoded = _authority._new_acquisition_effect_permit(
+        input_id=_operations._decode_m2_m1_as(
+            "acquisition permit input", fields[0], _identity.AuthorityInputId
+        ),
+        application_generation_id=_operations._decode_m2_m1_as(
+            "acquisition permit application",
+            fields[1],
+            _identity.ApplicationGenerationId,
+        ),
+        position_scope=_operations._decode_m2_position_scope(fields[2]),
+        session_id=_operations._decode_m2_m1_as(
+            "acquisition permit session", fields[3], _identity.SessionId
+        ),
+        generation_id=_operations._decode_m2_m1_as(
+            "acquisition permit generation",
+            fields[4],
+            _identity.AcquisitionGenerationId,
+        ),
+        acquisition_mandate_id=_operations._decode_m2_m1_as(
+            "acquisition permit mandate",
+            fields[5],
+            _identity.AcquisitionMandateId,
+        ),
+        protection_mandate_id=_operations._decode_m2_m1_as(
+            "acquisition permit protection mandate",
+            fields[6],
+            _identity.MandateId,
+        ),
+        binding_commitment=_operations._decode_m2_bytes(
+            "acquisition permit binding", fields[7]
+        ),
+        emergency_recovery_compatibility_commitment=_operations._decode_m2_bytes(
+            "acquisition permit emergency compatibility", fields[8]
+        ),
+        predecessor_controller_head=_operations._decode_m2_bytes(
+            "acquisition permit predecessor controller", fields[9]
+        ),
+        controller_head=_operations._decode_m2_bytes(
+            "acquisition permit controller", fields[10]
+        ),
+        successor_ordinal=_operations._require_exact_int(
+            "acquisition permit successor ordinal", fields[11]
+        ),
+        execution_snapshot_commitment=_operations._decode_m2_bytes(
+            "acquisition permit execution", fields[12]
+        ),
+        scope_execution_commitment=_operations._decode_m2_bytes(
+            "acquisition permit scope execution", fields[13]
+        ),
+        venue_commitment=_operations._decode_m2_bytes(
+            "acquisition permit venue", fields[14]
+        ),
+        authority_context_commitment=_operations._decode_m2_bytes(
+            "acquisition permit authority", fields[15]
+        ),
+        protection_commitment=_decode_optional_checkpoint_digest(
+            "acquisition permit protection", fields[16]
+        ),
+        terms=_operations._decode_m2_acquisition_effect_terms(fields[17]),
+        effect_id=_operations._decode_m2_m1_as(
+            "acquisition permit effect", fields[18], _identity.EffectId
+        ),
+        request_occurrence_id=_operations._decode_m2_m1_as(
+            "acquisition permit request occurrence",
+            fields[19],
+            _identity.RequestOccurrenceId,
+        ),
+        client_order_id=_operations._decode_m2_m1_as(
+            "acquisition permit client order", fields[20], _identity.ClientOrderId
+        ),
+    )
+    if _encode_runtime_checkpoint_acquisition_effect_permit(decoded) != value:
+        raise ValueError("acquisition effect permit is not canonical")
+    return decoded
+
+
+def _decode_compact_acquisition_currentness(
+    value: object,
+) -> _authority._AcquisitionCurrentnessEntry:
+    fields = _operations._require_m2_aggregate(
+        value,
+        "m2.authority.AcquisitionCurrentness/v1",
+        15,
+    )
+    decoded = _authority._new_acquisition_currentness_entry(
+        source_kind=_decode_checkpoint_enum_value(
+            "acquisition currentness source",
+            fields[0],
+            "m1.authority.AcquisitionCurrentnessSourceKind",
+            _authority._AcquisitionCurrentnessSourceKind,
+        ),
+        application_generation_id=_operations._decode_m2_m1_as(
+            "acquisition currentness application",
+            fields[1],
+            _identity.ApplicationGenerationId,
+        ),
+        position_scope=_operations._decode_m2_position_scope(fields[2]),
+        session_id=_operations._decode_m2_m1_as(
+            "acquisition currentness session", fields[3], _identity.SessionId
+        ),
+        generation_id=_operations._decode_m2_m1_as(
+            "acquisition currentness generation",
+            fields[4],
+            _identity.AcquisitionGenerationId,
+        ),
+        acquisition_mandate_id=_operations._decode_m2_m1_as(
+            "acquisition currentness mandate",
+            fields[5],
+            _identity.AcquisitionMandateId,
+        ),
+        protection_mandate_id=_operations._decode_m2_m1_as(
+            "acquisition currentness protection mandate",
+            fields[6],
+            _identity.MandateId,
+        ),
+        binding_commitment=_operations._decode_m2_bytes(
+            "acquisition currentness binding", fields[7]
+        ),
+        emergency_recovery_compatibility_commitment=_operations._decode_m2_bytes(
+            "acquisition currentness emergency compatibility", fields[8]
+        ),
+        controller_head=_operations._decode_m2_bytes(
+            "acquisition currentness controller", fields[9]
+        ),
+        successor_ordinal=_operations._require_exact_int(
+            "acquisition currentness successor ordinal", fields[10]
+        ),
+        scope_execution_commitment=_operations._decode_m2_bytes(
+            "acquisition currentness scope execution", fields[11]
+        ),
+        venue_commitment=_operations._decode_m2_bytes(
+            "acquisition currentness venue", fields[12]
+        ),
+        protection_commitment=_decode_optional_checkpoint_digest(
+            "acquisition currentness protection", fields[13]
+        ),
+        predecessor_slot_commitment=_operations._decode_m2_bytes(
+            "acquisition currentness predecessor slot", fields[14]
+        ),
+    )
+    if _encode_runtime_checkpoint_acquisition_currentness(decoded) != value:
+        raise ValueError("acquisition currentness is not canonical")
+    return decoded
+
+
+def _decode_compact_acquisition_descriptors(
+    rows: tuple[object, ...],
+) -> tuple[_authority._AcquisitionEffectDescriptor, ...]:
+    decoded: list[_authority._AcquisitionEffectDescriptor] = []
+    seen: set[_identity.EffectId] = set()
+    for row in rows:
+        fields = _operations._require_m2_aggregate(
+            row,
+            "m2.authority.AcquisitionDescriptor/v1",
+            2,
+        )
+        effect_id = _operations._decode_m2_m1_as(
+            "acquisition descriptor effect", fields[0], _identity.EffectId
+        )
+        descriptor = _authority._new_acquisition_effect_descriptor(
+            _decode_compact_acquisition_effect_permit(fields[1])
+        )
+        if descriptor.permit.effect_id != effect_id or effect_id in seen:
+            raise ValueError("acquisition descriptor identity is duplicated or spliced")
+        if [
+            "m2.authority.AcquisitionDescriptor/v1",
+            _operations._encode_m2_m1_atom(effect_id),
+            _encode_runtime_checkpoint_acquisition_effect_permit(descriptor.permit),
+        ] != row:
+            raise ValueError("acquisition descriptor is not canonical")
+        seen.add(effect_id)
+        decoded.append(descriptor)
+    return tuple(decoded)
+
+
+def _decode_compact_acquisition_slots(
+    rows: tuple[object, ...],
+    descriptors: tuple[_authority._AcquisitionEffectDescriptor, ...],
+) -> tuple[
+    tuple[
+        _authority._AcquisitionCurrentnessEntry,
+        _authority._AcquisitionEffectDescriptor
+        | _authority._AcquisitionInactiveSlot
+        | None,
+        _authority._AcquisitionActiveEffect
+        | _authority._AcquisitionInactiveSlot
+        | None,
+    ],
+    ...,
+]:
+    descriptor_by_effect = {
+        descriptor.permit.effect_id: descriptor for descriptor in descriptors
+    }
+    decoded: list[
+        tuple[
+            _authority._AcquisitionCurrentnessEntry,
+            _authority._AcquisitionEffectDescriptor
+            | _authority._AcquisitionInactiveSlot
+            | None,
+            _authority._AcquisitionActiveEffect
+            | _authority._AcquisitionInactiveSlot
+            | None,
+        ]
+    ] = []
+    seen: set[_fills.PositionScope] = set()
+    for row in rows:
+        fields = _operations._require_m2_aggregate(
+            row,
+            "m2.authority.AcquisitionSlot/v1",
+            3,
+        )
+        position_scope = _operations._decode_m2_position_scope(fields[0])
+        currentness = _decode_compact_acquisition_currentness(fields[1])
+        if currentness.position_scope != position_scope or position_scope in seen:
+            raise ValueError("acquisition slot scope is duplicated or spliced")
+        descriptor: (
+            _authority._AcquisitionEffectDescriptor
+            | _authority._AcquisitionInactiveSlot
+            | None
+        )
+        active: (
+            _authority._AcquisitionActiveEffect
+            | _authority._AcquisitionInactiveSlot
+            | None
+        )
+        if fields[2] == ["m2.authority.AcquisitionSlotEmpty/v1"]:
+            descriptor = None
+            active = None
+        elif (
+            type(fields[2]) is list
+            and fields[2]
+            and fields[2][0] == ("m2.authority.AcquisitionSlotActive/v1")
+        ):
+            slot_fields = _operations._require_m2_aggregate(
+                fields[2],
+                "m2.authority.AcquisitionSlotActive/v1",
+                2,
+            )
+            effect_id = _operations._decode_m2_m1_as(
+                "active acquisition slot effect", slot_fields[0], _identity.EffectId
+            )
+            descriptor = descriptor_by_effect.get(effect_id)
+            if (
+                descriptor is None
+                or descriptor.commitment
+                != _operations._decode_m2_bytes(
+                    "active acquisition slot descriptor", slot_fields[1]
+                )
+            ):
+                raise ValueError(
+                    "active acquisition slot descriptor is absent or spliced"
+                )
+            active = _authority._new_acquisition_active_effect(descriptor)
+        elif (
+            type(fields[2]) is list
+            and fields[2]
+            and fields[2][0] == ("m2.authority.AcquisitionSlotInactive/v1")
+        ):
+            slot_fields = _operations._require_m2_aggregate(
+                fields[2],
+                "m2.authority.AcquisitionSlotInactive/v1",
+                3,
+            )
+            effect_id = _operations._decode_m2_m1_as(
+                "inactive acquisition slot effect",
+                slot_fields[0],
+                _identity.EffectId,
+            )
+            source_descriptor = descriptor_by_effect.get(effect_id)
+            if (
+                source_descriptor is None
+                or source_descriptor.commitment
+                != _operations._decode_m2_bytes(
+                    "inactive acquisition slot descriptor", slot_fields[1]
+                )
+            ):
+                raise ValueError(
+                    "inactive acquisition slot descriptor is absent or spliced"
+                )
+            inactive = _authority._new_acquisition_inactive_slot(
+                _authority._new_acquisition_active_effect(source_descriptor),
+                source_descriptor,
+                _operations._decode_m2_m1_as(
+                    "inactive acquisition successor",
+                    slot_fields[2],
+                    _identity.AcquisitionGenerationId,
+                ),
+            )
+            descriptor = inactive
+            active = inactive
+        else:
+            raise ValueError("acquisition slot variant is not admitted")
+        encoded_value, _ = _encode_runtime_checkpoint_acquisition_slot_value(
+            descriptor,
+            active,
+        )
+        if encoded_value != fields[2]:
+            raise ValueError("acquisition slot value is not canonical")
+        seen.add(position_scope)
+        decoded.append((currentness, descriptor, active))
+    return tuple(decoded)
 
 
 def _decode_compact_authority_checkpoint(
@@ -6096,8 +6588,11 @@ def _decode_compact_authority_checkpoint(
         fields[11],
         "m2.authority.AcquisitionSlots/v1",
     )
-    if effect_rows or descriptor_rows or slot_rows:
-        raise ValueError("authority checkpoint requires unsupported active rows")
+    acquisition_descriptors = _decode_compact_acquisition_descriptors(descriptor_rows)
+    acquisition_slots = _decode_compact_acquisition_slots(
+        slot_rows,
+        acquisition_descriptors,
+    )
     restored = _authority._m2_restore_compact_authority_state(
         phase=phase,
         mode=mode,
@@ -6106,6 +6601,11 @@ def _decode_compact_authority_checkpoint(
         session_id=session_id,
         budget=budget,
         venue=venue,
+        effect_authorizations=tuple(
+            _decode_compact_effect_authorization_row(row) for row in effect_rows
+        ),
+        acquisition_descriptors=acquisition_descriptors,
+        acquisition_slots=acquisition_slots,
         manuals=tuple(_decode_compact_manual_row(row) for row in manual_rows),
         emergency_grant=_decode_compact_emergency_grant(fields[7]),
     )
