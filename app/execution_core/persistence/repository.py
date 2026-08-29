@@ -4321,6 +4321,33 @@ _RUNTIME_CHECKPOINT_SELECTED_GENERATION_PLAN_ACCESS: tuple[
     ("acquisition_generation", "generation", None),
 )
 
+# Upper-bound multisets of non-base planner access names.  SQLite must read
+# materialized CTEs/subqueries to drive the indexed base-table searches above;
+# those bounded intermediates are not historical table scans.  Repeated names
+# are deliberate and cap the number of matching plan rows that may be consumed.
+_RUNTIME_CHECKPOINT_SELECTED_GENERATION_PLAN_INTERMEDIATES = (
+    "selected",
+    "live_generation",
+    "selected",
+    "effect_unresolved",
+    "selected",
+    "protection_active",
+    "(subquery)",
+)
+_RUNTIME_CHECKPOINT_QUALIFYING_EFFECT_PLAN_INTERMEDIATES = (
+    "selected",
+    "selected",
+)
+_RUNTIME_CHECKPOINT_SELECTED_OUTPUT_PLAN_INTERMEDIATES = (
+    _RUNTIME_CHECKPOINT_SELECTED_GENERATION_PLAN_INTERMEDIATES
+    + ("selected", "admitted")
+)
+_RUNTIME_CHECKPOINT_QUALIFIED_OUTPUT_PLAN_INTERMEDIATES = (
+    _RUNTIME_CHECKPOINT_SELECTED_GENERATION_PLAN_INTERMEDIATES
+    + _RUNTIME_CHECKPOINT_QUALIFYING_EFFECT_PLAN_INTERMEDIATES
+    + ("selected", "admitted")
+)
+
 _RUNTIME_CHECKPOINT_QUALIFYING_EFFECT_PLAN_ACCESS: tuple[
     _RuntimeCheckpointPlanAccess, ...
 ] = (
@@ -4411,6 +4438,30 @@ _RUNTIME_CHECKPOINT_SELECTION_PLAN_ACCESS: tuple[
         ),
         ("market_cursor", "cursor", None),
     ),
+)
+
+_RUNTIME_CHECKPOINT_SELECTION_PLAN_BOUNDED_INTERMEDIATES: tuple[
+    tuple[str, ...], ...
+] = (
+    (),
+    (),
+    ("selected",),
+    (
+        "selected",
+        "effect_unresolved",
+        "selected",
+        "protection_active",
+        "combined",
+    ),
+    _RUNTIME_CHECKPOINT_SELECTED_OUTPUT_PLAN_INTERMEDIATES,
+    _RUNTIME_CHECKPOINT_SELECTED_OUTPUT_PLAN_INTERMEDIATES,
+    _RUNTIME_CHECKPOINT_QUALIFIED_OUTPUT_PLAN_INTERMEDIATES,
+    _RUNTIME_CHECKPOINT_QUALIFIED_OUTPUT_PLAN_INTERMEDIATES,
+    _RUNTIME_CHECKPOINT_QUALIFIED_OUTPUT_PLAN_INTERMEDIATES,
+    _RUNTIME_CHECKPOINT_QUALIFIED_OUTPUT_PLAN_INTERMEDIATES,
+    _RUNTIME_CHECKPOINT_QUALIFIED_OUTPUT_PLAN_INTERMEDIATES,
+    _RUNTIME_CHECKPOINT_QUALIFIED_OUTPUT_PLAN_INTERMEDIATES,
+    _RUNTIME_CHECKPOINT_SELECTED_OUTPUT_PLAN_INTERMEDIATES,
 )
 
 _RUNTIME_CHECKPOINT_LOAD_PLAN_ACCESS: tuple[

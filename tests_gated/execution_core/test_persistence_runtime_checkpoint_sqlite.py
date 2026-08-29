@@ -30,6 +30,7 @@ _RuntimeCheckpointPlanAccess = tuple[str, str, str | None]
 def _plan_access_violations(
     details: tuple[str, ...],
     accesses: tuple[_RuntimeCheckpointPlanAccess, ...],
+    bounded_intermediates: tuple[str, ...] = (),
 ) -> tuple[str, ...]:
     """Checks EXPLAIN output against the explicit repository plan contract.
 
@@ -38,26 +39,37 @@ def _plan_access_violations(
     sources in a test: SQLite permits aliases, optional ``AS``, ``INDEXED BY``,
     CTEs, and other grammar that a partial source parser can misread.  A missing
     metadata entry is a source-review defect; a missing or scanning EXPLAIN entry
-    is an executable plan defect.
+    is an executable plan defect. Materialized CTEs and planner subqueries are not
+    base tables, so their bounded access names are an explicit upper-bound
+    multiset rather than being silently accepted as unknown sources.
     """
 
     normalized = tuple(detail.upper() for detail in details)
     available = set(range(len(normalized)))
     violations: list[str] = []
 
+    def plan_access_name(detail: str) -> str | None:
+        words = detail.split()
+        if len(words) < 2 or words[0] not in {"SEARCH", "SCAN"}:
+            return None
+        name = words[1]
+        if name.startswith("(SUBQUERY-") and name.endswith(")"):
+            return "(SUBQUERY)"
+        return name
+
     def matching_searches(plan_name: str) -> tuple[int, ...]:
-        prefix = f"SEARCH {plan_name.upper()} "
+        expected = plan_name.upper()
         return tuple(
-            index for index in sorted(available) if normalized[index].startswith(prefix)
+            index
+            for index in sorted(available)
+            if normalized[index].startswith("SEARCH ")
+            and plan_access_name(normalized[index]) == expected
         )
 
     def matching_base_details(plan_name: str) -> tuple[str, ...]:
         name = plan_name.upper()
         return tuple(
-            detail
-            for detail in normalized
-            if detail.startswith(f"SEARCH {name} ")
-            or detail.startswith(f"SCAN {name} ")
+            detail for detail in normalized if plan_access_name(detail) == name
         )
 
     # Match forced-index entries first so an ordinary primary-key search cannot
@@ -67,11 +79,7 @@ def _plan_access_violations(
     ) + tuple(access for access in accesses if access[2] is None)
     for base_table, plan_name, required_index in ordered_accesses:
         base_details = matching_base_details(plan_name)
-        scans = tuple(
-            detail
-            for detail in base_details
-            if detail.startswith(f"SCAN {plan_name.upper()} ")
-        )
+        scans = tuple(detail for detail in base_details if detail.startswith("SCAN "))
         if scans:
             violations.append(f"{base_table}/{plan_name}: unbounded scan {scans!r}")
         if any("AUTOMATIC" in detail for detail in base_details):
@@ -95,6 +103,16 @@ def _plan_access_violations(
             continue
         available.remove(candidates[0])
 
+    for intermediate in bounded_intermediates:
+        expected = intermediate.upper()
+        candidates = tuple(
+            index
+            for index in sorted(available)
+            if plan_access_name(normalized[index]) == expected
+        )
+        if candidates:
+            available.remove(candidates[0])
+
     for index in sorted(available):
         detail = normalized[index]
         if detail.startswith(("SEARCH ", "SCAN ")):
@@ -115,6 +133,49 @@ def test_plan_access_checker_refuses_an_unlisted_search_access() -> None:
     )
 
     assert any("unexpected plan access" in violation for violation in violations)
+
+
+def test_plan_access_checker_accepts_only_declared_bounded_intermediate_multiplicity() -> (
+    None
+):
+    """Bounded CTE/subquery accesses are explicit and multiplicity-limited."""
+
+    details = (
+        "SEARCH expected USING INDEX ix_expected (key=?)",
+        "SCAN selected",
+        "SEARCH (subquery-7) USING AUTOMATIC COVERING INDEX (scope_id=?)",
+        "SCAN selected",
+    )
+    accesses: tuple[_RuntimeCheckpointPlanAccess, ...] = (
+        ("expected_table", "expected", None),
+    )
+
+    assert (
+        _plan_access_violations(
+            details,
+            accesses,
+            ("selected", "(subquery)", "selected"),
+        )
+        == ()
+    )
+    assert _plan_access_violations(
+        details,
+        accesses,
+        ("selected", "(subquery)"),
+    ) == ("unexpected plan access 'SCAN SELECTED'",)
+
+
+def test_plan_access_checker_never_reclassifies_a_declared_base_scan() -> None:
+    """An intermediate allowance cannot excuse a base-table scan."""
+
+    violations = _plan_access_violations(
+        ("SCAN expected",),
+        (("expected_table", "expected", None),),
+        ("expected",),
+    )
+
+    assert any("unbounded scan" in violation for violation in violations)
+    assert any("missing SEARCH" in violation for violation in violations)
 
 
 def _explain_details(
@@ -2008,16 +2069,21 @@ def test_thirteen_selection_and_load_queries_have_direct_plans_under_history_str
         connection.execute("ANALYZE")
         connection.execute("BEGIN")
 
-        for ordinal, (sql, accesses) in enumerate(
+        for ordinal, (sql, accesses, bounded_intermediates) in enumerate(
             zip(
                 repository._RUNTIME_CHECKPOINT_SELECTION_SQL,
                 repository._RUNTIME_CHECKPOINT_SELECTION_PLAN_ACCESS,
+                repository._RUNTIME_CHECKPOINT_SELECTION_PLAN_BOUNDED_INTERMEDIATES,
                 strict=True,
             ),
             1,
         ):
             details = _explain_details(connection, sql)
-            violations = _plan_access_violations(details, accesses)
+            violations = _plan_access_violations(
+                details,
+                accesses,
+                bounded_intermediates,
+            )
             assert not violations, (f"Q{ordinal}", details, violations)
 
         for label, sql, accesses in zip(
