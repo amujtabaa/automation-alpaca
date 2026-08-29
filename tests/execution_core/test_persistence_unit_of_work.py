@@ -3469,7 +3469,9 @@ def test_retained_checkpoint_accepts_exact_owners_projected_for_successor() -> N
     )
 
 
-def test_retained_checkpoint_rejects_wrong_head_provenance_or_owners() -> None:
+def test_retained_checkpoint_rejects_wrong_head_provenance_or_owners(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     context, _, predecessor_projection, retained, successor_projection = (
         _authentic_retained_successor_fixture()
     )
@@ -3477,15 +3479,53 @@ def test_retained_checkpoint_rejects_wrong_head_provenance_or_owners() -> None:
     active_proof, active_book, active_authority, active_owners = (
         hydration_fixtures._active_claimed_projection_inputs()
     )
+    mismatched_owner_proof = records._issue_runtime_checkpoint_selection_proof(
+        records.RuntimeCheckpointSelectionRequest(
+            head.application_generation_id,
+            active_proof.request.execution_profile_id,
+            active_proof.request.market_source_profile_id,
+            head,
+        ),
+        active_proof.application_generation,
+        active_proof.execution_profile,
+        active_proof.market_source_profile,
+        head,
+        head.currentness_head_ordinal,
+        head.checkpoint_version_ordinal + 1,
+        active_proof._selection,
+    )
     mismatched_owner_projection = checkpoint_codec._project_runtime_checkpoint(
-        active_proof,
+        mismatched_owner_proof,
         active_book,
         active_authority,  # type: ignore[arg-type]
         active_owners,
     )
+    assert mismatched_owner_projection.checkpoint_version_ordinal == (
+        retained.checkpoint_version_ordinal + 1
+    )
     assert not unit_of_work._m2_checkpoint_semantics_match(
         retained,
         mismatched_owner_projection,
+    )
+    owner_comparisons: list[
+        tuple[
+            checkpoint_codec.RuntimeCheckpointEnvelope,
+            checkpoint_codec.RuntimeCheckpointEnvelope,
+        ]
+    ] = []
+    compare_owner_semantics = unit_of_work._m2_checkpoint_semantics_match
+
+    def traced_owner_comparison(
+        left: checkpoint_codec.RuntimeCheckpointEnvelope,
+        right: checkpoint_codec.RuntimeCheckpointEnvelope,
+    ) -> bool:
+        owner_comparisons.append((left, right))
+        return compare_owner_semantics(left, right)
+
+    monkeypatch.setattr(
+        unit_of_work,
+        "_m2_checkpoint_semantics_match",
+        traced_owner_comparison,
     )
 
     mismatched_contexts = (
@@ -3566,6 +3606,7 @@ def test_retained_checkpoint_rejects_wrong_head_provenance_or_owners() -> None:
                 projected,
                 loaded,
             )
+    assert owner_comparisons == [(retained, mismatched_owner_projection)]
 
 
 def test_prepare_transaction_authenticates_retained_n_against_target_n_plus_one(

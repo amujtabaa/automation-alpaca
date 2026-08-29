@@ -619,3 +619,18 @@ whitespace checks. Protected identities remain DDL
 `164de10ad9fef6ce37324840aff59b5b68c07d2a`, exact-false human flag, and held-test SHA-256
 `f8081a38d2b5bc5fd073a0dbe79a47a8d4e2e1de2defc7323bea34ab4d992aca`. One finite fresh
 exact-head review with zero open P0/P1 remains required before the new fresh-file proof.
+
+## REV-0117 R6 test-evidence correction
+
+Fresh R6 review returned `ACCEPT-WITH-CHANGES`, P0=0/P1=1/P2=0. The product correction was not
+disputed. The accepted P1 showed that the different-owner negative control projected its active
+owner fixture at version N, so the earlier N+1 guard refused it before the owner-semantic
+comparison. The test therefore did not independently kill removal of the comparator.
+
+The test-only correction now issues the different active owner set under an authentic successor
+proof bound to the retained application's exact profile/head coordinates at version N+1. It pins
+that version relationship and traces the guard's single semantic-comparator invocation for the
+different-owner case; all stale-head, wrong-provenance, and predecessor-at-N cases must refuse
+before that comparator. One finite same-seat verification of this exact evidence correction must
+return zero open P0/P1 before the fresh-file proof proceeds. Production source, DDL, held test,
+human flag, and accepted startup architecture are unchanged.
