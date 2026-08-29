@@ -39,6 +39,8 @@ allowed_paths:
   - tests/execution_core/test_persistence_write_capability.py
   - tests/execution_core/test_persistence_unit_of_work.py
   - tests/execution_core/test_persistence_crash_atomicity.py
+  - tests/execution_core/test_persistence_runtime_checkpoint_directness.py
+  - tests/execution_core/test_sqlite_boundary.py
   - tests/execution_core/test_import_boundary.py
   - tests/execution_core/test_protection.py
   - tests/execution_core/test_venue_binding_recovery.py

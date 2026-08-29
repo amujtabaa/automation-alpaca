@@ -44,6 +44,9 @@ _TOKEN_ALLOWLIST = {
         "held SQLite proof"
     ),
     "tests_gated/execution_core/test_persistence_schema.py": "held SQLite proof",
+    "tests_gated/execution_core/test_persistence_unit_of_work_sqlite.py": (
+        "held fresh-file UOW proof"
+    ),
 }
 
 

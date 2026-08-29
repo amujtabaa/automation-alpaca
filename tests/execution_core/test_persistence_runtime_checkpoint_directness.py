@@ -7,7 +7,7 @@ import hashlib
 import inspect
 import re
 
-from app.execution_core.persistence import records, repository
+from app.execution_core.persistence import records, repository, unit_of_work
 
 
 _QUERY_SHA256 = (
@@ -193,6 +193,7 @@ def test_runtime_checkpoint_write_sql_is_exact_and_transaction_free() -> None:
 
 def test_runtime_checkpoint_classifier_and_issuers_have_one_source_route() -> None:
     source = inspect.getsource(repository)
+    unit_source = inspect.getsource(unit_of_work)
     tree = ast.parse(source)
     definitions = {
         node.name: node
@@ -203,8 +204,12 @@ def test_runtime_checkpoint_classifier_and_issuers_have_one_source_route() -> No
     assert "_classify_runtime_checkpoint_sqlite_failure" in definitions
     assert source.count("def _classify_runtime_checkpoint_sqlite_failure(") == 1
     assert source.count("def _issue_runtime_checkpoint_write_receipt(") == 1
-    assert "_activate_runtime_write_lease" not in source
-    assert "_retire_runtime_write_lease" not in source
+    assert source.count("def _activate_runtime_write_lease(") == 1
+    assert source.count("def _retire_runtime_write_lease(") == 1
+    assert "_activate_runtime_write_lease" not in repository.__all__
+    assert "_retire_runtime_write_lease" not in repository.__all__
+    assert unit_source.count("_repository._activate_runtime_write_lease(") == 1
+    assert unit_source.count("_repository._retire_runtime_write_lease(") == 2
     imported = {
         alias.name
         for node in tree.body
