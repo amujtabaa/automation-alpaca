@@ -782,6 +782,31 @@ class AcceptanceProof:
         _require_digest("evidence_digest", self.evidence_digest)
 
 
+def _m2_restore_compact_acceptance_proof(
+    *,
+    kind_value: str,
+    effect_scope: VenueEffectScope,
+    claim_occurrence_id: ClaimOccurrenceId | None,
+    evidence_reference: EvidenceReference,
+    evidence_digest: bytes,
+) -> AcceptanceProof:
+    """Restore one proof-bound compact closure value inside its owning module."""
+
+    if type(kind_value) is not str:
+        raise TypeError("compact acceptance proof kind must be exact text")
+    try:
+        kind = AcceptanceProofKind(kind_value)
+    except ValueError as exc:
+        raise ValueError("compact acceptance proof kind is not admitted") from exc
+    return AcceptanceProof(
+        kind=kind,
+        effect_scope=effect_scope,
+        claim_occurrence_id=claim_occurrence_id,
+        evidence_reference=evidence_reference,
+        evidence_digest=evidence_digest,
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class CloseAcceptanceSet:
     """Internal replay input; the public reducer never admits this capability."""

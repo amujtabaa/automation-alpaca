@@ -5890,12 +5890,13 @@ class _CompactRuntimeCheckpointOwners:
     scope_owners: tuple[_RuntimeCheckpointScopeOwners, ...]
 
 
-def _decode_checkpoint_enum_value(
+def _decode_checkpoint_enum_member(
     name: str,
     value: object,
     owner: str,
-    expected: type[_Any],
-) -> _Any:
+) -> str:
+    """Decode one canonical enum wire member without reaching its owner type."""
+
     if (
         type(value) is not list
         or len(value) != 2
@@ -5903,8 +5904,18 @@ def _decode_checkpoint_enum_value(
         or type(value[1]) is not str
     ):
         raise ValueError(f"{name} is not an exact {owner} enum")
+    return value[1]
+
+
+def _decode_checkpoint_enum_value(
+    name: str,
+    value: object,
+    owner: str,
+    expected: type[_Any],
+) -> _Any:
+    member = _decode_checkpoint_enum_member(name, value, owner)
     try:
-        decoded = expected(value[1])
+        decoded = expected(member)
     except (TypeError, ValueError) as exc:
         raise ValueError(f"{name} has an unadmitted value") from exc
     if _checkpoint_enum(owner, decoded) != value:
@@ -5992,34 +6003,41 @@ def _decode_compact_venue_effect_scope(value: object) -> _venue.VenueEffectScope
     return scope
 
 
-def _decode_compact_venue_acceptance_proof(
+def _decode_compact_venue_acceptance_proof_fields(
     value: object,
     *,
     effect_scope: _venue.VenueEffectScope,
     claim_occurrence_id: _identity.ClaimOccurrenceId | None,
-) -> _venue.AcceptanceProof:
+) -> tuple[str, _identity.EvidenceReference, bytes]:
     fields = _operations._require_m2_aggregate(
         value,
         "m2.venue.AcceptanceProof/v1",
         5,
     )
-    proof = _venue.AcceptanceProof(
-        _decode_checkpoint_enum_value(
-            "venue acceptance proof kind",
-            fields[0],
-            "m1.venue.AcceptanceProofKind",
-            _venue.AcceptanceProofKind,
-        ),
-        effect_scope,
-        (
-            None
-            if fields[2] is None
-            else _operations._decode_m2_m1_as(
-                "venue acceptance proof claim",
-                fields[2],
-                _identity.ClaimOccurrenceId,
-            )
-        ),
+    kind_value = _decode_checkpoint_enum_member(
+        "venue acceptance proof kind",
+        fields[0],
+        "m1.venue.AcceptanceProofKind",
+    )
+    encoded_claim = (
+        None
+        if fields[2] is None
+        else _operations._decode_m2_m1_as(
+            "venue acceptance proof claim",
+            fields[2],
+            _identity.ClaimOccurrenceId,
+        )
+    )
+    if (
+        _operations._decode_m2_m1_as(
+            "venue acceptance proof effect", fields[1], _identity.EffectId
+        )
+        != effect_scope.effect_id
+        or encoded_claim != claim_occurrence_id
+    ):
+        raise ValueError("venue acceptance proof is stale or spliced")
+    return (
+        kind_value,
         _operations._decode_m2_m1_as(
             "venue acceptance proof evidence",
             fields[3],
@@ -6027,21 +6045,6 @@ def _decode_compact_venue_acceptance_proof(
         ),
         _operations._decode_m2_bytes("venue acceptance proof digest", fields[4]),
     )
-    if (
-        _operations._decode_m2_m1_as(
-            "venue acceptance proof effect", fields[1], _identity.EffectId
-        )
-        != effect_scope.effect_id
-        or proof.claim_occurrence_id != claim_occurrence_id
-        or _encode_runtime_checkpoint_venue_acceptance_proof(
-            proof,
-            expected_scope=effect_scope,
-            expected_claim_occurrence_id=claim_occurrence_id,
-        )
-        != value
-    ):
-        raise ValueError("venue acceptance proof is stale or spliced")
-    return proof
 
 
 def _decode_compact_venue_effect_row(
@@ -6069,15 +6072,32 @@ def _decode_compact_venue_effect_row(
             _identity.ClaimOccurrenceId,
         )
     )
-    acceptance_proof = (
-        None
-        if fields[5] is None
-        else _decode_compact_venue_acceptance_proof(
-            fields[5],
+    if fields[5] is None:
+        acceptance_proof = None
+    else:
+        proof_kind, evidence_reference, evidence_digest = (
+            _decode_compact_venue_acceptance_proof_fields(
+                fields[5],
+                effect_scope=scope,
+                claim_occurrence_id=claim_occurrence_id,
+            )
+        )
+        acceptance_proof = _venue._m2_restore_compact_acceptance_proof(
+            kind_value=proof_kind,
             effect_scope=scope,
             claim_occurrence_id=claim_occurrence_id,
+            evidence_reference=evidence_reference,
+            evidence_digest=evidence_digest,
         )
-    )
+        if (
+            _encode_runtime_checkpoint_venue_acceptance_proof(
+                acceptance_proof,
+                expected_scope=scope,
+                expected_claim_occurrence_id=claim_occurrence_id,
+            )
+            != fields[5]
+        ):
+            raise ValueError("venue acceptance proof is not compact-canonical")
     contradiction_rows = _decode_checkpoint_collection_rows(
         fields[6],
         "m2.venue.Contradictions/v1",

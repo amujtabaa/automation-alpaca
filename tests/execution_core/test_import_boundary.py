@@ -7188,6 +7188,9 @@ _ACQUISITION_R8_OPAQUE_TYPES = {
 _ACQUISITION_R8_ALLOCATION_OWNERS = {
     "empty",
     "_finish_acquisition_transition",
+    # WO-0169: the proof-bound compact restore is the sole persistence owner
+    # factory; arbitrary raw allocation remains forbidden everywhere else.
+    "_m2_restore_compact_acquisition_controller",
     "_mint_dual_mandate_binding",
     "_new_acquisition_controller_state",
     "_new_acquisition_lineage_index",

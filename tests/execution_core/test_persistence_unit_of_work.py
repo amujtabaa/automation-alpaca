@@ -373,6 +373,7 @@ def test_every_repository_mutator_call_site_is_static_and_catalogued() -> None:
     expected = {
         "_claim_primary_input": ("claim_durable_input",),
         "_store_successor_checkpoint": ("store_runtime_checkpoint",),
+        "_m2_store_cold_successor": ("store_runtime_checkpoint",),
         "_store_venue_semantic_key": ("store_durable_input_semantic_key",),
         "_store_authority_query_semantic_key": ("store_durable_input_semantic_key",),
         "_store_authority_manual_semantic_key": ("store_durable_input_semantic_key",),
@@ -405,7 +406,10 @@ def test_every_repository_mutator_call_site_is_static_and_catalogued() -> None:
             "store_acquisition_root_route",
             "store_execution_fact",
         ),
-        "_advance_acquisition_currentness": ("advance_market_cursor",),
+        "_advance_acquisition_currentness": (
+            "store_market_cursor",
+            "advance_market_cursor",
+        ),
         "_advance_venue_protection_after_trigger": ("advance_market_cursor",),
         "_advance_protection_record": ("advance_protection_authority",),
         "_advance_controller_record": ("advance_symbol_controller",),
@@ -512,9 +516,16 @@ def test_every_repository_mutator_call_site_is_static_and_catalogued() -> None:
         ):
             continue
         catchers = _call_local_exception_catchers(node, parents)
-        if (
+        transaction_coordinator_call = (
             node.func.id == "_execute_prepared"
             and _call_enclosing_function_name(node, parents) == "execute_unit_of_work"
+        ) or (
+            node.func.id in {"_m2_advance_cold_currentness", "_m2_store_cold_successor"}
+            and _call_enclosing_function_name(node, parents)
+            == "_m2_cold_compact_cutover"
+        )
+        if (
+            transaction_coordinator_call
             and len(catchers) == 1
             and isinstance(catchers[0], ast.Try)
         ):
@@ -3558,6 +3569,257 @@ def test_commit_ambiguity_never_rolls_back_or_mints_eligibility(
     assert result.disposition is unit_of_work.UnitOfWorkDisposition.RECONCILIATION_ONLY
     assert result.effect_eligibility is None
     assert connection.events == ["BEGIN IMMEDIATE", "COMMIT", "CLOSE"]
+
+
+def _cold_cutover_fixture() -> tuple[
+    unit_of_work.UnitOfWorkContext,
+    records.RuntimeCheckpointSelectionProof,
+    checkpoint_codec.RuntimeCheckpointEnvelope,
+]:
+    proof, book, authority_state, owners = (
+        checkpoint_fixtures._dormant_projection_inputs()
+    )
+    envelope = checkpoint_codec._project_runtime_checkpoint(
+        proof,
+        book,
+        authority_state,
+        owners,
+    )
+    head = records.KernelCheckpointRecord(
+        envelope.application_generation_id,
+        envelope.currentness_head_ordinal,
+        envelope.payload_sha256,
+        envelope.checkpoint_version_ordinal,
+    )
+    context = unit_of_work.UnitOfWorkContext(
+        head,
+        book,
+        authority_state,
+        tuple(
+            (
+                owner.scope_id,
+                owner.acquisition,
+                owner.execution,
+                owner.protection,
+            )
+            for owner in owners
+        ),
+    )
+    return context, proof, envelope
+
+
+def test_cold_cutover_exact_replay_rolls_back_without_write_lease(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection = _TransactionConnection()
+    context, proof, envelope = _cold_cutover_fixture()
+    monkeypatch.setattr(
+        unit_of_work,
+        "_m2_load_compact_context",
+        lambda *args: (context, proof, envelope),
+    )
+
+    result = unit_of_work._m2_cold_compact_cutover(
+        connection,
+        proof.request.application_generation_id,
+        proof.request.execution_profile_id,
+        proof.request.market_source_profile_id,
+    )
+
+    assert result.disposition is unit_of_work.UnitOfWorkDisposition.EXACT_REPLAY
+    assert result.failure is None
+    assert result.successor_context == context
+    assert result.selection_proof is proof
+    assert connection.events == ["BEGIN IMMEDIATE", "ROLLBACK"]
+
+
+def test_cold_cutover_exact_replay_does_not_retry_ambiguous_rollback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection = _TransactionConnection(
+        rollback_error=RuntimeError("ambiguous cold rollback")
+    )
+    context, proof, envelope = _cold_cutover_fixture()
+    monkeypatch.setattr(
+        unit_of_work,
+        "_m2_load_compact_context",
+        lambda *args: (context, proof, envelope),
+    )
+
+    with pytest.raises(RuntimeError, match="ambiguous cold rollback"):
+        unit_of_work._m2_cold_compact_cutover(
+            connection,
+            proof.request.application_generation_id,
+            proof.request.execution_profile_id,
+            proof.request.market_source_profile_id,
+        )
+
+    assert connection.events == ["BEGIN IMMEDIATE", "ROLLBACK"]
+
+
+def _patch_changed_cold_cutover(
+    monkeypatch: pytest.MonkeyPatch,
+    context: unit_of_work.UnitOfWorkContext,
+    proof: records.RuntimeCheckpointSelectionProof,
+    envelope: checkpoint_codec.RuntimeCheckpointEnvelope,
+    *,
+    fail_store: bool = False,
+) -> unit_of_work.UnitOfWorkContext:
+    successor_head = replace(
+        context.expected_checkpoint,
+        checkpoint_sha256="f" * 64,
+        checkpoint_version_ordinal=(
+            context.expected_checkpoint.checkpoint_version_ordinal + 1
+        ),
+    )
+    successor = replace(context, expected_checkpoint=successor_head)
+    monkeypatch.setattr(
+        unit_of_work,
+        "_m2_load_compact_context",
+        lambda *args: (context, proof, envelope),
+    )
+    monkeypatch.setattr(
+        unit_of_work,
+        "_m2_checkpoint_semantics_match",
+        lambda *args: False,
+    )
+    monkeypatch.setattr(
+        unit_of_work,
+        "_m2_advance_cold_currentness",
+        lambda *args: None,
+    )
+
+    def store(*args: object) -> tuple[object, object, object]:
+        del args
+        if fail_store:
+            raise unit_of_work._TechnicalRefusal("injected cold store refusal")
+        return successor, proof, envelope
+
+    monkeypatch.setattr(unit_of_work, "_m2_store_cold_successor", store)
+    monkeypatch.setattr(
+        unit_of_work,
+        "_m2_reread_cold_context",
+        lambda *args: (successor, proof),
+    )
+    return successor
+
+
+def test_cold_cutover_commit_returns_only_the_exact_reread_successor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection = _TransactionConnection()
+    context, proof, envelope = _cold_cutover_fixture()
+    successor = _patch_changed_cold_cutover(
+        monkeypatch,
+        context,
+        proof,
+        envelope,
+    )
+
+    result = unit_of_work._m2_cold_compact_cutover(
+        connection,
+        proof.request.application_generation_id,
+        proof.request.execution_profile_id,
+        proof.request.market_source_profile_id,
+    )
+
+    assert result.disposition is unit_of_work.UnitOfWorkDisposition.COMMITTED
+    assert result.successor_context is successor
+    assert result.selection_proof is proof
+    assert connection.events == ["BEGIN IMMEDIATE", "COMMIT"]
+
+
+def test_cold_cutover_store_refusal_retires_lease_and_rolls_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection = _TransactionConnection()
+    context, proof, envelope = _cold_cutover_fixture()
+    _patch_changed_cold_cutover(
+        monkeypatch,
+        context,
+        proof,
+        envelope,
+        fail_store=True,
+    )
+
+    result = unit_of_work._m2_cold_compact_cutover(
+        connection,
+        proof.request.application_generation_id,
+        proof.request.execution_profile_id,
+        proof.request.market_source_profile_id,
+    )
+
+    assert result.disposition is unit_of_work.UnitOfWorkDisposition.REFUSED
+    assert result.failure is unit_of_work._ColdCompactCutoverFailure.DATASTORE
+    assert result.successor_context is None
+    assert result.selection_proof is None
+    assert connection.events == ["BEGIN IMMEDIATE", "ROLLBACK"]
+
+
+def test_cold_cutover_commit_ambiguity_closes_without_rollback_or_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection = _TransactionConnection(commit_error=RuntimeError("ambiguous commit"))
+    context, proof, envelope = _cold_cutover_fixture()
+    _patch_changed_cold_cutover(monkeypatch, context, proof, envelope)
+
+    result = unit_of_work._m2_cold_compact_cutover(
+        connection,
+        proof.request.application_generation_id,
+        proof.request.execution_profile_id,
+        proof.request.market_source_profile_id,
+    )
+
+    assert result.disposition is unit_of_work.UnitOfWorkDisposition.RECONCILIATION_ONLY
+    assert result.failure is unit_of_work._ColdCompactCutoverFailure.COMMIT_AMBIGUITY
+    assert result.successor_context is None
+    assert result.selection_proof is None
+    assert connection.events == ["BEGIN IMMEDIATE", "COMMIT", "CLOSE"]
+
+
+def test_cold_cutover_distinguishes_current_proof_from_invalidation_refusal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context, proof, envelope = _cold_cutover_fixture()
+
+    def load_refusal(*args: object) -> tuple[object, object, object]:
+        del args
+        raise unit_of_work._TechnicalRefusal("injected current proof refusal")
+
+    monkeypatch.setattr(unit_of_work, "_m2_load_compact_context", load_refusal)
+    proof_result = unit_of_work._m2_cold_compact_cutover(
+        _TransactionConnection(),
+        proof.request.application_generation_id,
+        proof.request.execution_profile_id,
+        proof.request.market_source_profile_id,
+    )
+    assert proof_result.failure is unit_of_work._ColdCompactCutoverFailure.CURRENT_PROOF
+
+    monkeypatch.setattr(
+        unit_of_work,
+        "_m2_load_compact_context",
+        lambda *args: (context, proof, envelope),
+    )
+
+    def invalidation_refusal(*args: object) -> unit_of_work.UnitOfWorkContext:
+        del args
+        raise unit_of_work._TechnicalRefusal("injected invalidation refusal")
+
+    monkeypatch.setattr(
+        unit_of_work,
+        "_m2_cold_invalidated_context",
+        invalidation_refusal,
+    )
+    invalidation_result = unit_of_work._m2_cold_compact_cutover(
+        _TransactionConnection(),
+        proof.request.application_generation_id,
+        proof.request.execution_profile_id,
+        proof.request.market_source_profile_id,
+    )
+    assert (
+        invalidation_result.failure
+        is unit_of_work._ColdCompactCutoverFailure.INVALIDATION
+    )
 
 
 def test_rollback_ambiguity_propagates_without_retry(

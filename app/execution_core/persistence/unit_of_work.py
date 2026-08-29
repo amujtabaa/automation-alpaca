@@ -47,6 +47,16 @@ class UnitOfWorkDisposition(str, _Enum):
     RECONCILIATION_ONLY = "RECONCILIATION_ONLY"
 
 
+class _ColdCompactCutoverFailure(str, _Enum):
+    """Private operational category for one failed cold cutover."""
+
+    INPUT = "INPUT"
+    DATASTORE = "DATASTORE"
+    CURRENT_PROOF = "CURRENT_PROOF"
+    INVALIDATION = "INVALIDATION"
+    COMMIT_AMBIGUITY = "COMMIT_AMBIGUITY"
+
+
 def _require_positive_int(name: str, value: object) -> int:
     if type(value) is not int:
         raise TypeError(f"{name} must be an exact integer")
@@ -177,6 +187,52 @@ class UnitOfWorkResult:
 
 
 @_dataclass(frozen=True, slots=True)
+class _ColdCompactCutoverResult:
+    """Private committed-or-replay result for the cold startup bridge."""
+
+    disposition: UnitOfWorkDisposition
+    successor_context: UnitOfWorkContext | None
+    selection_proof: _records.RuntimeCheckpointSelectionProof | None
+    failure: _ColdCompactCutoverFailure | None = None
+
+    def __post_init__(self) -> None:
+        if type(self) is not _ColdCompactCutoverResult:
+            raise TypeError("cold cutover result rejects subclasses")
+        if type(self.disposition) is not UnitOfWorkDisposition:
+            raise TypeError("cold cutover disposition must be exact")
+        if self.disposition in {
+            UnitOfWorkDisposition.COMMITTED,
+            UnitOfWorkDisposition.EXACT_REPLAY,
+        }:
+            if self.failure is not None:
+                raise ValueError("cold cutover success cannot retain a failure")
+            if type(self.successor_context) is not UnitOfWorkContext:
+                raise TypeError("cold cutover success requires an exact context")
+            if (
+                type(self.selection_proof)
+                is not _records.RuntimeCheckpointSelectionProof
+                or not _records.RuntimeCheckpointSelectionProof._is_authentic(
+                    self.selection_proof
+                )
+            ):
+                raise TypeError("cold cutover success requires an authentic proof")
+        elif self.disposition in {
+            UnitOfWorkDisposition.REFUSED,
+            UnitOfWorkDisposition.RECONCILIATION_ONLY,
+        }:
+            if self.successor_context is not None or self.selection_proof is not None:
+                raise ValueError("cold cutover failure cannot publish owner state")
+            if type(self.failure) is not _ColdCompactCutoverFailure:
+                raise TypeError("cold cutover failure requires an exact category")
+        else:
+            raise ValueError("cold cutover disposition is not admitted")
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        del cls, kwargs
+        raise TypeError("cold cutover result cannot be subclassed")
+
+
+@_dataclass(frozen=True, slots=True)
 class _PostCommitEffectCandidate:
     outbox_sequence: int
     effect_id: int
@@ -237,7 +293,7 @@ class _SelectedAcquisitionAuthority:
     generation_current: _records.AcquisitionGenerationCurrentRecord
     protection: _records.ProtectionAuthorityRecord
     stream: _records.MarketStreamAuthorityRecord
-    cursor: _records.MarketCursorRecord
+    cursor: _records.MarketCursorRecord | None
 
 
 @_dataclass(frozen=True, slots=True)
@@ -3926,21 +3982,26 @@ def _persist_venue_economics(
     return fact_record, retained_root, retained_route, predecessor_fact
 
 
-def _selected_acquisition_authority(
-    prepared: _PreparedOperation,
+def _selected_acquisition_authority_for_coordinates(
+    selection_proof: _records.RuntimeCheckpointSelectionProof,
+    application_generation_id: _identity.ApplicationGenerationId,
+    execution_profile_id: str,
+    scope_id: int,
+    acquisition_generation_id: _identity.AcquisitionGenerationId | None,
     acquisition: _acquisition.AcquisitionControllerState,
     execution: _position.ExecutionSnapshot,
     protection: _protection.PositionProtectionState | None,
+    *,
+    require_persisted_protection_commitment: bool = True,
+    require_cursor: bool = True,
 ) -> _SelectedAcquisitionAuthority:
-    selection = prepared.selection_proof._selection
-    scopes = tuple(row for row in selection.scopes if row.scope_id == prepared.scope_id)
+    selection = selection_proof._selection
+    scopes = tuple(row for row in selection.scopes if row.scope_id == scope_id)
     controllers = tuple(
-        row for row in selection.controllers if row.scope_id == prepared.scope_id
+        row for row in selection.controllers if row.scope_id == scope_id
     )
     protections = tuple(
-        row
-        for row in selection.protection_authorities
-        if row.scope_id == prepared.scope_id
+        row for row in selection.protection_authorities if row.scope_id == scope_id
     )
     if len(scopes) != 1 or len(controllers) != 1 or len(protections) != 1:
         raise _TechnicalRefusal("acquisition current rows are not singular")
@@ -3951,26 +4012,23 @@ def _selected_acquisition_authority(
     generations = tuple(
         row
         for row in selection.live_generations
-        if row.scope_id == prepared.scope_id
-        and row.acquisition_generation_id == generation_id
+        if row.scope_id == scope_id and row.acquisition_generation_id == generation_id
     )
     currents = tuple(
         row
         for row in selection.live_generation_current
-        if row.scope_id == prepared.scope_id
-        and row.acquisition_generation_id == generation_id
+        if row.scope_id == scope_id and row.acquisition_generation_id == generation_id
     )
     streams = tuple(
         row
         for row in selection.streams
-        if row.scope_id == prepared.scope_id
-        and row.acquisition_generation_id == generation_id
+        if row.scope_id == scope_id and row.acquisition_generation_id == generation_id
     )
     if (
         generation_id is None
         or (
-            prepared.acquisition_generation_id is not None
-            and prepared.acquisition_generation_id != generation_id
+            acquisition_generation_id is not None
+            and acquisition_generation_id != generation_id
         )
         or len(generations) != 1
         or len(currents) != 1
@@ -3983,23 +4041,23 @@ def _selected_acquisition_authority(
     cursors = tuple(
         row
         for row in selection.cursors
-        if row.scope_id == prepared.scope_id
+        if row.scope_id == scope_id
         and row.stream_generation_id == stream.stream_generation_id
     )
-    if len(cursors) != 1:
+    if len(cursors) > 1 or (require_cursor and len(cursors) != 1):
         raise _TechnicalRefusal("acquisition market cursor is not singular")
-    cursor = cursors[0]
+    cursor = None if not cursors else cursors[0]
     owner_generation = acquisition.registry.record(generation_id)
     owner_route = _acquisition._registry_market_stream_route(
         acquisition.registry,
         stream.stream_generation_id,
     )
     if (
-        scope.application_generation_id != prepared.application_generation_id
-        or scope.execution_profile_id != prepared.execution_profile_id
+        scope.application_generation_id != application_generation_id
+        or scope.execution_profile_id != execution_profile_id
         or scope.symbol != acquisition.position_scope.symbol_id
-        or controller.application_generation_id != prepared.application_generation_id
-        or controller.execution_profile_id != prepared.execution_profile_id
+        or controller.application_generation_id != application_generation_id
+        or controller.execution_profile_id != execution_profile_id
         or controller.aggregate_quantity != execution.position.raw_quantity
         or controller.currentness_head_ordinal
         != protection_record.expected_controller_head_ordinal
@@ -4015,7 +4073,7 @@ def _selected_acquisition_authority(
         != generation.mandate_commitment_sha256
         or owner_generation.binding.emergency_recovery_compatibility_commitment.hex()
         != generation.emergency_compatibility_sha256
-        or stream.application_generation_id != prepared.application_generation_id
+        or stream.application_generation_id != application_generation_id
         or stream.generation_mandate_commitment_sha256
         != generation.mandate_commitment_sha256
         or stream.session_id != acquisition._mandate.session_id
@@ -4023,13 +4081,18 @@ def _selected_acquisition_authority(
         != acquisition._mandate.protection_mandate.evidence_policy.stream_generation
         or stream.sequence_mode
         != acquisition._mandate.protection_mandate.evidence_policy.sequence_mode.value
-        or cursor.application_generation_id != stream.application_generation_id
-        or cursor.acquisition_generation_id != stream.acquisition_generation_id
-        or cursor.generation_mandate_commitment_sha256
-        != stream.generation_mandate_commitment_sha256
-        or cursor.source_profile_id != stream.source_profile_id
-        or cursor.session_id != stream.session_id
-        or cursor.sequence_mode != stream.sequence_mode
+        or (
+            cursor is not None
+            and (
+                cursor.application_generation_id != stream.application_generation_id
+                or cursor.acquisition_generation_id != stream.acquisition_generation_id
+                or cursor.generation_mandate_commitment_sha256
+                != stream.generation_mandate_commitment_sha256
+                or cursor.source_profile_id != stream.source_profile_id
+                or cursor.session_id != stream.session_id
+                or cursor.sequence_mode != stream.sequence_mode
+            )
+        )
     ):
         raise _TechnicalRefusal(
             "acquisition durable authority disagrees with its owner"
@@ -4068,7 +4131,11 @@ def _selected_acquisition_authority(
                 stream.sequence_mode,
             )
             or protection.mandate != acquisition._mandate.protection_mandate
-            or protection.commitment.hex() != protection_record.state_commitment_sha256
+            or (
+                require_persisted_protection_commitment
+                and protection.commitment.hex()
+                != protection_record.state_commitment_sha256
+            )
         ):
             raise _TechnicalRefusal(
                 "active protection authority disagrees with its owner"
@@ -4081,6 +4148,24 @@ def _selected_acquisition_authority(
         protection_record,
         stream,
         cursor,
+    )
+
+
+def _selected_acquisition_authority(
+    prepared: _PreparedOperation,
+    acquisition: _acquisition.AcquisitionControllerState,
+    execution: _position.ExecutionSnapshot,
+    protection: _protection.PositionProtectionState | None,
+) -> _SelectedAcquisitionAuthority:
+    return _selected_acquisition_authority_for_coordinates(
+        prepared.selection_proof,
+        prepared.application_generation_id,
+        prepared.execution_profile_id,
+        prepared.scope_id,
+        prepared.acquisition_generation_id,
+        acquisition,
+        execution,
+        protection,
     )
 
 
@@ -4134,11 +4219,39 @@ def _advance_acquisition_currentness(
                 selected.stream.session_id,
                 selected.stream.sequence_mode,
             )
-            or successor_state._cursor_ordinal < selected.cursor.fixed_cursor_ordinal
+            or (
+                selected.cursor is not None
+                and successor_state._cursor_ordinal
+                < selected.cursor.fixed_cursor_ordinal
+            )
         ):
             raise _TechnicalRefusal("successor protection authority is not contiguous")
-        protection_changed = successor_state.commitment != predecessor_state.commitment
-        if protection_changed:
+        protection_changed = (
+            successor_state.commitment.hex()
+            != selected.protection.state_commitment_sha256
+        )
+        if selected.cursor is None:
+            cursor = _records.MarketCursorRecord(
+                selected.stream.stream_generation_id,
+                selected.stream.scope_id,
+                selected.stream.application_generation_id,
+                selected.stream.acquisition_generation_id,
+                selected.stream.generation_mandate_commitment_sha256,
+                selected.stream.source_profile_id,
+                selected.stream.session_id,
+                selected.stream.sequence_mode,
+                successor_state._cursor_ordinal,
+                successor_state._cursor_ordinal,
+            )
+            _require_applied_repository_outcome(
+                "initial market cursor",
+                _repository.store_market_cursor(
+                    connection,
+                    cursor,
+                    capability=capability,
+                ),
+            )
+        elif protection_changed:
             published = max(
                 selected.cursor.published_head_ordinal + 1,
                 successor_state._cursor_ordinal,
@@ -4199,6 +4312,9 @@ def _advance_venue_protection_after_trigger(
     successor_state: _protection.PositionProtectionState | None,
     capability: _repository._RuntimeWriteCapability,
 ) -> _SelectedScopeAuthority:
+    cursor_record = selected.cursor
+    if cursor_record is None:
+        raise _TechnicalRefusal("triggered currentness has no market cursor")
     active = (
         selected.protection.active_stream_generation_id,
         selected.protection.active_acquisition_generation_id,
@@ -4228,7 +4344,7 @@ def _advance_venue_protection_after_trigger(
             or successor_state.mandate.session_id != selected.stream.session_id
             or successor_state.mandate.evidence_policy.sequence_mode.value
             != selected.stream.sequence_mode
-            or successor_state._cursor_ordinal < selected.cursor.fixed_cursor_ordinal
+            or successor_state._cursor_ordinal < cursor_record.fixed_cursor_ordinal
             or (
                 predecessor_state is None and any(value is not None for value in active)
             )
@@ -4241,11 +4357,11 @@ def _advance_venue_protection_after_trigger(
         )
         if protection_changed:
             published = max(
-                selected.cursor.published_head_ordinal + 1,
+                cursor_record.published_head_ordinal + 1,
                 successor_state._cursor_ordinal,
             )
             cursor = _replace(
-                selected.cursor,
+                cursor_record,
                 fixed_cursor_ordinal=successor_state._cursor_ordinal,
                 published_head_ordinal=published,
             )
@@ -4253,8 +4369,8 @@ def _advance_venue_protection_after_trigger(
                 "venue market cursor",
                 _repository.advance_market_cursor(
                     connection,
-                    selected.cursor.fixed_cursor_ordinal,
-                    selected.cursor.published_head_ordinal,
+                    cursor_record.fixed_cursor_ordinal,
+                    cursor_record.published_head_ordinal,
                     cursor,
                     capability=capability,
                 ),
@@ -5597,6 +5713,533 @@ def _execute_prepared(
     raise _TechnicalRefusal("operation route is not implemented in this slice")
 
 
+def _cold_cutover_failure(
+    disposition: UnitOfWorkDisposition,
+    failure: _ColdCompactCutoverFailure,
+) -> _ColdCompactCutoverResult:
+    return _ColdCompactCutoverResult(disposition, None, None, failure)
+
+
+def _activate_transaction_write_lease(
+    connection: _SQLiteConnectionProtocol,
+) -> _repository._RuntimeWriteCapability:
+    """Keep every transaction path behind one auditable write-lease issuer."""
+
+    return _repository._activate_runtime_write_lease(connection)
+
+
+def _retire_transaction_write_lease(
+    connection: _SQLiteConnectionProtocol,
+    capability: _repository._RuntimeWriteCapability,
+) -> None:
+    """Retire the shared transaction lease before either commit path."""
+
+    _repository._retire_runtime_write_lease(connection, capability)
+
+
+def _m2_checkpoint_head_from_envelope(
+    envelope: _checkpoint_codec.RuntimeCheckpointEnvelope,
+) -> _records.KernelCheckpointRecord:
+    if (
+        type(envelope) is not _checkpoint_codec.RuntimeCheckpointEnvelope
+        or not _checkpoint_codec.RuntimeCheckpointEnvelope._is_authentic(envelope)
+        or envelope._provenance != "LOADED"
+    ):
+        raise _TechnicalRefusal("runtime checkpoint load was not authentic")
+    return _records.KernelCheckpointRecord(
+        envelope.application_generation_id,
+        envelope.currentness_head_ordinal,
+        envelope.payload_sha256,
+        envelope.checkpoint_version_ordinal,
+    )
+
+
+def _m2_load_compact_context(
+    connection: _SQLiteConnectionProtocol,
+    application_generation_id: _identity.ApplicationGenerationId,
+    execution_profile_id: str,
+    market_source_profile_id: str,
+) -> tuple[
+    UnitOfWorkContext,
+    _records.RuntimeCheckpointSelectionProof,
+    _checkpoint_codec.RuntimeCheckpointEnvelope,
+]:
+    """Load one inert checkpoint and restore only its proof-complete owners."""
+
+    load_request = _records.RuntimeCheckpointLoadRequest(
+        application_generation_id,
+        execution_profile_id,
+        market_source_profile_id,
+    )
+    loaded_outcome = _repository.load_runtime_checkpoint(connection, load_request)
+    loaded = loaded_outcome.record
+    if (
+        loaded_outcome.kind is not _records.RepositoryOutcomeKind.FOUND
+        or type(loaded) is not _checkpoint_codec.RuntimeCheckpointEnvelope
+    ):
+        raise _TechnicalRefusal("runtime checkpoint could not be loaded exactly")
+    head = _m2_checkpoint_head_from_envelope(loaded)
+    selected = _repository.select_runtime_checkpoint(
+        connection,
+        _records.RuntimeCheckpointSelectionRequest(
+            application_generation_id,
+            execution_profile_id,
+            market_source_profile_id,
+            head,
+        ),
+    )
+    proof = selected.record
+    if (
+        selected.kind is not _records.RepositoryOutcomeKind.FOUND
+        or type(proof) is not _records.RuntimeCheckpointSelectionProof
+        or not _records.RuntimeCheckpointSelectionProof._is_authentic(proof)
+    ):
+        raise _TechnicalRefusal("runtime checkpoint current proof was refused")
+    try:
+        restored = _checkpoint_codec._restore_compact_runtime_checkpoint(
+            loaded,
+            proof,
+        )
+        context = UnitOfWorkContext(
+            head,
+            restored.venue,
+            restored.authority,
+            tuple(
+                (
+                    owner.scope_id,
+                    owner.acquisition,
+                    owner.execution,
+                    owner.protection,
+                )
+                for owner in restored.scope_owners
+            ),
+        )
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise _TechnicalRefusal("compact checkpoint hydration was refused") from exc
+    return context, proof, loaded
+
+
+def _m2_checkpoint_semantics_match(
+    left: _checkpoint_codec.RuntimeCheckpointEnvelope,
+    right: _checkpoint_codec.RuntimeCheckpointEnvelope,
+) -> bool:
+    """Compare owner components while deliberately ignoring successor metadata."""
+
+    if (
+        type(left) is not _checkpoint_codec.RuntimeCheckpointEnvelope
+        or type(right) is not _checkpoint_codec.RuntimeCheckpointEnvelope
+        or not _checkpoint_codec.RuntimeCheckpointEnvelope._is_authentic(left)
+        or not _checkpoint_codec.RuntimeCheckpointEnvelope._is_authentic(right)
+    ):
+        return False
+    return bool(
+        left.application_generation_id == right.application_generation_id
+        and left.execution_profile_id == right.execution_profile_id
+        and left.market_source_profile_id == right.market_source_profile_id
+        and left.venue.canonical_bytes == right.venue.canonical_bytes
+        and left.authority.canonical_bytes == right.authority.canonical_bytes
+        and tuple(
+            (
+                scope.scope_id,
+                scope.position_scope.canonical_bytes,
+                scope.acquisition.canonical_bytes,
+                scope.execution.canonical_bytes,
+                scope.protection.canonical_bytes,
+            )
+            for scope in left.scopes
+        )
+        == tuple(
+            (
+                scope.scope_id,
+                scope.position_scope.canonical_bytes,
+                scope.acquisition.canonical_bytes,
+                scope.execution.canonical_bytes,
+                scope.protection.canonical_bytes,
+            )
+            for scope in right.scopes
+        )
+    )
+
+
+def _m2_cold_invalidated_context(
+    context: UnitOfWorkContext,
+) -> UnitOfWorkContext:
+    """Apply cold market invalidation to every exact active protection owner."""
+
+    owners: list[_ScopeOwner] = []
+    try:
+        for scope_id, acquisition, execution, protection in context.scope_owners:
+            if protection is None:
+                owners.append((scope_id, acquisition, execution, None))
+                continue
+            if acquisition is None:
+                raise _TechnicalRefusal("active protection has no acquisition owner")
+            projection = _protection._m2_project_current_protection_venue(
+                context.venue,
+                execution,
+                protection,
+            )
+            transition = _protection.invalidate_position_protection_market(
+                protection,
+                projection,
+            )
+            if (
+                transition.disposition
+                not in {
+                    _protection.ProtectionDisposition.APPLIED,
+                    _protection.ProtectionDisposition.EXACT_REPLAY,
+                }
+                or transition.goal is not None
+                or type(transition.state) is not _protection.PositionProtectionState
+            ):
+                raise _TechnicalRefusal("cold market invalidation was refused")
+            venue_context = context.venue.project_acquisition_context(
+                execution,
+                acquisition.position_scope,
+            )
+            if not venue_context.matches_current(
+                context.venue,
+                execution,
+                context.venue.scope.generation,
+                acquisition.position_scope,
+            ):
+                raise _TechnicalRefusal("cold acquisition venue view is stale")
+            rebound_acquisition = (
+                _acquisition._m2_rebind_compact_acquisition_controller(
+                    acquisition,
+                    scope_execution_commitment=(
+                        venue_context.scope_execution_commitment
+                    ),
+                    venue_commitment=venue_context.commitment,
+                    protection_commitment=transition.state.commitment,
+                )
+            )
+            owners.append(
+                (
+                    scope_id,
+                    rebound_acquisition,
+                    execution,
+                    transition.state,
+                )
+            )
+    except _TechnicalRefusal:
+        raise
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise _TechnicalRefusal("cold invalidation owner reduction failed") from exc
+    return UnitOfWorkContext(
+        context.expected_checkpoint,
+        context.venue,
+        context.authority,
+        tuple(owners),
+    )
+
+
+def _m2_changed_protection_scope_ids(
+    proof: _records.RuntimeCheckpointSelectionProof,
+    successor: UnitOfWorkContext,
+) -> tuple[int, ...]:
+    records_by_scope = {
+        record.scope_id: record for record in proof._selection.protection_authorities
+    }
+    if len(records_by_scope) != len(proof._selection.protection_authorities):
+        raise _TechnicalRefusal("protection authority selection repeats a scope")
+    cursor_stream_ids = {
+        record.stream_generation_id for record in proof._selection.cursors
+    }
+    if len(cursor_stream_ids) != len(proof._selection.cursors):
+        raise _TechnicalRefusal("market cursor selection repeats a stream")
+    changed: list[int] = []
+    for scope_id, _acquisition_owner, _execution, protection in successor.scope_owners:
+        record = records_by_scope.get(scope_id)
+        if record is None:
+            raise _TechnicalRefusal("protection authority selection is incomplete")
+        active = (
+            record.active_stream_generation_id,
+            record.active_acquisition_generation_id,
+            record.active_generation_mandate_commitment_sha256,
+            record.active_source_profile_id,
+            record.active_session_id,
+            record.active_sequence_mode,
+        )
+        if protection is None:
+            if any(value is not None for value in active):
+                raise _TechnicalRefusal("dormant protection row is partially active")
+            continue
+        if any(value is None for value in active):
+            raise _TechnicalRefusal("active protection row is incomplete")
+        if (
+            protection.commitment.hex() != record.state_commitment_sha256
+            or record.active_stream_generation_id not in cursor_stream_ids
+        ):
+            changed.append(scope_id)
+    return tuple(changed)
+
+
+def _m2_advance_cold_currentness(
+    connection: _SQLiteConnectionProtocol,
+    proof: _records.RuntimeCheckpointSelectionProof,
+    successor: UnitOfWorkContext,
+    changed_scope_ids: tuple[int, ...],
+    capability: _repository._RuntimeWriteCapability,
+) -> None:
+    changed = frozenset(changed_scope_ids)
+    if len(changed) != len(changed_scope_ids):
+        raise _TechnicalRefusal("cold currentness scopes repeat")
+    for scope_id, acquisition, execution, protection in successor.scope_owners:
+        if scope_id not in changed:
+            continue
+        if acquisition is None or protection is None:
+            raise _TechnicalRefusal("cold currentness lacks active owners")
+        selected = _selected_acquisition_authority_for_coordinates(
+            proof,
+            proof.request.application_generation_id,
+            proof.request.execution_profile_id,
+            scope_id,
+            acquisition._controller.live_generation_id,
+            acquisition,
+            execution,
+            protection,
+            require_persisted_protection_commitment=False,
+            require_cursor=False,
+        )
+        _advance_acquisition_currentness(
+            connection,
+            selected,
+            protection,
+            protection,
+            capability,
+        )
+
+
+def _m2_store_cold_successor(
+    connection: _SQLiteConnectionProtocol,
+    source_proof: _records.RuntimeCheckpointSelectionProof,
+    successor: UnitOfWorkContext,
+    capability: _repository._RuntimeWriteCapability,
+) -> tuple[
+    UnitOfWorkContext,
+    _records.RuntimeCheckpointSelectionProof,
+    _checkpoint_codec.RuntimeCheckpointEnvelope,
+]:
+    selected = _repository.select_runtime_checkpoint(
+        connection,
+        _records.RuntimeCheckpointSelectionRequest(
+            source_proof.request.application_generation_id,
+            source_proof.request.execution_profile_id,
+            source_proof.request.market_source_profile_id,
+            successor.expected_checkpoint,
+        ),
+    )
+    proof = selected.record
+    if (
+        selected.kind is not _records.RepositoryOutcomeKind.FOUND
+        or type(proof) is not _records.RuntimeCheckpointSelectionProof
+        or not _records.RuntimeCheckpointSelectionProof._is_authentic(proof)
+    ):
+        raise _TechnicalRefusal("cold successor proof was refused")
+    try:
+        envelope = _checkpoint_codec._project_runtime_checkpoint(
+            proof,
+            successor.venue,
+            successor.authority,
+            _context_scope_rows(successor),
+        )
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise _TechnicalRefusal("cold successor projection was refused") from exc
+    stored = _repository.store_runtime_checkpoint(
+        connection,
+        proof,
+        envelope,
+        capability=capability,
+    )
+    receipt = stored.record
+    if (
+        stored.kind is not _records.RepositoryOutcomeKind.APPLIED
+        or type(receipt) is not _records.RuntimeCheckpointWriteReceipt
+        or not _records.RuntimeCheckpointWriteReceipt._is_authentic(receipt)
+        or receipt.predecessor_checkpoint != successor.expected_checkpoint
+    ):
+        raise _TechnicalRefusal("cold successor checkpoint was not stored exactly")
+    return (
+        _replace(successor, expected_checkpoint=receipt.resulting_checkpoint),
+        proof,
+        envelope,
+    )
+
+
+def _m2_reread_cold_context(
+    connection: _SQLiteConnectionProtocol,
+    application_generation_id: _identity.ApplicationGenerationId,
+    execution_profile_id: str,
+    market_source_profile_id: str,
+    expected_checkpoint: _records.KernelCheckpointRecord,
+) -> tuple[UnitOfWorkContext, _records.RuntimeCheckpointSelectionProof]:
+    connection.execute("BEGIN")
+    try:
+        context, proof, _loaded = _m2_load_compact_context(
+            connection,
+            application_generation_id,
+            execution_profile_id,
+            market_source_profile_id,
+        )
+        if context.expected_checkpoint != expected_checkpoint:
+            raise _TechnicalRefusal("cold successor reread changed identity")
+    except Exception:
+        connection.execute("ROLLBACK")
+        raise
+    connection.execute("ROLLBACK")
+    return context, proof
+
+
+def _m2_cold_compact_cutover(
+    connection: _SQLiteConnectionProtocol,
+    application_generation_id: _identity.ApplicationGenerationId,
+    execution_profile_id: str,
+    market_source_profile_id: str,
+) -> _ColdCompactCutoverResult:
+    """Commit one compact cold-invalidated checkpoint, or prove exact replay."""
+
+    try:
+        _identity.ApplicationGenerationId(application_generation_id.value)
+        _require_sha256("execution_profile_id", execution_profile_id)
+        _require_sha256("market_source_profile_id", market_source_profile_id)
+    except (AttributeError, TypeError, ValueError, OverflowError):
+        return _cold_cutover_failure(
+            UnitOfWorkDisposition.REFUSED,
+            _ColdCompactCutoverFailure.INPUT,
+        )
+    if (
+        type(application_generation_id) is not _identity.ApplicationGenerationId
+        or getattr(connection, "in_transaction", False) is True
+    ):
+        return _cold_cutover_failure(
+            UnitOfWorkDisposition.REFUSED,
+            _ColdCompactCutoverFailure.INPUT,
+        )
+
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+    except Exception:
+        return _cold_cutover_failure(
+            UnitOfWorkDisposition.REFUSED,
+            _ColdCompactCutoverFailure.DATASTORE,
+        )
+    capability: _repository._RuntimeWriteCapability | None = None
+    replay_result: _ColdCompactCutoverResult | None = None
+    committed_context: UnitOfWorkContext | None = None
+    failure = _ColdCompactCutoverFailure.CURRENT_PROOF
+    try:
+        source, source_proof, loaded = _m2_load_compact_context(
+            connection,
+            application_generation_id,
+            execution_profile_id,
+            market_source_profile_id,
+        )
+        failure = _ColdCompactCutoverFailure.INVALIDATION
+        successor = _m2_cold_invalidated_context(source)
+        failure = _ColdCompactCutoverFailure.CURRENT_PROOF
+        changed_scope_ids = _m2_changed_protection_scope_ids(
+            source_proof,
+            successor,
+        )
+        if not changed_scope_ids:
+            candidate = _checkpoint_codec._project_runtime_checkpoint(
+                source_proof,
+                successor.venue,
+                successor.authority,
+                _context_scope_rows(successor),
+            )
+            if _m2_checkpoint_semantics_match(loaded, candidate):
+                replay_result = _ColdCompactCutoverResult(
+                    UnitOfWorkDisposition.EXACT_REPLAY,
+                    successor,
+                    source_proof,
+                )
+
+        if replay_result is None:
+            failure = _ColdCompactCutoverFailure.DATASTORE
+            capability = _activate_transaction_write_lease(connection)
+            _m2_advance_cold_currentness(
+                connection,
+                source_proof,
+                successor,
+                changed_scope_ids,
+                capability,
+            )
+            stored_context, _stored_proof, _stored_envelope = _m2_store_cold_successor(
+                connection,
+                source_proof,
+                successor,
+                capability,
+            )
+            untrusted_decision = _issue_transaction_decision(
+                capability,
+                True,
+                UnitOfWorkResult(
+                    UnitOfWorkDisposition.COMMITTED,
+                    "STARTUP",
+                    "COLD_INVALIDATED",
+                    stored_context,
+                    None,
+                ),
+                None,
+            )
+            decision = _require_authentic_transaction_decision(
+                untrusted_decision,
+                capability,
+            )
+            committed_context = decision.result.successor_context
+            if type(committed_context) is not UnitOfWorkContext:
+                raise _TechnicalRefusal("cold cutover decision omitted its context")
+    except _TechnicalRefusal:
+        _rollback_once(connection, capability)
+        return _cold_cutover_failure(UnitOfWorkDisposition.REFUSED, failure)
+    except (TypeError, ValueError, OverflowError):
+        _rollback_once(connection, capability)
+        return _cold_cutover_failure(UnitOfWorkDisposition.REFUSED, failure)
+    except Exception:
+        _rollback_once(connection, capability)
+        raise
+
+    if replay_result is not None:
+        _rollback_once(connection, None)
+        return replay_result
+    if capability is None or committed_context is None:
+        _rollback_once(connection, capability)
+        return _cold_cutover_failure(
+            UnitOfWorkDisposition.REFUSED,
+            _ColdCompactCutoverFailure.DATASTORE,
+        )
+    _retire_transaction_write_lease(connection, capability)
+    try:
+        connection.execute("COMMIT")
+    except Exception:
+        _close_ambiguous_connection(connection)
+        return _cold_cutover_failure(
+            UnitOfWorkDisposition.RECONCILIATION_ONLY,
+            _ColdCompactCutoverFailure.COMMIT_AMBIGUITY,
+        )
+
+    try:
+        reread_context, reread_proof = _m2_reread_cold_context(
+            connection,
+            application_generation_id,
+            execution_profile_id,
+            market_source_profile_id,
+            committed_context.expected_checkpoint,
+        )
+    except Exception:
+        return _cold_cutover_failure(
+            UnitOfWorkDisposition.REFUSED,
+            _ColdCompactCutoverFailure.CURRENT_PROOF,
+        )
+    return _ColdCompactCutoverResult(
+        UnitOfWorkDisposition.COMMITTED,
+        reread_context,
+        reread_proof,
+    )
+
+
 def _rollback_once(
     connection: _SQLiteConnectionProtocol,
     capability: _repository._RuntimeWriteCapability | None,
@@ -5636,7 +6279,7 @@ def execute_unit_of_work(
     capability: _repository._RuntimeWriteCapability | None = None
     try:
         prepared = _prepare_transaction(connection, canonical_operation, context)
-        capability = _repository._activate_runtime_write_lease(connection)
+        capability = _activate_transaction_write_lease(connection)
         untrusted_decision = _execute_prepared(connection, prepared, capability)
         decision = _require_authentic_transaction_decision(
             untrusted_decision,
@@ -5653,7 +6296,7 @@ def execute_unit_of_work(
         _rollback_once(connection, capability)
         return decision.result
 
-    _repository._retire_runtime_write_lease(connection, capability)
+    _retire_transaction_write_lease(connection, capability)
     try:
         connection.execute("COMMIT")
     except Exception:

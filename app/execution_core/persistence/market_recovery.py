@@ -41,6 +41,14 @@ def _require_positive_int(name: str, value: object) -> int:
     return value
 
 
+def _require_u64_coordinate(name: str, value: object) -> int:
+    if type(value) is not int:
+        raise TypeError(f"{name} must be an exact integer")
+    if value < 0 or value > 18_446_744_073_709_551_615:
+        raise ValueError(f"{name} must be an unsigned 64-bit integer")
+    return value
+
+
 class EffectQueryDisposition(str, _Enum):
     RESOLVED = "RESOLVED"
     UNRESOLVED = "UNRESOLVED"
@@ -251,7 +259,7 @@ class MarketSourcePort:
     ) -> MarketFenceEvidence:
         if not self._recognizes(subscription):
             raise ValueError("subscription is not source-port-authentic")
-        ordinal = _require_positive_int("fence_ordinal", fence_ordinal)
+        ordinal = _require_u64_coordinate("fence_ordinal", fence_ordinal)
         if type(covers_pre_ack) is not bool:
             raise TypeError("covers_pre_ack must be exact bool")
         evidence = object.__new__(MarketFenceEvidence)
@@ -277,7 +285,7 @@ class MarketSourcePort:
             raise TypeError("occurrence must be exact MarketOccurrence")
         if not _protection._market_occurrence_is_authentic(occurrence):
             raise ValueError("occurrence must be authentic")
-        excluded = _require_positive_int(
+        excluded = _require_u64_coordinate(
             "excluded_through_ordinal", excluded_through_ordinal
         )
         evidence = object.__new__(MarketBaselineEvidence)
@@ -312,6 +320,49 @@ class MarketSourcePort:
         fence: MarketFenceEvidence,
     ) -> bool:
         raise NotImplementedError
+
+
+def _market_subscription_is_authentic(
+    port: MarketSourcePort,
+    evidence: object,
+    request: MarketSubscriptionRequest,
+) -> bool:
+    return bool(
+        isinstance(port, MarketSourcePort)
+        and type(evidence) is MarketSubscriptionEvidence
+        and port._recognizes(evidence)
+        and evidence.request == request
+    )
+
+
+def _market_fence_is_authentic(
+    port: MarketSourcePort,
+    evidence: object,
+    subscription: MarketSubscriptionEvidence,
+) -> bool:
+    return bool(
+        isinstance(port, MarketSourcePort)
+        and type(evidence) is MarketFenceEvidence
+        and port._recognizes(evidence)
+        and evidence.subscription is subscription
+        and evidence.covers_pre_ack
+    )
+
+
+def _market_baseline_is_authentic(
+    port: MarketSourcePort,
+    evidence: object,
+    subscription: MarketSubscriptionEvidence,
+    fence: MarketFenceEvidence,
+) -> bool:
+    return bool(
+        isinstance(port, MarketSourcePort)
+        and type(evidence) is MarketBaselineEvidence
+        and port._recognizes(evidence)
+        and evidence.subscription is subscription
+        and evidence.fence is fence
+        and evidence.excluded_through_ordinal == fence.fence_ordinal
+    )
 
 
 __all__ = (
