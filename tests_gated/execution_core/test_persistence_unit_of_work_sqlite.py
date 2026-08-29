@@ -93,19 +93,59 @@ def _insert_route(
 
 def _seed_dormant_normal_authority(
     connection: sqlite3.Connection,
-    *,
-    aggregate_quantity: int = 0,
 ) -> None:
     _schema._seed_scope_with_live_generation(connection)
-    _schema._insert_controller(
-        connection,
-        aggregate_quantity=aggregate_quantity,
-    )
+    _schema._insert_controller(connection)
     _schema._insert_protection_authority(
         connection,
         state_commitment_sha256="a1" * 32,
         version_ordinal=1,
     )
+
+
+def _seed_routed_dormant_position(
+    connection: sqlite3.Connection,
+    *,
+    side: str,
+    catch_up_dormant: bool = False,
+) -> None:
+    _seed_dormant_normal_authority(connection)
+    _schema._insert_root(connection)
+    _schema._insert_open_effect(
+        connection,
+        900,
+        ensure_protection=False,
+    )
+    _schema._insert_venue_owner(
+        connection,
+        owner_external="seed-owner",
+        observation_external="seed-observation",
+        effect_id=900,
+        root_id=1,
+    )
+    _insert_route(
+        connection,
+        root_id=1,
+        effect_id=900,
+        owner_external="seed-owner",
+        observation_external="seed-observation",
+    )
+    _schema._insert_fill(
+        connection,
+        fact_id=900,
+        root_id=1,
+        event="seed-position",
+        side=side,
+        ensure_route=False,
+    )
+    if catch_up_dormant:
+        connection.execute(
+            "UPDATE protection_authority"
+            " SET expected_controller_head_ordinal = 1,"
+            " state_commitment_sha256 = ?, version_ordinal = 2"
+            " WHERE scope_id = 1",
+            ("a8" * 32,),
+        )
 
 
 def _insert_invalidation(
@@ -259,10 +299,16 @@ def test_dormant_normal_admission_is_narrow(
     mutation: str,
     aggregate_quantity: int,
 ) -> None:
-    _seed_dormant_normal_authority(
-        connection,
-        aggregate_quantity=aggregate_quantity,
-    )
+    if aggregate_quantity > 0:
+        _seed_routed_dormant_position(
+            connection,
+            side="BUY",
+            catch_up_dormant=True,
+        )
+    elif aggregate_quantity < 0:
+        _seed_routed_dormant_position(connection, side="SELL")
+    else:
+        _seed_dormant_normal_authority(connection)
 
     with pytest.raises(
         sqlite3.IntegrityError,
@@ -273,7 +319,7 @@ def test_dormant_normal_admission_is_narrow(
             1,
             ensure_protection=False,
             expected_protection_version_ordinal=(
-                2 if mutation == "stale-protection" else 1
+                2 if mutation in {"positive", "stale-protection"} else 1
             ),
         )
 
@@ -281,7 +327,11 @@ def test_dormant_normal_admission_is_narrow(
 def test_positive_dormant_protection_can_activate_once_but_not_transfer(
     connection: sqlite3.Connection,
 ) -> None:
-    _seed_dormant_normal_authority(connection, aggregate_quantity=10)
+    _seed_routed_dormant_position(connection, side="BUY")
+    assert connection.execute(
+        "SELECT aggregate_quantity, integrity_state, currentness_head_ordinal"
+        " FROM symbol_controller WHERE scope_id = 1"
+    ).fetchone() == (10, "CONSISTENT", 1)
     first_stream = "b1" * 32
     second_stream = "b2" * 32
     _schema._insert_market_stream(
@@ -299,6 +349,7 @@ def test_positive_dormant_protection_can_activate_once_but_not_transfer(
                active_source_profile_id = ?,
                active_session_external = 'activation-session',
                active_sequence_mode = 'SEQUENCED',
+               expected_controller_head_ordinal = 1,
                state_commitment_sha256 = ?, version_ordinal = 2
          WHERE scope_id = 1
         """,
@@ -393,7 +444,11 @@ def test_flat_consistent_protection_transfer_and_release_remain_allowed(
 def test_negative_controller_cannot_activate_dormant_protection(
     connection: sqlite3.Connection,
 ) -> None:
-    _seed_dormant_normal_authority(connection, aggregate_quantity=-1)
+    _seed_routed_dormant_position(connection, side="SELL")
+    assert connection.execute(
+        "SELECT aggregate_quantity, integrity_state, currentness_head_ordinal"
+        " FROM symbol_controller WHERE scope_id = 1"
+    ).fetchone() == (-10, "NEGATIVE_POSITION_QUARANTINED", 1)
     stream_id = "b3" * 32
     _schema._insert_market_stream(
         connection,
@@ -414,6 +469,7 @@ def test_negative_controller_cannot_activate_dormant_protection(
                    active_source_profile_id = ?,
                    active_session_external = 'negative-session',
                    active_sequence_mode = 'SEQUENCED',
+                   expected_controller_head_ordinal = 1,
                    state_commitment_sha256 = ?, version_ordinal = 2
              WHERE scope_id = 1
             """,
