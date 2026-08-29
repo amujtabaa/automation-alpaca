@@ -477,3 +477,21 @@ The exact flag-false R2 source candidate is `06fb2e2b1c2d9f184c12032ed20ff81676b
 `83ff7f3a65f6a9f8a69d015a69c278d392dead3db985570f7c9e4a1a661f8c84`.
 `execution-request-r2.md` records the new branch, absent scratch path, exact command, stop rules,
 and approval text. The human gate remains closed.
+
+## REV-0117 corrected fresh-file R2 attempt 1 disposition
+
+Ameen approved the exact R2 packet. The published flag-only unlock is
+`911ae4292b9738bdb5353126fe12d397b8f6cd5f`, tree
+`b8564a30d9ec08820d89d94b28eb0834ab1aa183`, with exact parent
+`06fb2e2b1c2d9f184c12032ed20ff81676bf9ac0`. Attempt 1 executed once and reached
+the real startup/UOW path, then stopped because startup returned fail-closed
+`UNRESOLVED_EFFECTS` instead of `SERVING`; attempt 2 did not run.
+`execution-result-r2-attempt-1.md` preserves the exact identities, command, output, and untouched
+fresh database. The flag-true branch remains quarantined evidence only.
+
+Static source tracing and one fresh-context review agree that the fixture's
+`DISPATCH_CLAIMED -> ACKNOWLEDGED` response is admitted and startup's completeness gate is correct.
+The bounded defect is in the real-SQLite venue-recovery UOW persistence/reload chain, whose public
+result currently erases the exact inner `_TechnicalRefusal`. No DDL change is indicated. No repair
+or rerun is authorized under the consumed R2 gate; a separately bounded application/test
+diagnostic-remediation lane, fresh exact-head review, and new human execution packet are required.
