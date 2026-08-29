@@ -476,6 +476,18 @@ def _next_decision_receipt_ordinal(
     return _require_positive_int("next decision receipt ordinal", row[0])
 
 
+def _next_semantic_key_created_ordinal(
+    connection: _SQLiteConnectionProtocol,
+) -> int:
+    cursor = connection.execute(
+        "SELECT COALESCE(MAX(created_ordinal), 0) + 1 FROM durable_input_semantic_key"
+    )
+    row = cursor.fetchone()
+    if type(row) is not tuple or len(row) != 1:
+        raise _TechnicalRefusal("semantic-key ordinal query returned the wrong shape")
+    return _require_positive_int("next semantic-key ordinal", row[0])
+
+
 def _require_applied_repository_outcome(
     name: str,
     outcome: _records.RepositoryOutcome[object],
@@ -505,6 +517,31 @@ def _context_scope_rows(
     return tuple(
         _checkpoint_codec._RuntimeCheckpointScopeOwners(*owner)
         for owner in context.scope_owners
+    )
+
+
+def _bounded_context_changed(
+    prepared: _PreparedOperation,
+    successor_context: UnitOfWorkContext,
+) -> bool:
+    if (
+        successor_context.venue is prepared.context.venue
+        and successor_context.authority is prepared.context.authority
+        and successor_context.scope_owners is prepared.context.scope_owners
+    ):
+        return False
+    try:
+        successor = _checkpoint_codec._project_runtime_checkpoint(
+            prepared.selection_proof,
+            successor_context.venue,
+            successor_context.authority,
+            _context_scope_rows(successor_context),
+        )
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise _TechnicalRefusal("successor owner comparison was refused") from exc
+    return bool(
+        successor.canonical_payload_bytes
+        != prepared.authenticated_current.canonical_payload_bytes
     )
 
 
@@ -650,6 +687,112 @@ def _durable_input_outcome(
     )
 
 
+def _authority_query_key_bytes(
+    prepared: _PreparedOperation,
+    command: _authority.ClaimBrokerQuery,
+) -> bytes:
+    return _operations.encode_m2_semantic_key(
+        _operations.InputSemanticKeyKind.AUTHORITY_QUERY_CLAIM_V1,
+        (
+            prepared.application_generation_id.value,
+            prepared.execution_profile_id,
+            prepared.scope_id,
+        ),
+        ("query-claim-id", command.query_claim_id.value),
+    )
+
+
+def _authority_query_observation(
+    connection: _SQLiteConnectionProtocol,
+    prepared: _PreparedOperation,
+    command: _authority.ClaimBrokerQuery,
+) -> _authority._M2AuthorityQueryObservationProof:
+    key_bytes = _authority_query_key_bytes(prepared, command)
+    retained = _repository.load_durable_input_by_semantic_key(
+        connection,
+        _operations.InputSemanticKeyKind.AUTHORITY_QUERY_CLAIM_V1,
+        prepared.application_generation_id,
+        prepared.execution_profile_id,
+        prepared.scope_id,
+        key_bytes,
+    )
+    if retained.kind is _records.RepositoryOutcomeKind.ABSENT:
+        return _authority._m2_authority_query_observation_from_direct_evidence(
+            prepared.context.authority,
+            command,
+            retained_command=None,
+            retained_input_bytes=None,
+            retained_outcome_bytes=None,
+        )
+    if (
+        retained.kind is not _records.RepositoryOutcomeKind.FOUND
+        or type(retained.record) is not _records.DurableInputRecord
+    ):
+        raise _TechnicalRefusal("query semantic-key lookup was not exact")
+    retained_input = retained.record
+    try:
+        retained_operation = _operations.decode_m2_operation(
+            retained_input.canonical_payload_bytes
+        )
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise _TechnicalRefusal("retained query input is not canonical") from exc
+    if (
+        type(retained_operation) is not _operations.AuthorityOperation
+        or type(retained_operation.command) is not _authority.ClaimBrokerQuery
+        or retained_operation.command.query_claim_id != command.query_claim_id
+    ):
+        raise _TechnicalRefusal("retained query input has the wrong owner identity")
+    retained_outcome = _repository.load_durable_input_outcome(
+        connection,
+        retained_input.application_generation_id,
+        retained_input.input_domain,
+        retained_input.input_identity_sha256,
+    )
+    if (
+        retained_outcome.kind is not _records.RepositoryOutcomeKind.FOUND
+        or type(retained_outcome.record) is not _records.DurableInputOutcomeRecord
+        or retained_outcome.record.terminal_technical_state != "TERMINAL"
+    ):
+        raise _TechnicalRefusal("retained query outcome is not terminal evidence")
+    return _authority._m2_authority_query_observation_from_direct_evidence(
+        prepared.context.authority,
+        command,
+        retained_command=retained_operation.command,
+        retained_input_bytes=retained_input.canonical_payload_bytes,
+        retained_outcome_bytes=retained_outcome.record.canonical_outcome_bytes,
+    )
+
+
+def _store_authority_query_semantic_key(
+    connection: _SQLiteConnectionProtocol,
+    prepared: _PreparedOperation,
+    claimed: _records.DurableInputRecord,
+    command: _authority.ClaimBrokerQuery,
+    capability: _repository._RuntimeWriteCapability,
+) -> None:
+    key_bytes = _authority_query_key_bytes(prepared, command)
+    record = _records.DurableInputSemanticKeyRecord(
+        _operations.InputSemanticKeyKind.AUTHORITY_QUERY_CLAIM_V1,
+        prepared.application_generation_id,
+        prepared.execution_profile_id,
+        prepared.scope_id,
+        key_bytes,
+        _hashlib.sha256(key_bytes).hexdigest(),
+        claimed.application_generation_id,
+        claimed.input_domain,
+        claimed.input_identity_sha256,
+        _next_semantic_key_created_ordinal(connection),
+    )
+    _require_applied_repository_outcome(
+        "authority query semantic key",
+        _repository.store_durable_input_semantic_key(
+            connection,
+            record,
+            capability=capability,
+        ),
+    )
+
+
 def _complete_claimed_input(
     connection: _SQLiteConnectionProtocol,
     prepared: _PreparedOperation,
@@ -738,34 +881,70 @@ def _execute_authority_operation(
     operation = prepared.operation
     if type(operation) is not _operations.AuthorityOperation:
         raise _TechnicalRefusal("authority route received the wrong operation")
-    if type(operation.command) is not _authority.EngageKill:
+    if type(operation.command) not in (
+        _authority.EngageKill,
+        _authority.ClaimBrokerQuery,
+    ):
         raise _TechnicalRefusal("authority command route is not implemented")
     execution = _scope_execution(prepared.context, prepared.scope_id)
+    query_observation = (
+        _authority_query_observation(connection, prepared, operation.command)
+        if type(operation.command) is _authority.ClaimBrokerQuery
+        else None
+    )
     transition = _authority._m2_apply_execution_authority_input(
         prepared.context.authority,
         execution,
         operation.command,
         manual_observation=None,
+        query_observation=query_observation,
     )
+    if transition.created_effect_ids or (
+        transition.fresh_claim is not None
+        and type(transition.fresh_claim) is not _authority._FreshQueryClaim
+    ):
+        raise _TechnicalRefusal("authority transition emitted an unrelated claim")
     if (
-        transition.created_effect_ids
-        or transition.fresh_claim is not None
-        or transition.venue_transitions
+        transition.venue_transitions
         or transition.acquisition_receipt is not None
         or transition.acquisition_claim_receipt is not None
     ):
-        raise _TechnicalRefusal("kill transition emitted an unrelated derivative")
-    changed = transition.state is not prepared.context.authority
-    successor_context = (
+        raise _TechnicalRefusal("authority transition emitted an unrelated derivative")
+    if type(operation.command) is _authority.ClaimBrokerQuery:
+        if transition.disposition is _authority.AuthorityDisposition.APPLIED:
+            fresh_query = transition.fresh_claim
+            if (
+                type(fresh_query) is not _authority._FreshQueryClaim
+                or fresh_query.query_claim_id != operation.command.query_claim_id
+                or fresh_query.symbol_id != operation.command.symbol_id
+                or fresh_query.kind is not operation.command.kind
+            ):
+                raise _TechnicalRefusal(
+                    "query transition omitted its exact fresh claim"
+                )
+            _store_authority_query_semantic_key(
+                connection,
+                prepared,
+                claimed,
+                operation.command,
+                capability,
+            )
+        elif transition.fresh_claim is not None:
+            raise _TechnicalRefusal("non-applied query emitted a fresh claim")
+    elif transition.fresh_claim is not None:
+        raise _TechnicalRefusal("kill transition emitted a fresh claim")
+    candidate_context = (
         UnitOfWorkContext(
             prepared.context.expected_checkpoint,
             transition.state.venue,
             transition.state,
             prepared.context.scope_owners,
         )
-        if changed
+        if transition.state is not prepared.context.authority
         else prepared.context
     )
+    changed = _bounded_context_changed(prepared, candidate_context)
+    successor_context = candidate_context if changed else prepared.context
     return _complete_claimed_input(
         connection,
         prepared,

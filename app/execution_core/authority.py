@@ -594,6 +594,33 @@ class _M2AuthorityManualObservationKind(str, Enum):
     ABSENT = "ABSENT"
 
 
+class _M2AuthorityQueryObservationKind(str, Enum):
+    """Closed direct-evidence partition for one query-claim identity."""
+
+    RETAINED = "RETAINED"
+    ABSENT = "ABSENT"
+
+
+@dataclass(frozen=True, slots=True, init=False)
+class _M2AuthorityQueryObservationProof:
+    """Owner-sealed retained/absence proof for one query command."""
+
+    kind: _M2AuthorityQueryObservationKind
+    requested_query_claim_id: QueryClaimId
+    retained_command: ClaimBrokerQuery | None
+    _evidence_commitment: bytes
+    _binding: bytes
+    _seal: bytes
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise TypeError("query observation proof is owner-issued only")
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        del cls, kwargs
+        raise TypeError("query observation proof cannot be subclassed")
+
+
 @dataclass(frozen=True, slots=True, init=False)
 class _M2AuthorityManualObservationProof:
     """Owner-sealed current/terminal/absence proof for one manual operation."""
@@ -9507,9 +9534,10 @@ def _claim_query(
     state: ExecutionAuthorityState,
     execution: ExecutionSnapshot,
     item: ClaimBrokerQuery,
+    observation: _M2AuthorityQueryObservationProof,
 ) -> ExecutionAuthorityTransition:
-    retained = state._query_by_id.get(_query_key(item.query_claim_id))
-    if retained is not None:
+    proof = _m2_require_query_observation(item, observation)
+    if proof.kind is _M2AuthorityQueryObservationKind.RETAINED:
         return _result(state, AuthorityDisposition.CONFLICT)
     if (
         state.phase is not EnginePhase.RECONCILING
@@ -9633,6 +9661,183 @@ def _m2_manual_observation_binding(
         retained_binding,
         proof._evidence_commitment,
     )
+
+
+def _m2_query_observation_binding(
+    proof: _M2AuthorityQueryObservationProof,
+) -> bytes:
+    if type(proof) is not _M2AuthorityQueryObservationProof:
+        raise TypeError("query observation proof must be exact")
+    if type(proof.kind) is not _M2AuthorityQueryObservationKind:
+        raise TypeError("query observation kind must be exact")
+    _require(
+        "requested_query_claim_id",
+        proof.requested_query_claim_id,
+        QueryClaimId,
+    )
+    if (
+        type(proof._evidence_commitment) is not bytes
+        or len(proof._evidence_commitment) != 32
+    ):
+        raise ValueError("query observation evidence commitment is malformed")
+    if proof.kind is _M2AuthorityQueryObservationKind.RETAINED:
+        _require("retained_command", proof.retained_command, ClaimBrokerQuery)
+        exact_retained = cast(ClaimBrokerQuery, proof.retained_command)
+        if exact_retained.query_claim_id != proof.requested_query_claim_id:
+            raise ValueError("retained query command has wrong identity")
+        retained_binding = _value_commitment(exact_retained)
+    else:
+        if proof.retained_command is not None:
+            raise ValueError("absent query observation cannot retain a command")
+        retained_binding = b""
+    return _commit_parts(
+        b"execution-core/m2-authority/query-observation/v1",
+        proof.kind.value.encode("utf-8"),
+        proof.requested_query_claim_id.value.encode("utf-8"),
+        retained_binding,
+        proof._evidence_commitment,
+    )
+
+
+def _m2_query_observation_is_authentic(value: object) -> bool:
+    if type(value) is not _M2AuthorityQueryObservationProof:
+        return False
+    try:
+        binding = _m2_query_observation_binding(value)
+        return bool(
+            value._binding == binding
+            and value._seal
+            == _commit_parts(
+                b"execution-core/m2-authority/query-observation-seal/v1",
+                binding,
+            )
+        )
+    except (AttributeError, TypeError, ValueError):
+        return False
+
+
+def _m2_issue_query_observation(
+    state: ExecutionAuthorityState,
+    command: ClaimBrokerQuery,
+    retained_command: ClaimBrokerQuery | None,
+    evidence_commitment: bytes,
+) -> _M2AuthorityQueryObservationProof:
+    _validate_authority_state(state)
+    _require("command", command, ClaimBrokerQuery)
+    if retained_command is not None:
+        _require("retained_command", retained_command, ClaimBrokerQuery)
+        if retained_command.query_claim_id != command.query_claim_id:
+            raise ValueError("retained query command has wrong identity")
+    if type(evidence_commitment) is not bytes or len(evidence_commitment) != 32:
+        raise ValueError("query retained evidence commitment is malformed")
+    result = object.__new__(_M2AuthorityQueryObservationProof)
+    for name, value in (
+        (
+            "kind",
+            _M2AuthorityQueryObservationKind.RETAINED
+            if retained_command is not None
+            else _M2AuthorityQueryObservationKind.ABSENT,
+        ),
+        ("requested_query_claim_id", command.query_claim_id),
+        ("retained_command", retained_command),
+        ("_evidence_commitment", evidence_commitment),
+    ):
+        object.__setattr__(result, name, value)
+    binding = _m2_query_observation_binding(result)
+    object.__setattr__(result, "_binding", binding)
+    object.__setattr__(
+        result,
+        "_seal",
+        _commit_parts(
+            b"execution-core/m2-authority/query-observation-seal/v1",
+            binding,
+        ),
+    )
+    return result
+
+
+def _m2_authority_query_observation_from_reference(
+    state: ExecutionAuthorityState,
+    command: ClaimBrokerQuery,
+) -> _M2AuthorityQueryObservationProof:
+    """Bind the public route to exact owner-retained query evidence."""
+
+    _validate_authority_state(state)
+    _require("command", command, ClaimBrokerQuery)
+    retained_command: ClaimBrokerQuery | None = None
+    retained = state._query_by_id.get(_query_key(command.query_claim_id))
+    if type(retained) is ClaimBrokerQuery:
+        recorded = state._input_by_id.get(_input_key(retained.input_id))
+        if recorded == retained:
+            retained_command = retained
+    evidence = _commit_parts(
+        b"execution-core/m2-authority/query-reference-evidence/v1",
+        state._input_by_id.commitment,
+        state._query_by_id.commitment,
+    )
+    return _m2_issue_query_observation(
+        state,
+        command,
+        retained_command,
+        evidence,
+    )
+
+
+def _m2_authority_query_observation_from_direct_evidence(
+    state: ExecutionAuthorityState,
+    command: ClaimBrokerQuery,
+    *,
+    retained_command: ClaimBrokerQuery | None,
+    retained_input_bytes: bytes | None,
+    retained_outcome_bytes: bytes | None,
+) -> _M2AuthorityQueryObservationProof:
+    """Bind the UOW route to complete retained query evidence or exact absence."""
+
+    _validate_authority_state(state)
+    _require("command", command, ClaimBrokerQuery)
+    evidence_members = (
+        retained_command,
+        retained_input_bytes,
+        retained_outcome_bytes,
+    )
+    if all(member is None for member in evidence_members):
+        evidence = _commit_parts(b"execution-core/m2-authority/query-direct-absence/v1")
+    elif any(member is None for member in evidence_members):
+        raise ValueError("retained query evidence requires input and outcome bytes")
+    else:
+        exact_retained = cast(ClaimBrokerQuery, retained_command)
+        exact_input = cast(bytes, retained_input_bytes)
+        exact_outcome = cast(bytes, retained_outcome_bytes)
+        _require("retained_command", exact_retained, ClaimBrokerQuery)
+        if exact_retained.query_claim_id != command.query_claim_id:
+            raise ValueError("retained query command has wrong identity")
+        if type(exact_input) is not bytes or not exact_input:
+            raise ValueError("retained query input bytes are malformed")
+        if type(exact_outcome) is not bytes or not exact_outcome:
+            raise ValueError("retained query outcome bytes are malformed")
+        evidence = _commit_parts(
+            b"execution-core/m2-authority/query-direct-evidence/v1",
+            exact_input,
+            exact_outcome,
+        )
+    return _m2_issue_query_observation(
+        state,
+        command,
+        retained_command,
+        evidence,
+    )
+
+
+def _m2_require_query_observation(
+    command: ClaimBrokerQuery,
+    proof: object,
+) -> _M2AuthorityQueryObservationProof:
+    if not _m2_query_observation_is_authentic(proof):
+        raise ValueError("query observation proof is not authentic")
+    exact = cast(_M2AuthorityQueryObservationProof, proof)
+    if exact.requested_query_claim_id != command.query_claim_id:
+        raise ValueError("query observation proof has wrong identity")
+    return exact
 
 
 def _m2_manual_observation_is_authentic(value: object) -> bool:
@@ -10080,6 +10285,7 @@ def _m2_apply_execution_authority_input(
     item: object,
     *,
     manual_observation: _M2AuthorityManualObservationProof | None,
+    query_observation: _M2AuthorityQueryObservationProof | None = None,
 ) -> ExecutionAuthorityTransition:
     """Apply one exact semantic branch after technical dedupe is complete."""
 
@@ -10105,6 +10311,12 @@ def _m2_apply_execution_authority_input(
         if manual_observation is not None:
             raise ValueError("manual observation is not admitted for this command")
         observation = None
+    if type(command) is ClaimBrokerQuery:
+        query_proof = _m2_require_query_observation(command, query_observation)
+    else:
+        if query_observation is not None:
+            raise ValueError("query observation is not admitted for this command")
+        query_proof = None
     if type(command) is RegisterAcquisitionCurrentness:
         if _register_canonical_fact_currentness_command_is_authentic(command):
             return _register_canonical_fact_currentness(state, execution, command)
@@ -10128,7 +10340,12 @@ def _m2_apply_execution_authority_input(
     if type(item) is ClaimEffect:
         return _claim_effect(state, execution, item)
     if type(item) is ClaimBrokerQuery:
-        return _claim_query(state, execution, item)
+        return _claim_query(
+            state,
+            execution,
+            item,
+            cast(_M2AuthorityQueryObservationProof, query_proof),
+        )
     if type(item) is EngageKill:
         return _engage_kill(state, execution, item)
     if type(item) is BeginManualFlatten:
@@ -10164,6 +10381,7 @@ def apply_execution_authority_input(
             execution,
             command,
             manual_observation=None,
+            query_observation=None,
         )
     replay = _replay_or_conflict(state, command)
     if replay is not None:
@@ -10180,11 +10398,17 @@ def apply_execution_authority_input(
         )
     else:
         manual_observation = None
+    query_observation = (
+        _m2_authority_query_observation_from_reference(state, command)
+        if type(command) is ClaimBrokerQuery
+        else None
+    )
     return _m2_apply_execution_authority_input(
         state,
         execution,
         command,
         manual_observation=manual_observation,
+        query_observation=query_observation,
     )
 
 

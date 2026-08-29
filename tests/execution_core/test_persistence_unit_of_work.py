@@ -8,6 +8,7 @@ from dataclasses import replace
 import pytest
 
 from app.execution_core import authority
+from app.execution_core import identity
 from app.execution_core.persistence import checkpoint_codec
 from app.execution_core.persistence import operations
 from app.execution_core.persistence import records
@@ -227,6 +228,94 @@ def test_manual_observation_proof_is_owner_issued_and_required() -> None:
             begin,
             manual_observation=forged,
         )
+
+
+def test_query_kernel_ignores_omitted_payload_equal_history() -> None:
+    _, _, clean, owners = checkpoint_fixtures._dormant_projection_inputs()
+    retained = authority.ClaimBrokerQuery(
+        identity.AuthorityInputId("retained-query-input"),
+        identity.QueryClaimId("query-identity"),
+        identity.SymbolId("AAPL"),
+        authority.AuthorityQueryKind.QUERY,
+    )
+    command = replace(
+        retained,
+        input_id=identity.AuthorityInputId("fresh-query-input"),
+    )
+    altered = deepcopy(clean)
+    object.__setattr__(
+        altered,
+        "_query_by_id",
+        authority._inserted(
+            clean._query_by_id,
+            authority._query_key(retained.query_claim_id),
+            retained,
+        ),
+    )
+    object.__setattr__(
+        altered,
+        "_input_by_id",
+        authority._inserted(
+            clean._input_by_id,
+            authority._input_key(retained.input_id),
+            retained,
+        ),
+    )
+
+    clean_proof = authority._m2_authority_query_observation_from_direct_evidence(
+        clean,
+        command,
+        retained_command=None,
+        retained_input_bytes=None,
+        retained_outcome_bytes=None,
+    )
+    altered_absence = authority._m2_authority_query_observation_from_direct_evidence(
+        altered,
+        command,
+        retained_command=None,
+        retained_input_bytes=None,
+        retained_outcome_bytes=None,
+    )
+    clean_result = authority._m2_apply_execution_authority_input(
+        clean,
+        owners[0].execution,
+        command,
+        manual_observation=None,
+        query_observation=clean_proof,
+    )
+    altered_result = authority._m2_apply_execution_authority_input(
+        altered,
+        owners[0].execution,
+        command,
+        manual_observation=None,
+        query_observation=altered_absence,
+    )
+    assert (clean_result.disposition, clean_result.reason) == (
+        altered_result.disposition,
+        altered_result.reason,
+    )
+
+    retained_proof = authority._m2_authority_query_observation_from_direct_evidence(
+        altered,
+        command,
+        retained_command=retained,
+        retained_input_bytes=b"retained-query-input",
+        retained_outcome_bytes=b"retained-query-outcome",
+    )
+    direct_retained = authority._m2_apply_execution_authority_input(
+        altered,
+        owners[0].execution,
+        command,
+        manual_observation=None,
+        query_observation=retained_proof,
+    )
+    public_retained = authority.apply_execution_authority_input(
+        altered,
+        owners[0].execution,
+        command,
+    )
+    assert direct_retained.disposition is authority.AuthorityDisposition.CONFLICT
+    assert public_retained.disposition is authority.AuthorityDisposition.CONFLICT
 
 
 class _TransactionConnection:
@@ -738,11 +827,13 @@ def test_authority_engage_kill_route_uses_shared_kernel_and_common_completion(
         item: object,
         *,
         manual_observation: object,
+        query_observation: object,
     ) -> authority.ExecutionAuthorityTransition:
         del execution
         assert state is prepared.context.authority
         assert item is command
         assert manual_observation is None
+        assert query_observation is None
         owner_called.append(item)
         return authority.ExecutionAuthorityTransition(
             state,
@@ -808,3 +899,179 @@ def test_authority_engage_kill_route_uses_shared_kernel_and_common_completion(
     assert result.commit is True
     assert owner_called == [command]
     assert completed == [("AUTHORITY", "EXACT_REPLAY", False)]
+
+
+def test_bounded_change_detection_ignores_omitted_owner_history(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prepared = _prepared_primary_claim()
+    successor_authority = deepcopy(prepared.context.authority)
+    successor = unit_of_work.UnitOfWorkContext(
+        prepared.context.expected_checkpoint,
+        successor_authority.venue,
+        successor_authority,
+        prepared.context.scope_owners,
+    )
+    projected: list[object] = []
+
+    class _Envelope:
+        canonical_payload_bytes = b"same-bounded-payload"
+
+    monkeypatch.setattr(
+        unit_of_work._checkpoint_codec,
+        "_project_runtime_checkpoint",
+        lambda proof, venue, authority_state, owners: (
+            projected.append((proof, venue, authority_state, owners)) or _Envelope()
+        ),
+    )
+    prepared = replace(prepared, authenticated_current=_Envelope())
+
+    assert unit_of_work._bounded_context_changed(prepared, successor) is False
+    assert len(projected) == 1
+
+
+def test_authority_query_applied_claims_semantic_key_before_completion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prepared = _prepared_primary_claim()
+    scope_id, _, execution, _ = prepared.context.scope_owners[0]
+    command = authority.ClaimBrokerQuery(
+        identity.AuthorityInputId("uow-query-input"),
+        identity.QueryClaimId("uow-query-claim"),
+        execution.position.scope.symbol_id,
+        authority.AuthorityQueryKind.QUERY,
+    )
+    operation = operations.AuthorityOperation(
+        operations.ExecutionOperationCoordinates(
+            prepared.application_generation_id,
+            prepared.execution_profile_id,
+            scope_id,
+        ),
+        command,
+    )
+    payload = operations.encode_m2_operation(operation)
+    projection = operations._derive_m2_durable_input_projection(operation)
+    prepared = replace(
+        prepared,
+        operation=operation,
+        canonical_payload_bytes=payload,
+        input_domain=operations.OperationDomain.AUTHORITY,
+        scope_id=scope_id,
+        input_identity_sha256=projection[-1],
+    )
+    claimed = records.DurableInputRecord(
+        prepared.application_generation_id,
+        prepared.execution_profile_id,
+        prepared.scope_id,
+        prepared.input_domain,
+        None,
+        None,
+        None,
+        None,
+        prepared.input_identity_sha256,
+        1,
+        payload,
+        unit_of_work._hashlib.sha256(payload).hexdigest(),
+        "CLAIMED",
+        1,
+    )
+    successor_state = deepcopy(prepared.context.authority)
+    observation = object()
+    stored: list[records.DurableInputSemanticKeyRecord] = []
+    completed: list[tuple[str, str, bool]] = []
+
+    monkeypatch.setattr(
+        unit_of_work,
+        "_authority_query_observation",
+        lambda connection, prepared_operation, query: observation,
+    )
+
+    def owner(
+        state: authority.ExecutionAuthorityState,
+        execution_state: object,
+        item: object,
+        *,
+        manual_observation: object,
+        query_observation: object,
+    ) -> authority.ExecutionAuthorityTransition:
+        del state, execution_state, manual_observation
+        assert item is command
+        assert query_observation is observation
+        return authority.ExecutionAuthorityTransition(
+            successor_state,
+            authority.AuthorityDisposition.APPLIED,
+            None,
+            (),
+            authority._FreshQueryClaim(
+                command.query_claim_id,
+                command.symbol_id,
+                command.kind,
+            ),
+            (),
+            None,
+            None,
+        )
+
+    def store_key(
+        connection: object,
+        record: records.DurableInputSemanticKeyRecord,
+        *,
+        capability: object,
+    ) -> records.RepositoryOutcome[object]:
+        del connection, capability
+        stored.append(record)
+        return records.RepositoryOutcome(records.RepositoryOutcomeKind.APPLIED)
+
+    def complete(
+        connection: object,
+        prepared_operation: object,
+        claimed_record: object,
+        *,
+        owner_domain: str,
+        owner_disposition: str,
+        successor_context: object,
+        checkpoint_changed: bool,
+        pending_effect: object,
+        capability: object,
+    ) -> unit_of_work._TransactionDecision:
+        del connection, prepared_operation, claimed_record, successor_context
+        del pending_effect, capability
+        completed.append((owner_domain, owner_disposition, checkpoint_changed))
+        return unit_of_work._TransactionDecision(
+            True,
+            _committed_result(prepared.context),
+            None,
+        )
+
+    monkeypatch.setattr(
+        unit_of_work._authority,
+        "_m2_apply_execution_authority_input",
+        owner,
+    )
+    monkeypatch.setattr(unit_of_work, "_bounded_context_changed", lambda *args: True)
+    monkeypatch.setattr(
+        unit_of_work,
+        "_next_semantic_key_created_ordinal",
+        lambda connection: 7,
+    )
+    monkeypatch.setattr(
+        unit_of_work._repository,
+        "store_durable_input_semantic_key",
+        store_key,
+    )
+    monkeypatch.setattr(unit_of_work, "_complete_claimed_input", complete)
+
+    unit_of_work._execute_authority_operation(
+        object(),
+        prepared,
+        claimed,
+        object(),
+    )
+
+    assert len(stored) == 1
+    assert (
+        stored[0].key_kind is operations.InputSemanticKeyKind.AUTHORITY_QUERY_CLAIM_V1
+    )
+    assert stored[0].input_identity_sha256 == claimed.input_identity_sha256
+    assert stored[0].created_ordinal == 7
+    assert completed == [("AUTHORITY", "APPLIED", True)]
