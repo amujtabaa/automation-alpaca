@@ -88,6 +88,25 @@ it verifies the accepted schema and operation coordinates, selects direct curren
 projector. A projection mismatch is a technical refusal; caller-owned state is never trusted by
 identity or digest alone.
 
+### Operation-keyed owner proof correction (REV-0113 F1)
+
+Projection equality authenticates only the bounded checkpoint members. Before an owner reducer can
+read a member deliberately omitted from that checkpoint, the owner module must mint one exact,
+sealed, operation-keyed observation proof. The UOW derives that proof only from the selected current
+row plus retained durable-input/semantic-key evidence; it never supplies a mapping, callback, or
+caller assertion. The public owner API derives the same proof from its reference owner and delegates
+to the same shared kernel, so there is one decision engine.
+
+For `BeginManualFlatten` and `AdvanceManualFlatten`, the authority proof has exactly three cases:
+`ACTIVE_CURRENT` binds the current scope index to its exact manual row represented by the checkpoint;
+`RETAINED_TERMINAL` binds the manual semantic key to its retained input and terminal outcome while
+proving no active scope row; and `ABSENT` proves both current and retained evidence absent. The
+shared authority kernel may consult only that proof for the targeted flatten ID. An unbound
+`_manual_by_id` entry is non-authoritative noise: adding, removing, or changing it cannot alter the
+disposition, reason, writes, or successor context. This is an operation-keyed correction, not
+authorization to serialize a historical map. Apply the same rule if another admitted route is
+shown to read an omitted owner member during implementation.
+
 `UnitOfWorkDisposition` is exactly `COMMITTED`, `REFUSED`, `EXACT_REPLAY`, `CONFLICT`, and
 `RECONCILIATION_ONLY`. `COMMITTED` carries the exact owner domain/disposition and successor context;
 an owner-level `REFUSED`, `STALE`, or `EXACT_REPLAY` may therefore be a committed durable decision
@@ -106,11 +125,13 @@ The one exact sequence is:
 1. C0 canonicalize/decode the exact operation; reject unknown/proxy/subclass before SQL.
 2. C1 execute literal `BEGIN IMMEDIATE`; no savepoint, retry, or hidden transaction.
 3. C2 verify schema plus application/profile/source/scope/session/acquisition/stream coordinates;
-   select and project current owners against direct proof.
+   select and project current owners against direct proof, then mint any required exact
+   operation-keyed owner observation proof.
 4. C3 activate one runtime write lease, claim the canonical durable input, and classify primary
    replay/conflict. Derive and load required semantic keys; callers cannot supply them.
-5. C4 derive the exact owner inputs and invoke exactly one existing public reducer pipeline from
-   the frozen eight-row matrix. No generic callback/registry/`Any` dispatch.
+5. C4 derive the exact owner inputs and invoke exactly one existing public reducer pipeline or its
+   owner-equivalent shared kernel from the frozen eight-row matrix. A public reducer and the UOW
+   route must delegate to that same kernel; no generic callback/registry/`Any` dispatch.
 6. C5 validate the exact transition and derive a closed pure write plan from predecessor/result.
 7. C6 issue only owner-proven semantic keys and relational rows in dependency order using the
    existing capability-bound repository methods.
@@ -141,7 +162,8 @@ checks. No wall clock, randomness, retry allocator, generic SQL builder, or call
 
 ## Functional requirements
 
-- FR-1: authenticate exact coordinates and all owner state against direct proof before reduction.
+- FR-1: authenticate exact coordinates, bounded owner state, and every operation-keyed omitted
+  member the selected reducer can read against direct proof before reduction.
 - FR-2: one admitted input yields old-complete or new-complete durable state; no partial authority.
 - FR-3: primary replay/conflict short-circuit exactly; semantic matches reach the owning reducer.
 - FR-4: a concrete immutable claim and outbox snapshot precede post-commit eligibility.
@@ -164,6 +186,12 @@ unknown/subclassed input, stale/cross-coordinate context, primary and semantic c
 disposition parity, and restart inspection proving old-complete/new-complete. Mutants must fail if
 lease retirement is skipped/reordered, a reducer is bypassed, a write family is omitted, receipt
 becomes optional, eligibility appears pre-commit, or ambiguity retries.
+
+The authority proof slice starts with the two REV-0113 payload-equal counterexamples. For fresh
+manual identities, an added omitted `_manual_by_id` row must not change `BeginManualFlatten` from
+its clean-context result or make `AdvanceManualFlatten` apply. Mutants fail if the shared kernel
+reads the raw target-key map, accepts a semantic digest without retained bytes/outcome, or treats a
+terminal manual as active.
 
 ## Review and stop rules
 
