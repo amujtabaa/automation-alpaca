@@ -11,6 +11,7 @@ the accepted M2-I1 codec and immutable profile constructors.
 from __future__ import annotations as _annotations
 
 from hashlib import sha256 as _sha256
+from threading import RLock as _RLock
 from typing import Any as _Any
 from typing import Callable as _Callable
 from typing import TypeVar as _TypeVar
@@ -33,6 +34,12 @@ _RecordT = _TypeVar("_RecordT")
 _CONTRACT_VERSION = "1"
 _SETUP_WRITE_CAPABILITY_SEAL = object()
 _RUNTIME_WRITE_CAPABILITY_SEAL = object()
+_RETIRED_RUNTIME_WRITE_CAPABILITY_SEAL = object()
+_RUNTIME_WRITE_LEASE_LOCK = _RLock()
+_RUNTIME_WRITE_LEASES: dict[
+    int,
+    tuple[_SQLiteConnectionProtocol, "_RuntimeWriteCapability"],
+] = {}
 
 
 class _RuntimeWriteCapability:
@@ -49,6 +56,20 @@ class _RuntimeWriteCapability:
     def __init_subclass__(cls, **kwargs: object) -> None:
         del cls, kwargs
         raise TypeError("runtime write capability cannot be subclassed")
+
+    def __copy__(self) -> _Any:
+        raise TypeError("runtime write capability cannot be copied")
+
+    def __deepcopy__(self, memo: object) -> _Any:
+        del memo
+        raise TypeError("runtime write capability cannot be copied")
+
+    def __reduce__(self) -> _Any:
+        raise TypeError("runtime write capability cannot be reduced")
+
+    def __reduce_ex__(self, protocol: object) -> _Any:
+        del protocol
+        raise TypeError("runtime write capability cannot be reduced")
 
 
 class _SetupWriteCapability:
@@ -81,6 +102,63 @@ def _issue_setup_write_capability(
     return capability
 
 
+def _runtime_write_lease_is_active(
+    connection: _SQLiteConnectionProtocol,
+    capability: _RuntimeWriteCapability,
+) -> bool:
+    with _RUNTIME_WRITE_LEASE_LOCK:
+        retained = _RUNTIME_WRITE_LEASES.get(id(connection))
+        return bool(
+            retained is not None
+            and retained[0] is connection
+            and retained[1] is capability
+        )
+
+
+def _activate_runtime_write_lease(
+    connection: _SQLiteConnectionProtocol,
+) -> _RuntimeWriteCapability:
+    """Mint the sole write authority for one already-active UOW transaction."""
+
+    if getattr(connection, "in_transaction", False) is not True:
+        raise ValueError("runtime write lease requires an active transaction")
+    key = id(connection)
+    with _RUNTIME_WRITE_LEASE_LOCK:
+        retained = _RUNTIME_WRITE_LEASES.get(key)
+        if retained is not None:
+            raise ValueError("runtime write lease is already active")
+        capability = object.__new__(_RuntimeWriteCapability)
+        object.__setattr__(capability, "_connection", connection)
+        object.__setattr__(capability, "_seal", _RUNTIME_WRITE_CAPABILITY_SEAL)
+        _RUNTIME_WRITE_LEASES[key] = (connection, capability)
+    return capability
+
+
+def _retire_runtime_write_lease(
+    connection: _SQLiteConnectionProtocol,
+    capability: object,
+) -> None:
+    """Irreversibly retire the exact active lease before COMMIT or ROLLBACK."""
+
+    if type(capability) is not _RuntimeWriteCapability:
+        raise TypeError("runtime write capability is not admitted")
+    exact = _cast(_RuntimeWriteCapability, capability)
+    key = id(connection)
+    with _RUNTIME_WRITE_LEASE_LOCK:
+        retained = _RUNTIME_WRITE_LEASES.get(key)
+        if (
+            retained is None
+            or retained[0] is not connection
+            or retained[1] is not exact
+            or getattr(exact, "_connection", None) is not connection
+            or getattr(exact, "_seal", None) is not _RUNTIME_WRITE_CAPABILITY_SEAL
+            or getattr(connection, "in_transaction", False) is not True
+        ):
+            raise ValueError("runtime write lease is not active")
+        del _RUNTIME_WRITE_LEASES[key]
+        object.__setattr__(exact, "_seal", _RETIRED_RUNTIME_WRITE_CAPABILITY_SEAL)
+
+
 def _require_write_capability(
     connection: _SQLiteConnectionProtocol,
     capability: object,
@@ -100,6 +178,7 @@ def _require_write_capability(
             is not _RUNTIME_WRITE_CAPABILITY_SEAL
             or getattr(runtime_capability, "_connection", None) is not connection
             or getattr(connection, "in_transaction", False) is not True
+            or not _runtime_write_lease_is_active(connection, runtime_capability)
         ):
             raise ValueError("runtime write capability is not current for connection")
         return

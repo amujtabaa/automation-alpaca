@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+from copy import copy, deepcopy
 import inspect
 from pathlib import Path
 
@@ -22,6 +23,11 @@ class _Connection:
     def execute(self, sql: str, parameters: object = ()) -> object:
         del sql, parameters
         raise AssertionError("capability refusal must occur before SQL dispatch")
+
+
+class _TransactionalConnection(_Connection):
+    def __init__(self, *, in_transaction: bool) -> None:
+        self.in_transaction = in_transaction
 
 
 def _literal_text(expression: ast.expr) -> str | None:
@@ -128,13 +134,76 @@ def test_setup_capability_is_connection_bound_and_constructor_closed() -> None:
         repository._require_write_capability(connection, object())
 
 
-def test_runtime_capability_has_no_issuance_route() -> None:
+def test_runtime_capability_has_one_repository_owned_lease_route() -> None:
     app_root = Path(repository.__file__).resolve().parents[1]
     assert {
         path.relative_to(app_root).as_posix()
         for path in app_root.rglob("*.py")
         if "object.__new__(_RuntimeWriteCapability)" in path.read_text(encoding="utf-8")
-    } == set()
+    } == {"persistence/repository.py"}
+
+
+def test_runtime_lease_requires_transaction_and_rejects_overlap() -> None:
+    connection = _TransactionalConnection(in_transaction=False)
+    with pytest.raises(ValueError, match="active transaction"):
+        repository._activate_runtime_write_lease(connection)
+
+    connection.in_transaction = True
+    capability = repository._activate_runtime_write_lease(connection)
+    assert type(capability) is repository._RuntimeWriteCapability
+    repository._require_write_capability(connection, capability)
+    with pytest.raises(ValueError, match="already active"):
+        repository._activate_runtime_write_lease(connection)
+
+    repository._retire_runtime_write_lease(connection, capability)
+    with pytest.raises(ValueError, match="not current"):
+        repository._require_write_capability(connection, capability)
+
+
+def test_runtime_lease_is_exact_connection_bound_and_noncopyable() -> None:
+    connection = _TransactionalConnection(in_transaction=True)
+    other = _TransactionalConnection(in_transaction=True)
+    capability = repository._activate_runtime_write_lease(connection)
+
+    with pytest.raises(ValueError, match="not current"):
+        repository._require_write_capability(other, capability)
+    with pytest.raises(TypeError, match="cannot be copied"):
+        copy(capability)
+    with pytest.raises(TypeError, match="cannot be copied"):
+        deepcopy(capability)
+    with pytest.raises(TypeError, match="cannot be reduced"):
+        capability.__reduce__()
+    with pytest.raises(TypeError, match="cannot be reduced"):
+        capability.__reduce_ex__(4)
+
+    repository._retire_runtime_write_lease(connection, capability)
+
+
+def test_retired_runtime_lease_stays_stale_after_next_transaction() -> None:
+    connection = _TransactionalConnection(in_transaction=True)
+    first = repository._activate_runtime_write_lease(connection)
+    repository._retire_runtime_write_lease(connection, first)
+
+    connection.in_transaction = False
+    with pytest.raises(ValueError, match="not current"):
+        repository._require_write_capability(connection, first)
+    connection.in_transaction = True
+    second = repository._activate_runtime_write_lease(connection)
+    repository._require_write_capability(connection, second)
+    with pytest.raises(ValueError, match="not current"):
+        repository._require_write_capability(connection, first)
+    with pytest.raises(ValueError, match="not active"):
+        repository._retire_runtime_write_lease(connection, first)
+    repository._retire_runtime_write_lease(connection, second)
+
+
+def test_runtime_lease_rejects_forged_exact_type() -> None:
+    connection = _TransactionalConnection(in_transaction=True)
+    forged = object.__new__(repository._RuntimeWriteCapability)
+    with pytest.raises(ValueError, match="not current"):
+        repository._require_write_capability(connection, forged)
+    with pytest.raises(ValueError, match="not active"):
+        repository._retire_runtime_write_lease(connection, forged)
 
 
 def test_setup_support_importers_have_the_frozen_direction() -> None:
