@@ -2039,6 +2039,114 @@ def test_venue_operation_composes_the_direct_owner_with_acquisition_currentness(
     )
 
 
+def test_acknowledged_venue_write_defers_delta_check_to_fresh_checkpoint_proof(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, _, claimed = acquisition_fixtures._r8_claimed_first_effect()
+    assert claimed.fresh_claim is not None
+    item = venue.RecordTransportOutcome(
+        venue.VenueInputId("uow-o2-acknowledged-fresh-proof"),
+        claimed.fresh_claim.effect_id,
+        venue.BrokerEffectState.ACKNOWLEDGED,
+    )
+    transition, observation = _apply_direct_venue_observation(
+        claimed.venue,
+        claimed.execution,
+        item,
+    )
+    operation = operations.VenueRecoveryOperation(
+        operations.VenueOperationCoordinates(
+            claimed.state.application_generation_id,
+            "ep",
+            7,
+            claimed.state._mandate.session_id,
+        ),
+        item,
+    )
+    prepared = _prepared_acquisition_operation(operation, claimed)
+    monkeypatch.setattr(
+        unit_of_work,
+        "_venue_direct_observation",
+        lambda *args: (
+            venue._m2_venue_state_from_book(claimed.venue),
+            observation,
+        ),
+    )
+    monkeypatch.setattr(
+        unit_of_work,
+        "_store_venue_transition_semantic_keys",
+        lambda *args: None,
+    )
+    monkeypatch.setattr(
+        unit_of_work,
+        "_persist_venue_owner_rows",
+        lambda *args: (object(), None, False),
+    )
+    monkeypatch.setattr(
+        unit_of_work,
+        "_persist_venue_terminal_closure",
+        lambda *args: None,
+    )
+    monkeypatch.setattr(
+        unit_of_work,
+        "_advance_acquisition_currentness",
+        lambda *args: object(),
+    )
+    monkeypatch.setattr(
+        unit_of_work,
+        "_persist_authority_venue_transitions",
+        lambda *args, **kwargs: ((), ()),
+    )
+
+    def stale_proof_check(*args: object) -> bool:
+        del args
+        raise AssertionError("venue successor was checked against stale proof")
+
+    monkeypatch.setattr(
+        unit_of_work,
+        "_bounded_context_changed",
+        stale_proof_check,
+    )
+    completed: list[tuple[object, bool]] = []
+    expected = object()
+
+    def complete(
+        connection: object,
+        prepared_operation: object,
+        claimed_record: object,
+        *,
+        owner_domain: str,
+        owner_disposition: str,
+        successor_context: object,
+        checkpoint_changed: bool,
+        pending_outbox: object,
+        capability: object,
+    ) -> object:
+        del connection, prepared_operation, claimed_record, pending_outbox, capability
+        assert owner_domain == "VENUE_RECOVERY"
+        assert owner_disposition == "APPLIED"
+        completed.append((successor_context, checkpoint_changed))
+        return expected
+
+    monkeypatch.setattr(unit_of_work, "_complete_claimed_input", complete)
+
+    actual = unit_of_work._execute_venue_operation(
+        object(),
+        prepared,
+        object(),
+        object(),
+    )
+
+    assert actual is expected
+    assert len(completed) == 1
+    successor_context, checkpoint_changed = completed[0]
+    assert type(successor_context) is unit_of_work.UnitOfWorkContext
+    assert checkpoint_changed is True
+    effect = successor_context.venue._current_effect(item.effect_id)
+    assert effect is not None
+    assert effect.state is venue.BrokerEffectState.ACKNOWLEDGED
+
+
 def test_fresh_venue_input_emits_only_its_owner_proven_semantic_key(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -5127,6 +5235,54 @@ def test_bounded_change_detection_ignores_omitted_owner_history(
 
     assert unit_of_work._bounded_context_changed(prepared, successor) is False
     assert len(projected) == 1
+
+
+def test_successor_checkpoint_requires_a_delta_under_its_fresh_proof(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context, proof, envelope = _cold_cutover_fixture()
+    prepared = SimpleNamespace(
+        application_generation_id=proof.request.application_generation_id,
+        execution_profile_id=proof.request.execution_profile_id,
+        selection_proof=proof,
+        context=context,
+        authenticated_current=envelope,
+    )
+    selected = records.RepositoryOutcome(
+        records.RepositoryOutcomeKind.FOUND,
+        proof,
+    )
+    monkeypatch.setattr(
+        unit_of_work._repository,
+        "select_runtime_checkpoint",
+        lambda *args: selected,
+    )
+    monkeypatch.setattr(
+        unit_of_work._checkpoint_codec,
+        "_project_runtime_checkpoint",
+        lambda *args: envelope,
+    )
+
+    def stale_store(*args: object, **kwargs: object) -> object:
+        del args, kwargs
+        raise AssertionError("unchanged successor reached checkpoint storage")
+
+    monkeypatch.setattr(
+        unit_of_work._repository,
+        "store_runtime_checkpoint",
+        stale_store,
+    )
+
+    with pytest.raises(
+        unit_of_work._TechnicalRefusal,
+        match="successor checkpoint omitted its bounded delta",
+    ):
+        unit_of_work._store_successor_checkpoint(
+            object(),
+            prepared,
+            context,
+            object(),
+        )
 
 
 def test_authority_query_applied_claims_semantic_key_before_completion(

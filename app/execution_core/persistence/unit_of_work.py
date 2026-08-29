@@ -1708,6 +1708,11 @@ def _store_successor_checkpoint(
         )
     except (TypeError, ValueError, OverflowError) as exc:
         raise _TechnicalRefusal("successor owner projection was refused") from exc
+    if (
+        envelope.canonical_payload_bytes
+        == prepared.authenticated_current.canonical_payload_bytes
+    ):
+        raise _TechnicalRefusal("successor checkpoint omitted its bounded delta")
     stored = _repository.store_runtime_checkpoint(
         connection,
         proof,
@@ -5279,8 +5284,10 @@ def _execute_venue_operation(
         prepared,
         acquisition_transition,
     )
-    if not _bounded_context_changed(prepared, successor_context):
-        raise _TechnicalRefusal("venue currentness changed without a checkpoint delta")
+    # Venue persistence changes the selected relational proof before checkpoint
+    # projection.  `_store_successor_checkpoint` reselects that proof and owns
+    # the bounded-delta check; comparing here would splice the successor owner
+    # into the stale predecessor proof.
     return _complete_claimed_input(
         connection,
         prepared,

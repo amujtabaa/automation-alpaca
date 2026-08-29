@@ -495,3 +495,29 @@ The bounded defect is in the real-SQLite venue-recovery UOW persistence/reload c
 result currently erases the exact inner `_TechnicalRefusal`. No DDL change is indicated. No repair
 or rerun is authorized under the consumed R2 gate; a separately bounded application/test
 diagnostic-remediation lane, fresh exact-head review, and new human execution packet are required.
+
+## REV-0117 R2 root-cause remediation candidate
+
+Ameen authorized one database-free application/test remediation from canonical head
+`5bd3473f5d4f34316935369acb5d38e31f1bcee1`. A pure reproducer isolated the exact rollback:
+venue recovery correctly derived `DISPATCH_CLAIMED -> ACKNOWLEDGED`, but
+`_execute_venue_operation` projected that successor through `_bounded_context_changed` using the
+pre-transaction selection proof. The codec correctly rejected the successor lifecycle against that
+stale predecessor row, the UOW collapsed the resulting `_TechnicalRefusal` to `REFUSED`, and
+startup remained fail-closed with `UNRESOLVED_EFFECTS`.
+
+The root correction removes only that stale-proof precheck from the relational venue route. The
+existing shared checkpoint writer already reselects the post-write proof inside the same
+transaction; it now also requires the freshly projected canonical payload to differ from the
+authenticated predecessor before storage. This preserves the no-op guard at the authoritative
+proof boundary instead of weakening it. Two failure-capable pure controls reproduce the old
+stale-proof call and reject an unchanged successor before checkpoint storage.
+
+Both controls failed against the predecessor and pass after correction. Six source-confirmed pure
+files passed all 550 collected tests with exit code 0. Ruff check/format, mypy over all 99 app
+files, install/version/ledger/PKL checks, scope, and whitespace checks pass. No SQLite-bearing test,
+held test, database, DDL, authorization-flag change, runtime, credential, broker/network call, or
+order occurred. DDL remains 190,705 bytes at
+`d4df1aaa0a7fed6002c8a55923fb3a35ba948055779dac99bf82e70b6a804c18`; the flag remains exact
+`False`, and the held-test SHA-256 remains
+`f8081a38d2b5bc5fd073a0dbe79a47a8d4e2e1de2defc7323bea34ab4d992aca`.
