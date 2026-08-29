@@ -317,6 +317,11 @@ def test_o1_o8_write_table_rejects_every_contract_mutant() -> None:
 def test_every_repository_mutator_call_site_is_static_and_catalogued() -> None:
     source = inspect.getsource(unit_of_work)
     tree = ast.parse(source)
+    parents = {
+        child: parent
+        for parent in ast.walk(tree)
+        for child in ast.iter_child_nodes(parent)
+    }
     write_prefixes = ("advance_", "claim_", "finalize_", "retire_", "store_")
     expected = {
         "_claim_primary_input": ("claim_durable_input",),
@@ -372,6 +377,7 @@ def test_every_repository_mutator_call_site_is_static_and_catalogued() -> None:
     actual: dict[str, tuple[str, ...]] = {}
     dynamic_calls: list[int] = []
     wildcard_calls: list[int] = []
+    locally_caught_calls: list[int] = []
 
     for function in (node for node in tree.body if isinstance(node, ast.FunctionDef)):
         calls: list[str] = []
@@ -399,6 +405,14 @@ def test_every_repository_mutator_call_site_is_static_and_catalogued() -> None:
                         }
                     ):
                         calls.append(node.func.attr)
+                        ancestor = parents.get(node)
+                        while ancestor is not None and not isinstance(
+                            ancestor, ast.FunctionDef
+                        ):
+                            if isinstance(ancestor, ast.Try):
+                                locally_caught_calls.append(node.lineno)
+                                break
+                            ancestor = parents.get(ancestor)
                         if any(
                             isinstance(argument, ast.Starred) for argument in node.args
                         ) or any(keyword.arg is None for keyword in node.keywords):
@@ -420,8 +434,24 @@ def test_every_repository_mutator_call_site_is_static_and_catalogued() -> None:
         for family in unit_of_work._M2_COMMON_WRITE_TABLE
         for call in family.repository_calls
     )
+    locally_caught_write_helpers: list[int] = []
+    for node in ast.walk(tree):
+        if (
+            not isinstance(node, ast.Call)
+            or not isinstance(node.func, ast.Name)
+            or node.func.id not in expected
+        ):
+            continue
+        ancestor = parents.get(node)
+        while ancestor is not None and not isinstance(ancestor, ast.FunctionDef):
+            if isinstance(ancestor, ast.Try):
+                locally_caught_write_helpers.append(node.lineno)
+                break
+            ancestor = parents.get(ancestor)
     assert dynamic_calls == []
     assert wildcard_calls == []
+    assert locally_caught_calls == []
+    assert locally_caught_write_helpers == []
     assert actual == expected
     assert catalogued == set(unit_of_work._M2_REPOSITORY_WRITE_CALLS)
 
@@ -3060,18 +3090,42 @@ def test_body_fault_retires_lease_then_rolls_back_once(
         )
 
 
-def _catalogued_write_fault_edges() -> tuple[tuple[str, str], ...]:
-    edges: list[tuple[str, str]] = [("F03:after-reducer", "after")]
+def _catalogued_write_fault_cases() -> tuple[
+    tuple[str, str, tuple[str, ...], int], ...
+]:
+    cases: list[tuple[str, str, tuple[str, ...], int]] = []
     for row_id, families in unit_of_work._M2_C6_WRITE_TABLE:
+        row_calls = tuple(
+            call for family in families for call in family.repository_calls
+        )
+        row_index = 0
         for family in families:
             for ordinal, call in enumerate(family.repository_calls, start=1):
                 boundary = f"F04:{row_id}:{family.name}:{ordinal}:{call}"
-                edges.extend(((boundary, "before"), (boundary, "after")))
+                cases.extend(
+                    (
+                        (boundary, "before", row_calls, row_index),
+                        (boundary, "after", row_calls, row_index),
+                    )
+                )
+                row_index += 1
+    common_calls = tuple(
+        call
+        for family in unit_of_work._M2_COMMON_WRITE_TABLE
+        for call in family.repository_calls
+    )
+    common_index = 0
     for family in unit_of_work._M2_COMMON_WRITE_TABLE:
         for ordinal, call in enumerate(family.repository_calls, start=1):
             boundary = f"COMMON:{family.name}:{ordinal}:{call}"
-            edges.extend(((boundary, "before"), (boundary, "after")))
-    return tuple(edges)
+            cases.extend(
+                (
+                    (boundary, "before", common_calls, common_index),
+                    (boundary, "after", common_calls, common_index),
+                )
+            )
+            common_index += 1
+    return tuple(cases)
 
 
 class _JournalTransactionConnection(_TransactionConnection):
@@ -3090,14 +3144,43 @@ class _JournalTransactionConnection(_TransactionConnection):
         return result
 
 
-@pytest.mark.parametrize(("edge", "phase"), _catalogued_write_fault_edges())
-def test_every_catalogued_write_boundary_fault_is_old_complete(
+@pytest.mark.parametrize(
+    ("edge", "phase", "call_path", "target_index"),
+    _catalogued_write_fault_cases(),
+)
+def test_every_catalogued_repository_call_fault_is_old_complete(
     monkeypatch: pytest.MonkeyPatch,
     edge: str,
     phase: str,
+    call_path: tuple[str, ...],
+    target_index: int,
 ) -> None:
     connection = _JournalTransactionConnection()
     retained_capability: list[object] = []
+    attempted: list[str] = []
+
+    for method_name in frozenset(unit_of_work._M2_REPOSITORY_WRITE_CALLS):
+
+        def repository_probe(
+            *args: object,
+            _method_name: str = method_name,
+            **kwargs: object,
+        ) -> records.RepositoryOutcome[object]:
+            del args, kwargs
+            attempted.append(_method_name)
+            current_index = len(attempted) - 1
+            if current_index == target_index and phase == "before":
+                raise RuntimeError(f"injected write boundary fault: {edge}:{phase}")
+            connection.staged.append(f"{current_index}:{_method_name}")
+            if current_index == target_index:
+                raise RuntimeError(f"injected write boundary fault: {edge}:{phase}")
+            return records.RepositoryOutcome(records.RepositoryOutcomeKind.APPLIED)
+
+        monkeypatch.setattr(
+            unit_of_work._repository,
+            method_name,
+            repository_probe,
+        )
 
     def fail_at_boundary(
         body_connection: object,
@@ -3107,9 +3190,10 @@ def test_every_catalogued_write_boundary_fault_is_old_complete(
         del prepared
         assert body_connection is connection
         retained_capability.append(capability)
-        if phase == "after":
-            connection.staged.append(edge)
-        raise RuntimeError(f"injected write boundary fault: {edge}:{phase}")
+        for method_name in call_path:
+            method = getattr(unit_of_work._repository, method_name)
+            method(connection, object(), capability=capability)
+        pytest.fail(f"fault edge was not reached: {edge}:{phase}")
 
     _patch_prepared_path(monkeypatch, fail_at_boundary)
     with pytest.raises(RuntimeError, match="injected write boundary fault"):
@@ -3118,6 +3202,7 @@ def test_every_catalogued_write_boundary_fault_is_old_complete(
     assert connection.events == ["BEGIN IMMEDIATE", "ROLLBACK"]
     assert connection.staged == []
     assert connection.committed == []
+    assert attempted == list(call_path[: target_index + 1])
     assert len(retained_capability) == 1
     with pytest.raises(ValueError, match="not current"):
         unit_of_work._repository._require_write_capability(
