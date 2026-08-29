@@ -55,7 +55,7 @@ forbidden_paths: []
 
 **Date:** 2026-08-21
 
-**Status:** Active from exact accepted WO-0168 closeout; preflight required before source edits
+**Status:** Active from exact accepted WO-0168 closeout; REV-0116 R1 accepted P0=0/P1=0/P2=0
 
 `[FABLE • FULL • spec-first/TDD • fake capabilities only, no broker network]`
 
@@ -246,8 +246,8 @@ may start until the committed invalidation result has returned normally.
 
 ### Boundedness and failure evidence
 
-Normal startup may traverse the exact scope tuple and each scope's current open-effect tuple, but
-its query count is bounded by those current rows and is invariant under unrelated retired/fact/
+Normal startup may traverse the exact scope tuple and the authenticated current-unresolved effect
+tuple, but its query count is bounded by those current rows and is invariant under unrelated retired/fact/
 receipt/tape history growth. No generic retry loop, background task, plugin registry, callback
 graph, new lock table, or configurable recovery framework is admitted. Tests use exact fake lock,
 query, and source ports plus explicit fresh pytest-owned file databases only where the existing
@@ -345,5 +345,11 @@ and preserved unchanged in `work/review/REV-0116/result.md`: caller-held live co
 retry impossible, literal OPEN-only reconciliation omitted current unresolved variants, and final
 service did not revalidate subscription currentness. The reconciled contract now owns those roots
 through immutable request coordinates plus owner-locked proof-bound hydration, the complete
-authenticated unresolved union, and final-edge subscription-currentness checks. Source remains
-held until one correction-only `REV-0116/result-r1.md` returns zero open P0/P1.
+authenticated unresolved union, and final-edge subscription-currentness checks. Source was held
+until one correction-only `REV-0116/result-r1.md` returned zero open P0/P1.
+
+REV-0116 R1 returned `ACCEPT`, P0=0/P1=0/P2=0, `Unverified: NONE`, against exact corrected
+contract candidate `9867e45fe53540c06cd821760f27e2e844be716a`, tree
+`8c2e237aca44928ea04ec10cfd122f869535cb97`. The source hold is released. The stale boundedness
+shorthand above was normalized from literal open effects to the already-reviewed authenticated
+current-unresolved union without changing the accepted contract.
