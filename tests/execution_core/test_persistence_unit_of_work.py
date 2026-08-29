@@ -268,6 +268,11 @@ def test_o1_o8_write_table_rejects_every_contract_mutant() -> None:
     missing_row = table[:-1]
     extra_row = table + (("O9", first_families),)
     reordered_rows = (table[1], table[0], *table[2:])
+    missing_family = ((first_row_id, first_families[:-1]), *table[1:])
+    duplicate_family = (
+        (first_row_id, (*first_families, first_families[-1])),
+        *table[1:],
+    )
     missing_call_family = replace(
         first_family,
         repository_calls=first_family.repository_calls[:-1],
@@ -305,6 +310,8 @@ def test_o1_o8_write_table_rejects_every_contract_mutant() -> None:
         missing_row,
         extra_row,
         reordered_rows,
+        missing_family,
+        duplicate_family,
         missing_call,
         extra_call,
         reordered_calls,
