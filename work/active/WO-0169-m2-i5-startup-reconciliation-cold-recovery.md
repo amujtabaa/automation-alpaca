@@ -40,6 +40,7 @@ allowed_paths:
   - tests/execution_core/test_persistence_runtime_checkpoint_pure.py
   - tests/execution_core/test_persistence_unit_of_work.py
   - tests/execution_core/test_import_boundary.py
+  - tests_gated/execution_core/test_persistence_cold_recovery_sqlite.py
   - work/queue/WO-0169-m2-i5-startup-reconciliation-cold-recovery.md
   - work/active/WO-0169-m2-i5-startup-reconciliation-cold-recovery.md
   - work/completed/keep/WO-0169-m2-i5-startup-reconciliation-cold-recovery.md
@@ -347,6 +348,7 @@ allowed_paths:
   - app/execution_core/persistence/unit_of_work.py
   - tests/execution_core/test_persistence_unit_of_work.py
   - tests/execution_core/test_import_boundary.py
+  - tests_gated/execution_core/test_persistence_cold_recovery_sqlite.py
   - work/queue/WO-0169-m2-i5-startup-reconciliation-cold-recovery.md
   - work/active/WO-0169-m2-i5-startup-reconciliation-cold-recovery.md
   - work/completed/keep/WO-0169-m2-i5-startup-reconciliation-cold-recovery.md

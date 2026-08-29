@@ -16,6 +16,11 @@ from . import unit_of_work as _unit_of_work
 from .schema import SQLiteConnectionProtocol as _SQLiteConnectionProtocol
 
 
+_BLOCKING_CLAIMED_EFFECT_STATES = frozenset(
+    {"DISPATCH_CLAIMED", "OUTCOME_UNKNOWN", "NEEDS_REVIEW"}
+)
+
+
 def _require_digest(name: str, value: object) -> str:
     if type(value) is not str:
         raise TypeError(f"{name} must be exact text")
@@ -191,6 +196,8 @@ def _effect_query_requests(
         if effect is None or claim.effect_id in seen_effects:
             return None
         seen_effects.add(claim.effect_id)
+        if effect.lifecycle_state not in _BLOCKING_CLAIMED_EFFECT_STATES:
+            continue
         try:
             requests.append(
                 _market_recovery.EffectQueryRequest(
@@ -266,7 +273,6 @@ def _proof_has_complete_claimed_reconciliation(
     effects_by_id = {effect.effect_id: effect for effect in selection.effects}
     if len(effects_by_id) != len(selection.effects):
         return False
-    blocking_states = {"DISPATCH_CLAIMED", "OUTCOME_UNKNOWN", "NEEDS_REVIEW"}
     seen_effects: set[int] = set()
     for claim in selection.claims:
         effect = effects_by_id.get(claim.effect_id)
@@ -274,7 +280,7 @@ def _proof_has_complete_claimed_reconciliation(
             effect is None
             or claim.effect_id in seen_effects
             or claim.execution_profile_id != effect.execution_profile_id
-            or effect.lifecycle_state in blocking_states
+            or effect.lifecycle_state in _BLOCKING_CLAIMED_EFFECT_STATES
         ):
             return False
         seen_effects.add(claim.effect_id)

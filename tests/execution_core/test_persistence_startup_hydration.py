@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from copy import copy
+from dataclasses import replace
 
 import pytest
 
 from app.execution_core import acquisition
+from app.execution_core import authority
 from app.execution_core import fills
 from app.execution_core import identity
 from app.execution_core import position
@@ -81,9 +83,9 @@ def _active_acquisition_projection_inputs() -> tuple[
         scope=book.scope,
         account_authority_epoch=0,
         unresolved_account_execution_reconciliation_count=0,
-        execution_registry_count=None,
-        execution_registry_commitment=None,
-        registry_transition_head_commitment=None,
+        execution_registry_count=execution.seen_facts.count,
+        execution_registry_commitment=execution.seen_facts.commitment,
+        registry_transition_head_commitment=execution.reconciliation_transition_head,
         authority_epochs=(),
         effects=(),
         claims=(),
@@ -277,6 +279,233 @@ def _active_acquisition_projection_inputs() -> tuple[
         ),
     )
     return proof, book, authority_state, owners
+
+
+def _active_claimed_projection_inputs() -> tuple[
+    records.RuntimeCheckpointSelectionProof,
+    venue.VenueRecoveryBook,
+    object,
+    tuple[checkpoint_codec._RuntimeCheckpointScopeOwners, ...],
+]:
+    """Build one genuine active owner set with a claimed unresolved effect."""
+
+    base_proof, base_book, base_authority, base_owners = (
+        _active_acquisition_projection_inputs()
+    )
+    source_acquisition = base_owners[0].acquisition
+    assert source_acquisition is not None
+    execution = base_owners[0].execution
+    effect_id = identity.EffectId("effect-1")
+    authority_state = checkpoint_fixtures._with_extra_authorization(
+        base_authority,
+        effect_id.value,
+        claimed=True,
+    )
+    authorization = authority_state._effect_authority_by_id.get(
+        authority._effect_key(effect_id)
+    )
+    claim = authority_state._claim_by_effect.get(authority._effect_key(effect_id))
+    assert authorization is not None and claim is not None
+    request = authorization.request
+    effect_scope = venue.VenueEffectScope(
+        base_book.scope.generation,
+        base_book.scope.broker,
+        base_book.scope.environment,
+        base_book.scope.account,
+        request.effect_id,
+        request.request_occurrence_id,
+        request.mandate_id,
+        request.kind,
+        request.client_order_id,
+        request.symbol_id,
+        request.side,
+        request.quantity,
+        request.economic_scope,
+        request.target_leg_key,
+    )
+    book = venue._m2_restore_compact_venue_book(
+        scope=base_book.scope,
+        account_authority_epoch=0,
+        unresolved_account_execution_reconciliation_count=0,
+        execution_registry_count=execution.seen_facts.count,
+        execution_registry_commitment=execution.seen_facts.commitment,
+        registry_transition_head_commitment=execution.reconciliation_transition_head,
+        authority_epochs=(),
+        effects=(
+            (
+                venue._EffectCurrent(
+                    venue.BrokerEffect(
+                        effect_scope,
+                        venue.BrokerEffectState.DISPATCH_CLAIMED,
+                        venue.AcceptanceSetState.OPEN,
+                        claim.claim_occurrence_id,
+                        None,
+                        (),
+                    )
+                ),
+                (),
+            ),
+        ),
+        claims=(venue.DispatchClaim(effect_scope, claim.claim_occurrence_id),),
+        owners=(),
+        acquisition_correlations=(),
+        closure_heads=(),
+        economic_high_waters=(),
+        human_coverages=(),
+        broker_coverages=(),
+        coverage_provenances=(),
+        reconciliations=(),
+        execution_reconciliations=(),
+        bootstrap_targets=(),
+        execution_snapshots=(execution,),
+        protection_cursors=(),
+    )
+    authority_state = copy(authority_state)
+    object.__setattr__(authority_state, "venue", book)
+    venue_context = book.project_acquisition_context(
+        execution,
+        source_acquisition.position_scope,
+    )
+    authority_context = authority.project_acquisition_authority_context(
+        authority_state,
+        execution,
+        venue_context,
+    )
+    source_controller = source_acquisition._controller
+    generation_id = source_controller.live_generation_id
+    assert generation_id is not None
+    generation = source_acquisition.registry.record(generation_id)
+    assert generation is not None
+    controller = acquisition._new_symbol_acquisition_controller(
+        application_generation_id=source_controller.application_generation_id,
+        position_scope=source_controller.position_scope,
+        controller_head=source_controller.controller_head,
+        successor_ordinal=source_controller.successor_ordinal,
+        live_generation_id=generation_id,
+        recovery_class=source_controller.recovery_class,
+        scope_execution_commitment=venue_context.scope_execution_commitment,
+        venue_commitment=venue_context.commitment,
+        authority_context_commitment=authority_context.authority_commitment,
+        protection_commitment=None,
+        binding_commitment=source_controller._binding_commitment,
+        compatibility_commitment=source_controller._compatibility_commitment,
+    )
+    acquisition_state = acquisition._m2_restore_compact_acquisition_controller(
+        controller=controller,
+        mandate=source_acquisition._mandate,
+        generation_records=(generation,),
+        stream_routes=(
+            (
+                source_acquisition._mandate.protection_mandate.evidence_policy.stream_generation,
+                generation_id,
+            ),
+        ),
+        lineage_routes=(
+            (
+                acquisition.GenerationRouteKind.REQUEST,
+                identity.RequestOccurrenceId("req-effect-1"),
+                generation_id,
+            ),
+            (
+                acquisition.GenerationRouteKind.EFFECT,
+                effect_id,
+                generation_id,
+            ),
+        ),
+    )
+
+    selected_generation = base_proof._selection.live_generations[0]
+    selected_controller = replace(
+        base_proof._selection.controllers[0],
+        aggregate_quantity=execution.position.raw_quantity,
+    )
+    effect_selection = checkpoint_fixtures._venue_claim_selection()
+    selected_effect = replace(
+        effect_selection.effects[0],
+        application_generation_id=base_proof.request.application_generation_id,
+        execution_profile_id=base_proof.request.execution_profile_id,
+        acquisition_generation_id=selected_generation.acquisition_generation_id,
+        generation_mandate_commitment_sha256=(
+            selected_generation.mandate_commitment_sha256
+        ),
+        expected_controller_head_ordinal=(selected_controller.currentness_head_ordinal),
+        expected_protection_version_ordinal=(
+            base_proof._selection.protection_authorities[0].version_ordinal
+        ),
+        authority_class=(
+            base_proof._selection.protection_authorities[0].authority_class
+        ),
+    )
+    selected_claim = replace(
+        effect_selection.claims[0],
+        effect_id=selected_effect.effect_id,
+        execution_profile_id=selected_effect.execution_profile_id,
+    )
+    selection = replace(
+        base_proof._selection,
+        controllers=(selected_controller,),
+        effects=(selected_effect,),
+        claims=(selected_claim,),
+    )
+    proof = checkpoint_fixtures._selection_proof(selection=selection)
+    owners = (
+        checkpoint_codec._RuntimeCheckpointScopeOwners(
+            1,
+            acquisition_state,
+            execution,
+            None,
+        ),
+    )
+    return proof, book, authority_state, owners
+
+
+def test_compact_hydration_restores_one_active_claimed_effect() -> None:
+    proof, book, authority_state, owners = _active_claimed_projection_inputs()
+    projected = checkpoint_codec._project_runtime_checkpoint(
+        proof,
+        book,
+        authority_state,  # type: ignore[arg-type]
+        owners,
+    )
+    loaded = checkpoint_codec._decode_runtime_checkpoint(
+        checkpoint_codec.encode_runtime_checkpoint(projected),
+        bytes.fromhex("31" * 32),
+    )
+    head = records.KernelCheckpointRecord(
+        projected.application_generation_id,
+        projected.currentness_head_ordinal,
+        projected.payload_sha256,
+        projected.checkpoint_version_ordinal,
+    )
+    successor = records._issue_runtime_checkpoint_selection_proof(
+        records.RuntimeCheckpointSelectionRequest(
+            projected.application_generation_id,
+            projected.execution_profile_id,
+            projected.market_source_profile_id,
+            head,
+        ),
+        proof.application_generation,
+        proof.execution_profile,
+        proof.market_source_profile,
+        head,
+        head.currentness_head_ordinal,
+        head.checkpoint_version_ordinal + 1,
+        proof._selection,
+    )
+
+    restored = checkpoint_codec._restore_compact_runtime_checkpoint(
+        loaded,
+        successor,
+    )
+
+    assert restored.scope_owners[0].acquisition is not None
+    assert restored.scope_owners[0].execution.position.raw_quantity == 0
+    effect = restored.venue._current_effect(identity.EffectId("effect-1"))
+    assert effect is not None
+    assert effect.state is venue.BrokerEffectState.DISPATCH_CLAIMED
+    assert effect.claim_occurrence_id == identity.ClaimOccurrenceId(
+        "occurrence-effect-1"
+    )
 
 
 def test_compact_hydration_requires_loaded_checkpoint_and_fresh_successor_proof() -> (

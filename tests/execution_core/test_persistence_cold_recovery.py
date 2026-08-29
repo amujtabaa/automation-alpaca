@@ -911,6 +911,14 @@ def test_effect_query_enumeration_preserves_unclaimed_effects_without_query() ->
             claim.claim_occurrence_id,
         ),
     )
+    for lifecycle_state in ("ACKNOWLEDGED", "REJECTED", "OPERATOR_RECONCILED"):
+        known = SimpleNamespace(
+            _selection=SimpleNamespace(
+                effects=(replace(effect, lifecycle_state=lifecycle_state),),
+                claims=(claim,),
+            )
+        )
+        assert startup._effect_query_requests(request, known) == ()
 
 
 @pytest.mark.parametrize(
