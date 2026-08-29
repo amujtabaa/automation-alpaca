@@ -377,6 +377,18 @@ checks passed. DDL remained 190,705 bytes at
 `False` execution flag did not move. `REV-0115/request-r1.md` binds the single fresh exact-source
 re-review. WO-0168 remains ACTIVE until that review returns zero open P0/P1.
 
+R1 returned `ACCEPT-WITH-CHANGES` P0=0/P1=1/P2=0 because its negative control proved the labeled
+fault cases reached zero repository mutators. The finding is accepted. Exact correction candidate
+`0d7a92f54365f4056cd8fb762f369798fa5916ac`, tree
+`403843fb4394b3922de68542f5e7961ac7ec7030`, now drives every F04/common case through the named
+repository callable, pins the exact attempted prefix/no-later-call result, and proves outer
+rollback plus lease retirement. A paired AST ratchet rejects direct mutator or mutator-owning
+helper calls beneath local exception catchers, closing the reviewer's row-specific swallow mutant
+without adding runtime hooks or generic dispatch. Missing/duplicate optional-family and duplicate-
+call mutants are explicit. All 2,177 ordinary execution-core tests and focused/static/type checks
+passed at the exact correction. `REV-0115/request-r2.md` is a same-reviewer, single-P1 verification;
+it is not another whole-work-order review.
+
 ## Done
 
 Focused pure and fresh-file fault suites, full `tests/execution_core`, Ruff check/format, mypy,
