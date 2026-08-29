@@ -23,6 +23,7 @@ execution_authority: >
   migration, runtime composition, credential, broker/network call, order, promotion, master merge,
   history rewrite, or M3 implementation is authorized.
 allowed_paths:
+  - app/execution_core/persistence/schema.py
   - tests/execution_core/test_persistence_fault_matrix.py
   - tests/execution_core/test_persistence_restore.py
   - tests/execution_core/test_persistence_boundedness.py
@@ -138,6 +139,7 @@ Then the evidence reproduces with P0=0/P1=0 or M2 remains unclosed
 
 ```yaml
 allowed_paths:
+  - app/execution_core/persistence/schema.py
   - tests/execution_core/test_persistence_fault_matrix.py
   - tests/execution_core/test_persistence_restore.py
   - tests/execution_core/test_persistence_boundedness.py
@@ -167,6 +169,11 @@ discovery. The three exact `tests_gated/execution_core/**` files own SQLite-bear
 proof and remain outside default discovery behind the existing application-owned installer gate.
 This split prevents a skipped or locally provisioned database from masquerading as ordinary green
 evidence.
+
+`app/execution_core/persistence/schema.py` is admitted only on the quarantined WO-0170 proof branch
+for one exact authorization-only change from literal boolean `False` to literal boolean `True`.
+The canonical branch retains `False`; `SCHEMA_DDL`, its expected digest, and every other source byte
+must remain unchanged. A substantive failure ends that execution attempt before remediation.
 
 ## Out of scope and completion
 
