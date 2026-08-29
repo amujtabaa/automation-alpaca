@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import ast
+from collections.abc import Iterator
+from contextlib import contextmanager
 from copy import copy
 from copy import deepcopy
 from dataclasses import replace
@@ -3089,6 +3091,26 @@ def _patch_prepared_path(
     monkeypatch.setattr(unit_of_work, "_execute_prepared", body)
 
 
+@contextmanager
+def _test_runtime_write_capability(
+    connection: object,
+) -> Iterator[unit_of_work._repository._RuntimeWriteCapability]:
+    setattr(connection, "in_transaction", True)
+    capability = unit_of_work._repository._activate_runtime_write_lease(connection)
+    try:
+        yield capability
+    finally:
+        if unit_of_work._repository._runtime_write_lease_is_active(
+            connection,
+            capability,
+        ):
+            unit_of_work._repository._retire_runtime_write_lease(
+                connection,
+                capability,
+            )
+        setattr(connection, "in_transaction", False)
+
+
 def _refused_result() -> unit_of_work.UnitOfWorkResult:
     return unit_of_work.UnitOfWorkResult(
         unit_of_work.UnitOfWorkDisposition.REFUSED,
@@ -3216,6 +3238,124 @@ def test_body_fault_retires_lease_then_rolls_back_once(
             connection,
             retained_capability[0],
         )
+
+
+def test_rebound_operation_wrapper_cannot_forge_commit_after_write_fault(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection = _JournalTransactionConnection()
+    context = _uow_context()
+    operation = object.__new__(operations.BrokerExecutionOperation)
+    prepared = replace(_prepared_primary_claim(), operation=operation, context=context)
+    retained_capability: list[object] = []
+
+    monkeypatch.setattr(
+        unit_of_work, "_canonicalize_operation", lambda value: operation
+    )
+    monkeypatch.setattr(
+        unit_of_work,
+        "_prepare_transaction",
+        lambda body_connection, canonical_operation, body_context: prepared,
+    )
+    monkeypatch.setattr(
+        unit_of_work,
+        "_claim_primary_input",
+        lambda body_connection, prepared_operation, capability: (
+            unit_of_work._ClaimedPrimaryInput(operation, object())
+        ),
+    )
+
+    def fault_after_write(
+        body_connection: object,
+        prepared_operation: object,
+        claimed_record: object,
+        capability: object,
+    ) -> object:
+        del prepared_operation, claimed_record
+        assert body_connection is connection
+        retained_capability.append(capability)
+        connection.staged.append("O1:store_execution_fact")
+        raise RuntimeError("injected rebound after-write fault")
+
+    def rebound_handler(
+        body_connection: object,
+        prepared_operation: object,
+        claimed_record: object,
+        capability: object,
+    ) -> object:
+        try:
+            return fault_after_write(
+                body_connection,
+                prepared_operation,
+                claimed_record,
+                capability,
+            )
+        except Exception:
+            return unit_of_work._TransactionDecision(
+                True,
+                _committed_result(context),
+                None,
+            )
+
+    monkeypatch.setattr(
+        unit_of_work,
+        "_execute_broker_execution_operation",
+        rebound_handler,
+    )
+
+    with pytest.raises(TypeError, match="factory-issued"):
+        unit_of_work.execute_unit_of_work(connection, object(), context)
+
+    assert connection.events == ["BEGIN IMMEDIATE", "ROLLBACK"]
+    assert connection.staged == []
+    assert connection.committed == []
+    assert len(retained_capability) == 1
+    with pytest.raises(ValueError, match="not current"):
+        unit_of_work._repository._require_write_capability(
+            connection,
+            retained_capability[0],
+        )
+
+
+def test_structural_transaction_decision_forgery_rolls_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection = _TransactionConnection()
+    forged = object.__new__(unit_of_work._TransactionDecision)
+    object.__setattr__(forged, "commit", True)
+    object.__setattr__(forged, "result", _committed_result(_uow_context()))
+    object.__setattr__(forged, "pending_effect", None)
+
+    _patch_prepared_path(monkeypatch, lambda *args: forged)
+    result = unit_of_work.execute_unit_of_work(
+        connection,
+        object(),
+        _uow_context(),
+    )
+
+    assert result.disposition is unit_of_work.UnitOfWorkDisposition.REFUSED
+    assert connection.events == ["BEGIN IMMEDIATE", "ROLLBACK"]
+
+
+def test_transaction_decision_is_bound_to_the_issuing_write_lease(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection = _TransactionConnection()
+    other_connection = _TransactionConnection()
+    context = _uow_context()
+
+    with _test_runtime_write_capability(other_connection) as other_capability:
+        cross_lease_decision = unit_of_work._issue_transaction_decision(
+            other_capability,
+            True,
+            _committed_result(context),
+            None,
+        )
+        _patch_prepared_path(monkeypatch, lambda *args: cross_lease_decision)
+        result = unit_of_work.execute_unit_of_work(connection, object(), context)
+
+    assert result.disposition is unit_of_work.UnitOfWorkDisposition.REFUSED
+    assert connection.events == ["BEGIN IMMEDIATE", "ROLLBACK"]
 
 
 def _catalogued_write_fault_cases() -> tuple[
@@ -3347,10 +3487,15 @@ def test_noncommitting_decision_retires_lease_and_rolls_back(
     def refuse(
         body_connection: object,
         prepared: object,
-        capability: object,
+        capability: unit_of_work._repository._RuntimeWriteCapability,
     ) -> unit_of_work._TransactionDecision:
-        del body_connection, prepared, capability
-        return unit_of_work._TransactionDecision(False, _refused_result(), None)
+        del body_connection, prepared
+        return unit_of_work._issue_transaction_decision(
+            capability,
+            False,
+            _refused_result(),
+            None,
+        )
 
     _patch_prepared_path(monkeypatch, refuse)
     result = unit_of_work.execute_unit_of_work(connection, object(), _uow_context())
@@ -3367,11 +3512,12 @@ def test_commit_mints_effect_eligibility_only_after_normal_return(
     def commit(
         body_connection: object,
         prepared: object,
-        capability: object,
+        capability: unit_of_work._repository._RuntimeWriteCapability,
     ) -> unit_of_work._TransactionDecision:
-        del body_connection, prepared, capability
+        del body_connection, prepared
         assert connection.events == ["BEGIN IMMEDIATE"]
-        return unit_of_work._TransactionDecision(
+        return unit_of_work._issue_transaction_decision(
+            capability,
             True,
             _committed_result(context),
             unit_of_work._PostCommitEffectCandidate(7, 11, 13, "a" * 64),
@@ -3397,10 +3543,11 @@ def test_commit_ambiguity_never_rolls_back_or_mints_eligibility(
     def commit(
         body_connection: object,
         prepared: object,
-        capability: object,
+        capability: unit_of_work._repository._RuntimeWriteCapability,
     ) -> unit_of_work._TransactionDecision:
-        del body_connection, prepared, capability
-        return unit_of_work._TransactionDecision(
+        del body_connection, prepared
+        return unit_of_work._issue_transaction_decision(
+            capability,
             True,
             _committed_result(context),
             unit_of_work._PostCommitEffectCandidate(7, 11, 13, "a" * 64),
@@ -3423,10 +3570,15 @@ def test_rollback_ambiguity_propagates_without_retry(
     def refuse(
         body_connection: object,
         prepared: object,
-        capability: object,
+        capability: unit_of_work._repository._RuntimeWriteCapability,
     ) -> unit_of_work._TransactionDecision:
-        del body_connection, prepared, capability
-        return unit_of_work._TransactionDecision(False, _refused_result(), None)
+        del body_connection, prepared
+        return unit_of_work._issue_transaction_decision(
+            capability,
+            False,
+            _refused_result(),
+            None,
+        )
 
     _patch_prepared_path(monkeypatch, refuse)
     with pytest.raises(RuntimeError, match="ambiguous rollback"):
@@ -4415,7 +4567,12 @@ def test_primary_replay_and_conflict_short_circuit_before_owner_reduction(
         )
 
     monkeypatch.setattr(unit_of_work._repository, "claim_durable_input", claim)
-    result = unit_of_work._claim_primary_input(connection, prepared, object())
+    with _test_runtime_write_capability(connection) as capability:
+        result = unit_of_work._claim_primary_input(
+            connection,
+            prepared,
+            capability,
+        )
 
     assert type(result) is unit_of_work._TransactionDecision
     assert result.commit is False
@@ -4465,17 +4622,18 @@ def test_committed_no_change_decision_stores_coherent_receipt_outcome_then_final
     )
     monkeypatch.setattr(unit_of_work._repository, "finalize_durable_input", applied)
 
-    decision = unit_of_work._complete_claimed_input(
-        connection,
-        prepared,
-        claimed,
-        owner_domain="VENUE_RECOVERY",
-        owner_disposition="REFUSED",
-        successor_context=prepared.context,
-        checkpoint_changed=False,
-        pending_outbox=None,
-        capability=object(),
-    )
+    with _test_runtime_write_capability(connection) as capability:
+        decision = unit_of_work._complete_claimed_input(
+            connection,
+            prepared,
+            claimed,
+            owner_domain="VENUE_RECOVERY",
+            owner_disposition="REFUSED",
+            successor_context=prepared.context,
+            checkpoint_changed=False,
+            pending_outbox=None,
+            capability=capability,
+        )
 
     assert decision.commit is True
     assert decision.result.disposition is unit_of_work.UnitOfWorkDisposition.COMMITTED
@@ -4543,17 +4701,18 @@ def test_claim_completion_stores_outbox_after_outcome_before_finalization(
     monkeypatch.setattr(unit_of_work._repository, "store_broker_outbox", applied)
     monkeypatch.setattr(unit_of_work._repository, "finalize_durable_input", applied)
 
-    decision = unit_of_work._complete_claimed_input(
-        connection,
-        prepared,
-        claimed,
-        owner_domain="VENUE_RECOVERY",
-        owner_disposition="APPLIED",
-        successor_context=prepared.context,
-        checkpoint_changed=False,
-        pending_outbox=outbox,
-        capability=object(),
-    )
+    with _test_runtime_write_capability(connection) as capability:
+        decision = unit_of_work._complete_claimed_input(
+            connection,
+            prepared,
+            claimed,
+            owner_domain="VENUE_RECOVERY",
+            owner_disposition="APPLIED",
+            successor_context=prepared.context,
+            checkpoint_changed=False,
+            pending_outbox=outbox,
+            capability=capability,
+        )
 
     assert tuple(type(item) for item in stored) == (
         records.DecisionReceiptRecord,
@@ -4639,15 +4798,11 @@ def test_authority_engage_kill_route_uses_shared_kernel_and_common_completion(
         checkpoint_changed: bool,
         pending_outbox: object,
         capability: object,
-    ) -> unit_of_work._TransactionDecision:
+    ) -> object:
         del connection, prepared_operation, claimed_record, successor_context
         del pending_outbox, capability
         completed.append((owner_domain, owner_disposition, checkpoint_changed))
-        return unit_of_work._TransactionDecision(
-            True,
-            _committed_result(prepared.context),
-            None,
-        )
+        return SimpleNamespace(commit=True)
 
     monkeypatch.setattr(
         unit_of_work._authority,
@@ -4818,15 +4973,11 @@ def test_authority_query_applied_claims_semantic_key_before_completion(
         checkpoint_changed: bool,
         pending_outbox: object,
         capability: object,
-    ) -> unit_of_work._TransactionDecision:
+    ) -> object:
         del connection, prepared_operation, claimed_record, successor_context
         del pending_outbox, capability
         completed.append((owner_domain, owner_disposition, checkpoint_changed))
-        return unit_of_work._TransactionDecision(
-            True,
-            _committed_result(prepared.context),
-            None,
-        )
+        return SimpleNamespace(commit=True)
 
     monkeypatch.setattr(
         unit_of_work._authority,
@@ -4968,11 +5119,7 @@ def test_authority_manual_begin_uses_direct_proof_and_claims_semantic_key(
     monkeypatch.setattr(
         unit_of_work,
         "_complete_claimed_input",
-        lambda *args, **kwargs: unit_of_work._TransactionDecision(
-            True,
-            _committed_result(prepared.context),
-            None,
-        ),
+        lambda *args, **kwargs: SimpleNamespace(commit=True),
     )
 
     capability = object()
@@ -5087,11 +5234,7 @@ def test_authority_manual_sell_uses_an_operation_targeted_direct_proof(
     monkeypatch.setattr(
         unit_of_work,
         "_complete_claimed_input",
-        lambda *args, **kwargs: unit_of_work._TransactionDecision(
-            True,
-            _committed_result(prepared.context),
-            None,
-        ),
+        lambda *args, **kwargs: SimpleNamespace(commit=True),
     )
 
     decision = unit_of_work._execute_authority_operation(

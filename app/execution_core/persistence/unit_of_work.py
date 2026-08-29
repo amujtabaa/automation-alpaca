@@ -246,32 +246,91 @@ class _PersistedEffectClaim:
     claim: _records.DispatchClaimRecord
 
 
-@_dataclass(frozen=True, slots=True)
+_TRANSACTION_DECISION_SEAL = object()
+
+
+@_dataclass(frozen=True, slots=True, init=False)
 class _TransactionDecision:
     commit: bool
     result: UnitOfWorkResult
     pending_effect: _PostCommitEffectCandidate | None
+    _capability: _repository._RuntimeWriteCapability
+    _seal: object
 
-    def __post_init__(self) -> None:
-        if type(self.commit) is not bool:
-            raise TypeError("transaction decision commit must be exact bool")
-        if type(self.result) is not UnitOfWorkResult:
-            raise TypeError("transaction decision result must be exact")
-        if (
-            self.pending_effect is not None
-            and type(self.pending_effect) is not _PostCommitEffectCandidate
-        ):
-            raise TypeError("pending effect must be exact")
-        if self.commit:
-            if self.result.disposition is not UnitOfWorkDisposition.COMMITTED:
-                raise ValueError("commit decision requires a committed owner result")
-        elif (
-            self.result.disposition is UnitOfWorkDisposition.COMMITTED
-            or self.pending_effect is not None
-        ):
-            raise ValueError(
-                "rollback decision cannot publish committed state or effects"
-            )
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        del self, args, kwargs
+        raise TypeError("transaction decisions are factory-issued")
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        del cls, kwargs
+        raise TypeError("transaction decisions cannot be subclassed")
+
+    def __copy__(self) -> object:
+        del self
+        raise TypeError("transaction decisions cannot be copied")
+
+    def __deepcopy__(self, memo: object) -> object:
+        del self, memo
+        raise TypeError("transaction decisions cannot be copied")
+
+    def __reduce__(self) -> str | tuple[object, ...]:
+        del self
+        raise TypeError("transaction decisions cannot be reduced")
+
+    def __reduce_ex__(self, protocol: object) -> str | tuple[object, ...]:
+        del self, protocol
+        raise TypeError("transaction decisions cannot be reduced")
+
+
+def _issue_transaction_decision(
+    capability: _repository._RuntimeWriteCapability,
+    commit: bool,
+    result: UnitOfWorkResult,
+    pending_effect: _PostCommitEffectCandidate | None,
+) -> _TransactionDecision:
+    """Mint the sole transaction decision accepted by the outer coordinator."""
+
+    if type(capability) is not _repository._RuntimeWriteCapability:
+        raise TypeError("transaction decision capability must be exact")
+    if type(commit) is not bool:
+        raise TypeError("transaction decision commit must be exact bool")
+    if type(result) is not UnitOfWorkResult:
+        raise TypeError("transaction decision result must be exact")
+    if (
+        pending_effect is not None
+        and type(pending_effect) is not _PostCommitEffectCandidate
+    ):
+        raise TypeError("pending effect must be exact")
+    if commit:
+        if result.disposition is not UnitOfWorkDisposition.COMMITTED:
+            raise ValueError("commit decision requires a committed owner result")
+    elif (
+        result.disposition is UnitOfWorkDisposition.COMMITTED
+        or pending_effect is not None
+    ):
+        raise ValueError("rollback decision cannot publish committed state or effects")
+    decision = object.__new__(_TransactionDecision)
+    object.__setattr__(decision, "commit", commit)
+    object.__setattr__(decision, "result", result)
+    object.__setattr__(decision, "pending_effect", pending_effect)
+    object.__setattr__(decision, "_capability", capability)
+    object.__setattr__(decision, "_seal", _TRANSACTION_DECISION_SEAL)
+    return decision
+
+
+def _require_authentic_transaction_decision(
+    decision: object,
+    capability: _repository._RuntimeWriteCapability,
+) -> _TransactionDecision:
+    """Refuse structurally plausible decisions not minted for this write lease."""
+
+    if (
+        type(decision) is not _TransactionDecision
+        or getattr(decision, "_seal", None) is not _TRANSACTION_DECISION_SEAL
+        or getattr(decision, "_capability", None) is not capability
+    ):
+        raise _TechnicalRefusal("transaction decision is not authentic")
+    return _cast(_TransactionDecision, decision)
 
 
 @_dataclass(frozen=True, slots=True)
@@ -731,7 +790,8 @@ def _claim_primary_input(
         and fact.kind is _operations.InputDedupeKind.EXACT_REPLAY
         and fact.retained_outcome_sha256 is not None
     ):
-        return _TransactionDecision(
+        return _issue_transaction_decision(
+            capability,
             False,
             _noncommitting_result(UnitOfWorkDisposition.EXACT_REPLAY),
             None,
@@ -741,7 +801,8 @@ def _claim_primary_input(
         and fact.kind is _operations.InputDedupeKind.IDENTITY_CONFLICT
         and fact.retained_outcome_sha256 is None
     ):
-        return _TransactionDecision(
+        return _issue_transaction_decision(
+            capability,
             False,
             _noncommitting_result(UnitOfWorkDisposition.CONFLICT),
             None,
@@ -2930,7 +2991,7 @@ def _complete_claimed_input(
         completed_context,
         None,
     )
-    return _TransactionDecision(True, result, pending_effect)
+    return _issue_transaction_decision(capability, True, result, pending_effect)
 
 
 def _execute_authority_operation(
@@ -5576,7 +5637,11 @@ def execute_unit_of_work(
     try:
         prepared = _prepare_transaction(connection, canonical_operation, context)
         capability = _repository._activate_runtime_write_lease(connection)
-        decision = _execute_prepared(connection, prepared, capability)
+        untrusted_decision = _execute_prepared(connection, prepared, capability)
+        decision = _require_authentic_transaction_decision(
+            untrusted_decision,
+            capability,
+        )
     except _TechnicalRefusal:
         _rollback_once(connection, capability)
         return _refused_result()
