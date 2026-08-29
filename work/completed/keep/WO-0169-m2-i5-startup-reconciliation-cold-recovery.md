@@ -1,12 +1,12 @@
 ---
 type: Work Order
 title: M2-I5 startup, reconciliation, and cold market recovery
-status: ACTIVE
+status: CLOSED
 work_order_id: WO-0169
 wave: M2-I5
 model_tier: strong
 risk: critical
-disposition: []
+disposition: [RESULT_SUMMARY_KEPT, ARCHIVED]
 owner: Codex implementation seat; fresh-context review seats REV-0116 and REV-0117
 created: 2026-08-21
 predecessor: WO-0168 closeout c390c1b1de7ee0f88f6c8a3b4419e8fa122aec51 / tree de844054db45d03c73889d986185cab651cbc386
@@ -643,3 +643,67 @@ while all earlier invalid categories refuse at their owning guards. The applicat
 remediation is accepted. Under Ameen's standing instruction to finish this work order without
 routine approval stops, the next bounded action is one new R4 fresh pytest-owned file-database
 proof with unchanged approved DDL and an exact flag-only quarantined branch.
+
+## REV-0117 fresh-file R4 proof
+
+The published flag-only R4 unlock is `ccbdf2233a5e385717dbba77d2a06da87c745b4f`, tree
+`5aed1cad204ee352916cf1a2b54ec5183a6e1468`, with exact parent
+`ae6277b38fb8e9e9823e512373a8c2d19938c7e9`. Its sole source change is the exact human flag from
+`False` to `True`; DDL, held test, application, tests, and manifest remained at their approved
+identities. The branch was published and local equaled origin before execution.
+
+Attempt 1 passed: `1 passed in 1.08s`. On a brand-new pytest-owned file database, startup resolved
+the retained `DISPATCH_CLAIMED` effect to `ACKNOWLEDGED`, committed and reread exactly one N+1
+checkpoint successor, returned `SERVING`, then independently reopened as `SERVING` with zero
+queries and no additional checkpoint write. Attempt 2 did not run. The database is preserved with
+its exact size and SHA-256 in `execution-result-r4-attempt-1.md`; the flag-true branch remains
+quarantined evidence only. WO-0169 implementation and its held persistence proof are complete;
+terminal governance closeout is next.
+
+## Terminal acceptance and completion
+
+REV-0117 R7 accepted the final application/test correction chain with P0=0/P1=0/P2=0. The exact
+product correction is `ecee243d5627d06a55f7de1b89c59b9982e253fd`, tree
+`1f35f8204ebab2356885aea17ef19d2748e220b3`; the exact test-evidence correction is
+`51c90ba480e8b61ea7e57d627f0b90cdb80191e1`, tree
+`b1514e84c5fcb910520353e90115d6a0bb2de6ab`. Reviewer result R7 is preserved at commit
+`b81a5f2fa1fac7d677c2abcfe9bdebcdce435c85` with P0=0/P1=0/P2=0.
+
+The R4 held proof used exact flag-false source `ae6277b38fb8e9e9823e512373a8c2d19938c7e9`,
+tree `6a5acb8d5fff6333660c40cd7b5f493aefb044ce`, and published flag-only unlock
+`ccbdf2233a5e385717dbba77d2a06da87c745b4f`. Attempt 1 passed its complete fresh-file cold
+startup/reopen chain: `1 passed in 1.08s`. The canonical branch retains the exact-false human flag;
+the flag-true branch and 806,912-byte evidence database remain quarantined and are not
+implementation predecessors.
+
+Author evidence passed 552 focused pure tests and all 2,266 ordinary execution-core tests. Ruff
+check/format, mypy over 99 application files, install/version/ledger/PKL/disposition/scope, and
+whitespace checks pass. DDL remains 190,705 UTF-8 bytes at
+`d4df1aaa0a7fed6002c8a55923fb3a35ba948055779dac99bf82e70b6a804c18`, schema blob
+`164de10ad9fef6ce37324840aff59b5b68c07d2a`, and the held test remains at SHA-256
+`f8081a38d2b5bc5fd073a0dbe79a47a8d4e2e1de2defc7323bea34ab4d992aca`. No configured or
+in-memory database, migration, runtime composition, credential, broker/network activity, order,
+promotion, master merge, history rewrite, later work-order implementation, or M3 implementation
+occurred.
+
+## Completion disposition
+
+- [x] `RESULT_SUMMARY_KEPT`
+- [x] `ARCHIVED`
+- [x] PKL/ADR update not required: WO-0169 implements the accepted ADR-023 cold-only startup and
+  recovery contract without changing accepted architecture.
+
+```yaml
+fable_done:
+  status: VERIFIED
+  evidence: "REV-0117 R7 ACCEPT P0=0/P1=0/P2=0; 552 focused and 2266 execution-core tests; R4 fresh-file cold startup/reopen proof passed; static, governance, scope, and unchanged-DDL gates passed."
+  command: "See work/review/REV-0117/result-r7.md and execution-result-r4-attempt-1.md."
+  terminal_state: "WO-0169 CLOSED — WO-0170 NOT YET ACTIVATED"
+```
+
+## Distillation decision
+
+Keep this work order and the complete REV-0116/REV-0117 chain as durable startup, cold-recovery,
+checkpoint-authentication, fresh-file execution, and review-correction evidence. Delete no source,
+test, ADR, PKL, review history, or preserved pytest database. WO-0170 may start only from the exact
+published canonical flag-false WO-0169 closeout on its own fresh branch.
