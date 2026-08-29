@@ -59,6 +59,7 @@ def _direct_manual_proof(
     state: authority.ExecutionAuthorityState,
     command: object,
     *,
+    active_symbol_id: identity.SymbolId | None = None,
     retained_command: authority.BeginManualFlatten | None = None,
     retained_input_bytes: bytes | None = None,
     retained_outcome_bytes: bytes | None = None,
@@ -66,6 +67,7 @@ def _direct_manual_proof(
     return authority._m2_authority_manual_observation_from_direct_evidence(
         state,
         command,
+        active_symbol_id=active_symbol_id,
         retained_command=retained_command,
         retained_input_bytes=retained_input_bytes,
         retained_outcome_bytes=retained_outcome_bytes,
@@ -189,9 +191,7 @@ def test_manual_active_current_direct_proof_matches_public_owner_route() -> None
     proof = _direct_manual_proof(
         state,
         advance,
-        retained_command=manual.command,
-        retained_input_bytes=b"retained-input",
-        retained_outcome_bytes=b"retained-terminal-outcome",
+        active_symbol_id=manual.command.symbol_id,
     )
 
     direct = authority._m2_apply_execution_authority_input(
@@ -1075,3 +1075,127 @@ def test_authority_query_applied_claims_semantic_key_before_completion(
     assert stored[0].input_identity_sha256 == claimed.input_identity_sha256
     assert stored[0].created_ordinal == 7
     assert completed == [("AUTHORITY", "APPLIED", True)]
+
+
+def test_authority_manual_begin_uses_direct_proof_and_claims_semantic_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prepared = _prepared_primary_claim()
+    scope_id, _, execution, _ = prepared.context.scope_owners[0]
+    command = authority.BeginManualFlatten(
+        identity.AuthorityInputId("uow-manual-input"),
+        identity.ManualFlattenId("uow-manual-flatten"),
+        identity.SessionId("uow-manual-session"),
+        execution.position.scope.symbol_id,
+        identity.ActorId("operator"),
+        "bounded manual flatten",
+        identity.EvidenceReference("manual-evidence"),
+        None,
+    )
+    operation = operations.AuthorityOperation(
+        operations.ExecutionOperationCoordinates(
+            prepared.application_generation_id,
+            prepared.execution_profile_id,
+            scope_id,
+        ),
+        command,
+    )
+    payload = operations.encode_m2_operation(operation)
+    projection = operations._derive_m2_durable_input_projection(operation)
+    prepared = replace(
+        prepared,
+        operation=operation,
+        canonical_payload_bytes=payload,
+        input_domain=operations.OperationDomain.AUTHORITY,
+        scope_id=scope_id,
+        input_identity_sha256=projection[-1],
+    )
+    claimed = records.DurableInputRecord(
+        prepared.application_generation_id,
+        prepared.execution_profile_id,
+        prepared.scope_id,
+        prepared.input_domain,
+        None,
+        None,
+        None,
+        None,
+        prepared.input_identity_sha256,
+        1,
+        payload,
+        unit_of_work._hashlib.sha256(payload).hexdigest(),
+        "CLAIMED",
+        1,
+    )
+    observation = object()
+    owner_calls: list[tuple[object, object]] = []
+    semantic_calls: list[tuple[object, object]] = []
+
+    monkeypatch.setattr(
+        unit_of_work,
+        "_authority_manual_observation",
+        lambda connection, prepared_operation, item: observation,
+    )
+
+    def owner(
+        state: authority.ExecutionAuthorityState,
+        execution_state: object,
+        item: object,
+        *,
+        manual_observation: object,
+        query_observation: object,
+    ) -> authority.ExecutionAuthorityTransition:
+        del state, execution_state
+        owner_calls.append((manual_observation, query_observation))
+        assert item is command
+        return authority.ExecutionAuthorityTransition(
+            prepared.context.authority,
+            authority.AuthorityDisposition.APPLIED,
+            None,
+            (),
+            None,
+            (),
+            None,
+            None,
+        )
+
+    def store_manual_key(
+        connection: object,
+        prepared_operation: object,
+        claimed_record: object,
+        item: object,
+        capability: object,
+    ) -> None:
+        del connection, prepared_operation, claimed_record
+        semantic_calls.append((item, capability))
+
+    monkeypatch.setattr(
+        unit_of_work._authority,
+        "_m2_apply_execution_authority_input",
+        owner,
+    )
+    monkeypatch.setattr(
+        unit_of_work,
+        "_store_authority_manual_semantic_key",
+        store_manual_key,
+    )
+    monkeypatch.setattr(
+        unit_of_work,
+        "_complete_claimed_input",
+        lambda *args, **kwargs: unit_of_work._TransactionDecision(
+            True,
+            _committed_result(prepared.context),
+            None,
+        ),
+    )
+
+    capability = object()
+    decision = unit_of_work._execute_authority_operation(
+        object(),
+        prepared,
+        claimed,
+        capability,
+    )
+
+    assert decision.commit is True
+    assert owner_calls == [(observation, None)]
+    assert semantic_calls == [(command, capability)]

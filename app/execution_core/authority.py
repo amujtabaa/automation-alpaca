@@ -9861,14 +9861,19 @@ def _m2_active_manual_for_command(
     state: ExecutionAuthorityState,
     command: BeginManualFlatten | AdvanceManualFlatten,
     retained_command: BeginManualFlatten | None,
+    active_symbol_id: SymbolId | None,
 ) -> tuple[ManualFlattenId | None, _ManualFlatten | None]:
-    symbol_id = (
-        command.symbol_id
-        if type(command) is BeginManualFlatten
-        else None
-        if retained_command is None
-        else retained_command.symbol_id
-    )
+    if active_symbol_id is not None:
+        _require("active_symbol_id", active_symbol_id, SymbolId)
+    symbol_id: SymbolId | None
+    if type(command) is BeginManualFlatten:
+        if active_symbol_id is not None and active_symbol_id != command.symbol_id:
+            raise ValueError("active manual symbol does not match begin command")
+        symbol_id = command.symbol_id
+    elif active_symbol_id is not None:
+        symbol_id = active_symbol_id
+    else:
+        symbol_id = None if retained_command is None else retained_command.symbol_id
     if symbol_id is None:
         return None, None
     position_scope = _position_scope(state, symbol_id)
@@ -9893,6 +9898,8 @@ def _m2_issue_manual_observation(
     command: BeginManualFlatten | AdvanceManualFlatten,
     retained_command: BeginManualFlatten | None,
     evidence_commitment: bytes,
+    *,
+    active_symbol_id: SymbolId | None = None,
 ) -> _M2AuthorityManualObservationProof:
     _validate_authority_state(state)
     if type(command) not in (BeginManualFlatten, AdvanceManualFlatten):
@@ -9907,6 +9914,7 @@ def _m2_issue_manual_observation(
         state,
         command,
         retained_command,
+        active_symbol_id,
     )
     if active_manual is not None:
         if (
@@ -9979,6 +9987,7 @@ def _m2_authority_manual_observation_from_direct_evidence(
     state: ExecutionAuthorityState,
     command: BeginManualFlatten | AdvanceManualFlatten,
     *,
+    active_symbol_id: SymbolId | None = None,
     retained_command: BeginManualFlatten | None,
     retained_input_bytes: bytes | None,
     retained_outcome_bytes: bytes | None,
@@ -9988,6 +9997,11 @@ def _m2_authority_manual_observation_from_direct_evidence(
     _validate_authority_state(state)
     if type(command) not in (BeginManualFlatten, AdvanceManualFlatten):
         raise TypeError("manual observation requires an exact manual command")
+    if active_symbol_id is not None:
+        _require("active_symbol_id", active_symbol_id, SymbolId)
+    active_symbol_binding = (
+        b"" if active_symbol_id is None else active_symbol_id.value.encode("utf-8")
+    )
     evidence_members = (
         retained_command,
         retained_input_bytes,
@@ -9995,7 +10009,8 @@ def _m2_authority_manual_observation_from_direct_evidence(
     )
     if all(member is None for member in evidence_members):
         evidence = _commit_parts(
-            b"execution-core/m2-authority/manual-direct-absence/v1"
+            b"execution-core/m2-authority/manual-direct-absence/v1",
+            active_symbol_binding,
         )
     elif any(member is None for member in evidence_members):
         raise ValueError("retained evidence must include input and terminal outcome")
@@ -10012,6 +10027,7 @@ def _m2_authority_manual_observation_from_direct_evidence(
             raise ValueError("retained evidence outcome bytes are malformed")
         evidence = _commit_parts(
             b"execution-core/m2-authority/manual-direct-evidence/v1",
+            active_symbol_binding,
             exact_input_bytes,
             exact_outcome_bytes,
         )
@@ -10020,6 +10036,7 @@ def _m2_authority_manual_observation_from_direct_evidence(
         command,
         retained_command,
         evidence,
+        active_symbol_id=active_symbol_id,
     )
 
 

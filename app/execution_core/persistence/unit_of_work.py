@@ -211,6 +211,13 @@ class _ClaimedPrimaryInput:
 
 
 @_dataclass(frozen=True, slots=True)
+class _RetainedTerminalInput:
+    operation: _operations.M2Operation
+    input_record: _records.DurableInputRecord
+    outcome_record: _records.DurableInputOutcomeRecord
+
+
+@_dataclass(frozen=True, slots=True)
 class _TransactionDecision:
     commit: bool
     result: UnitOfWorkResult
@@ -687,6 +694,53 @@ def _durable_input_outcome(
     )
 
 
+def _load_terminal_semantic_input(
+    connection: _SQLiteConnectionProtocol,
+    prepared: _PreparedOperation,
+    key_kind: _operations.InputSemanticKeyKind,
+    key_bytes: bytes,
+) -> _RetainedTerminalInput | None:
+    retained = _repository.load_durable_input_by_semantic_key(
+        connection,
+        key_kind,
+        prepared.application_generation_id,
+        prepared.execution_profile_id,
+        prepared.scope_id,
+        key_bytes,
+    )
+    if retained.kind is _records.RepositoryOutcomeKind.ABSENT:
+        return None
+    if (
+        retained.kind is not _records.RepositoryOutcomeKind.FOUND
+        or type(retained.record) is not _records.DurableInputRecord
+    ):
+        raise _TechnicalRefusal("semantic-key lookup was not exact")
+    retained_input = retained.record
+    try:
+        retained_operation = _operations.decode_m2_operation(
+            retained_input.canonical_payload_bytes
+        )
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise _TechnicalRefusal("retained semantic input is not canonical") from exc
+    retained_outcome = _repository.load_durable_input_outcome(
+        connection,
+        retained_input.application_generation_id,
+        retained_input.input_domain,
+        retained_input.input_identity_sha256,
+    )
+    if (
+        retained_outcome.kind is not _records.RepositoryOutcomeKind.FOUND
+        or type(retained_outcome.record) is not _records.DurableInputOutcomeRecord
+        or retained_outcome.record.terminal_technical_state != "TERMINAL"
+    ):
+        raise _TechnicalRefusal("retained semantic outcome is not terminal evidence")
+    return _RetainedTerminalInput(
+        retained_operation,
+        retained_input,
+        retained_outcome.record,
+    )
+
+
 def _authority_query_key_bytes(
     prepared: _PreparedOperation,
     command: _authority.ClaimBrokerQuery,
@@ -708,15 +762,13 @@ def _authority_query_observation(
     command: _authority.ClaimBrokerQuery,
 ) -> _authority._M2AuthorityQueryObservationProof:
     key_bytes = _authority_query_key_bytes(prepared, command)
-    retained = _repository.load_durable_input_by_semantic_key(
+    retained = _load_terminal_semantic_input(
         connection,
+        prepared,
         _operations.InputSemanticKeyKind.AUTHORITY_QUERY_CLAIM_V1,
-        prepared.application_generation_id,
-        prepared.execution_profile_id,
-        prepared.scope_id,
         key_bytes,
     )
-    if retained.kind is _records.RepositoryOutcomeKind.ABSENT:
+    if retained is None:
         return _authority._m2_authority_query_observation_from_direct_evidence(
             prepared.context.authority,
             command,
@@ -725,41 +777,17 @@ def _authority_query_observation(
             retained_outcome_bytes=None,
         )
     if (
-        retained.kind is not _records.RepositoryOutcomeKind.FOUND
-        or type(retained.record) is not _records.DurableInputRecord
-    ):
-        raise _TechnicalRefusal("query semantic-key lookup was not exact")
-    retained_input = retained.record
-    try:
-        retained_operation = _operations.decode_m2_operation(
-            retained_input.canonical_payload_bytes
-        )
-    except (TypeError, ValueError, OverflowError) as exc:
-        raise _TechnicalRefusal("retained query input is not canonical") from exc
-    if (
-        type(retained_operation) is not _operations.AuthorityOperation
-        or type(retained_operation.command) is not _authority.ClaimBrokerQuery
-        or retained_operation.command.query_claim_id != command.query_claim_id
+        type(retained.operation) is not _operations.AuthorityOperation
+        or type(retained.operation.command) is not _authority.ClaimBrokerQuery
+        or retained.operation.command.query_claim_id != command.query_claim_id
     ):
         raise _TechnicalRefusal("retained query input has the wrong owner identity")
-    retained_outcome = _repository.load_durable_input_outcome(
-        connection,
-        retained_input.application_generation_id,
-        retained_input.input_domain,
-        retained_input.input_identity_sha256,
-    )
-    if (
-        retained_outcome.kind is not _records.RepositoryOutcomeKind.FOUND
-        or type(retained_outcome.record) is not _records.DurableInputOutcomeRecord
-        or retained_outcome.record.terminal_technical_state != "TERMINAL"
-    ):
-        raise _TechnicalRefusal("retained query outcome is not terminal evidence")
     return _authority._m2_authority_query_observation_from_direct_evidence(
         prepared.context.authority,
         command,
-        retained_command=retained_operation.command,
-        retained_input_bytes=retained_input.canonical_payload_bytes,
-        retained_outcome_bytes=retained_outcome.record.canonical_outcome_bytes,
+        retained_command=retained.operation.command,
+        retained_input_bytes=retained.input_record.canonical_payload_bytes,
+        retained_outcome_bytes=retained.outcome_record.canonical_outcome_bytes,
     )
 
 
@@ -785,6 +813,89 @@ def _store_authority_query_semantic_key(
     )
     _require_applied_repository_outcome(
         "authority query semantic key",
+        _repository.store_durable_input_semantic_key(
+            connection,
+            record,
+            capability=capability,
+        ),
+    )
+
+
+def _authority_manual_key_bytes(
+    prepared: _PreparedOperation,
+    command: _authority.BeginManualFlatten | _authority.AdvanceManualFlatten,
+) -> bytes:
+    return _operations.encode_m2_semantic_key(
+        _operations.InputSemanticKeyKind.AUTHORITY_MANUAL_FLATTEN_V1,
+        (
+            prepared.application_generation_id.value,
+            prepared.execution_profile_id,
+            prepared.scope_id,
+        ),
+        ("manual-flatten-id", command.flatten_id.value),
+    )
+
+
+def _authority_manual_observation(
+    connection: _SQLiteConnectionProtocol,
+    prepared: _PreparedOperation,
+    command: _authority.BeginManualFlatten | _authority.AdvanceManualFlatten,
+) -> _authority._M2AuthorityManualObservationProof:
+    execution = _scope_execution(prepared.context, prepared.scope_id)
+    key_bytes = _authority_manual_key_bytes(prepared, command)
+    retained = _load_terminal_semantic_input(
+        connection,
+        prepared,
+        _operations.InputSemanticKeyKind.AUTHORITY_MANUAL_FLATTEN_V1,
+        key_bytes,
+    )
+    if retained is None:
+        return _authority._m2_authority_manual_observation_from_direct_evidence(
+            prepared.context.authority,
+            command,
+            active_symbol_id=execution.position.scope.symbol_id,
+            retained_command=None,
+            retained_input_bytes=None,
+            retained_outcome_bytes=None,
+        )
+    if (
+        type(retained.operation) is not _operations.AuthorityOperation
+        or type(retained.operation.command) is not _authority.BeginManualFlatten
+        or retained.operation.command.flatten_id != command.flatten_id
+    ):
+        raise _TechnicalRefusal("retained manual input has the wrong owner identity")
+    return _authority._m2_authority_manual_observation_from_direct_evidence(
+        prepared.context.authority,
+        command,
+        active_symbol_id=execution.position.scope.symbol_id,
+        retained_command=retained.operation.command,
+        retained_input_bytes=retained.input_record.canonical_payload_bytes,
+        retained_outcome_bytes=retained.outcome_record.canonical_outcome_bytes,
+    )
+
+
+def _store_authority_manual_semantic_key(
+    connection: _SQLiteConnectionProtocol,
+    prepared: _PreparedOperation,
+    claimed: _records.DurableInputRecord,
+    command: _authority.BeginManualFlatten,
+    capability: _repository._RuntimeWriteCapability,
+) -> None:
+    key_bytes = _authority_manual_key_bytes(prepared, command)
+    record = _records.DurableInputSemanticKeyRecord(
+        _operations.InputSemanticKeyKind.AUTHORITY_MANUAL_FLATTEN_V1,
+        prepared.application_generation_id,
+        prepared.execution_profile_id,
+        prepared.scope_id,
+        key_bytes,
+        _hashlib.sha256(key_bytes).hexdigest(),
+        claimed.application_generation_id,
+        claimed.input_domain,
+        claimed.input_identity_sha256,
+        _next_semantic_key_created_ordinal(connection),
+    )
+    _require_applied_repository_outcome(
+        "authority manual semantic key",
         _repository.store_durable_input_semantic_key(
             connection,
             record,
@@ -884,9 +995,25 @@ def _execute_authority_operation(
     if type(operation.command) not in (
         _authority.EngageKill,
         _authority.ClaimBrokerQuery,
+        _authority.BeginManualFlatten,
+        _authority.AdvanceManualFlatten,
     ):
         raise _TechnicalRefusal("authority command route is not implemented")
     execution = _scope_execution(prepared.context, prepared.scope_id)
+    manual_command = (
+        _cast(
+            _authority.BeginManualFlatten | _authority.AdvanceManualFlatten,
+            operation.command,
+        )
+        if type(operation.command)
+        in (_authority.BeginManualFlatten, _authority.AdvanceManualFlatten)
+        else None
+    )
+    manual_observation = (
+        _authority_manual_observation(connection, prepared, manual_command)
+        if manual_command is not None
+        else None
+    )
     query_observation = (
         _authority_query_observation(connection, prepared, operation.command)
         if type(operation.command) is _authority.ClaimBrokerQuery
@@ -896,14 +1023,11 @@ def _execute_authority_operation(
         prepared.context.authority,
         execution,
         operation.command,
-        manual_observation=None,
+        manual_observation=manual_observation,
         query_observation=query_observation,
     )
-    if transition.created_effect_ids or (
-        transition.fresh_claim is not None
-        and type(transition.fresh_claim) is not _authority._FreshQueryClaim
-    ):
-        raise _TechnicalRefusal("authority transition emitted an unrelated claim")
+    if transition.created_effect_ids:
+        raise _TechnicalRefusal("authority transition emitted unwritten effects")
     if (
         transition.venue_transitions
         or transition.acquisition_receipt is not None
@@ -931,8 +1055,20 @@ def _execute_authority_operation(
             )
         elif transition.fresh_claim is not None:
             raise _TechnicalRefusal("non-applied query emitted a fresh claim")
-    elif transition.fresh_claim is not None:
-        raise _TechnicalRefusal("kill transition emitted a fresh claim")
+    else:
+        if transition.fresh_claim is not None:
+            raise _TechnicalRefusal("authority transition emitted a fresh claim")
+        if (
+            type(operation.command) is _authority.BeginManualFlatten
+            and transition.disposition is _authority.AuthorityDisposition.APPLIED
+        ):
+            _store_authority_manual_semantic_key(
+                connection,
+                prepared,
+                claimed,
+                operation.command,
+                capability,
+            )
     candidate_context = (
         UnitOfWorkContext(
             prepared.context.expected_checkpoint,
