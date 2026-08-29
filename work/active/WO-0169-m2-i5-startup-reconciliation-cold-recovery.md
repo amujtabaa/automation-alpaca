@@ -634,3 +634,12 @@ different-owner case; all stale-head, wrong-provenance, and predecessor-at-N cas
 before that comparator. One finite same-seat verification of this exact evidence correction must
 return zero open P0/P1 before the fresh-file proof proceeds. Production source, DDL, held test,
 human flag, and accepted startup architecture are unchanged.
+
+REV-0117 R7 returned `ACCEPT`, P0=0/P1=0/P2=0, against exact test-only correction
+`51c90ba480e8b61ea7e57d627f0b90cdb80191e1`, tree
+`b1514e84c5fcb910520353e90115d6a0bb2de6ab`. The reviewer reproduced the corrected direct
+control and confirmed that the genuine N+1 different-owner case reaches the semantic comparator,
+while all earlier invalid categories refuse at their owning guards. The application/test
+remediation is accepted. Under Ameen's standing instruction to finish this work order without
+routine approval stops, the next bounded action is one new R4 fresh pytest-owned file-database
+proof with unchanged approved DDL and an exact flag-only quarantined branch.
