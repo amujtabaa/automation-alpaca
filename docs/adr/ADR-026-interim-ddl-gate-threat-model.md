@@ -1,11 +1,12 @@
 # ADR-026 — Interim changed-DDL gate threat model and review convergence
 
-Status: **ACCEPTED — exact implementation accepted by REV-0108**
+Status: **ACCEPTED — REV-0108 baseline; REV-0109-R2 catalog-evidence amendment authorized**
 
 Decision owner: Ameen Mujtabaa
 
 Authority: Ameen's 2026-08-26 hybrid ratification and 2026-08-27 approval of the
-Codex handoff corrections recorded in WO-0168d.
+Codex handoff corrections recorded in WO-0168d, plus his 2026-08-28 bounded
+REV-0109 round-two static-remediation authorization.
 
 ## Context
 
@@ -59,6 +60,14 @@ decision may move enforcement to an external process or OS boundary.
 6. CODEOWNERS marks the gate, gated suites, schema, workflows, and ownership
    policy for Ameen's review. Repository settings determine whether GitHub can
    enforce this marker.
+7. The catalog fingerprint is post-install integrity evidence, not execution
+   authority. After the exact human-approved DDL is installed on the verified
+   empty target, the installer computes the observed application-owned catalog
+   digest and stores it in the immutable `schema_meta` row beside the schema
+   version and approved DDL digest. Every later connection guard compares the
+   current catalog to that retained observation. There is no precomputed catalog
+   constant to approve its own installation; only Ameen's flag and the exact
+   approved DDL SHA-256 may authorize connection access and DDL execution.
 
 No control claims that arbitrary Python cannot evade an in-process guard.
 
@@ -72,7 +81,9 @@ flag is `False`. A valid source-recorded unlock must:
 3. record Ameen's approved commands and bounded attempt count;
 4. record the resulting commit and tree before execution; and
 5. re-verify a clean, published checkout plus unchanged DDL digest, byte count,
-   schema blob, catalog digest, and SQL-manifest identity.
+   schema blob, and SQL-manifest identity. The catalog digest does not exist as
+   gate evidence until the authorized fresh-file installation observes and
+   immutably records it.
 
 The human act supplies authorization. The resulting Git identity supplies the
 audit record. Neither a matching digest nor an agent-authored record authorizes
@@ -112,6 +123,9 @@ solution-class decision. It may not silently regrow the retired scanner.
   that create databases remain deferred under the narrower F1 authority.
 - The gate is legible and bounded; it protects against the declared accidental
   threat, not a hostile interpreter or host owner.
+- Catalog verification detects post-install catalog drift without turning a
+  runtime-derived catalog value into pre-execution approval. The authorized run
+  must return the retained observed digest as evidence.
 - The four held suites remain NOT_RUN until Ameen completes the separate DDL
   intent review and exact unlock. This ADR grants no database, migration,
   credential, broker, order, promotion, or master-merge authority.

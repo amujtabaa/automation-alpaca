@@ -49,7 +49,7 @@ from typing import Sequence as _Sequence
 SCHEMA_VERSION = 2
 
 EXPECTED_EXECUTION_DDL_SHA256: _Final[str] = (
-    "2636c72793515a46c893d93084750b45ea2f151c58055480d5c601eb8c0faac5"
+    "75d68e53a110b01e1b1030d30e089166765ea34c5883a1c07ed9257685ec72d4"
 )
 DDL_EXECUTION_AUTHORIZED_BY_AMEEN: _Final[bool] = False
 
@@ -57,7 +57,9 @@ SCHEMA_DDL = """
 CREATE TABLE schema_meta (
     schema_version INTEGER PRIMARY KEY,
     approved_ddl_sha256 TEXT NOT NULL
-        CHECK (length(approved_ddl_sha256) = 64 AND approved_ddl_sha256 NOT GLOB '*[^0-9a-f]*')
+        CHECK (length(approved_ddl_sha256) = 64 AND approved_ddl_sha256 NOT GLOB '*[^0-9a-f]*'),
+    observed_catalog_sha256 TEXT NOT NULL
+        CHECK (length(observed_catalog_sha256) = 64 AND observed_catalog_sha256 NOT GLOB '*[^0-9a-f]*')
 );
 
 CREATE TABLE execution_connection_profile (
@@ -4307,6 +4309,28 @@ BEGIN
     SELECT RAISE (ABORT, 'durable input must initially be claimed');
 END;
 
+CREATE TRIGGER trg_durable_input_market_stream_exact_route
+    BEFORE INSERT ON durable_input
+    FOR EACH ROW
+    WHEN NEW.input_domain = 'MARKET_OCCURRENCE'
+     AND NOT EXISTS (
+            SELECT 1
+              FROM market_stream_authority AS stream
+             WHERE stream.stream_generation_id = NEW.stream_generation_id
+               AND stream.scope_id = NEW.scope_id
+               AND stream.application_generation_id =
+                    NEW.application_generation_id
+               AND stream.acquisition_generation_id =
+                    NEW.acquisition_generation_id
+               AND stream.source_profile_id = NEW.market_source_profile_id
+               AND stream.session_external = NEW.session_external
+        )
+BEGIN
+    SELECT RAISE (
+        ABORT, 'market occurrence input must bind its exact stream route'
+    );
+END;
+
 CREATE TRIGGER trg_durable_input_immutable
     BEFORE UPDATE ON durable_input
     FOR EACH ROW
@@ -4595,6 +4619,36 @@ BEGIN
     SELECT RAISE (ABORT, 'broker outbox sequence must be the next global ordinal');
 END;
 
+CREATE TRIGGER trg_broker_outbox_exact_input_route
+    BEFORE INSERT ON broker_outbox
+    FOR EACH ROW
+    WHEN NOT EXISTS (
+            SELECT 1
+              FROM durable_input AS input
+             WHERE input.application_generation_id =
+                    NEW.application_generation_id
+               AND input.input_domain = NEW.input_domain
+               AND input.input_identity_sha256 = NEW.input_identity_sha256
+               AND input.execution_profile_id = NEW.execution_profile_id
+               AND input.scope_id = NEW.scope_id
+               AND (
+                    (
+                        NEW.input_domain = 'AUTHORITY'
+                        AND input.acquisition_generation_id IS NULL
+                    )
+                    OR (
+                        NEW.input_domain = 'CLAIM_ACQUISITION_EFFECT'
+                        AND input.acquisition_generation_id =
+                            NEW.acquisition_generation_id
+                    )
+               )
+        )
+BEGIN
+    SELECT RAISE (
+        ABORT, 'broker outbox must bind its exact durable input route'
+    );
+END;
+
 CREATE TRIGGER trg_broker_outbox_no_conflict_replace
     BEFORE INSERT ON broker_outbox
     FOR EACH ROW
@@ -4622,10 +4676,6 @@ BEGIN
     SELECT RAISE (ABORT, 'broker outbox rows are retained');
 END;
 """
-
-_SCHEMA_CATALOG_SHA256 = (
-    "c717f6a6c84b37cb13773416c90b50d14f377e39928d7f9c626e769296e632d2"
-)
 
 
 class SchemaInstallError(Exception):
@@ -4727,14 +4777,36 @@ def verify_schema_connection(connection: SQLiteConnectionProtocol) -> int:
             "connection does not expose the exact installed schema identity"
         )
     identity_rows = connection.execute(
-        "SELECT schema_version, approved_ddl_sha256 FROM schema_meta"
+        "SELECT schema_version, approved_ddl_sha256, observed_catalog_sha256"
+        " FROM schema_meta"
     ).fetchall()
-    expected = (SCHEMA_VERSION, schema_ddl_digest())
-    if len(identity_rows) != 1 or tuple(identity_rows[0]) != expected:
+    current_ddl_sha256 = schema_ddl_digest()
+    if EXPECTED_EXECUTION_DDL_SHA256 != current_ddl_sha256:
+        raise SchemaInstallError(
+            "current schema bytes do not match the expected execution DDL identity"
+        )
+    expected = (SCHEMA_VERSION, EXPECTED_EXECUTION_DDL_SHA256)
+    if len(identity_rows) != 1:
         raise SchemaInstallError(
             "connection does not expose the exact installed schema identity"
         )
-    if _schema_catalog_digest(connection) != _SCHEMA_CATALOG_SHA256:
+    retained_identity = tuple(identity_rows[0])
+    if len(retained_identity) != 3 or retained_identity[:2] != expected:
+        raise SchemaInstallError(
+            "connection does not expose the exact installed schema identity"
+        )
+    observed_catalog_sha256 = retained_identity[2]
+    if (
+        type(observed_catalog_sha256) is not str
+        or len(observed_catalog_sha256) != 64
+        or any(
+            character not in "0123456789abcdef" for character in observed_catalog_sha256
+        )
+    ):
+        raise SchemaInstallError(
+            "connection does not expose the exact installed schema identity"
+        )
+    if _schema_catalog_digest(connection) != observed_catalog_sha256:
         raise SchemaInstallError(
             "connection does not expose the exact installed schema catalog"
         )
@@ -4809,13 +4881,11 @@ def install_schema(
             )
         for statement in _ddl_statements():
             connection.execute(statement)
-        if _schema_catalog_digest(connection) != _SCHEMA_CATALOG_SHA256:
-            raise SchemaInstallError(
-                "installed schema catalog differs from the exact contract"
-            )
+        observed_catalog_sha256 = _schema_catalog_digest(connection)
         connection.execute(
-            "INSERT INTO schema_meta (schema_version, approved_ddl_sha256) VALUES (?, ?)",
-            (SCHEMA_VERSION, actual_digest),
+            "INSERT INTO schema_meta (schema_version, approved_ddl_sha256,"
+            " observed_catalog_sha256) VALUES (?, ?, ?)",
+            (SCHEMA_VERSION, actual_digest, observed_catalog_sha256),
         )
         connection.execute("COMMIT")
     except BaseException:

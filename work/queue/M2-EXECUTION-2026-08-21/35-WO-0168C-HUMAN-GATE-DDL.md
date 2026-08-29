@@ -562,3 +562,32 @@ connection, database, DDL, migration, or later work executed.
 This acceptance does NOT authorize DDL execution. The next milestone is the separate human DDL
 intent review, exact command/attempt authorization, and one-line unlock commit from the accepted
 parent. Until Ameen expressly authorizes that milestone, the gate remains CLOSED.
+
+---
+
+# Amendment 14 — REV-0109 round-two route and catalog remediation
+
+Date: 2026-08-28 · Recorded by: Codex implementation/orchestrator seat · Approved by: Ameen Mujtabaa
+
+REV-0109 round one returned `BLOCK`, P0=0/P1=3/P2=0. Static reproduction confirmed two split
+database relationships: a `MARKET_OCCURRENCE` durable input could name a stream from another valid
+route, and a broker-outbox row could borrow a durable input from another scope or acquisition
+route. Its attempt-two plan also permitted a changed test revision without repeating the exact
+published review lifecycle.
+
+Ameen authorized one bounded static remediation. The successor adds database-owned insert-time
+exact-route bindings and held positive/negative controls. It also removes the precomputed catalog
+pin: after an authorized empty-target installation, the installer records the observed catalog
+SHA-256 in immutable `schema_meta`; later guards compare the current catalog to that retained
+evidence. The still-False human flag and exact approved DDL SHA-256 remain the only execution
+authority. Attempt two is now permitted only for a zero-tracked-change environmental or
+interruption retry. Any product, DDL, fixture, expectation, or test change stops the run and
+requires a new reviewed packet.
+
+The exact DDL candidate is 180,858 UTF-8 bytes at SHA-256
+`75d68e53a110b01e1b1030d30e089166765ea34c5883a1c07ed9257685ec72d4`; the static catalog
+inventory is 28 tables, 29 indexes, 150 triggers, and zero views. No catalog digest is claimed
+before installation. No SQLite connection, database, DDL installation, held-suite execution,
+migration, later work order, promotion, or merge is authorized. REV-0109 round two must return
+zero open P0/P1 against the exact published candidate before Ameen receives a separate execution
+decision packet.

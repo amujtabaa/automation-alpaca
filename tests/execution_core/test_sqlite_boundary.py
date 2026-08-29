@@ -405,6 +405,10 @@ def test_matching_expected_digest_cannot_bypass_closed_human_gate() -> None:
         install_schema(_Connection(), approved_ddl_sha256=EXPECTED_EXECUTION_DDL_SHA256)
 
 
+def test_expected_digest_is_the_exact_static_ddl_identity() -> None:
+    assert EXPECTED_EXECUTION_DDL_SHA256 == schema_ddl_digest()
+
+
 def test_one_character_digest_mismatch_is_refused_without_connection_use() -> None:
     actual = schema_ddl_digest()
     wrong = ("0" if actual[0] != "0" else "1") + actual[1:]

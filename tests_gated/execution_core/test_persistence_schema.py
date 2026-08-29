@@ -1090,10 +1090,15 @@ def test_installer_installs_exact_version_into_fresh_temporary_database(
     connection = _installed_connection(tmp_path)
 
     version_row = connection.execute(
-        "SELECT schema_version, approved_ddl_sha256 FROM schema_meta"
+        "SELECT schema_version, approved_ddl_sha256, observed_catalog_sha256"
+        " FROM schema_meta"
     ).fetchone()
 
-    assert version_row == (SCHEMA_VERSION, schema_ddl_digest())
+    assert version_row == (
+        SCHEMA_VERSION,
+        schema_ddl_digest(),
+        schema_module._schema_catalog_digest(connection),  # noqa: SLF001
+    )
 
 
 def test_digest_mismatch_refuses_before_any_ddl() -> None:
@@ -1144,11 +1149,12 @@ def test_connection_verifier_refuses_spoofed_metadata_without_exact_catalog(
 ) -> None:
     connection = _connection(tmp_path)
     connection.execute(
-        "CREATE TABLE schema_meta (schema_version INTEGER, approved_ddl_sha256 TEXT)"
+        "CREATE TABLE schema_meta (schema_version INTEGER, approved_ddl_sha256 TEXT,"
+        " observed_catalog_sha256 TEXT)"
     )
     connection.execute(
-        "INSERT INTO schema_meta VALUES (?, ?)",
-        (SCHEMA_VERSION, schema_ddl_digest()),
+        "INSERT INTO schema_meta VALUES (?, ?, ?)",
+        (SCHEMA_VERSION, schema_ddl_digest(), "00" * 32),
     )
 
     with pytest.raises(SchemaInstallError, match="exact installed schema catalog"):
@@ -1604,6 +1610,10 @@ def test_immutable_rows_refuse_update_and_delete(tmp_path: object) -> None:
         ("DELETE FROM application_generation", ()),
         ("UPDATE execution_fact SET quantity = 11 WHERE fact_id = 1", ()),
         ("DELETE FROM execution_fact", ()),
+        (
+            "UPDATE schema_meta SET observed_catalog_sha256 = ?",
+            ("00" * 32,),
+        ),
         ("DELETE FROM schema_meta", ()),
         ("UPDATE root_fill SET root_fill_key_id = 2", ()),
         ("UPDATE root_fill SET owner_generation_id = ?", ("34" * 32,)),
@@ -3003,8 +3013,8 @@ def test_reopened_default_connection_cannot_replace_direct_authority(
     assert reopened.execute("PRAGMA recursive_triggers").fetchone() == (0,)
     with pytest.raises(sqlite3.IntegrityError, match="metadata is already retained"):
         reopened.execute(
-            "INSERT OR REPLACE INTO schema_meta VALUES (1, ?)",
-            ("00" * 32,),
+            "INSERT OR REPLACE INTO schema_meta VALUES (1, ?, ?)",
+            ("00" * 32, "11" * 32),
         )
     reopened.rollback()
     with pytest.raises(SchemaForeignKeysDisabledError):
@@ -4628,3 +4638,260 @@ def test_acquisition_predecessor_must_be_same_scope_and_immediate(
         ("dd" * 32, "bb" * 32, "6a" * 32, "9b" * 32),
     ).rowcount
     assert stored == 1
+
+
+# ---------------------------------------------------------------------------
+# REV-0109-R2 exact durable-input and broker-outbox route attribution.
+
+
+def _insert_durable_input_route(
+    connection: sqlite3.Connection,
+    *,
+    input_domain: str,
+    input_identity_sha256: str,
+    created_ordinal: int,
+    scope_id: int = 1,
+    application_generation_id: str = _DEFAULT_GENERATION_ID,
+    execution_profile_id: str = _DEFAULT_EXECUTION_PROFILE_ID,
+    session_external: str | None = None,
+    acquisition_generation_id: str | None = None,
+    market_source_profile_id: str | None = None,
+    stream_generation_id: str | None = None,
+) -> int:
+    payload = f"input-{created_ordinal}".encode()
+    return connection.execute(
+        """
+        INSERT INTO durable_input (
+            application_generation_id, execution_profile_id, scope_id,
+            input_domain, session_external, acquisition_generation_id,
+            market_source_profile_id, stream_generation_id,
+            input_identity_sha256, operation_contract_version,
+            canonical_payload_bytes, payload_sha256, technical_state,
+            created_ordinal
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, 'CLAIMED', ?)
+        """,
+        (
+            application_generation_id,
+            execution_profile_id,
+            scope_id,
+            input_domain,
+            session_external,
+            acquisition_generation_id,
+            market_source_profile_id,
+            stream_generation_id,
+            input_identity_sha256,
+            payload,
+            f"{created_ordinal:064x}",
+            created_ordinal,
+        ),
+    ).rowcount
+
+
+def _insert_broker_outbox_route(
+    connection: sqlite3.Connection,
+    *,
+    input_domain: str,
+    input_identity_sha256: str,
+    effect_id: int,
+    claim_id: int,
+    acquisition_generation_id: str,
+    scope_id: int = 1,
+    outbox_sequence: int = 1,
+) -> int:
+    payload = f"outbox-{outbox_sequence}".encode()
+    return connection.execute(
+        """
+        INSERT INTO broker_outbox (
+            outbox_sequence, application_generation_id,
+            execution_profile_id, scope_id, acquisition_generation_id,
+            input_domain, input_identity_sha256, effect_id, claim_id,
+            canonical_payload_bytes, payload_length, payload_sha256
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            outbox_sequence,
+            _DEFAULT_GENERATION_ID,
+            _DEFAULT_EXECUTION_PROFILE_ID,
+            scope_id,
+            acquisition_generation_id,
+            input_domain,
+            input_identity_sha256,
+            effect_id,
+            claim_id,
+            payload,
+            len(payload),
+            f"{outbox_sequence + 100:064x}",
+        ),
+    ).rowcount
+
+
+def test_market_occurrence_input_requires_its_exact_stream_route(
+    tmp_path: object,
+) -> None:
+    connection = _installed_connection(tmp_path)
+    _seed_scope_with_live_generation(connection)
+    exact_stream_id = "81" * 32
+    other_session_stream_id = "82" * 32
+    _insert_market_stream(
+        connection,
+        stream_generation_id=exact_stream_id,
+        session_external="session-exact",
+    )
+    _insert_market_stream(
+        connection,
+        stream_generation_id=other_session_stream_id,
+        session_external="session-other",
+    )
+
+    assert (
+        _insert_durable_input_route(
+            connection,
+            input_domain="MARKET_OCCURRENCE",
+            input_identity_sha256="91" * 32,
+            created_ordinal=1,
+            session_external="session-exact",
+            acquisition_generation_id="12" * 32,
+            market_source_profile_id=_DEFAULT_MARKET_SOURCE_PROFILE_ID,
+            stream_generation_id=exact_stream_id,
+        )
+        == 1
+    )
+    with pytest.raises(sqlite3.IntegrityError, match="exact stream route"):
+        _insert_durable_input_route(
+            connection,
+            input_domain="MARKET_OCCURRENCE",
+            input_identity_sha256="92" * 32,
+            created_ordinal=2,
+            session_external="session-exact",
+            acquisition_generation_id="12" * 32,
+            market_source_profile_id=_DEFAULT_MARKET_SOURCE_PROFILE_ID,
+            stream_generation_id=other_session_stream_id,
+        )
+
+    assert connection.execute("SELECT count(*) FROM durable_input").fetchone() == (1,)
+
+
+def test_broker_outbox_refuses_durable_input_from_another_scope(
+    tmp_path: object,
+) -> None:
+    connection = _installed_connection(tmp_path)
+    _seed_scope_with_live_generation(connection)
+    connection.execute(
+        "INSERT INTO acquisition_scope VALUES (2, ?, ?, 'MSFT')",
+        (_DEFAULT_GENERATION_ID, _DEFAULT_EXECUTION_PROFILE_ID),
+    )
+    connection.execute(
+        "INSERT INTO acquisition_generation VALUES (?, 2, 'LIVE', 1, NULL, ?, ?)",
+        ("34" * 32, "8a" * 32, "8b" * 32),
+    )
+    _insert_open_effect(
+        connection,
+        2,
+        scope_id=2,
+        acquisition_generation_id="34" * 32,
+        generation_mandate_commitment_sha256="8a" * 32,
+    )
+    _insert_claim(connection, claim_id=2, effect_id=2)
+
+    _insert_durable_input_route(
+        connection,
+        input_domain="AUTHORITY",
+        input_identity_sha256="a1" * 32,
+        created_ordinal=1,
+        scope_id=1,
+    )
+    with pytest.raises(sqlite3.IntegrityError, match="exact durable input route"):
+        _insert_broker_outbox_route(
+            connection,
+            input_domain="AUTHORITY",
+            input_identity_sha256="a1" * 32,
+            effect_id=2,
+            claim_id=2,
+            scope_id=2,
+            acquisition_generation_id="34" * 32,
+        )
+
+    _insert_durable_input_route(
+        connection,
+        input_domain="AUTHORITY",
+        input_identity_sha256="a2" * 32,
+        created_ordinal=2,
+        scope_id=2,
+    )
+    assert (
+        _insert_broker_outbox_route(
+            connection,
+            input_domain="AUTHORITY",
+            input_identity_sha256="a2" * 32,
+            effect_id=2,
+            claim_id=2,
+            scope_id=2,
+            acquisition_generation_id="34" * 32,
+        )
+        == 1
+    )
+
+
+def test_broker_outbox_refuses_durable_input_from_another_acquisition(
+    tmp_path: object,
+) -> None:
+    connection = _installed_connection(tmp_path)
+    _insert_profiles_and_generation(connection)
+    connection.execute(
+        "INSERT INTO acquisition_scope VALUES (1, ?, ?, 'AAPL')",
+        (_DEFAULT_GENERATION_ID, _DEFAULT_EXECUTION_PROFILE_ID),
+    )
+    connection.execute(
+        "INSERT INTO acquisition_generation VALUES"
+        " (?, 1, 'RETIRED_UNSERVING', 1, NULL, ?, ?)",
+        ("12" * 32, "9a" * 32, "9b" * 32),
+    )
+    connection.execute(
+        "INSERT INTO acquisition_generation VALUES (?, 1, 'LIVE', 2, ?, ?, ?)",
+        ("34" * 32, "12" * 32, "9c" * 32, "9b" * 32),
+    )
+    _insert_open_effect(
+        connection,
+        1,
+        acquisition_generation_id="34" * 32,
+        generation_mandate_commitment_sha256="9c" * 32,
+    )
+    _insert_claim(connection, claim_id=1, effect_id=1)
+
+    _insert_durable_input_route(
+        connection,
+        input_domain="CLAIM_ACQUISITION_EFFECT",
+        input_identity_sha256="b1" * 32,
+        created_ordinal=1,
+        session_external="session-retired",
+        acquisition_generation_id="12" * 32,
+    )
+    with pytest.raises(sqlite3.IntegrityError, match="exact durable input route"):
+        _insert_broker_outbox_route(
+            connection,
+            input_domain="CLAIM_ACQUISITION_EFFECT",
+            input_identity_sha256="b1" * 32,
+            effect_id=1,
+            claim_id=1,
+            acquisition_generation_id="34" * 32,
+        )
+
+    _insert_durable_input_route(
+        connection,
+        input_domain="CLAIM_ACQUISITION_EFFECT",
+        input_identity_sha256="b2" * 32,
+        created_ordinal=2,
+        session_external="session-live",
+        acquisition_generation_id="34" * 32,
+    )
+    assert (
+        _insert_broker_outbox_route(
+            connection,
+            input_domain="CLAIM_ACQUISITION_EFFECT",
+            input_identity_sha256="b2" * 32,
+            effect_id=1,
+            claim_id=1,
+            acquisition_generation_id="34" * 32,
+        )
+        == 1
+    )

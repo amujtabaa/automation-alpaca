@@ -955,7 +955,8 @@ _SCHEMA_GUARD_CALLS = tuple(
         "PRAGMA foreign_keys",
         "PRAGMA recursive_triggers",
         "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_meta'",
-        "SELECT schema_version, approved_ddl_sha256 FROM schema_meta",
+        "SELECT schema_version, approved_ddl_sha256, observed_catalog_sha256"
+        " FROM schema_meta",
         "SELECT type, name, tbl_name, sql FROM sqlite_master "
         "WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name",
     )
