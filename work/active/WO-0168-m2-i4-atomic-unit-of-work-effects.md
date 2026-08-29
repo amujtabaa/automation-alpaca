@@ -48,6 +48,7 @@ allowed_paths:
   - tests/execution_core/test_import_boundary.py
   - tests/execution_core/test_protection.py
   - tests/execution_core/test_venue_binding_recovery.py
+  - tests_gated/execution_core/test_persistence_schema.py
   - tests_gated/execution_core/test_persistence_unit_of_work_sqlite.py
   - work/active/WO-0168-m2-i4-atomic-unit-of-work-effects.md
   - work/completed/keep/WO-0168-m2-i4-atomic-unit-of-work-effects.md
@@ -275,6 +276,28 @@ changed-DDL candidate but still does not permit execution.
 This authority changes schema bytes but does not authorize their execution. The expected digest is
 an identity pin only. `DDL_EXECUTION_AUTHORIZED_BY_AMEEN` remains the exact boolean `False` through
 this candidate and its static review.
+
+### REV-0114 attempt-one test-only remediation
+
+The separately approved flag-only execution commit
+`99f14907d0b4cfdb7ebeff20492c9c101ca9aeb9` ran the exact five-suite attempt-one command once and
+stopped with six failures. No attempt-two run occurred. All failures are test-contract or fixture
+defects against the accepted DDL, not DDL defects:
+
+1. The legacy cross-root test expected SQLite's generic `FOREIGN KEY` text, but the new owning
+   root guard correctly refuses first with the precise retained-owner-root error. Its assertion now
+   requires that owning refusal.
+2. The legacy serial-late-owner test expected the superseded double advance. Three late owners now
+   produce exactly three immediate advances, while each exact matching INVALIDATION produces zero
+   additional advances, so the final head/version is `(5, 6)`, not `(6, 7)`.
+3. The routed dormant-position helper used `fact_id=900`, which also defaulted its global fact
+   ordinal to 900 in an otherwise empty database. It now uses the canonical first fact/ordinal `1`.
+   The four controls that share this fixture therefore reach their intended controller/protection
+   assertions instead of failing during seed setup.
+
+This remediation changes held tests and governance only. `schema.py`, DDL bytes/digest, expected
+digest, and exact `False` human flag remain unchanged. A fresh static correction review must return
+zero open P0/P1 before a new flag-only execution branch and fresh attempt path may be used.
 
 ### Static remediation identity
 

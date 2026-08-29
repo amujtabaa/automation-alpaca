@@ -1892,7 +1892,10 @@ def test_acquisition_route_cannot_borrow_another_roots_owner_proof(
     ).fetchone()
     assert route is not None
 
-    with pytest.raises(sqlite3.IntegrityError, match="FOREIGN KEY"):
+    with pytest.raises(
+        sqlite3.IntegrityError,
+        match="acquisition route must match the retained owner root",
+    ):
         connection.execute(
             "INSERT INTO acquisition_root_route VALUES (?, 1, ?, ?, ?, ?, ?, ?)",
             (
@@ -2814,7 +2817,7 @@ def test_post_closure_owner_atomically_quarantines_serial_successor(
     assert connection.execute(
         "SELECT integrity_state, currentness_head_ordinal,"
         " controller_version_ordinal FROM symbol_controller"
-    ).fetchone() == ("UNRESOLVED_VENUE_QUARANTINED", 6, 7)
+    ).fetchone() == ("UNRESOLVED_VENUE_QUARANTINED", 5, 6)
 
 
 def test_normal_effect_and_claim_require_current_normal_protection(

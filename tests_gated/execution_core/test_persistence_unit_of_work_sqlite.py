@@ -132,7 +132,7 @@ def _seed_routed_dormant_position(
     )
     _schema._insert_fill(
         connection,
-        fact_id=900,
+        fact_id=1,
         root_id=1,
         event="seed-position",
         side=side,
