@@ -464,3 +464,10 @@ plus-one comparison had no non-empty unresolved selection test. The test-only co
 authentic successor with a retained retired predecessor and stream route, proves the one-based
 durable row encodes, and proves the domain-ordinal mutant raises the existing splice refusal. One
 finite correction verification is required; no SQLite rerun is authorized yet.
+
+REV-0117 R3 returned `ACCEPT`, P0=0/P1=0/P2=0, against exact test-only correction
+`d1b0b26a55f8d45fa7b6bc7953c99f5a4fb78126`, tree
+`142e738b7848f0751ac51d7b66521227aaff4e6e`. The reviewer reproduced all 23 pure hydration tests
+and confirmed the unresolved-generation mutant is failure-capable. `sqlite-execution-manifest-r2.md`
+now holds the corrected candidate at a new human gate. The first authorization remains consumed;
+no new SQLite execution is authorized yet.
