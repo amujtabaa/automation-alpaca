@@ -356,6 +356,27 @@ questions without a contract clause or demonstrated failure.
   five-suite fresh-file commands. Candidate commit/tree are bound in the review request after
   commit creation.
 
+### REV-0115 whole-work-order findings and root remediation
+
+Fresh whole-work-order review returned `BLOCK` against source candidate
+`7c0e52b26cf0bc1b82bbfa04ffc4131e80161145` with P0=2/P1=1/P2=0. All findings are accepted:
+manual SELL creation consumed an unbound raw row, route-less canonical corrections/busts were
+stopped before persistence, and the frozen O1-O8 exact-call/fault ratchet was absent.
+
+Root-remediation commit `55c4698236858fd1f9a92fc8e50134b8161c1843`, tree
+`6b6c4dda85e56c9648fb545b806c12bce5d42b0b`, closes those owning boundaries. Manual SELL now
+requires a sealed operation-targeted proof of the exact active READY scope row; route-less
+predecessor-valid revisions advance quarantined broker truth without inventing attribution; and
+one literal O1-O8 repository-call table is pinned to every static mutator call site with exact
+missing/extra/reordered/dynamic/wildcard mutants plus before/after old-complete fault controls.
+
+At that exact source commit, all 2,178 ordinary `tests/execution_core` tests passed at 100% with
+exit zero. Ruff check/format passed, mypy passed all 96 application files, and whitespace/static
+checks passed. DDL remained 190,705 bytes at
+`d4df1aaa0a7fed6002c8a55923fb3a35ba948055779dac99bf82e70b6a804c18`; schema blob and exact
+`False` execution flag did not move. `REV-0115/request-r1.md` binds the single fresh exact-source
+re-review. WO-0168 remains ACTIVE until that review returns zero open P0/P1.
+
 ## Done
 
 Focused pure and fresh-file fault suites, full `tests/execution_core`, Ruff check/format, mypy,
