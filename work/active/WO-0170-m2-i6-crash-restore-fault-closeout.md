@@ -26,6 +26,9 @@ allowed_paths:
   - tests/execution_core/test_persistence_fault_matrix.py
   - tests/execution_core/test_persistence_restore.py
   - tests/execution_core/test_persistence_boundedness.py
+  - tests_gated/execution_core/test_persistence_fault_matrix.py
+  - tests_gated/execution_core/test_persistence_restore.py
+  - tests_gated/execution_core/test_persistence_boundedness.py
   - tests/performance/m2_persistence_budget.py
   - harness/m2/**
   - work/queue/WO-0170-m2-i6-crash-restore-fault-closeout.md
@@ -138,6 +141,9 @@ allowed_paths:
   - tests/execution_core/test_persistence_fault_matrix.py
   - tests/execution_core/test_persistence_restore.py
   - tests/execution_core/test_persistence_boundedness.py
+  - tests_gated/execution_core/test_persistence_fault_matrix.py
+  - tests_gated/execution_core/test_persistence_restore.py
+  - tests_gated/execution_core/test_persistence_boundedness.py
   - tests/performance/m2_persistence_budget.py
   - harness/m2/**
   - work/active/WO-0170-m2-i6-crash-restore-fault-closeout.md
@@ -155,6 +161,12 @@ Any production correction needs an additive exact scope amendment naming the own
 demonstrated defect before edit. The two review paths are finite: REV-0118 owns the WO-0170 green
 candidate and at most one correction re-review; REV-0119 owns the terminal combined M2 and M3-entry
 preparation review.
+
+The ordinary `tests/execution_core/**` files are pure/static controls and remain part of default
+discovery. The three exact `tests_gated/execution_core/**` files own SQLite-bearing fresh-file
+proof and remain outside default discovery behind the existing application-owned installer gate.
+This split prevents a skipped or locally provisioned database from masquerading as ordinary green
+evidence.
 
 ## Out of scope and completion
 
