@@ -6185,6 +6185,71 @@ def _new_state(**values: object) -> ExecutionAuthorityState:
     return _validate_authority_state(result)
 
 
+def _m2_restore_compact_authority_state(
+    *,
+    phase: EnginePhase,
+    mode: TradingMode,
+    supervisor_fence: SupervisorFence,
+    kill_engaged: bool,
+    session_id: SessionId | None,
+    budget: RequestBudget,
+    venue: VenueRecoveryBook,
+    manuals: tuple[_ManualFlatten, ...],
+    emergency_grant: _EmergencyGrant | None,
+) -> ExecutionAuthorityState:
+    """Restore checkpoint-owned current authority state without input history."""
+
+    if type(manuals) is not tuple:
+        raise TypeError("manuals must be an exact tuple")
+    manual_by_id: _PersistentKeyMap[_ManualFlatten] = _PersistentKeyMap.empty()
+    manual_by_scope: _PersistentKeyMap[ManualFlattenId] = _PersistentKeyMap.empty()
+    application_generation_id = venue.scope.generation
+    for manual in manuals:
+        if type(manual) is not _ManualFlatten:
+            raise TypeError("manual checkpoint row must be exact _ManualFlatten")
+        command = manual.command
+        if type(command) is not BeginManualFlatten:
+            raise TypeError("manual checkpoint command must be exact")
+        manual_by_id = _inserted(
+            manual_by_id,
+            _manual_key(command.flatten_id),
+            manual,
+        )
+        position_scope = PositionScope(
+            broker=venue.scope.broker,
+            environment=venue.scope.environment,
+            account=venue.scope.account,
+            symbol_id=command.symbol_id,
+        )
+        manual_by_scope = _inserted(
+            manual_by_scope,
+            _acquisition_scope_key(application_generation_id, position_scope),
+            command.flatten_id,
+        )
+    return _new_state(
+        phase=phase,
+        mode=mode,
+        supervisor_fence=supervisor_fence,
+        kill_engaged=kill_engaged,
+        session_id=session_id,
+        budget=budget,
+        venue=venue,
+        _input_by_id=_PersistentKeyMap.empty(),
+        _effect_authority_by_id=_PersistentKeyMap.empty(),
+        _claim_by_effect=_PersistentKeyMap.empty(),
+        _claim_by_occurrence=_PersistentKeyMap.empty(),
+        _query_by_id=_PersistentKeyMap.empty(),
+        _manual_by_id=manual_by_id,
+        _manual_flatten_by_scope=manual_by_scope,
+        _consumed_grant_ids=_PersistentKeyMap.empty(),
+        _acquisition_currentness_by_scope=_PersistentKeyMap.empty(),
+        _acquisition_descriptor_by_scope=_PersistentKeyMap.empty(),
+        _acquisition_descriptor_by_effect=_PersistentKeyMap.empty(),
+        _acquisition_active_by_scope=_PersistentKeyMap.empty(),
+        _emergency_grant=emergency_grant,
+    )
+
+
 def _state_with(
     state: ExecutionAuthorityState, **changes: object
 ) -> ExecutionAuthorityState:

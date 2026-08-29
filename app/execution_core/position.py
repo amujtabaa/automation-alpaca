@@ -1179,6 +1179,102 @@ def _m2_execution_state_from_snapshot(snapshot: ExecutionSnapshot) -> _M2Executi
     )
 
 
+def _m2_execution_state_from_checkpoint_fields(
+    fields: tuple[object, ...],
+) -> _M2ExecutionState:
+    """Decode one inert checkpoint state without minting serving authority."""
+
+    if type(fields) is not tuple or len(fields) != 19:
+        raise ValueError("checkpoint execution state has an invalid field count")
+    (
+        scope,
+        raw_quantity,
+        basis_authority,
+        cost_basis,
+        basis_price_metadata,
+        tail_fold_input,
+        integrity_floor,
+        integrity,
+        account_reconciliation_required,
+        reconciliation_transition_count,
+        reconciliation_transition_head,
+        root_count,
+        root_order_commitment,
+        head_ids_commitment,
+        root_heads_commitment,
+        seen_facts_commitment,
+        root_head_map_commitment,
+        seen_fact_map_commitment,
+        root_claim_map_commitment,
+    ) = fields
+    return _new_m2_execution_state(
+        scope=cast(PositionScope, scope),
+        raw_quantity=cast(int, raw_quantity),
+        basis_authority=cast(BasisAuthority, basis_authority),
+        cost_basis=cast(ExactBasis | None, cost_basis),
+        basis_price_metadata=cast(ReportedPrice | None, basis_price_metadata),
+        tail_fold_input=cast(FoldInput | None, tail_fold_input),
+        integrity_floor=cast(PositionIntegrity, integrity_floor),
+        integrity=cast(PositionIntegrity, integrity),
+        account_reconciliation_required=cast(bool, account_reconciliation_required),
+        reconciliation_transition_count=cast(int, reconciliation_transition_count),
+        reconciliation_transition_head=cast(bytes, reconciliation_transition_head),
+        root_count=cast(int, root_count),
+        root_order_commitment=cast(bytes, root_order_commitment),
+        head_ids_commitment=cast(bytes, head_ids_commitment),
+        root_heads_commitment=cast(bytes, root_heads_commitment),
+        seen_facts_commitment=cast(bytes, seen_facts_commitment),
+        root_head_map_commitment=cast(bytes, root_head_map_commitment),
+        seen_fact_map_commitment=cast(bytes, seen_fact_map_commitment),
+        root_claim_map_commitment=cast(bytes, root_claim_map_commitment),
+    )
+
+
+def _m2_restore_compact_execution_snapshot(
+    state: _M2ExecutionState,
+    root_heads: RootHeadIndex,
+    current_facts: SeenFactIndex,
+) -> ExecutionSnapshot:
+    """Cut an inert bounded state over complete current roots into a compact owner."""
+
+    if not _m2_execution_state_is_authentic(state):
+        raise ValueError("execution checkpoint state is not authentic")
+    if type(root_heads) is not RootHeadIndex:
+        raise TypeError("root_heads must be exact RootHeadIndex")
+    if type(current_facts) is not SeenFactIndex:
+        raise TypeError("current_facts must be exact SeenFactIndex")
+    if (
+        root_heads.position_scope != state.scope
+        or root_heads.count != state.root_count
+        or root_heads.signed_quantity != state.raw_quantity
+        or root_heads.root_order_commitment != state.root_order_commitment
+        or root_heads.head_ids_commitment != state.head_ids_commitment
+        or root_heads.commitment != state.root_heads_commitment
+        or root_heads._by_root.commitment != state.root_head_map_commitment
+    ):
+        raise ValueError("current root proof does not reproduce execution semantics")
+    position = PositionState.from_materialized(
+        scope=state.scope,
+        raw_quantity=state.raw_quantity,
+        basis_authority=state.basis_authority,
+        cost_basis=state.cost_basis,
+        root_fill_sequence=root_heads._root_sequence.to_tuple(),
+        effective_head_ids=root_heads._head_sequence.to_tuple(),
+        basis_price_metadata=state.basis_price_metadata,
+        tail_fold_input=state.tail_fold_input,
+        integrity_floor=state.integrity_floor,
+    )
+    return _bind_components(
+        position,
+        state.integrity,
+        root_heads,
+        current_facts,
+        account_reconciliation_required=state.account_reconciliation_required,
+        reconciliation_transition_count=state.reconciliation_transition_count,
+        reconciliation_transition_head=state.reconciliation_transition_head,
+    )
+
+
 def _m2_execution_state_from_direct_proof(
     state_or_fields: _M2ExecutionState | tuple[object, ...],
     proof: _M2ExecutionObservationProof,

@@ -5596,11 +5596,10 @@ def _encode_m2_execution_state_component(state: object) -> list[object]:
     ]
 
 
-def _decode_m2_execution_state_component(
+def _decode_m2_execution_checkpoint_state(
     value: object,
-    proof: _position._M2ExecutionObservationProof,
 ) -> _position._M2ExecutionState:
-    """Decode only through the owner's aggregate-bound direct-proof seam."""
+    """Decode one authentic but still non-serving execution checkpoint state."""
 
     fields = _operations._require_m2_aggregate(value, _M2_EXECUTION_STATE_TAG, 20)
     decoded_fields = (
@@ -5642,7 +5641,7 @@ def _decode_m2_execution_state_component(
             "execution state root claim map commitment", fields[18]
         ),
     )
-    decoded = _position._m2_execution_state_from_direct_proof(decoded_fields, proof)
+    decoded = _position._m2_execution_state_from_checkpoint_fields(decoded_fields)
     retained_commitment = _operations._decode_m2_bytes(
         "execution state commitment", fields[19]
     )
@@ -5651,6 +5650,16 @@ def _decode_m2_execution_state_component(
     if _encode_m2_execution_state_component(decoded) != value:
         raise ValueError("execution state component is not canonical")
     return decoded
+
+
+def _decode_m2_execution_state_component(
+    value: object,
+    proof: _position._M2ExecutionObservationProof,
+) -> _position._M2ExecutionState:
+    """Decode only through the owner's aggregate-bound direct-proof seam."""
+
+    decoded = _decode_m2_execution_checkpoint_state(value)
+    return _position._m2_execution_state_from_direct_proof(decoded, proof)
 
 
 def _encode_m2_protection_checkpoint_component(
@@ -5865,6 +5874,464 @@ def _m2_protection_authority_proof_from_current_proof(
         authority.state_commitment_sha256,
         authority.version_ordinal,
         checkpoint.mandate.evidence_policy.source_id,
+    )
+
+
+@_dataclass(frozen=True, slots=True)
+class _CompactRuntimeCheckpointOwners:
+    """Non-serving compact owners bound to one loaded C0 and successor proof."""
+
+    source_checkpoint: RuntimeCheckpointEnvelope
+    selection_proof: _records.RuntimeCheckpointSelectionProof
+    venue: _venue.VenueRecoveryBook
+    authority: _authority.ExecutionAuthorityState
+    scope_owners: tuple[_RuntimeCheckpointScopeOwners, ...]
+
+
+def _decode_checkpoint_enum_value(
+    name: str,
+    value: object,
+    owner: str,
+    expected: type[_Any],
+) -> _Any:
+    if (
+        type(value) is not list
+        or len(value) != 2
+        or value[0] != owner
+        or type(value[1]) is not str
+    ):
+        raise ValueError(f"{name} is not an exact {owner} enum")
+    try:
+        decoded = expected(value[1])
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} has an unadmitted value") from exc
+    if _checkpoint_enum(owner, decoded) != value:
+        raise ValueError(f"{name} is not canonical")
+    return decoded
+
+
+def _decode_checkpoint_collection_rows(
+    value: object,
+    tag: str,
+) -> tuple[object, ...]:
+    _validate_checkpoint_collection(value, tag)
+    assert type(value) is list and type(value[2]) is list
+    return tuple(value[2])
+
+
+def _decode_compact_manual_row(value: object) -> _authority._ManualFlatten:
+    fields = _operations._require_m2_aggregate(
+        value,
+        "m2.authority.ManualFlatten/v1",
+        4,
+    )
+    command = _operations._decode_m2_begin_manual_flatten(fields[0])
+    phase = _decode_checkpoint_enum_value(
+        "manual phase",
+        fields[1],
+        "m1.authority.FlattenPhase",
+        _authority._FlattenPhase,
+    )
+    cancel_effect_ids = tuple(
+        _operations._decode_m2_m1_as(
+            "manual cancel effect",
+            row,
+            _identity.EffectId,
+        )
+        for row in _decode_checkpoint_collection_rows(
+            fields[2],
+            "m2.authority.CancelEffects/v1",
+        )
+    )
+    sell_effect_id = (
+        None
+        if fields[3] is None
+        else _operations._decode_m2_m1_as(
+            "manual sell effect",
+            fields[3],
+            _identity.EffectId,
+        )
+    )
+    decoded = _authority._ManualFlatten(
+        command,
+        phase,
+        cancel_effect_ids,
+        sell_effect_id,
+    )
+    if _encode_runtime_checkpoint_manual_row(decoded) != value:
+        raise ValueError("manual checkpoint row is not canonical")
+    return decoded
+
+
+def _decode_compact_emergency_grant(
+    value: object,
+) -> _authority._EmergencyGrant | None:
+    if value is None:
+        return None
+    fields = _operations._require_m2_aggregate(
+        value,
+        "m2.authority.EmergencyGrant/v1",
+        7,
+    )
+    decoded = _authority._EmergencyGrant(
+        _operations._decode_m2_m1_as(
+            "emergency grant id", fields[0], _identity.EmergencyGrantId
+        ),
+        _operations._decode_m2_m1_as(
+            "emergency grant account", fields[1], _identity.AccountId
+        ),
+        _operations._decode_m2_m1_as(
+            "emergency grant symbol", fields[2], _identity.SymbolId
+        ),
+        _operations._decode_m2_m1_as(
+            "emergency grant session", fields[3], _identity.SessionId
+        ),
+        _operations._decode_m2_m1_as(
+            "emergency grant actor", fields[4], _identity.ActorId
+        ),
+        _operations._require_exact_text("emergency grant reason", fields[5]),
+        _operations._decode_m2_m1_as(
+            "emergency grant evidence", fields[6], _identity.EvidenceReference
+        ),
+    )
+    if _encode_runtime_checkpoint_emergency_grant(decoded) != value:
+        raise ValueError("emergency grant checkpoint row is not canonical")
+    return decoded
+
+
+def _decode_compact_authority_checkpoint(
+    value: object,
+    *,
+    venue: _venue.VenueRecoveryBook,
+    venue_commitment: bytes,
+    application_generation_id: _identity.ApplicationGenerationId,
+    selected_position_scopes: tuple[_fills.PositionScope, ...],
+    selected_effect_ids: tuple[_identity.EffectId, ...],
+) -> _authority.ExecutionAuthorityState:
+    fields = _operations._require_m2_aggregate(
+        value,
+        _M2_AUTHORITY_CHECKPOINT_TAG,
+        13,
+    )
+    phase = _decode_checkpoint_enum_value(
+        "authority phase",
+        fields[0],
+        "m1.authority.EnginePhase",
+        _authority.EnginePhase,
+    )
+    mode = _decode_checkpoint_enum_value(
+        "authority mode",
+        fields[1],
+        "m1.authority.TradingMode",
+        _authority.TradingMode,
+    )
+    supervisor_fence = _decode_checkpoint_enum_value(
+        "authority supervisor fence",
+        fields[2],
+        "m1.authority.SupervisorFence",
+        _authority.SupervisorFence,
+    )
+    if type(fields[3]) is not bool:
+        raise TypeError("authority kill flag must be exact bool")
+    session_id = (
+        None
+        if fields[4] is None
+        else _operations._decode_m2_m1_as(
+            "authority session", fields[4], _identity.SessionId
+        )
+    )
+    budget_fields = _operations._require_m2_aggregate(
+        fields[5],
+        "m2.authority.RequestBudget/v1",
+        2,
+    )
+    budget = _authority.RequestBudget(
+        _operations._require_exact_int("authority budget remaining", budget_fields[0]),
+        _operations._require_exact_int(
+            "authority budget safety reserve", budget_fields[1]
+        ),
+    )
+    venue_fields = _operations._require_m2_aggregate(
+        fields[6],
+        "m2.authority.VenueRef/v1",
+        5,
+    )
+    if (
+        _operations._decode_m2_m1_as(
+            "authority venue generation",
+            venue_fields[0],
+            _identity.ApplicationGenerationId,
+        )
+        != application_generation_id
+        or _operations._decode_m2_m1_as(
+            "authority venue broker", venue_fields[1], _identity.BrokerId
+        )
+        != venue.scope.broker
+        or _operations._decode_m2_m1_as(
+            "authority venue environment", venue_fields[2], _identity.EnvironmentId
+        )
+        != venue.scope.environment
+        or _operations._decode_m2_m1_as(
+            "authority venue account", venue_fields[3], _identity.AccountId
+        )
+        != venue.scope.account
+        or _operations._decode_m2_bytes("authority venue commitment", venue_fields[4])
+        != venue_commitment
+    ):
+        raise ValueError("authority venue reference is stale or spliced")
+
+    effect_rows = _decode_checkpoint_collection_rows(
+        fields[8],
+        "m2.authority.EffectAuthorizations/v1",
+    )
+    manual_rows = _decode_checkpoint_collection_rows(
+        fields[9],
+        "m2.authority.ManualFlattens/v1",
+    )
+    descriptor_rows = _decode_checkpoint_collection_rows(
+        fields[10],
+        "m2.authority.AcquisitionDescriptors/v1",
+    )
+    slot_rows = _decode_checkpoint_collection_rows(
+        fields[11],
+        "m2.authority.AcquisitionSlots/v1",
+    )
+    if effect_rows or descriptor_rows or slot_rows:
+        raise ValueError("authority checkpoint requires unsupported active rows")
+    restored = _authority._m2_restore_compact_authority_state(
+        phase=phase,
+        mode=mode,
+        supervisor_fence=supervisor_fence,
+        kill_engaged=fields[3],
+        session_id=session_id,
+        budget=budget,
+        venue=venue,
+        manuals=tuple(_decode_compact_manual_row(row) for row in manual_rows),
+        emergency_grant=_decode_compact_emergency_grant(fields[7]),
+    )
+    expected, _, _ = _encode_runtime_checkpoint_authority(
+        restored,
+        venue_commitment,
+        application_generation_id,
+        selected_position_scopes,
+        selected_effect_ids,
+    )
+    if expected != value:
+        raise ValueError("authority checkpoint is not compact-canonical")
+    expected_commitment = _checkpoint_row_commitment(
+        b"execution-core/m2-authority/checkpoint/v1",
+        _cast(list[object], value)[:-1],
+    )
+    if (
+        _operations._decode_m2_bytes("authority checkpoint commitment", fields[12])
+        != expected_commitment
+    ):
+        raise ValueError("authority checkpoint commitment is stale or spliced")
+    return restored
+
+
+def _restore_compact_runtime_checkpoint(
+    checkpoint: RuntimeCheckpointEnvelope,
+    selection_proof: _records.RuntimeCheckpointSelectionProof,
+) -> _CompactRuntimeCheckpointOwners:
+    """Restore only proof-complete bounded semantics from one inert loaded C0."""
+
+    if not _envelope_is_authentic(checkpoint) or checkpoint._provenance != "LOADED":
+        raise ValueError("compact hydration requires an authentic loaded checkpoint")
+    if (
+        type(selection_proof) is not _records.RuntimeCheckpointSelectionProof
+        or not _records.RuntimeCheckpointSelectionProof._is_authentic(selection_proof)
+    ):
+        raise ValueError("compact hydration requires an authentic selection proof")
+    predecessor = selection_proof.predecessor_checkpoint
+    if predecessor is None:
+        raise ValueError("compact hydration proof has no checkpoint predecessor")
+    if (
+        predecessor.application_generation_id != checkpoint.application_generation_id
+        or predecessor.currentness_head_ordinal != checkpoint.currentness_head_ordinal
+        or predecessor.checkpoint_version_ordinal
+        != checkpoint.checkpoint_version_ordinal
+        or predecessor.checkpoint_sha256 != checkpoint.payload_sha256
+        or selection_proof.request.application_generation_id
+        != checkpoint.application_generation_id
+        or selection_proof.request.execution_profile_id
+        != checkpoint.execution_profile_id
+        or selection_proof.request.market_source_profile_id
+        != checkpoint.market_source_profile_id
+        or selection_proof.request.expected_checkpoint != predecessor
+    ):
+        raise ValueError("compact hydration proof predecessor is stale or spliced")
+
+    selection = selection_proof._selection
+    venue_wire = _decode_canonical_json(checkpoint.venue.canonical_bytes)
+    if type(venue_wire) is not list:
+        raise ValueError("venue checkpoint component is not an exact row")
+    venue_fields = _operations._require_m2_aggregate(
+        venue_wire,
+        _M2_VENUE_STATE_TAG,
+        22,
+    )
+    venue_scope_wire = _operations._require_m2_aggregate(
+        venue_fields[0],
+        "m2.venue.Scope/v1",
+        4,
+    )
+    venue_scope = _venue.VenueScope(
+        _operations._decode_m2_m1_as(
+            "venue application generation",
+            venue_scope_wire[0],
+            _identity.ApplicationGenerationId,
+        ),
+        _operations._decode_m2_m1_as(
+            "venue broker", venue_scope_wire[1], _identity.BrokerId
+        ),
+        _operations._decode_m2_m1_as(
+            "venue environment", venue_scope_wire[2], _identity.EnvironmentId
+        ),
+        _operations._decode_m2_m1_as(
+            "venue account", venue_scope_wire[3], _identity.AccountId
+        ),
+    )
+    if venue_scope.generation != checkpoint.application_generation_id:
+        raise ValueError("venue checkpoint leaves the selected application")
+    initial_authority = _authority.initial_execution_authority_state(venue_scope)
+    restored_venue = initial_authority.venue
+    expected_venue_wire, _, _ = _encode_runtime_checkpoint_venue(
+        restored_venue,
+        selection,
+    )
+    if expected_venue_wire != venue_wire:
+        raise ValueError("venue checkpoint requires unsupported noncompact history")
+
+    authority_wire = _decode_canonical_json(checkpoint.authority.canonical_bytes)
+    if type(authority_wire) is not list:
+        raise ValueError("authority checkpoint component is not an exact row")
+    selected_position_scopes = tuple(
+        _fills.PositionScope(
+            venue_scope.broker,
+            venue_scope.environment,
+            venue_scope.account,
+            selected.symbol,
+        )
+        for selected in selection.scopes
+    )
+    restored_authority = _decode_compact_authority_checkpoint(
+        authority_wire,
+        venue=restored_venue,
+        venue_commitment=_checkpoint_row_commitment(
+            b"execution-core/m2-venue/state/v1", venue_wire[:-1]
+        ),
+        application_generation_id=checkpoint.application_generation_id,
+        selected_position_scopes=selected_position_scopes,
+        selected_effect_ids=tuple(
+            effect.effect_external for effect in selection.effects
+        ),
+    )
+
+    controllers = {row.scope_id: row for row in selection.controllers}
+    protection_authorities = {
+        row.scope_id: row for row in selection.protection_authorities
+    }
+    selected_scopes = {row.scope_id: row for row in selection.scopes}
+    if (
+        tuple(selected_scopes) != tuple(scope.scope_id for scope in checkpoint.scopes)
+        or set(controllers) != set(selected_scopes)
+        or set(protection_authorities) != set(selected_scopes)
+    ):
+        raise ValueError("compact hydration scope proof is incomplete")
+
+    scope_owners: list[_RuntimeCheckpointScopeOwners] = []
+    for candidate in checkpoint.scopes:
+        selected = selected_scopes[candidate.scope_id]
+        controller = controllers[candidate.scope_id]
+        protection_authority = protection_authorities[candidate.scope_id]
+        position_scope_wire = _decode_canonical_json(
+            candidate.position_scope.canonical_bytes
+        )
+        position_scope = _operations._decode_m2_position_scope(position_scope_wire)
+        if (
+            position_scope
+            != _fills.PositionScope(
+                venue_scope.broker,
+                venue_scope.environment,
+                venue_scope.account,
+                selected.symbol,
+            )
+            or controller.application_generation_id
+            != checkpoint.application_generation_id
+            or controller.execution_profile_id != checkpoint.execution_profile_id
+            or controller.aggregate_quantity
+            != _operations._require_exact_int(
+                "execution checkpoint quantity",
+                _operations._require_m2_aggregate(
+                    _decode_canonical_json(candidate.execution.canonical_bytes),
+                    _M2_EXECUTION_STATE_TAG,
+                    20,
+                )[1],
+            )
+        ):
+            raise ValueError("compact hydration scope coordinates are spliced")
+
+        execution_wire = _decode_canonical_json(candidate.execution.canonical_bytes)
+        execution_state = _decode_m2_execution_checkpoint_state(execution_wire)
+        scope_roots = tuple(
+            row for row in selection.roots if row.scope_id == candidate.scope_id
+        )
+        scope_facts = tuple(
+            row for row in selection.current_facts if row.scope_id == candidate.scope_id
+        )
+        if scope_roots or scope_facts:
+            raise ValueError("compact execution current-root restoration is incomplete")
+        execution = _position._m2_restore_compact_execution_snapshot(
+            execution_state,
+            _fills.RootHeadIndex.empty(position_scope),
+            _fills.SeenFactIndex.empty(position_scope),
+        )
+
+        acquisition_wire = _decode_canonical_json(candidate.acquisition.canonical_bytes)
+        if (
+            type(acquisition_wire) is not list
+            or not acquisition_wire
+            or acquisition_wire[0] != _M2_DORMANT_ACQUISITION_TAG
+        ):
+            raise ValueError("compact active acquisition restoration is incomplete")
+        expected_acquisition_wire, _ = _encode_dormant_acquisition(
+            selection,
+            controller,
+            position_scope,
+            selection_proof._binding,
+        )
+        if expected_acquisition_wire != acquisition_wire:
+            raise ValueError("dormant acquisition checkpoint is spliced")
+
+        protection_wire = _decode_canonical_json(candidate.protection.canonical_bytes)
+        if (
+            type(protection_wire) is not list
+            or not protection_wire
+            or protection_wire[0] != _M2_DORMANT_PROTECTION_TAG
+        ):
+            raise ValueError("compact active protection restoration is incomplete")
+        expected_protection_wire, _ = _encode_dormant_protection(
+            protection_authority,
+            selection_proof._binding,
+        )
+        if expected_protection_wire != protection_wire:
+            raise ValueError("dormant protection checkpoint is spliced")
+        scope_owners.append(
+            _RuntimeCheckpointScopeOwners(
+                candidate.scope_id,
+                None,
+                execution,
+                None,
+            )
+        )
+
+    return _CompactRuntimeCheckpointOwners(
+        checkpoint,
+        selection_proof,
+        restored_venue,
+        restored_authority,
+        tuple(scope_owners),
     )
 
 
