@@ -586,6 +586,36 @@ class _ManualFlatten:
     sell_effect_id: EffectId | None = None
 
 
+class _M2AuthorityManualObservationKind(str, Enum):
+    """Closed provenance partition for one operation-targeted manual identity."""
+
+    ACTIVE_CURRENT = "ACTIVE_CURRENT"
+    RETAINED_TERMINAL = "RETAINED_TERMINAL"
+    ABSENT = "ABSENT"
+
+
+@dataclass(frozen=True, slots=True, init=False)
+class _M2AuthorityManualObservationProof:
+    """Owner-sealed current/terminal/absence proof for one manual operation."""
+
+    kind: _M2AuthorityManualObservationKind
+    requested_flatten_id: ManualFlattenId
+    active_flatten_id: ManualFlattenId | None
+    active_manual: _ManualFlatten | None
+    retained_command: BeginManualFlatten | None
+    _evidence_commitment: bytes
+    _binding: bytes
+    _seal: bytes
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise TypeError("manual observation proof is owner-issued only")
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        del cls, kwargs
+        raise TypeError("manual observation proof cannot be subclassed")
+
+
 @dataclass(frozen=True, slots=True)
 class _FreshEffectClaim:
     effect_id: EffectId
@@ -9550,21 +9580,275 @@ def _engage_kill(
     )
 
 
+def _m2_manual_observation_binding(
+    proof: _M2AuthorityManualObservationProof,
+) -> bytes:
+    if type(proof) is not _M2AuthorityManualObservationProof:
+        raise TypeError("manual observation proof must be exact")
+    if type(proof.kind) is not _M2AuthorityManualObservationKind:
+        raise TypeError("manual observation kind must be exact")
+    _require("requested_flatten_id", proof.requested_flatten_id, ManualFlattenId)
+    if (
+        type(proof._evidence_commitment) is not bytes
+        or len(proof._evidence_commitment) != 32
+    ):
+        raise ValueError("manual observation evidence commitment is malformed")
+
+    active_binding = b""
+    retained_binding = b""
+    if proof.kind is _M2AuthorityManualObservationKind.ACTIVE_CURRENT:
+        _require("active_flatten_id", proof.active_flatten_id, ManualFlattenId)
+        if type(proof.active_manual) is not _ManualFlatten:
+            raise TypeError("active manual observation must be exact")
+        if (
+            proof.active_manual.command.flatten_id != proof.active_flatten_id
+            or proof.retained_command != proof.active_manual.command
+        ):
+            raise ValueError("active manual observation does not agree")
+        active_binding = _value_commitment(proof.active_manual)
+        retained_binding = _value_commitment(proof.retained_command)
+    elif proof.kind is _M2AuthorityManualObservationKind.RETAINED_TERMINAL:
+        if proof.active_flatten_id is not None or proof.active_manual is not None:
+            raise ValueError("terminal manual observation cannot be active")
+        if type(proof.retained_command) is not BeginManualFlatten:
+            raise TypeError("retained manual command must be exact")
+        if proof.retained_command.flatten_id != proof.requested_flatten_id:
+            raise ValueError("retained manual command has wrong identity")
+        retained_binding = _value_commitment(proof.retained_command)
+    else:
+        if (
+            proof.active_flatten_id is not None
+            or proof.active_manual is not None
+            or proof.retained_command is not None
+        ):
+            raise ValueError("absent manual observation cannot retain state")
+    return _commit_parts(
+        b"execution-core/m2-authority/manual-observation/v1",
+        proof.kind.value.encode("utf-8"),
+        proof.requested_flatten_id.value.encode("utf-8"),
+        b""
+        if proof.active_flatten_id is None
+        else proof.active_flatten_id.value.encode("utf-8"),
+        active_binding,
+        retained_binding,
+        proof._evidence_commitment,
+    )
+
+
+def _m2_manual_observation_is_authentic(value: object) -> bool:
+    if type(value) is not _M2AuthorityManualObservationProof:
+        return False
+    try:
+        binding = _m2_manual_observation_binding(value)
+        return bool(
+            value._binding == binding
+            and value._seal
+            == _commit_parts(
+                b"execution-core/m2-authority/manual-observation-seal/v1",
+                binding,
+            )
+        )
+    except (AttributeError, TypeError, ValueError):
+        return False
+
+
+def _m2_active_manual_for_command(
+    state: ExecutionAuthorityState,
+    command: BeginManualFlatten | AdvanceManualFlatten,
+    retained_command: BeginManualFlatten | None,
+) -> tuple[ManualFlattenId | None, _ManualFlatten | None]:
+    symbol_id = (
+        command.symbol_id
+        if type(command) is BeginManualFlatten
+        else None
+        if retained_command is None
+        else retained_command.symbol_id
+    )
+    if symbol_id is None:
+        return None, None
+    position_scope = _position_scope(state, symbol_id)
+    scope_key = _acquisition_scope_key(state.venue.scope.generation, position_scope)
+    active_flatten_id = state._manual_flatten_by_scope.get(scope_key)
+    if active_flatten_id is None:
+        return None, None
+    if type(active_flatten_id) is not ManualFlattenId:
+        raise ValueError("active manual scope entry is malformed")
+    active_manual = state._manual_by_id.get(_manual_key(active_flatten_id))
+    if (
+        type(active_manual) is not _ManualFlatten
+        or active_manual.command.flatten_id != active_flatten_id
+        or active_manual.command.symbol_id != symbol_id
+    ):
+        raise ValueError("active manual row does not match its scope entry")
+    return active_flatten_id, active_manual
+
+
+def _m2_issue_manual_observation(
+    state: ExecutionAuthorityState,
+    command: BeginManualFlatten | AdvanceManualFlatten,
+    retained_command: BeginManualFlatten | None,
+    evidence_commitment: bytes,
+) -> _M2AuthorityManualObservationProof:
+    _validate_authority_state(state)
+    if type(command) not in (BeginManualFlatten, AdvanceManualFlatten):
+        raise TypeError("manual observation requires an exact manual command")
+    if retained_command is not None:
+        _require("retained_command", retained_command, BeginManualFlatten)
+        if retained_command.flatten_id != command.flatten_id:
+            raise ValueError("retained manual command has wrong identity")
+    if type(evidence_commitment) is not bytes or len(evidence_commitment) != 32:
+        raise ValueError("manual retained evidence commitment is malformed")
+    active_flatten_id, active_manual = _m2_active_manual_for_command(
+        state,
+        command,
+        retained_command,
+    )
+    if active_manual is not None:
+        if (
+            active_flatten_id == command.flatten_id
+            and retained_command is not None
+            and retained_command != active_manual.command
+        ):
+            raise ValueError("active and retained manual evidence disagree")
+        kind = _M2AuthorityManualObservationKind.ACTIVE_CURRENT
+        retained = active_manual.command
+    elif retained_command is not None:
+        kind = _M2AuthorityManualObservationKind.RETAINED_TERMINAL
+        retained = retained_command
+    else:
+        kind = _M2AuthorityManualObservationKind.ABSENT
+        retained = None
+    result = object.__new__(_M2AuthorityManualObservationProof)
+    for name, value in (
+        ("kind", kind),
+        ("requested_flatten_id", command.flatten_id),
+        ("active_flatten_id", active_flatten_id),
+        ("active_manual", active_manual),
+        ("retained_command", retained),
+        ("_evidence_commitment", evidence_commitment),
+    ):
+        object.__setattr__(result, name, value)
+    binding = _m2_manual_observation_binding(result)
+    object.__setattr__(result, "_binding", binding)
+    object.__setattr__(
+        result,
+        "_seal",
+        _commit_parts(
+            b"execution-core/m2-authority/manual-observation-seal/v1",
+            binding,
+        ),
+    )
+    return result
+
+
+def _m2_authority_manual_observation_from_reference(
+    state: ExecutionAuthorityState,
+    command: BeginManualFlatten | AdvanceManualFlatten,
+) -> _M2AuthorityManualObservationProof:
+    """Bind the public M1 route to exact owner-retained manual evidence."""
+
+    _validate_authority_state(state)
+    if type(command) not in (BeginManualFlatten, AdvanceManualFlatten):
+        raise TypeError("manual observation requires an exact manual command")
+    retained_command: BeginManualFlatten | None = None
+    retained_manual = state._manual_by_id.get(_manual_key(command.flatten_id))
+    if type(retained_manual) is _ManualFlatten:
+        recorded = state._input_by_id.get(_input_key(retained_manual.command.input_id))
+        if recorded == retained_manual.command:
+            retained_command = retained_manual.command
+    evidence = _commit_parts(
+        b"execution-core/m2-authority/manual-reference-evidence/v1",
+        state._input_by_id.commitment,
+        state._manual_by_id.commitment,
+        state._manual_flatten_by_scope.commitment,
+    )
+    return _m2_issue_manual_observation(
+        state,
+        command,
+        retained_command,
+        evidence,
+    )
+
+
+def _m2_authority_manual_observation_from_direct_evidence(
+    state: ExecutionAuthorityState,
+    command: BeginManualFlatten | AdvanceManualFlatten,
+    *,
+    retained_command: BeginManualFlatten | None,
+    retained_input_bytes: bytes | None,
+    retained_outcome_bytes: bytes | None,
+) -> _M2AuthorityManualObservationProof:
+    """Bind the UOW route to selected current and complete retained evidence."""
+
+    _validate_authority_state(state)
+    if type(command) not in (BeginManualFlatten, AdvanceManualFlatten):
+        raise TypeError("manual observation requires an exact manual command")
+    evidence_members = (
+        retained_command,
+        retained_input_bytes,
+        retained_outcome_bytes,
+    )
+    if all(member is None for member in evidence_members):
+        evidence = _commit_parts(
+            b"execution-core/m2-authority/manual-direct-absence/v1"
+        )
+    elif any(member is None for member in evidence_members):
+        raise ValueError("retained evidence must include input and terminal outcome")
+    else:
+        exact_retained_command = cast(BeginManualFlatten, retained_command)
+        exact_input_bytes = cast(bytes, retained_input_bytes)
+        exact_outcome_bytes = cast(bytes, retained_outcome_bytes)
+        _require("retained_command", exact_retained_command, BeginManualFlatten)
+        if exact_retained_command.flatten_id != command.flatten_id:
+            raise ValueError("retained manual command has wrong identity")
+        if type(exact_input_bytes) is not bytes or not exact_input_bytes:
+            raise ValueError("retained evidence input bytes are malformed")
+        if type(exact_outcome_bytes) is not bytes or not exact_outcome_bytes:
+            raise ValueError("retained evidence outcome bytes are malformed")
+        evidence = _commit_parts(
+            b"execution-core/m2-authority/manual-direct-evidence/v1",
+            exact_input_bytes,
+            exact_outcome_bytes,
+        )
+    return _m2_issue_manual_observation(
+        state,
+        command,
+        retained_command,
+        evidence,
+    )
+
+
+def _m2_require_manual_observation(
+    command: BeginManualFlatten | AdvanceManualFlatten,
+    proof: object,
+) -> _M2AuthorityManualObservationProof:
+    if not _m2_manual_observation_is_authentic(proof):
+        raise ValueError("manual observation proof is not authentic")
+    exact = cast(_M2AuthorityManualObservationProof, proof)
+    if exact.requested_flatten_id != command.flatten_id:
+        raise ValueError("manual observation proof has wrong identity")
+    return exact
+
+
 def _begin_manual_flatten(
     state: ExecutionAuthorityState,
     execution: ExecutionSnapshot,
     item: BeginManualFlatten,
+    observation: _M2AuthorityManualObservationProof,
 ) -> ExecutionAuthorityTransition:
-    if state._manual_by_id.get(_manual_key(item.flatten_id)) is not None:
+    proof = _m2_require_manual_observation(item, observation)
+    if proof.kind is _M2AuthorityManualObservationKind.RETAINED_TERMINAL:
         return _result(state, AuthorityDisposition.CONFLICT)
-    position_scope = _position_scope(state, item.symbol_id)
-    scope_key = _acquisition_scope_key(state.venue.scope.generation, position_scope)
-    if state._manual_flatten_by_scope.get(scope_key) is not None:
+    if proof.kind is _M2AuthorityManualObservationKind.ACTIVE_CURRENT:
+        if proof.active_flatten_id == item.flatten_id:
+            return _result(state, AuthorityDisposition.CONFLICT)
         return _result(
             state,
             AuthorityDisposition.REFUSED,
             AuthorityReason.VENUE_UNCERTAIN,
         )
+    position_scope = _position_scope(state, item.symbol_id)
+    scope_key = _acquisition_scope_key(state.venue.scope.generation, position_scope)
     reason = _mutation_fence_reason(state)
     if reason is None and item.session_id != state.session_id:
         reason = AuthorityReason.SESSION_MISMATCH
@@ -9620,13 +9904,17 @@ def _begin_manual_flatten(
             _EffectAuthorization(request, item.session_id, item.flatten_id, None),
         )
     manual = _ManualFlatten(item, _FlattenPhase.WAITING, cancel_ids)
+    manual_key = _manual_key(item.flatten_id)
+    manuals = (
+        _inserted(state._manual_by_id, manual_key, manual)
+        if state._manual_by_id.get(manual_key) is None
+        else _replaced(state._manual_by_id, manual_key, manual)
+    )
     next_state = _state_with(
         state,
         venue=venue,
         _effect_authority_by_id=effect_authority,
-        _manual_by_id=_inserted(
-            state._manual_by_id, _manual_key(item.flatten_id), manual
-        ),
+        _manual_by_id=manuals,
         _manual_flatten_by_scope=_inserted(
             state._manual_flatten_by_scope,
             scope_key,
@@ -9646,9 +9934,15 @@ def _advance_manual_flatten(
     state: ExecutionAuthorityState,
     execution: ExecutionSnapshot,
     item: AdvanceManualFlatten,
+    observation: _M2AuthorityManualObservationProof,
 ) -> ExecutionAuthorityTransition:
-    manual = state._manual_by_id.get(_manual_key(item.flatten_id))
-    if manual is None:
+    proof = _m2_require_manual_observation(item, observation)
+    manual = proof.active_manual
+    if (
+        proof.kind is not _M2AuthorityManualObservationKind.ACTIVE_CURRENT
+        or proof.active_flatten_id != item.flatten_id
+        or type(manual) is not _ManualFlatten
+    ):
         return _result(
             state,
             AuthorityDisposition.REFUSED,
@@ -9780,12 +10074,14 @@ _COMMAND_TYPES = (
 )
 
 
-def apply_execution_authority_input(
+def _m2_apply_execution_authority_input(
     state: ExecutionAuthorityState,
     execution: ExecutionSnapshot,
     item: object,
+    *,
+    manual_observation: _M2AuthorityManualObservationProof | None,
 ) -> ExecutionAuthorityTransition:
-    """Apply one exact authority input without I/O or caller-minted authority."""
+    """Apply one exact semantic branch after technical dedupe is complete."""
 
     state = _validate_authority_state(state)
     _require("execution", execution, ExecutionSnapshot)
@@ -9801,9 +10097,14 @@ def apply_execution_authority_input(
             AuthorityDisposition.REFUSED,
             AuthorityReason.VENUE_UNCERTAIN,
         )
-    replay = _replay_or_conflict(state, command)
-    if replay is not None:
-        return replay
+    if type(command) is BeginManualFlatten:
+        observation = _m2_require_manual_observation(command, manual_observation)
+    elif type(command) is AdvanceManualFlatten:
+        observation = _m2_require_manual_observation(command, manual_observation)
+    else:
+        if manual_observation is not None:
+            raise ValueError("manual observation is not admitted for this command")
+        observation = None
     if type(command) is RegisterAcquisitionCurrentness:
         if _register_canonical_fact_currentness_command_is_authentic(command):
             return _register_canonical_fact_currentness(state, execution, command)
@@ -9831,8 +10132,60 @@ def apply_execution_authority_input(
     if type(item) is EngageKill:
         return _engage_kill(state, execution, item)
     if type(item) is BeginManualFlatten:
-        return _begin_manual_flatten(state, execution, item)
-    return _advance_manual_flatten(state, execution, cast(AdvanceManualFlatten, item))
+        return _begin_manual_flatten(
+            state,
+            execution,
+            item,
+            cast(_M2AuthorityManualObservationProof, observation),
+        )
+    return _advance_manual_flatten(
+        state,
+        execution,
+        cast(AdvanceManualFlatten, item),
+        cast(_M2AuthorityManualObservationProof, observation),
+    )
+
+
+def apply_execution_authority_input(
+    state: ExecutionAuthorityState,
+    execution: ExecutionSnapshot,
+    item: object,
+) -> ExecutionAuthorityTransition:
+    """Apply one exact authority input without I/O or caller-minted authority."""
+
+    state = _validate_authority_state(state)
+    _require("execution", execution, ExecutionSnapshot)
+    if type(item) not in _COMMAND_TYPES:
+        raise TypeError("authority input must be an exact admitted command type")
+    command = cast(_AuthorityCommand, item)
+    if type(command) is _RegisterAcquisitionCurrentness:
+        return _m2_apply_execution_authority_input(
+            state,
+            execution,
+            command,
+            manual_observation=None,
+        )
+    replay = _replay_or_conflict(state, command)
+    if replay is not None:
+        return replay
+    if type(command) is BeginManualFlatten:
+        manual_observation = _m2_authority_manual_observation_from_reference(
+            state,
+            command,
+        )
+    elif type(command) is AdvanceManualFlatten:
+        manual_observation = _m2_authority_manual_observation_from_reference(
+            state,
+            command,
+        )
+    else:
+        manual_observation = None
+    return _m2_apply_execution_authority_input(
+        state,
+        execution,
+        command,
+        manual_observation=manual_observation,
+    )
 
 
 __all__ = [
