@@ -457,3 +457,10 @@ vocabulary. The changed hydration file passed 22 tests; all 2,261 ordinary `exec
 reached 100% with exit code 0; Ruff, mypy, and correction-range whitespace checks passed. DDL,
 schema blob, held-test blob, and exact-false human flag remain unchanged. One finite static R2 review
 is open under `correction-r2-request.md`; no SQLite rerun is authorized yet.
+
+REV-0117 R2 returned `ACCEPT-WITH-CHANGES`, P0=0/P1=1/P2=0. The result is preserved unchanged in
+`result-r2.md`. Its single accepted P1 was a mutation gap: the production unresolved-generation
+plus-one comparison had no non-empty unresolved selection test. The test-only correction builds an
+authentic successor with a retained retired predecessor and stream route, proves the one-based
+durable row encodes, and proves the domain-ordinal mutant raises the existing splice refusal. One
+finite correction verification is required; no SQLite rerun is authorized yet.

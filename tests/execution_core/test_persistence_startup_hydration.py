@@ -607,6 +607,99 @@ def test_compact_hydration_rejects_domain_ordinal_as_durable_ordinal() -> None:
         )
 
 
+def test_compact_projection_rejects_domain_ordinal_for_unresolved_generation() -> None:
+    authority_module, scope, initialized = (
+        acquisition_fixtures._r8_initialized_controller()
+    )
+    refresh = authority_module.refresh_acquisition_context(
+        initialized.authority,
+        initialized.execution,
+        scope,
+    )
+    bootstrap = initialized.venue.project_acquisition_bootstrap(
+        initialized.execution,
+        scope,
+    )
+    admission = authority_module.project_acquisition_admission(
+        initialized.authority,
+        initialized.execution,
+        scope,
+    )
+    successor = acquisition.begin_acquisition_generation(
+        initialized.state,
+        acquisition_fixtures._successor_mandate(
+            initialized.state._mandate,
+            "checkpoint-unresolved-ordinal",
+        ),
+        bootstrap,
+        admission,
+        refresh,
+        initialized.protection,
+    )
+    assert successor.disposition is acquisition.AcquisitionControllerDisposition.APPLIED
+    predecessor_id = initialized.state._controller.live_generation_id
+    assert predecessor_id is not None
+    retired = successor.state.registry.record(predecessor_id)
+    assert retired is not None
+    assert retired.serving_class is acquisition.GenerationServingClass.RETIRED_UNSERVING
+    durable = records.AcquisitionGenerationRecord(
+        predecessor_id,
+        1,
+        retired.serving_class.value,
+        retired.binding.successor_ordinal + 1,
+        None,
+        retired.binding.dual_mandate_binding_commitment.hex(),
+        retired.binding.emergency_recovery_compatibility_commitment.hex(),
+    )
+    predecessor_policy = initialized.state._mandate.protection_mandate.evidence_policy
+    predecessor_stream = records.MarketStreamAuthorityRecord(
+        predecessor_policy.stream_generation,
+        1,
+        successor.state.application_generation_id,
+        predecessor_id,
+        durable.mandate_commitment_sha256,
+        checkpoint_fixtures._MARKET_PROFILE,
+        initialized.state._mandate.session_id,
+        predecessor_policy.sequence_mode.value,
+    )
+    selection = replace(
+        checkpoint_fixtures._selection_proof()._selection,
+        unresolved_generations=(durable,),
+        unresolved_generation_current=(
+            records.AcquisitionGenerationCurrentRecord(
+                predecessor_id,
+                1,
+                0,
+                1,
+                0,
+            ),
+        ),
+        streams=(predecessor_stream,),
+    )
+
+    checkpoint_codec._encode_runtime_checkpoint_acquisition(
+        successor.state,
+        selection,
+        1,
+    )
+    wrong_selection = replace(
+        selection,
+        unresolved_generations=(
+            replace(
+                durable,
+                successor_ordinal=retired.binding.successor_ordinal,
+            ),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="selected unresolved generation is spliced"):
+        checkpoint_codec._encode_runtime_checkpoint_acquisition(
+            successor.state,
+            wrong_selection,
+            1,
+        )
+
+
 def test_compact_hydration_authenticates_and_rebinds_active_protection() -> None:
     transition = protection_fixtures._owned_fill_transition(
         label="compact-active-protection"
