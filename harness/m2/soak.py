@@ -63,6 +63,7 @@ def run_soak(
             break
         cycle += 1
         cycle_root = evidence / f"cycle-{cycle:06d}"
+        cycle_root.mkdir()
         command = (
             str(interpreter),
             "-m",

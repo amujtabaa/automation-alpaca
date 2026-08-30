@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 
@@ -103,3 +106,45 @@ def test_soak_schedule_is_exact_ordered_and_never_launders_a_short_run() -> None
         )
         == "FAILED"
     )
+
+
+def test_soak_creates_each_cycle_parent_before_invoking_pytest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed_basetemps: list[Path] = []
+
+    def fake_run(
+        command: tuple[str, ...],
+        *,
+        cwd: Path,
+        capture_output: bool,
+        check: bool,
+    ) -> subprocess.CompletedProcess[bytes]:
+        assert cwd == Path(__file__).resolve().parents[2]
+        assert capture_output is True
+        assert check is False
+        basetemp = Path(command[command.index("--basetemp") + 1])
+        assert basetemp.parent.is_dir()
+        assert not basetemp.exists()
+        observed_basetemps.append(basetemp)
+        return subprocess.CompletedProcess(command, 0, b"green", b"")
+
+    monkeypatch.setattr(soak.subprocess, "run", fake_run)
+    evidence = tmp_path / "soak-evidence"
+    assert (
+        soak.run_soak(
+            repository_root=Path(__file__).resolve().parents[2],
+            python=Path(sys.executable),
+            evidence_directory=evidence,
+            duration_seconds=1,
+            max_cycles=1,
+        )
+        == 0
+    )
+
+    assert observed_basetemps == [evidence / "cycle-000001" / "pytest"]
+    summary = json.loads((evidence / "summary.json").read_text(encoding="utf-8"))
+    assert summary["status"] == "NOT_RUN"
+    assert summary["all_cycles_passed"] is True
+    assert summary["cycles"] == 1
