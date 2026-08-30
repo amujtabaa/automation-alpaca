@@ -1,18 +1,18 @@
 ---
 type: Work Order
 title: M3-P1 deterministic broker simulator, normalized tape, and virtual clock
-status: READY
+status: PREPARED-CANDIDATE
 work_order_id: WO-0171
 wave: M3-P1
 model_tier: strong
 risk: high
 disposition: []
-owner: unassigned local coding LLM; Codex checkpoint governor
+owner: unassigned M3 implementation seat; Codex checkpoint governor
 created: 2026-08-21
-predecessor: WO-0170 exact accepted M2 closeout head
+predecessor: WO-0170 closeout 6edd8fbae0cd0eb7868826cfd0450860c63df70e / tree 8c918f3a1cf46333ed0eef79d3ef51d0503de88a
 branch: TO_ASSIGN_ON_ACTIVATION
 review_id: TO_ASSIGN_ON_ACTIVATION
-execution_authority: BLOCKED_BY_M2; preparation only, no M3 implementation authority.
+execution_authority: M2_WO_CHAIN_CLOSED; PREPARATION_CANDIDATE_PENDING_REV-0119; separate human M3 activation required; no M3 implementation authority.
 ---
 
 # Work Order: M3-P1 deterministic simulator foundation
@@ -21,7 +21,7 @@ execution_authority: BLOCKED_BY_M2; preparation only, no M3 implementation autho
 
 **Date:** 2026-08-21
 
-**Status:** Prepared — blocked by accepted M2 closeout and separate M3 activation
+**Status:** Prepared candidate — blocked by terminal REV-0119 acceptance and separate M3 activation
 
 `[FABLE • FULL • conditional M3 preparation • no real broker]`
 
@@ -95,9 +95,65 @@ Then each history remains semantically distinguishable and ready for M3-P2 compa
 
 ## Activation path boundary
 
-Activation after M2 must freeze exact new simulator/tape/clock and test paths from the accepted M2
-head. Existing legacy `app/broker/sim.py` is evidence only and may not be transplanted or edited
-without an explicit comparison and scope amendment.
+### Frozen M3 entry checkpoint
+
+Activation MUST start from the exact accepted M2 closeout above and reverify all of these identities:
+
+- final M2 implementation/test source `c7e394f52782a9b398ed89bfdc55b45bc09499b4`, tree
+  `2d5c662f569ec3ee792216863fe46213551773a8`;
+- REV-0118 accepted candidate `2051afe2bbc21918fac6b69875e0a536fe722e49`, tree
+  `2d3fef0011412ec432fd26f43f526be6946ad00c`;
+- canonical DDL SHA-256
+  `d4df1aaa0a7fed6002c8a55923fb3a35ba948055779dac99bf82e70b6a804c18`, 190,705
+  UTF-8 bytes, schema blob `164de10ad9fef6ce37324840aff59b5b68c07d2a`, and exact authorization
+  flag `False`; and
+- closeout manifest SHA-256
+  `a72f5e92820415c48bf404063fe6a4d1dbe6397c02f5439424a43b7cc823eb66`, blob
+  `e708e782f980d4eecd79ba148a11e5a3a884e304`.
+
+The accepted M2 application boundary is the frozen public surface at that checkpoint:
+
+- `persistence.operations`: the eight-member `M2Operation` union, its typed coordinates and
+  semantic keys, and the public operation/key encoders and decoders;
+- `persistence.unit_of_work`: `PostCommitEffectEligibility`, `UnitOfWorkContext`,
+  `UnitOfWorkDisposition`, `UnitOfWorkResult`, and `execute_unit_of_work`;
+- `persistence.startup`: `StartupDisposition`, `StartupPhase`, `StartupRefusalCode`,
+  `StartupRequest`, `StartupResult`, and `start_startup`; and
+- `persistence.checkpoint_codec`: `InertRuntimeCheckpointComponent`,
+  `RuntimeCheckpointEnvelope`, `RuntimeCheckpointScopeCandidate`, and
+  `encode_runtime_checkpoint`.
+
+Their exact source blobs are respectively `21845a500363edf96f2c9fc06939830067469659`,
+`1d0879ba4dfddefa59e3c815abbaf62e685131a6`,
+`ee168dee89f51253af1930544b3c96b78b8f93ff`, and
+`3ed34cddfd3d56f3835628072661b527df2367c9`. M3 may feed typed observations through those
+accepted seams; simulator/comparator code may not call repository, records, schema, checkpoint
+storage, or current-state mutators directly. A needed seam change is a separately reviewed
+contract amendment, not an implementation convenience.
+
+### Required scenario representation
+
+| Roadmap history | M3-P1 representation obligation |
+| --- | --- |
+| 1. Partial fill, cancel request, late fill, terminal cancel | Ordered submit/fill/cancel/fill/terminal observations with exact occurrence identity |
+| 2. Submit timeout where the order landed | Timeout outcome followed by deterministic query/stream discovery of the same occurrence |
+| 3. Submit timeout where the order never landed | Timeout outcome followed by exhaustive deterministic absence evidence |
+| 4. Cancel timeout with fill during ambiguity | Cancel ambiguity and an independently ordered broker-authoritative fill |
+| 5. Trail trigger, normal exit, hard-bail escalation | Virtual-clock market observations and broker outcomes sufficient to distinguish each policy step |
+| 6. Crash at every durable/network boundary and recover | Deterministic crash/restart markers and replayable observations; M2 remains owner of persistence fault injection |
+| 7. Stale/crossed/phantom data near each trigger | Explicit source, sequence, event/receipt time, bid/ask, and validity metadata |
+| 8. Position mismatch and external order on startup | Deterministic startup query/stream evidence for mismatch and unowned-order discovery |
+
+P1 must also be able to express the inputs for AR-02 through AR-09: multiple and late
+acceptances; generation-fence delay; fill/correct/bust reorder and duplicate; terminal-leg replay;
+duplicate quote occurrence; formula-changing fills and trigger observations; BUY-resolution wait;
+and a late BUY fill after `FLAT`. M3-P2—not P1—owns their semantic verdicts, mutants, minimization,
+and permanent corpus.
+
+Activation must freeze exact new simulator/tape/clock and test paths from this accepted checkpoint.
+Existing legacy `app/broker/sim.py` is evidence only and may not be transplanted or edited without
+an explicit comparison and scope amendment. A fresh branch and review identity are assigned only
+after separate M3-P1 activation.
 
 ## Out of scope and completion
 

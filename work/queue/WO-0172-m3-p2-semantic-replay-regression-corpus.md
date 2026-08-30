@@ -1,18 +1,18 @@
 ---
 type: Work Order
 title: M3-P2 semantic trace comparison and permanent regression corpus
-status: READY
+status: PREPARED-CANDIDATE
 work_order_id: WO-0172
 wave: M3-P2
 model_tier: strong
 risk: high
 disposition: []
-owner: unassigned local coding LLM; Codex checkpoint governor
+owner: unassigned M3 implementation seat; Codex checkpoint governor
 created: 2026-08-21
 predecessor: WO-0171 exact accepted head
 branch: TO_ASSIGN_ON_ACTIVATION
 review_id: TO_ASSIGN_ON_ACTIVATION
-execution_authority: BLOCKED_BY_M2_AND_M3_P1; preparation only, no M3 implementation authority.
+execution_authority: M2_WO_CHAIN_CLOSED; BLOCKED_BY_ACCEPTED_M3_P1_AND_SEPARATE_M3_P2_ACTIVATION; preparation only, no M3 implementation authority.
 ---
 
 # Work Order: M3-P2 semantic replay and regression corpus
@@ -21,7 +21,7 @@ execution_authority: BLOCKED_BY_M2_AND_M3_P1; preparation only, no M3 implementa
 
 **Date:** 2026-08-21
 
-**Status:** Prepared — blocked by M2 and accepted M3-P1
+**Status:** Prepared candidate — blocked by terminal REV-0119, accepted M3-P1, and separate M3-P2 activation
 
 `[FABLE • FULL • conditional M3 preparation • semantic comparison, not live truth]`
 
@@ -99,9 +99,37 @@ Then the minimized trace keeps the decisive coordinate and no write/dispatch pat
 
 ## Activation path boundary
 
-Activation freezes exact comparator/corpus/test paths after M3-P1 acceptance. Existing legacy
-replay and simulator artifacts are regression evidence only; no live operational truth or wholesale
-copy is allowed.
+### Frozen inherited baseline
+
+M3-P2 inherits, without widening, the exact M2 closeout at
+`6edd8fbae0cd0eb7868826cfd0450860c63df70e`, tree
+`8c918f3a1cf46333ed0eef79d3ef51d0503de88a`, and the exact accepted M3-P1 head that must be
+substituted into `predecessor` during later activation. The frozen M2 public seam, DDL, flag,
+manifest, and prohibition on direct repository/current-state mutation are those recorded in
+WO-0171's M3 entry checkpoint. Semantic trace collection may observe typed results at that seam;
+it may not become a second reducer, writer, recovery authority, or serving source.
+
+### Required counterexample map
+
+| Counterexample | Required semantic distinction and mutant target |
+| --- | --- |
+| AR-02 latent second acceptance | A terminal leg is not occurrence closure; late acceptance after `CLOSED` yields retained proof plus permanent `INVALIDATED` |
+| AR-03 legacy restart/stale rollback | Application generation, account/profile, occurrence, and post-disable coverage remain exact fence coordinates |
+| AR-04 correction/bust | Predecessor-linked immutable economics and ordered effective-root fold differ from naive overwrite/subtraction |
+| AR-05 terminal-leg compaction | Immutable non-branching closure head prevents stale reactivation while active checkpoint size remains bounded |
+| AR-06 duplicate quote | Repeated occurrence counts once; only a distinct strictly advancing observation corroborates the trigger |
+| AR-07 formula displacement | Immutable formula/fill inputs remain distinguishable from a tighten-only armed trigger |
+| AR-08 BUY-resolution wait | Waiting preserves `EXIT_NORMAL` versus `HARD_BAIL`; `OPEN`/`INVALIDATED` never release authority |
+| AR-09 late BUY after `FLAT` | The late fill applies once and exits `FLAT` into protected `HARD_BAIL`/critical state |
+
+Each roadmap history 1-8 and each row above requires one accepted trace and at least one
+failure-capable mutant whose first semantic difference is asserted at an exact coordinate. Corpus
+minimization must retain that coordinate. No row is satisfied by a fixture name, prose-only claim,
+or a comparator that excludes the disputed field as transport noise.
+
+Activation freezes exact comparator/corpus/test paths after M3-P1 acceptance and replaces the
+placeholder predecessor with that exact accepted commit/tree. Existing legacy replay and simulator
+artifacts are regression evidence only; no live operational truth or wholesale copy is allowed.
 
 ## Out of scope and completion
 
