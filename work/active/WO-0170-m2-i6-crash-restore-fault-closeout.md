@@ -213,3 +213,15 @@ stored a real checkpoint, the legacy selection-only probe still requested the pr
 `106fa7c4be39adc974af038264ed74d4349f19c7` now propagates the exact repository-issued
 checkpoint head into every selector sample. R6 is quarantined; R7 is the one exact corrected
 fresh-file execution recorded in `work/review/REV-0118/execution-packet-r7.md`.
+
+R7 PASSED all seven corrected fresh-file cases at flag-only proof commit
+`94ca21f2cf0a786ac92e0ef15c8cb3966e0de1a8`, tree
+`ac046cc8590aa668e7e324f3d8c06f24d6cc2633`. The canonical source remains exact boolean
+`False`; the proof branch and databases are quarantined evidence. Final ordinary/static
+regression and the finite REV-0118 correction re-review remain before closeout.
+
+The final ordinary suite then found one frozen import-direction violation: the new boundedness
+test imported setup support directly. Canonical `c7e394f52782a9b398ed89bfdc55b45bc09499b4`
+removes that extra dependency and reaches the identical approved helper through the already-
+authorized checkpoint SQLite test module. Its focused pure boundary test passes. R8 rebinds the
+seven-case proof to these final test bytes; no application or DDL behavior changed.
