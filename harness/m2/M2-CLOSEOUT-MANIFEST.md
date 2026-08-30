@@ -1,6 +1,6 @@
 # M2 persistence closeout manifest
 
-Status: **WO-0170 corrected candidate — pending finite REV-0118 re-review**
+Status: **WO-0170 ACCEPTED — terminal M2/M3-preparation review remains**
 
 This manifest closes the implementation-evidence boundary of M2. It does not authorize promotion,
 configured-database use, runtime composition, a broker connection, an order, a merge to `master`,
@@ -19,6 +19,9 @@ or any M3 implementation. `NOT_RUN` and `NOT_EVALUATED` below remain real residu
 - Final flag-only proof head: commit
   `b14cbb88061aab09f69ce219e9c1427a01873761`, tree
   `f4571503ad5a3b507b0ee33997d3335c317f68b4`
+- REV-0118 accepted closeout candidate: commit
+  `2051afe2bbc21918fac6b69875e0a536fe722e49`, tree
+  `2d3fef0011412ec432fd26f43f526be6946ad00c`
 - Canonical DDL authorization flag: exact literal boolean `False`
 - `schema.py` blob: `164de10ad9fef6ce37324840aff59b5b68c07d2a`
 - `SCHEMA_DDL`: 190,705 UTF-8 bytes
@@ -87,6 +90,7 @@ memory.
 | R4 fresh-file matrix | 259 passed; packet `048265cf73aff73c1c83bdbf09a1b7bb71db339af2bb9b888d422bba85e02850` |
 | R5 one-cycle driver smoke | 180 passed in 7.29 seconds; process exit 0; summary `NOT_RUN` |
 | R8 final review-correction proof | 7 passed; packet `08427d02ba8e3e25c33ef3cf14e121a95aac2f9b01e7e3704e1579916d159344` |
+| REV-0118 final verification | `ACCEPT`, P0=0, P1=0, P2=0, `Unverified: NONE` |
 | Ruff lint | passed repository check; inaccessible user-owned temp roots emitted warnings only |
 | Ruff format | all 11 changed Python files clean |
 | mypy | success over 99 application files |
@@ -112,6 +116,10 @@ Authoritative execution records:
   `08427d02ba8e3e25c33ef3cf14e121a95aac2f9b01e7e3704e1579916d159344`
 - R8 final result: `work/review/REV-0118/execution-result-r8.md`, SHA-256
   `4f4f26c609db486d333c7cbc1a6c1f09d75b4801aa84b4da08157f6ba48a7b9a`
+- REV-0118 correction result: `work/review/REV-0118/result-r1.md`, SHA-256
+  `cb5adaafc687a6a80a53709d8a66c6ffa361545b6da2f77210ea82f2d5694080`
+- REV-0118 final verification: `work/review/REV-0118/result-r2.md`, SHA-256
+  `14ebde3fb24498b0b9d2272c486eda7efef5a7524f9b84431cfd7741cd9a2a23`
 - R4 matrix proof branch: `codex/m2-wo0170-fault-restore-sqlite-r3` at
   `1ed68fa79961c1a23b27e6da039c344c6cae4667`, tree
   `a4b3dbbd7da6c584ccbde37fd0a00acdb43063a0`
@@ -131,8 +139,9 @@ implementation predecessors. Failed R6 is retained honestly and superseded by pa
 ### Mandatory 24-hour soak — `NOT_RUN`
 
 Only the one-cycle driver smoke ran. A future separately authorized run must create
-`codex/m2-wo0170-24h-soak-r1` as a flag-only branch from the exact accepted canonical head, use one
-new evidence directory, no configured database, and no other tracked change. The command is:
+`codex/m2-wo0170-24h-soak-r1` as a flag-only branch from accepted candidate
+`2051afe2bbc21918fac6b69875e0a536fe722e49`, use one new evidence directory, no configured
+database, and no other tracked change. The command is:
 
 ```powershell
 New-Item -ItemType Directory -Path .codex-ddl-gate-run\wo0170-24h-r1

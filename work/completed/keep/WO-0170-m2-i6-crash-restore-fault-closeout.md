@@ -1,12 +1,12 @@
 ---
 type: Work Order
 title: M2-I6 crash, restore, fault, and boundedness closeout
-status: ACTIVE
+status: CLOSED
 work_order_id: WO-0170
 wave: M2-I6
 model_tier: strong
 risk: critical
-disposition: []
+disposition: [RESULT_SUMMARY_KEPT, ARCHIVED]
 owner: Codex implementation seat; fresh-context review seats REV-0118 and REV-0119
 created: 2026-08-21
 predecessor: WO-0169 closeout 0e9c5aadf003aae7dc66cf6df497b1a1d1d6d130 / tree b5f1042247804ad9fde4347c8729d5bde29a172d
@@ -239,3 +239,50 @@ updates the R7 reference to the changed R6 packet hash, and rebinds every affect
 ledger hash. Exact checks from both the original reviewed candidate and the final implementation
 source now pass. One narrow same-seat verification may confirm only this correction and no drift;
 it is not another design-review round.
+
+## Terminal acceptance and completion
+
+REV-0118 final correction verification accepted candidate
+`2051afe2bbc21918fac6b69875e0a536fe722e49`, tree
+`2d3fef0011412ec432fd26f43f526be6946ad00c`, with P0=0/P1=0/P2=0 and
+`Unverified: NONE`. All three original substantive findings are closed, and the sole correction-
+review P0 was resolved by exact diff-clean evidence plus hash rebindings with zero application,
+test, DDL, flag, or outcome drift.
+
+The accepted implementation/test source remains
+`c7e394f52782a9b398ed89bfdc55b45bc09499b4`, tree
+`2d5c662f569ec3ee792216863fe46213551773a8`. Final evidence is 60 focused pure controls, 2,310
+ordinary execution-core tests, 61 R2 cases, R4's 259-case full matrix, R5's 180-case one-cycle
+smoke honestly classified `NOT_RUN`, and R8's seven correction cases. Ruff, format, mypy, six
+import contracts, install/version/ledger/PKL/disposition/scope, and exact diff hygiene pass.
+
+DDL remains 190,705 UTF-8 bytes at
+`d4df1aaa0a7fed6002c8a55923fb3a35ba948055779dac99bf82e70b6a804c18`, schema blob
+`164de10ad9fef6ce37324840aff59b5b68c07d2a`, with canonical flag exact boolean `False`.
+Every flag-true branch and generated database remains quarantined evidence and is not an
+implementation predecessor.
+
+The 24-hour soak remains `NOT_RUN`; R16 G0-G7 remains `NOT_EVALUATED` for the exact missing
+coordinates in the manifest. These honest residuals grant no operational, promotion, or trading
+authority. Terminal combined M2/M3-preparation review REV-0119 is documentation/governance only.
+
+## Completion disposition
+
+- [x] `RESULT_SUMMARY_KEPT`
+- [x] `ARCHIVED`
+- [x] PKL/ADR update not required: the implementation conforms to the accepted M2 architecture;
+  no new architecture decision was introduced.
+
+```yaml
+fable_done:
+  status: VERIFIED
+  evidence: "REV-0118 ACCEPT P0=0/P1=0/P2=0; 2310 ordinary, 61 R2, R4 259-case and R8 7-case fresh-file proofs passed; static/governance/diff gates passed; DDL unchanged and canonical flag False."
+  command: "See work/review/REV-0118/result-r2.md and harness/m2/M2-CLOSEOUT-MANIFEST.md."
+  terminal_state: "WO-0170 CLOSED — M2 implementation complete; REV-0119 terminal M2/M3-preparation review pending"
+```
+
+## Distillation decision
+
+Keep this work order, closeout manifest, and REV-0118 chain as durable crash, restore,
+boundedness, soak-status, and review-correction evidence. Delete no source, tests, review history,
+or preserved pytest evidence. No M3 work order is activated by this closeout.
