@@ -71,6 +71,30 @@ def test_uow_fault_generator_covers_every_current_repository_write_before_and_af
     assert all(edge.startswith(("F04:", "COMMON:")) for edge, *_rest in cases)
 
 
+def test_durable_input_claim_faults_are_old_complete(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    claim_cases = tuple(
+        case
+        for case in uow_faults._catalogued_write_fault_cases()
+        if case[2][case[3]] == "claim_durable_input"
+    )
+    assert tuple((edge, phase) for edge, phase, *_rest in claim_cases) == (
+        ("COMMON:primary-claim:1:claim_durable_input", "before"),
+        ("COMMON:primary-claim:1:claim_durable_input", "after"),
+    )
+
+    for edge, phase, call_path, target_index in claim_cases:
+        with monkeypatch.context() as fault_patch:
+            uow_faults.test_every_catalogued_repository_call_fault_is_old_complete(
+                fault_patch,
+                edge,
+                phase,
+                call_path,
+                target_index,
+            )
+
+
 def test_soak_schedule_is_exact_ordered_and_never_launders_a_short_run() -> None:
     assert len(closeout.SOAK_NODEIDS) == len(set(closeout.SOAK_NODEIDS)) == 7
     assert any(nodeid.startswith("tests_gated/") for nodeid in closeout.SOAK_NODEIDS)

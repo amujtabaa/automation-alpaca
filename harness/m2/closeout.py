@@ -66,6 +66,8 @@ _SCHEMA = "tests_gated/execution_core/test_persistence_schema.py"
 _CHECKPOINT = "tests_gated/execution_core/test_persistence_runtime_checkpoint_sqlite.py"
 _DIRECTNESS = "tests_gated/execution_core/test_persistence_directness.py"
 _REPOSITORY = "tests_gated/execution_core/test_persistence_repository.py"
+_FAULT_MATRIX = "tests/execution_core/test_persistence_fault_matrix.py"
+_GATED_FAULT_MATRIX = "tests_gated/execution_core/test_persistence_fault_matrix.py"
 
 
 def _cases(
@@ -97,7 +99,7 @@ FAULT_CASES: Final = _cases(
         f"{_UOW}::test_rollback_ambiguity_propagates_without_retry",
         f"{_UOW}::test_commit_ambiguity_never_rolls_back_or_mints_eligibility",
         f"{_UOW}::test_commit_mints_effect_eligibility_only_after_normal_return",
-        f"{_UOW}::test_claim_completion_stores_outbox_after_outcome_before_finalization",
+        f"{_FAULT_MATRIX}::test_durable_input_claim_faults_are_old_complete",
         f"{_UOW}::test_claim_completion_stores_outbox_after_outcome_before_finalization",
         f"{_CHECKPOINT}::test_f02_fault_after_payload_insert_before_cas_rolls_back_exactly",
         f"{_CHECKPOINT}::test_f06_fault_after_successful_cas_before_reread_rolls_back_exactly",
@@ -138,9 +140,9 @@ MUTANT_CASES: Final = _cases(
         f"{_SCHEMA}::test_two_live_acquisition_generations_in_one_scope_are_rejected",
         "tests_gated/execution_core/test_persistence_restore.py::"
         "test_restored_profile_substitution_and_catalog_corruption_are_non_serving",
-        f"{_REPOSITORY}::test_missing_requested_proof_member_fails_without_partial_record",
-        f"{_SCHEMA}::test_closure_chain_rejects_gap_branch_and_cross_owner",
-        f"{_SCHEMA}::test_monotonic_heads_refuse_regression",
+        f"{_GATED_FAULT_MATRIX}::test_current_proof_refuses_erased_dispatch_claim",
+        f"{_GATED_FAULT_MATRIX}::test_current_proof_refuses_acceptance_or_closure_gap",
+        f"{_GATED_FAULT_MATRIX}::test_market_cursor_refuses_each_monotonic_regression",
         f"{_COLD}::test_cold_context_loader_uses_only_bounded_checkpoint_routes",
         f"{_SCHEMA}::test_market_occurrence_input_requires_its_exact_stream_route",
         f"{_SCHEMA}::test_broker_outbox_refuses_durable_input_from_another_acquisition",
@@ -163,7 +165,7 @@ BOUNDEDNESS_CASES: Final = _cases(
         f"{_DIRECTNESS}::test_total_proof_uses_only_fixed_direct_key_queries_under_history_stress",
         f"{_CHECKPOINT}::test_thirteen_selection_and_load_queries_have_direct_plans_under_history_stress",
         "tests_gated/execution_core/test_persistence_boundedness.py::"
-        "test_runtime_checkpoint_selection_stays_bounded_from_target_to_stress",
+        "test_runtime_checkpoint_selection_and_hydration_stay_bounded_from_target_to_stress",
         f"{_COLD}::test_cold_context_loader_uses_only_bounded_checkpoint_routes",
     ),
 )
@@ -247,6 +249,14 @@ def snapshot_sqlite_bundle(
     if not destination.parent.is_dir():
         raise CloseoutCatalogError("restore destination parent must already exist")
 
+    destination_family = tuple(
+        _bundle_path(destination, suffix) for suffix in ("", "-wal", "-shm")
+    )
+    if any(path.exists() for path in destination_family):
+        raise CloseoutCatalogError(
+            "restore destination collides with existing evidence"
+        )
+
     suffixes = [""]
     source_wal = _bundle_path(source, "-wal")
     if source_wal.is_file():
@@ -256,11 +266,6 @@ def snapshot_sqlite_bundle(
 
     sources = tuple(_bundle_path(source, suffix) for suffix in suffixes)
     destinations = tuple(_bundle_path(destination, suffix) for suffix in suffixes)
-    if any(path.exists() for path in destinations):
-        raise CloseoutCatalogError(
-            "restore destination collides with existing evidence"
-        )
-
     before = tuple((_file_sha256(path), path.stat().st_size) for path in sources)
     for source_path, destination_path in zip(sources, destinations, strict=True):
         copyfile(source_path, destination_path)
@@ -288,6 +293,22 @@ def snapshot_sqlite_bundle(
 
 
 def verify_restore_bundle(evidence: RestoreBundleEvidence) -> None:
+    recorded_suffixes = tuple(item.suffix for item in evidence.files)
+    if (
+        not recorded_suffixes
+        or recorded_suffixes[0] != ""
+        or len(recorded_suffixes) != len(set(recorded_suffixes))
+        or any(suffix not in {"", "-wal"} for suffix in recorded_suffixes)
+    ):
+        raise CloseoutCatalogError("restore evidence suffix set is invalid")
+    if "-wal" not in recorded_suffixes and (
+        _bundle_path(evidence.source_database, "-wal").exists()
+        or _bundle_path(evidence.destination_database, "-wal").exists()
+    ):
+        raise CloseoutCatalogError("unrecorded restore WAL sidecar is present")
+    if _bundle_path(evidence.destination_database, "-shm").exists():
+        raise CloseoutCatalogError("unrecorded restore SHM sidecar is present")
+
     for item in evidence.files:
         source = _bundle_path(evidence.source_database, item.suffix)
         destination = _bundle_path(evidence.destination_database, item.suffix)

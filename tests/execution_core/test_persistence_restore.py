@@ -53,6 +53,20 @@ def test_restore_bundle_refuses_collision_alias_and_missing_wal(tmp_path: Path) 
         closeout.snapshot_sqlite_bundle(source, destination, require_wal=False)
 
 
+@pytest.mark.parametrize("suffix", ("-wal", "-shm"))
+def test_restore_bundle_refuses_orphan_destination_sidecar(
+    tmp_path: Path,
+    suffix: str,
+) -> None:
+    source = tmp_path / "source.db"
+    destination = tmp_path / "destination.db"
+    source.write_bytes(b"db")
+    destination.with_name(destination.name + suffix).write_bytes(b"stale-sidecar")
+
+    with pytest.raises(closeout.CloseoutCatalogError, match="collides"):
+        closeout.snapshot_sqlite_bundle(source, destination, require_wal=False)
+
+
 def test_restore_bundle_verifier_detects_destination_and_source_drift(
     tmp_path: Path,
 ) -> None:
@@ -72,4 +86,23 @@ def test_restore_bundle_verifier_detects_destination_and_source_drift(
     destination.write_bytes(source.read_bytes())
     source.write_bytes(b"mutated-source")
     with pytest.raises(closeout.CloseoutCatalogError, match="source"):
+        closeout.verify_restore_bundle(evidence)
+
+
+@pytest.mark.parametrize("suffix", ("-wal", "-shm"))
+def test_restore_bundle_verifier_refuses_unrecorded_destination_sidecar(
+    tmp_path: Path,
+    suffix: str,
+) -> None:
+    source = tmp_path / "source.db"
+    destination = tmp_path / "destination.db"
+    source.write_bytes(b"db")
+    evidence = closeout.snapshot_sqlite_bundle(
+        source,
+        destination,
+        require_wal=False,
+    )
+    destination.with_name(destination.name + suffix).write_bytes(b"rogue-sidecar")
+
+    with pytest.raises(closeout.CloseoutCatalogError, match="unrecorded restore"):
         closeout.verify_restore_bundle(evidence)

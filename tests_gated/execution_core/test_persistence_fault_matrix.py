@@ -8,10 +8,18 @@ from typing import Any
 
 import pytest
 
-from app.execution_core.persistence import startup
+from app.execution_core import identity
+from app.execution_core.persistence import records, repository, startup
+from app.execution_core.persistence.schema import install_schema
+from approved_schema_digest import (
+    open_approved_sqlite_connection,
+    require_approved_ddl_execution,
+)
 from tests_gated.execution_core import (
     test_persistence_cold_recovery_sqlite as cold_sqlite,
 )
+from tests_gated.execution_core import test_persistence_directness as directness
+from tests_gated.execution_core import test_persistence_schema as schema_tests
 from tests.execution_core import test_persistence_cold_recovery as cold_fakes
 
 
@@ -61,6 +69,103 @@ class _FaultDatastore(startup._StartupDatastorePort):
             self._phase,
         )
         return self.connection
+
+
+def _open_installed(path: Path) -> sqlite3.Connection:
+    connection = open_approved_sqlite_connection(path)
+    connection.execute("PRAGMA foreign_keys = ON")
+    connection.execute("PRAGMA recursive_triggers = ON")
+    install_schema(connection, approved_ddl_sha256=require_approved_ddl_execution())
+    return connection
+
+
+def _complete_proof_request() -> records.CurrentProofRequest:
+    return records.CurrentProofRequest(
+        directness.fixtures.APP_ID,
+        1,
+        effect_id=2,
+        owner_id=identity.OrderId("owner-2"),
+        require_acceptance=True,
+        require_closure=True,
+    )
+
+
+def _assert_complete_proof_refuses_omission(
+    connection: sqlite3.Connection,
+    omitted_table: str,
+) -> None:
+    request = _complete_proof_request()
+    baseline = repository.load_current_proof(connection, request)
+    assert baseline.kind is records.RepositoryOutcomeKind.FOUND
+    assert baseline.record is not None
+
+    omitted = repository.load_current_proof(
+        directness._OmittingConnection(connection, omitted_table),  # type: ignore[arg-type]
+        request,
+    )
+    assert omitted.kind is records.RepositoryOutcomeKind.INTEGRITY_FAILURE
+    assert omitted.record is None
+
+
+def test_current_proof_refuses_erased_dispatch_claim(tmp_path: Path) -> None:
+    connection = _open_installed(tmp_path / "claim-erasure.db")
+    try:
+        directness._seed_complete(connection)
+        _assert_complete_proof_refuses_omission(connection, "dispatch_claim")
+    finally:
+        connection.close()
+
+
+@pytest.mark.parametrize("omitted_table", ("acceptance_set", "closure_chain"))
+def test_current_proof_refuses_acceptance_or_closure_gap(
+    tmp_path: Path,
+    omitted_table: str,
+) -> None:
+    connection = _open_installed(tmp_path / f"{omitted_table}-gap.db")
+    try:
+        directness._seed_complete(connection)
+        _assert_complete_proof_refuses_omission(connection, omitted_table)
+    finally:
+        connection.close()
+
+
+def test_market_cursor_refuses_each_monotonic_regression(tmp_path: Path) -> None:
+    for column, value in (
+        ("fixed_cursor_ordinal", 3),
+        ("published_head_ordinal", 4),
+    ):
+        connection = _open_installed(tmp_path / f"cursor-{column}.db")
+        try:
+            schema_tests._seed_scope_with_live_generation(connection)
+            schema_tests._insert_controller(connection)
+            stream_id = "81" * 32
+            schema_tests._insert_market_stream(
+                connection,
+                stream_generation_id=stream_id,
+            )
+            schema_tests._insert_market_cursor(
+                connection,
+                stream_generation_id=stream_id,
+                fixed_cursor_ordinal=4,
+                published_head_ordinal=5,
+            )
+
+            with pytest.raises(
+                sqlite3.IntegrityError,
+                match="market_cursor ordinals may only advance",
+            ):
+                connection.execute(
+                    f"UPDATE market_cursor SET {column} = ? "
+                    "WHERE stream_generation_id = ?",
+                    (value, stream_id),
+                )
+            assert connection.execute(
+                "SELECT fixed_cursor_ordinal, published_head_ordinal "
+                "FROM market_cursor WHERE stream_generation_id = ?",
+                (stream_id,),
+            ).fetchone() == (4, 5)
+        finally:
+            connection.close()
 
 
 def _durable_snapshot(path: Path) -> tuple[str, ...]:
