@@ -6,7 +6,6 @@ from pathlib import Path
 import sqlite3
 
 from approved_schema_digest import open_approved_sqlite_connection
-from app.execution_core import identity
 from app.execution_core.persistence import startup
 from harness.m2 import closeout
 from tests_gated.execution_core import (
@@ -102,7 +101,7 @@ def test_restored_profile_substitution_and_catalog_corruption_are_non_serving(
 
     substituted = startup.StartupRequest(
         request.application_generation_id,
-        identity.ExecutionConnectionProfileId("f" * 64),
+        "f" * 64,
         request.market_source_profile_id,
     )
     substituted_owner = cold_fakes._Owner([])

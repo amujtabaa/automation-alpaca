@@ -25,6 +25,10 @@ class _CommitFaultConnection:
     def in_transaction(self) -> bool:
         return self._connection.in_transaction
 
+    @property
+    def faulted(self) -> bool:
+        return self._faulted
+
     def execute(
         self,
         sql: str,
@@ -49,12 +53,14 @@ class _FaultDatastore(startup._StartupDatastorePort):
     def __init__(self, path: Path, phase: str) -> None:
         self._path = path
         self._phase = phase
+        self.connection: _CommitFaultConnection | None = None
 
     def open(self) -> _CommitFaultConnection:
-        return _CommitFaultConnection(
+        self.connection = _CommitFaultConnection(
             cold_sqlite._open_database(self._path),
             self._phase,
         )
+        return self.connection
 
 
 @pytest.mark.parametrize("phase", ("before", "after"))
@@ -66,17 +72,20 @@ def test_startup_commit_fault_reopens_old_or_new_complete(
     request, _checkpoint, session_id = cold_sqlite._install_claimed_c0(database)
     old_complete = cold_sqlite._checkpoint_state(database)
     owner = cold_fakes._Owner([])
+    datastore = _FaultDatastore(database, phase)
 
     faulted = startup.start_startup(
         request,
         owner_lock=owner,
-        datastore=_FaultDatastore(database, phase),
+        datastore=datastore,
         effect_queries=cold_sqlite._AcknowledgingQueries(session_id),
         market_source=cold_fakes._NoMarketSource(),
     )
 
     assert faulted.disposition is startup.StartupDisposition.NON_SERVING
-    assert faulted.refusal_code is startup.StartupRefusalCode.DATASTORE_INTEGRITY
+    assert faulted.refusal_code is startup.StartupRefusalCode.UNRESOLVED_EFFECTS
+    assert datastore.connection is not None
+    assert datastore.connection.faulted
     observed = cold_sqlite._checkpoint_state(database)
     if phase == "before":
         assert observed == old_complete
