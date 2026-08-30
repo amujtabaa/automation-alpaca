@@ -16,13 +16,27 @@ from tests_gated.execution_core import (
 )
 
 
-def _sample_selection(connection) -> tuple[int, tuple[int, ...]]:
+def _selection_request(
+    expected_checkpoint: records.KernelCheckpointRecord,
+) -> records.RuntimeCheckpointSelectionRequest:
+    return records.RuntimeCheckpointSelectionRequest(
+        checkpoint_sqlite.base.APP_ID,
+        checkpoint_sqlite.base.EXECUTION_PROFILE_ID,
+        checkpoint_sqlite.base.MARKET_PROFILE_ID,
+        expected_checkpoint,
+    )
+
+
+def _sample_selection(
+    connection,
+    expected_checkpoint: records.KernelCheckpointRecord,
+) -> tuple[int, tuple[int, ...]]:
     connection.execute("BEGIN")
     try:
         started = perf_counter_ns()
         selected = repository.select_runtime_checkpoint(
             connection,
-            checkpoint_sqlite._selection_request(),
+            _selection_request(expected_checkpoint),
         )
         elapsed = perf_counter_ns() - started
         assert selected.kind is records.RepositoryOutcomeKind.FOUND
@@ -32,12 +46,15 @@ def _sample_selection(connection) -> tuple[int, tuple[int, ...]]:
         connection.rollback()
 
 
-def _measured_selection_samples(connection) -> tuple[tuple[int, ...], tuple[int, ...]]:
-    _sample_selection(connection)
+def _measured_selection_samples(
+    connection,
+    expected_checkpoint: records.KernelCheckpointRecord,
+) -> tuple[tuple[int, ...], tuple[int, ...]]:
+    _sample_selection(connection, expected_checkpoint)
     elapsed: list[int] = []
     row_counts: tuple[int, ...] | None = None
     for _ in range(20):
-        sample, observed_counts = _sample_selection(connection)
+        sample, observed_counts = _sample_selection(connection, expected_checkpoint)
         elapsed.append(sample)
         if row_counts is None:
             row_counts = observed_counts
@@ -111,7 +128,7 @@ def _measured_hydration_samples(
     return tuple(elapsed), row_counts, tuple(read_counts), peak
 
 
-def _store_checkpoint(connection) -> None:
+def _store_checkpoint(connection) -> records.KernelCheckpointRecord:
     connection.execute("BEGIN")
     selected = repository.select_runtime_checkpoint(
         connection,
@@ -128,7 +145,10 @@ def _store_checkpoint(connection) -> None:
         capability=setup_support.issue_setup_write_capability(connection),
     )
     assert stored.kind is records.RepositoryOutcomeKind.APPLIED
+    assert type(stored.record) is records.RuntimeCheckpointWriteReceipt
+    receipt = stored.record
     connection.commit()
+    return receipt.resulting_checkpoint
 
 
 def _assert_direct_plans(connection) -> None:
@@ -166,12 +186,12 @@ def _build_history_database(
 ):
     connection = checkpoint_sqlite._open_fresh(path)
     checkpoint_sqlite._install_foundation(connection)
-    _store_checkpoint(connection)
+    checkpoint = _store_checkpoint(connection)
     monkeypatch.setattr(checkpoint_sqlite, "_PLAN_HISTORY_ROW_COUNT", row_count)
     checkpoint_sqlite._seed_unrelated_plan_history(connection)
     checkpoint_sqlite._assert_unrelated_plan_history_floor(connection)
     connection.execute("ANALYZE")
-    return connection
+    return connection, checkpoint
 
 
 def test_runtime_checkpoint_selection_and_hydration_stay_bounded_from_target_to_stress(
@@ -179,19 +199,25 @@ def test_runtime_checkpoint_selection_and_hydration_stay_bounded_from_target_to_
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     frozen = budget.M2_PERSISTENCE_BUDGET
-    target = _build_history_database(
+    target, target_checkpoint = _build_history_database(
         tmp_path / "target.db",
         frozen.target_unrelated_rows,
         monkeypatch,
     )
-    stress = _build_history_database(
+    stress, stress_checkpoint = _build_history_database(
         tmp_path / "stress.db",
         frozen.stress_unrelated_rows,
         monkeypatch,
     )
     try:
-        target_samples, target_counts = _measured_selection_samples(target)
-        stress_samples, stress_counts = _measured_selection_samples(stress)
+        target_samples, target_counts = _measured_selection_samples(
+            target,
+            target_checkpoint,
+        )
+        stress_samples, stress_counts = _measured_selection_samples(
+            stress,
+            stress_checkpoint,
+        )
 
         runtime_growth = budget.growth_ratio(
             budget.percentile_95(target_samples),
