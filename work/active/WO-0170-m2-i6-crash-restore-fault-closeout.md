@@ -206,3 +206,10 @@ No application persistence or DDL byte changed. Canonical `DDL_EXECUTION_AUTHORI
 remains exact boolean `False`. One correction-only flag-true proof is recorded in
 `work/review/REV-0118/execution-packet-r6.md`; after it passes, REV-0118 receives its one finite
 correction re-review against the exact final canonical head.
+
+R6 then passed all six fault-matrix cases and failed only the boundedness setup: after setup
+stored a real checkpoint, the legacy selection-only probe still requested the pre-checkpoint
+`None` head and was correctly refused as a conflict. Canonical test-only correction
+`106fa7c4be39adc974af038264ed74d4349f19c7` now propagates the exact repository-issued
+checkpoint head into every selector sample. R6 is quarantined; R7 is the one exact corrected
+fresh-file execution recorded in `work/review/REV-0118/execution-packet-r7.md`.
