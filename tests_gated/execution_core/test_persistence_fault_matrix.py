@@ -71,6 +71,7 @@ def test_startup_commit_fault_reopens_old_or_new_complete(
     database = tmp_path / f"wo0170-commit-{phase}.db"
     request, _checkpoint, session_id = cold_sqlite._install_claimed_c0(database)
     old_complete = cold_sqlite._checkpoint_state(database)
+    assert old_complete[4] == "DISPATCH_CLAIMED"
     owner = cold_fakes._Owner([])
     datastore = _FaultDatastore(database, phase)
 
@@ -90,11 +91,11 @@ def test_startup_commit_fault_reopens_old_or_new_complete(
     if phase == "before":
         assert observed == old_complete
     else:
-        assert observed[0] == old_complete[0]
+        assert observed[0] == old_complete[0] + 1
         assert observed[1] == old_complete[1] + 1
         assert observed[2] != old_complete[2]
         assert observed[3] == old_complete[3] + 1
-        assert observed[4] == old_complete[4]
+        assert observed[4] == "ACKNOWLEDGED"
 
     retry_owner = cold_fakes._Owner([])
     retry_queries = cold_sqlite._AcknowledgingQueries(session_id)
