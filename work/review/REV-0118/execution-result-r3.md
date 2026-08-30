@@ -17,16 +17,18 @@ Status: `FAILED` and quarantined; superseded by the final correction-bound execu
 ## Result and root cause
 
 The exact R3 command collected 259 cases and returned 258 passed / 1 failed. The sole failure was
-the post-COMMIT branch of the new cross-layer fault test. The database contained the correct
-new-complete state: both currentness and checkpoint ordinals advanced by one, a second canonical
-payload was retained, the checkpoint digest changed, and the claimed effect became
-`ACKNOWLEDGED`. The test still expected the pre-commit currentness ordinal and lifecycle even
-though it expected the new checkpoint and payload.
+the post-COMMIT branch of the new cross-layer fault test. The failure output directly proved that
+the currentness head advanced by one; the stale assertion stopped the test before its remaining
+handwritten field checks and retry-query expectation executed.
 
-This was a test-contract defect, not a production or DDL defect. The canonical correction pins the
-complete transition coherently: pre-COMMIT interruption is byte-for-byte old-complete;
-post-COMMIT interruption is exact new-complete across both ordinals, digest, payload count, and
-effect lifecycle. The already-passing independent retry and replay checks remain unchanged.
+Fresh static review then exposed the full test-contract defect before another live run. A
+post-COMMIT retry must issue zero effect queries because the committed lifecycle is no longer a
+blocking claimed state, while the old test required one for both phases. More importantly,
+separate ordinal/count/lifecycle assertions did not prove an exact new-complete state. The
+canonical root correction now produces a clean successful control database from the same exact C0
+fixture and compares a full independently reopened deterministic SQLite dump: pre-COMMIT must
+equal old-complete exactly and post-COMMIT must equal the clean new-complete exactly. Retry queries
+are phase-specific and the final replay remains query-free.
 
 The short soak-driver smoke was not run because the first command failed, as required by the
 packet. The flag-true branch and generated files remain quarantined and are not predecessors.

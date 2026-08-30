@@ -63,6 +63,14 @@ class _FaultDatastore(startup._StartupDatastorePort):
         return self.connection
 
 
+def _durable_snapshot(path: Path) -> tuple[str, ...]:
+    connection = cold_sqlite._open_database(path)
+    try:
+        return tuple(connection.iterdump())
+    finally:
+        connection.close()
+
+
 @pytest.mark.parametrize("phase", ("before", "after"))
 def test_startup_commit_fault_reopens_old_or_new_complete(
     tmp_path: Path,
@@ -70,8 +78,31 @@ def test_startup_commit_fault_reopens_old_or_new_complete(
 ) -> None:
     database = tmp_path / f"wo0170-commit-{phase}.db"
     request, _checkpoint, session_id = cold_sqlite._install_claimed_c0(database)
-    old_complete = cold_sqlite._checkpoint_state(database)
-    assert old_complete[4] == "DISPATCH_CLAIMED"
+    old_complete = _durable_snapshot(database)
+
+    control_database = tmp_path / f"wo0170-control-{phase}.db"
+    control_request, _control_checkpoint, control_session_id = (
+        cold_sqlite._install_claimed_c0(control_database)
+    )
+    assert control_request == request
+    assert control_session_id == session_id
+    assert _durable_snapshot(control_database) == old_complete
+    control_owner = cold_fakes._Owner([])
+    control_queries = cold_sqlite._AcknowledgingQueries(control_session_id)
+    control = startup.start_startup(
+        control_request,
+        owner_lock=control_owner,
+        datastore=cold_sqlite._FileDatastore(control_database),
+        effect_queries=control_queries,
+        market_source=cold_fakes._NoMarketSource(),
+    )
+    assert control.disposition is startup.StartupDisposition.SERVING
+    assert control.owner_lease is not None
+    assert len(control_queries.requests) == 1
+    control_owner.release(control.owner_lease)
+    new_complete = _durable_snapshot(control_database)
+    assert new_complete != old_complete
+
     owner = cold_fakes._Owner([])
     datastore = _FaultDatastore(database, phase)
 
@@ -87,15 +118,11 @@ def test_startup_commit_fault_reopens_old_or_new_complete(
     assert faulted.refusal_code is startup.StartupRefusalCode.UNRESOLVED_EFFECTS
     assert datastore.connection is not None
     assert datastore.connection.faulted
-    observed = cold_sqlite._checkpoint_state(database)
+    observed = _durable_snapshot(database)
     if phase == "before":
         assert observed == old_complete
     else:
-        assert observed[0] == old_complete[0] + 1
-        assert observed[1] == old_complete[1] + 1
-        assert observed[2] != old_complete[2]
-        assert observed[3] == old_complete[3] + 1
-        assert observed[4] == "ACKNOWLEDGED"
+        assert observed == new_complete
 
     retry_owner = cold_fakes._Owner([])
     retry_queries = cold_sqlite._AcknowledgingQueries(session_id)
@@ -108,7 +135,7 @@ def test_startup_commit_fault_reopens_old_or_new_complete(
     )
     assert recovered.disposition is startup.StartupDisposition.SERVING
     assert recovered.owner_lease is not None
-    assert len(retry_queries.requests) == 1
+    assert len(retry_queries.requests) == (1 if phase == "before" else 0)
     retry_owner.release(recovered.owner_lease)
 
     replay_owner = cold_fakes._Owner([])
