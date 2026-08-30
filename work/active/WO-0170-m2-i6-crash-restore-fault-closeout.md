@@ -186,3 +186,23 @@ must remain unchanged. A substantive failure ends that execution attempt before 
 
 Completion requires exact independent acceptance, full lifecycle closeout, M2 manifest, honest
 soak/R16 state, and a separately reviewed M3 entry handoff. It activates neither M3 order.
+
+## REV-0118 consolidated correction checkpoint — 2026-08-29
+
+The first whole-candidate review returned `ACCEPT-WITH-CHANGES`, P0=0/P1=3/P2=0. All three
+findings are accepted and corrected at their proof-contract roots in canonical source
+`a18924131e0e2534bbdf51fb9374dbdd5bac4c9f`, tree
+`c9ee080be59a4847e82258c615289da456c2f195`:
+
+1. claim, claim-erasure, acceptance/closure-gap, and cursor-ordering obligations now map to
+   dedicated failure-capable tests that isolate the stated invariant;
+2. boundedness now measures actual checkpoint load, decode, and compact restoration at target
+   and stress, consumes the frozen startup SELECT/elapsed and memory budgets, and checks plans at
+   both coordinates; and
+3. restore snapshot and verification reject destination database, WAL, and SHM collisions even
+   when the corresponding source sidecar is absent.
+
+No application persistence or DDL byte changed. Canonical `DDL_EXECUTION_AUTHORIZED_BY_AMEEN`
+remains exact boolean `False`. One correction-only flag-true proof is recorded in
+`work/review/REV-0118/execution-packet-r6.md`; after it passes, REV-0118 receives its one finite
+correction re-review against the exact final canonical head.
