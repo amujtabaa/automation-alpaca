@@ -1,6 +1,6 @@
 # M2 persistence closeout manifest
 
-Status: **WO-0170 candidate — pending REV-0118 acceptance**
+Status: **WO-0170 corrected candidate — pending finite REV-0118 re-review**
 
 This manifest closes the implementation-evidence boundary of M2. It does not authorize promotion,
 configured-database use, runtime composition, a broker connection, an order, a merge to `master`,
@@ -14,11 +14,11 @@ or any M3 implementation. `NOT_RUN` and `NOT_EVALUATED` below remain real residu
   `0e9c5aadf003aae7dc66cf6df497b1a1d1d6d130`, tree
   `b5f1042247804ad9fde4347c8729d5bde29a172d`
 - Final WO-0170 implementation/test source: commit
-  `3b3b1462bc8a52e6dd4308121e87545bd11f6a70`, tree
-  `800b0f7a56eda308d445810dc998107597f7c539`
-- Published execution-evidence head before this manifest: commit
-  `9c46494a79dc0b1790809aed80ed10f39f42d53f`, tree
-  `3809555b2122b871bcac38a6a87bfd2ac3b31345`
+  `c7e394f52782a9b398ed89bfdc55b45bc09499b4`, tree
+  `2d5c662f569ec3ee792216863fe46213551773a8`
+- Final flag-only proof head: commit
+  `b14cbb88061aab09f69ce219e9c1427a01873761`, tree
+  `f4571503ad5a3b507b0ee33997d3335c317f68b4`
 - Canonical DDL authorization flag: exact literal boolean `False`
 - `schema.py` blob: `164de10ad9fef6ce37324840aff59b5b68c07d2a`
 - `SCHEMA_DDL`: 190,705 UTF-8 bytes
@@ -38,15 +38,15 @@ WO-0169's governance closeout.
 | Artifact | SHA-256 |
 | --- | --- |
 | `harness/m2/__init__.py` | `c088f3d38a2a6a9745760365a13adbd76c3530bd22960f76c0a23a0d4e729b73` |
-| `harness/m2/closeout.py` | `5bf96014af598bb01d513c6ef6eab2de703886a5fe18f0bccba7aa8fe34a32a8` |
+| `harness/m2/closeout.py` | `460d404ad441a7f8f409c6aabacc8bfce116d5217aff733045f40884363eca6f` |
 | `harness/m2/soak.py` | `9deff7a6be5035e6a7dcbec06482506a6acebf1a655502fa912100d201d0fdd6` |
 | `tests/execution_core/test_persistence_boundedness.py` | `8d472a1c96f60ce859aed7a95e4529a34a673d8c48c99df04cdd5bd897ab888d` |
-| `tests/execution_core/test_persistence_fault_matrix.py` | `f209f2424848f9bedb47bebd9a3914802f80e5557af359f24fefd5f08ce839b4` |
-| `tests/execution_core/test_persistence_restore.py` | `fb31c8e772140e49b95f69fafe2ed206d5c783b28657abf920f0aaa8936936f4` |
+| `tests/execution_core/test_persistence_fault_matrix.py` | `9d3721c59e51193985160cf8a9039dbcf798296acb69be6f7ef820aba23397e0` |
+| `tests/execution_core/test_persistence_restore.py` | `2c9f82bb48dca46dd41fd2daf8311b9af9a595b5af1facb278721687394e87e9` |
 | `tests/execution_core/test_sqlite_boundary.py` | `25690965f4ee8b77dd6660464cbb0d3814c2264cba003c40a7149b4693666656` |
 | `tests/performance/m2_persistence_budget.py` | `32bc0d6905855ae71b4062b4aae0b4ae503ac17a53f013449c4f001fa271a085` |
-| `tests_gated/execution_core/test_persistence_boundedness.py` | `dde8b1f6a99b5f931cb469f08766b37c21b58bd1c932f6f2c498e1400fd45f75` |
-| `tests_gated/execution_core/test_persistence_fault_matrix.py` | `920b41ba3b85d530ad0a0232c90b75427e5d57debad6743cd393d810b9e46e89` |
+| `tests_gated/execution_core/test_persistence_boundedness.py` | `9d44bdbaad3df45a586a6045c4afcf29341397fbcf182ccb206c20c6c418ec98` |
+| `tests_gated/execution_core/test_persistence_fault_matrix.py` | `7fe3611333ec007ff6c0eec4ffb0cd05ae405d66622db18ed167bb13df48d40d` |
 | `tests_gated/execution_core/test_persistence_restore.py` | `c712c7e08dda0a5173cf6734c619a9e17bd7ab543ce50944b94dd415276afe01` |
 
 ## Environment
@@ -71,18 +71,22 @@ The live proof covers complete pre/post COMMIT old-or-new state against an indep
 control, recovery and replay equality, DB/WAL copy and independent restore, profile/catalog
 corruption refusal, duplicate/forked lineage, stale/missing and cross-owner routes, two-LIVE,
 claim erasure, acceptance/closure gaps, cursor regression, no serving-time history fold, direct
-query plans, and 1,000-to-10,000 unrelated-history measurement. Frozen limits are 3x runtime p95
-growth, 12x startup select/elapsed growth, and 2 MiB peak canonical-projection memory.
+query plans, and 1,000-to-10,000 unrelated-history measurement. The review correction gives claim,
+claim-erasure, acceptance, closure, and each cursor ordinal its own decisive failure path; actual
+checkpoint load, decode, and compact restoration now consume the startup budget. Frozen limits
+are 3x runtime p95 growth, 12x startup SELECT/elapsed growth, and 2 MiB peak canonical-projection
+memory.
 
 ## Fresh evidence
 
 | Gate | Exact result |
 | --- | --- |
-| Pure WO-0170/static boundary controls | 55 passed |
-| Canonical ordinary `tests/execution_core` | 2,305 passed, 0 failed, 0 skipped |
+| Pure WO-0170/static boundary controls | 60 passed |
+| Canonical ordinary `tests/execution_core` | 2,310 passed, 0 failed, 0 skipped |
 | R2 conformance oracle | 61 passed |
 | R4 fresh-file matrix | 259 passed; packet `048265cf73aff73c1c83bdbf09a1b7bb71db339af2bb9b888d422bba85e02850` |
 | R5 one-cycle driver smoke | 180 passed in 7.29 seconds; process exit 0; summary `NOT_RUN` |
+| R8 final review-correction proof | 7 passed; packet `b5adffd5228398271d30e816e868f39f8e482d1186368cfbeb288069fccac7f9` |
 | Ruff lint | passed repository check; inaccessible user-owned temp roots emitted warnings only |
 | Ruff format | all 11 changed Python files clean |
 | mypy | success over 99 application files |
@@ -100,27 +104,39 @@ Authoritative execution records:
   `2aa5a119c47afeaba764e1f97ed98e8f967e3a198a6ca2aaef3b932d15dc5da3`
 - R5 result: `work/review/REV-0118/execution-result-r5.md`, SHA-256
   `80199754f53512437b0497e74e4f3bb484a76b5bd0028d7b056999c6df4754eb`
+- R6 failed-result record: `work/review/REV-0118/execution-result-r6.md`, SHA-256
+  `2d3a7f60a80e50ec98fb96fda08a8267189fa4c59a01b4fc29e1e35a3c72cc34`
+- R7 passing result: `work/review/REV-0118/execution-result-r7.md`, SHA-256
+  `e3352999d3568adf3ae0d3809075e4e97519c8b1916601c51fe0e3336c13827c`
+- R8 final packet: `work/review/REV-0118/execution-packet-r8.md`, SHA-256
+  `b5adffd5228398271d30e816e868f39f8e482d1186368cfbeb288069fccac7f9`
+- R8 final result: `work/review/REV-0118/execution-result-r8.md`, SHA-256
+  `15b0b2df7fa4b1ef67751c02e6b7b884468b0be96ad325b5c638c952dde1cf61`
 - R4 matrix proof branch: `codex/m2-wo0170-fault-restore-sqlite-r3` at
   `1ed68fa79961c1a23b27e6da039c344c6cae4667`, tree
   `a4b3dbbd7da6c584ccbde37fd0a00acdb43063a0`
 - R5 smoke proof branch: `codex/m2-wo0170-soak-smoke-sqlite-r1` at
   `87dbf2ece6f4b1fcf97dc55ca94a873b4be83cb7`, tree
   `d607bef24bd773b90e7de4c0454afe3c9afee63e`
+- R8 final correction proof branch: `codex/m2-wo0170-rev0118-correction-sqlite-r3`
+  at `b14cbb88061aab09f69ce219e9c1427a01873761`, tree
+  `f4571503ad5a3b507b0ee33997d3335c317f68b4`
 
-Both proof branches differ from their exact canonical sources only by the authorized literal
+Every retained proof branch differs from its exact canonical source only by the authorized literal
 `False` to `True` flag change. They and all generated databases are quarantined evidence, never
-implementation predecessors.
+implementation predecessors. Failed R6 is retained honestly and superseded by passing R7/R8.
 
 ## Honest residuals
 
 ### Mandatory 24-hour soak — `NOT_RUN`
 
-Only the one-cycle driver smoke ran. A future separately authorized run must use one exact
-accepted flag-only proof source, a new evidence directory, no configured database, and no other
-tracked change. The command shape is:
+Only the one-cycle driver smoke ran. A future separately authorized run must create
+`codex/m2-wo0170-24h-soak-r1` as a flag-only branch from the exact accepted canonical head, use one
+new evidence directory, no configured database, and no other tracked change. The command is:
 
 ```powershell
-.\.venv\Scripts\python.exe -m harness.m2.soak --duration-seconds 86400 --python .\.venv\Scripts\python.exe --evidence-directory <NEW_ISOLATED_EVIDENCE_DIRECTORY>
+New-Item -ItemType Directory -Path .codex-ddl-gate-run\wo0170-24h-r1
+.\.venv\Scripts\python.exe -m harness.m2.soak --duration-seconds 86400 --python .\.venv\Scripts\python.exe --evidence-directory .codex-ddl-gate-run\wo0170-24h-r1
 ```
 
 Interruption, any failed cycle, a changed build/profile, or less than 86,400 elapsed seconds remains
@@ -143,8 +159,9 @@ operational readiness or trading authority.
 ## Reproduction commands
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest -q tests\execution_core --basetemp <NEW_LOCAL_ROOT> -p no:cacheprovider
-.\.venv\Scripts\python.exe -m pytest -q tests\r2_conformance_oracle.py --basetemp <NEW_LOCAL_ROOT> -p no:cacheprovider
+New-Item -ItemType Directory -Path .codex-temp\wo0170-reproduction
+.\.venv\Scripts\python.exe -m pytest -q tests\execution_core --basetemp .codex-temp\wo0170-reproduction\ordinary -p no:cacheprovider
+.\.venv\Scripts\python.exe -m pytest -q tests\r2_conformance_oracle.py --basetemp .codex-temp\wo0170-reproduction\r2 -p no:cacheprovider
 .\.venv\Scripts\python.exe -m ruff check .
 .\.venv\Scripts\python.exe -m mypy app
 .\.venv\Scripts\lint-imports.exe

@@ -225,3 +225,9 @@ test imported setup support directly. Canonical `c7e394f52782a9b398ed89bfdc55b45
 removes that extra dependency and reaches the identical approved helper through the already-
 authorized checkpoint SQLite test module. Its focused pure boundary test passes. R8 rebinds the
 seven-case proof to these final test bytes; no application or DDL behavior changed.
+
+R8 PASSED all seven held cases at proof commit
+`b14cbb88061aab09f69ce219e9c1427a01873761`, tree
+`f4571503ad5a3b507b0ee33997d3335c317f68b4`. The final canonical ordinary suite passed all
+2,310 cases, the R2 oracle passed all 61, and all named static/import/governance gates passed.
+The candidate is ready for the finite REV-0118 correction re-review.
