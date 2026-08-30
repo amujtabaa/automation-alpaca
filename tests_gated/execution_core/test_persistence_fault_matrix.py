@@ -137,6 +137,7 @@ def test_startup_commit_fault_reopens_old_or_new_complete(
     assert recovered.owner_lease is not None
     assert len(retry_queries.requests) == (1 if phase == "before" else 0)
     retry_owner.release(recovered.owner_lease)
+    assert _durable_snapshot(database) == new_complete
 
     replay_owner = cold_fakes._Owner([])
     replay_queries = cold_sqlite._AcknowledgingQueries(session_id)
@@ -151,3 +152,4 @@ def test_startup_commit_fault_reopens_old_or_new_complete(
     assert replay.owner_lease is not None
     assert replay_queries.requests == []
     replay_owner.release(replay.owner_lease)
+    assert _durable_snapshot(database) == new_complete
