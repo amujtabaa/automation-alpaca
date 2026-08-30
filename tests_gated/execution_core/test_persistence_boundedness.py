@@ -10,7 +10,6 @@ import pytest
 
 from app.execution_core.persistence import records, repository, unit_of_work
 from tests.performance import m2_persistence_budget as budget
-import persistence_setup_support as setup_support
 from tests_gated.execution_core import (
     test_persistence_runtime_checkpoint_sqlite as checkpoint_sqlite,
 )
@@ -142,7 +141,9 @@ def _store_checkpoint(connection) -> records.KernelCheckpointRecord:
         connection,
         proof,
         envelope,
-        capability=setup_support.issue_setup_write_capability(connection),
+        capability=checkpoint_sqlite.setup_support.issue_setup_write_capability(
+            connection
+        ),
     )
     assert stored.kind is records.RepositoryOutcomeKind.APPLIED
     assert type(stored.record) is records.RuntimeCheckpointWriteReceipt
