@@ -4,7 +4,7 @@ Status: **WO-0170 ACCEPTED — terminal M2/M3-preparation review remains**
 
 This manifest closes the implementation-evidence boundary of M2. It does not authorize promotion,
 configured-database use, runtime composition, a broker connection, an order, a merge to `master`,
-or any M3 implementation. `NOT_RUN` and `NOT_EVALUATED` below remain real residuals.
+or any M3 implementation. The `NOT_RUN` 24-hour soak below remains a real residual.
 
 ## Repository and source identity
 
@@ -151,12 +151,15 @@ New-Item -ItemType Directory -Path .codex-ddl-gate-run\wo0170-24h-r1
 Interruption, any failed cycle, a changed build/profile, or less than 86,400 elapsed seconds remains
 `NOT_RUN` or `FAILED`; it is never promoted to PASS.
 
-### Frozen R16 G0-G7 conjunction — `NOT_EVALUATED`
+### Former R16 G0-G7 label — retired as untraceable
 
-The repository preserves the requirement but does not contain a current exact G0-G7 input
-manifest with source coordinates, freshness/expiry identities, and one complete exact build/profile
-binding. Those missing coordinates prevent an evidence-faithful evaluation. This is not a failed
-implementation test and is not silently treated as satisfied.
+Post-closeout tracing established that the repository never defined G0 through G7 or retained an
+authoritative input manifest from which they could be reconstructed. Ameen Mujtabaa authorized the
+documentation correction recorded in
+`work/queue/M2-EXECUTION-2026-08-21/40-R16-G0-G7-LABEL-DISPOSITION.md`. The orphaned label is no
+longer a current `NOT_EVALUATED` residual or gate. The actual R16 checkpoint contract and ratified
+manual rule remain binding, implemented, and unchanged. A later recovered external source would
+require a new, separately scoped human decision.
 
 ### Operational and promotion surfaces — unpassed and unauthorized
 

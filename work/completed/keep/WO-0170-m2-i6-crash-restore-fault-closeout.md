@@ -286,3 +286,14 @@ fable_done:
 Keep this work order, closeout manifest, and REV-0118 chain as durable crash, restore,
 boundedness, soak-status, and review-correction evidence. Delete no source, tests, review history,
 or preserved pytest evidence. No M3 work order is activated by this closeout.
+
+## Post-closeout R16 label correction — 2026-08-29
+
+The original FR-6/AC-3 and closeout paragraphs retain the historical `R16 G0-G7` wording that was
+accepted when no input manifest was available. Subsequent repository and introduction-commit
+tracing established that the eight gates were never defined in repository authority. Ameen
+Mujtabaa authorized the additive disposition in
+`work/queue/M2-EXECUTION-2026-08-21/40-R16-G0-G7-LABEL-DISPOSITION.md`: the orphaned label is
+retired and is no longer a current residual or gate. The actual R16 contract, its manual-rule
+ratification, all M2 implementation/test evidence, the 24-hour soak `NOT_RUN`, and every
+operational prohibition remain unchanged.

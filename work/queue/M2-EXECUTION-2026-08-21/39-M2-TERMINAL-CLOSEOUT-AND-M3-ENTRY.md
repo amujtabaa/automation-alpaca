@@ -64,7 +64,7 @@ boundary:
 | Fail-closed lock/startup/recovery | WO-0169 owner lock, phase ladder, current checkpoint restoration, unknown-effect reconciliation, and ADR-023 cold recovery |
 | Exact profile-scoped Paper authority | Durable profiles/schema and startup bindings retain Alpaca Paper as the sole M2-M8 mutation profile; no broker access occurred |
 | Fresh fault/restore/boundedness proof | R4 259 fresh-file cases, R8 seven correction cases, 2,310 ordinary cases, 61 R2 cases, static/import/governance gates |
-| Honest unpassed surfaces | 24-hour soak remains `NOT_RUN`; frozen R16 G0-G7 remains `NOT_EVALUATED`; operational/promotion surfaces remain unauthorized |
+| Honest unpassed surfaces | 24-hour soak remains `NOT_RUN`; the former R16 G0-G7 label is retired as untraceable under `40-R16-G0-G7-LABEL-DISPOSITION.md`; operational/promotion surfaces remain unauthorized |
 
 This is a persistence/startup milestone, not a production-readiness or trading-readiness claim.
 
@@ -106,7 +106,9 @@ Neither M3 order is active. After REV-0119 acceptance:
 ## Honest residuals and forbidden inferences
 
 - The 24-hour soak is `NOT_RUN`; the successful short driver smoke is not a substitute.
-- R16 G0-G7 is `NOT_EVALUATED` because a current exact input manifest is absent.
+- The former `R16 G0-G7` label is retired as untraceable under
+  `40-R16-G0-G7-LABEL-DISPOSITION.md`; it is not an unresolved implementation or readiness gate.
+  The concrete R16 contract and ratified manual rule remain unchanged.
 - No configured or in-memory database was used for this terminal documentation step.
 - No DDL byte, authorization flag, application source, test source, or accepted execution result is
   changed by M3 preparation.

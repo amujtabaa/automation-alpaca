@@ -202,3 +202,10 @@ gap first); the circuit breaker exhausting a materially different second approac
 undiscoverable-and-material missing facts (batched). Everything else — test failures, reviewer
 findings, ambiguous specs with a conservative reading, long remaining distance — is your job, not
 a reason to return. Begin by verifying the identities, then take the EffectAuthorizations family.
+
+## Post-completion correction — 2026-08-29
+
+The historical residual sentence naming `R16 G0-G7` is superseded by
+`40-R16-G0-G7-LABEL-DISPOSITION.md`. Repository and introduction-commit tracing found no gate
+definitions or authoritative input manifest, so Ameen Mujtabaa authorized retirement of the label
+as untraceable. This addendum changes no actual R16 rule, M2 evidence, or operational boundary.

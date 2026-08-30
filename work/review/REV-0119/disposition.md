@@ -23,7 +23,9 @@ No finding required remediation or a second review round.
 - [x] WO-0171 and WO-0172 are prepared and `READY-BLOCKED`; neither is activated.
 - [x] Roadmap histories 1-8 and AR-02 through AR-09 have explicit M3 owners and failure-capable
   obligations.
-- [x] The 24-hour soak remains `NOT_RUN`; R16 G0-G7 remains `NOT_EVALUATED`.
+- [x] At REV-0119 acceptance, the 24-hour soak remained `NOT_RUN` and the then-recorded R16 G0-G7
+  label remained `NOT_EVALUATED`. The post-closeout correction below retires only that label; the
+  soak remains `NOT_RUN`.
 - [x] No DDL byte, authorization flag, application/test source, accepted execution result,
   configured database, runtime, credential, broker/network path, order, promotion, merge, or M3
   implementation changed or ran during terminal preparation/review.
@@ -41,3 +43,12 @@ authority.
 | `work/queue/WO-0171-m3-p1-deterministic-simulator-tape-clock.md` | `783760de466c4b5fabf722c3b1b1647ff674b86e` | `9286f12b0b8d3c1794b03097b7446ea048e5b64763bc8af51ba95350365b47d0` |
 | `work/queue/WO-0172-m3-p2-semantic-replay-regression-corpus.md` | `df99b9642d2ca3f28d836522436c991cc9366772` | `39146460e7104d6e6257aa89453a5d4b70cb6123fbddd4527118b6bf85263ffa` |
 | `work/review/REV-0119/result.md` | `ee2d6a37a043496800a4442a67e6f4ec92fe7aaf` | `0ec9364bec497a7b7d24e35a0b3bb5a6db492955a4c954d5c9c9af709707415c` |
+
+## Post-closeout human-authorized clarification — 2026-08-29
+
+Reviewer-owned `result.md` and the exact reviewed candidate remain unchanged. After terminal
+acceptance, repository tracing established that the separately listed `R16 G0-G7` residual had no
+repository definitions or authoritative input manifest. Ameen Mujtabaa authorized the additive
+correction recorded in `40-R16-G0-G7-LABEL-DISPOSITION.md`. It retires only that untraceable label;
+the concrete R16 contract, M2 acceptance, M3 preparation, 24-hour soak `NOT_RUN`, and all
+operational prohibitions remain unchanged.
