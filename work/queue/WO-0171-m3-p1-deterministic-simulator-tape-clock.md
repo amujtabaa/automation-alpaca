@@ -1,7 +1,7 @@
 ---
 type: Work Order
 title: M3-P1 deterministic broker simulator, normalized tape, and virtual clock
-status: PREPARED-CANDIDATE
+status: READY-BLOCKED
 work_order_id: WO-0171
 wave: M3-P1
 model_tier: strong
@@ -12,7 +12,7 @@ created: 2026-08-21
 predecessor: WO-0170 closeout 6edd8fbae0cd0eb7868826cfd0450860c63df70e / tree 8c918f3a1cf46333ed0eef79d3ef51d0503de88a
 branch: TO_ASSIGN_ON_ACTIVATION
 review_id: TO_ASSIGN_ON_ACTIVATION
-execution_authority: M2_WO_CHAIN_CLOSED; PREPARATION_CANDIDATE_PENDING_REV-0119; separate human M3 activation required; no M3 implementation authority.
+execution_authority: M2_TERMINAL_ACCEPTED_AT_8499845F668C0E0B71100E2420D000B0657606A6_BY_REV-0119; separate human M3-P1 activation required; no M3 implementation authority.
 ---
 
 # Work Order: M3-P1 deterministic simulator foundation
@@ -21,7 +21,7 @@ execution_authority: M2_WO_CHAIN_CLOSED; PREPARATION_CANDIDATE_PENDING_REV-0119;
 
 **Date:** 2026-08-21
 
-**Status:** Prepared candidate — blocked by terminal REV-0119 acceptance and separate M3 activation
+**Status:** Prepared and REV-0119 accepted — blocked by separate M3-P1 activation
 
 `[FABLE • FULL • conditional M3 preparation • no real broker]`
 
@@ -154,6 +154,11 @@ Activation must freeze exact new simulator/tape/clock and test paths from this a
 Existing legacy `app/broker/sim.py` is evidence only and may not be transplanted or edited without
 an explicit comparison and scope amendment. A fresh branch and review identity are assigned only
 after separate M3-P1 activation.
+
+REV-0119 accepted the exact preparation candidate
+`8499845f668c0e0b71100e2420d000b0657606a6`, tree
+`79382c952ceacf5e777c13a7a44f4e3ccddb32f7`, with P0=0/P1=0/P2=0 and nothing unverified. This
+lifecycle status update records that acceptance; it does not activate the order.
 
 ## Out of scope and completion
 

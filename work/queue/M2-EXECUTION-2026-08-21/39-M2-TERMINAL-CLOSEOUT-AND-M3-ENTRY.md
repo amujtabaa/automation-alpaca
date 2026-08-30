@@ -1,6 +1,6 @@
 # M2 terminal closeout and M3 entry checkpoint
 
-Status: **TERMINAL CANDIDATE — REV-0119 PENDING**
+Status: **ACCEPTED — M2 COMPLETE; M3 PREPARED, NOT ACTIVATED**
 
 Date: 2026-08-29
 
@@ -8,6 +8,12 @@ This is the compact terminal record for the serial M2 persistence milestone and 
 documentation-only preparation of M3. It binds accepted repository evidence; it does not merge,
 promote, activate M3, compose a runtime, access a configured database, contact a broker, or
 authorize an order.
+
+REV-0119 independently accepted exact terminal candidate
+`8499845f668c0e0b71100e2420d000b0657606a6`, tree
+`79382c952ceacf5e777c13a7a44f4e3ccddb32f7`, with P0=0/P1=0/P2=0 and
+`Unverified: NONE`. Reviewer result SHA-256:
+`0ec9364bec497a7b7d24e35a0b3bb5a6db492955a4c954d5c9c9af709707415c`.
 
 ## Repository and terminal candidate
 
@@ -62,13 +68,17 @@ boundary:
 
 This is a persistence/startup milestone, not a production-readiness or trading-readiness claim.
 
-## M3 preparation artifacts
+## REV-0119-reviewed M3 preparation artifacts
 
 | Artifact | Exact candidate identity | Purpose |
 | --- | --- | --- |
 | `01-M2-M3-EXECUTION-MAP.md` | blob `09ea6d572caefe9301f0c820a6b6e2ca1a7e1e33`; SHA-256 `685eebf48efb8c668fa7372674064e494fc88d9f77f777fa45d1d720e9d87f41` | Current serial status and terminal gates |
 | `WO-0171-m3-p1-deterministic-simulator-tape-clock.md` | blob `e0b337ee41624353a3baf0022009680fc06e7aa7`; SHA-256 `99e938998fba25f87512940faef42713d26b81b87f287e3190c20c56ccd099c5` | Deterministic offline simulator, tape, and clock through the accepted M2 seam |
 | `WO-0172-m3-p2-semantic-replay-regression-corpus.md` | blob `cb21a523c209fc846c9be0bd44e65dd3ca809e8a`; SHA-256 `7206b6f2a9954b47509db09dbf730683f84330e2e17bda933e5109c2150951d8` | Semantic comparator, mutant obligations, minimizer, and permanent corpus |
+
+Those hashes identify the exact reviewed candidate. The post-acceptance lifecycle commit changes
+only candidate/pending labels to accepted/ready-blocked labels and records REV-0119's result and
+disposition; it changes no M2 or M3 contract requirement.
 
 The M3 entry checkpoint freezes the existing public M2 operation, unit-of-work, startup, and inert
 checkpoint-codec surfaces by exact source blobs in WO-0171. Simulator and comparator code remain
@@ -112,11 +122,10 @@ Neither M3 order is active. After REV-0119 acceptance:
 5. Accepted ADR-020 through ADR-024 and only the roadmap/war-game clauses linked by that work order.
 6. The frozen public M2 source surfaces and directly necessary tests named by the activated order.
 
-## Terminal review boundary
+## Terminal review disposition
 
-REV-0119 is one fresh, finite, documentation/governance review. It checks exact identities, the M2
-completion argument against accepted evidence, M3 seam and scenario completeness, honest residuals,
-and absence of accidental M3 or operational authority. It does not rerun SQLite, reopen accepted
-implementation design, demand the 24-hour soak, invent new M3 architecture, or implement M3. One
-root correction and one correction-only re-review are the maximum if a contract-backed P0/P1 is
-found.
+REV-0119 completed one fresh, finite documentation/governance review and returned `ACCEPT` with no
+findings. It verified exact identities, the M2 completion argument, M3 seam/scenario completeness,
+honest residuals, and absence of accidental M3 or operational authority. It ran no SQLite, held
+suite, configured/in-memory database, broker/network path, or M3 code. No correction round was
+needed.

@@ -1,7 +1,7 @@
 ---
 type: Work Order
 title: M3-P2 semantic trace comparison and permanent regression corpus
-status: PREPARED-CANDIDATE
+status: READY-BLOCKED
 work_order_id: WO-0172
 wave: M3-P2
 model_tier: strong
@@ -12,7 +12,7 @@ created: 2026-08-21
 predecessor: WO-0171 exact accepted head
 branch: TO_ASSIGN_ON_ACTIVATION
 review_id: TO_ASSIGN_ON_ACTIVATION
-execution_authority: M2_WO_CHAIN_CLOSED; BLOCKED_BY_ACCEPTED_M3_P1_AND_SEPARATE_M3_P2_ACTIVATION; preparation only, no M3 implementation authority.
+execution_authority: M2_TERMINAL_ACCEPTED_AT_8499845F668C0E0B71100E2420D000B0657606A6_BY_REV-0119; BLOCKED_BY_ACCEPTED_M3_P1_AND_SEPARATE_M3_P2_ACTIVATION; no M3 implementation authority.
 ---
 
 # Work Order: M3-P2 semantic replay and regression corpus
@@ -21,7 +21,7 @@ execution_authority: M2_WO_CHAIN_CLOSED; BLOCKED_BY_ACCEPTED_M3_P1_AND_SEPARATE_
 
 **Date:** 2026-08-21
 
-**Status:** Prepared candidate — blocked by terminal REV-0119, accepted M3-P1, and separate M3-P2 activation
+**Status:** Prepared and REV-0119 accepted — blocked by accepted M3-P1 and separate M3-P2 activation
 
 `[FABLE • FULL • conditional M3 preparation • semantic comparison, not live truth]`
 
@@ -130,6 +130,12 @@ or a comparator that excludes the disputed field as transport noise.
 Activation freezes exact comparator/corpus/test paths after M3-P1 acceptance and replaces the
 placeholder predecessor with that exact accepted commit/tree. Existing legacy replay and simulator
 artifacts are regression evidence only; no live operational truth or wholesale copy is allowed.
+
+REV-0119 accepted the exact preparation candidate
+`8499845f668c0e0b71100e2420d000b0657606a6`, tree
+`79382c952ceacf5e777c13a7a44f4e3ccddb32f7`, with P0=0/P1=0/P2=0 and nothing unverified. This
+lifecycle status update records that acceptance; it does not activate the order or satisfy its
+future WO-0171 predecessor gate.
 
 ## Out of scope and completion
 

@@ -1,13 +1,15 @@
 # Fresh M2 execution and M3 preparation map
 
-Status: **TERMINAL M2 / M3-PREPARATION CANDIDATE — REV-0119 PENDING**
+Status: **M2 COMPLETE — M3 PREPARED, NOT ACTIVATED**
 
 ## Current position
 
 All six serial M2 work orders are independently accepted and closed. WO-0170's canonical closeout
 is `6edd8fbae0cd0eb7868826cfd0450860c63df70e`, tree
-`8c918f3a1cf46333ed0eef79d3ef51d0503de88a`. The implementation boundary is frozen; only the
-combined terminal review and documentation-only M3 entry reconciliation remain in this candidate.
+`8c918f3a1cf46333ed0eef79d3ef51d0503de88a`. REV-0119 accepted the combined terminal candidate
+`8499845f668c0e0b71100e2420d000b0657606a6`, tree
+`79382c952ceacf5e777c13a7a44f4e3ccddb32f7`, with P0=0/P1=0/P2=0 and nothing unverified. The
+implementation boundary is frozen and the documentation-only M3 entry contracts are prepared.
 
 ## Work-order chain
 
@@ -18,14 +20,13 @@ combined terminal review and documentation-only M3 entry reconciliation remain i
 | `WO-0167` / M2-I3 | `CLOSED` | Narrow SQLite repository hydration | Current state loads and saves by direct keys without replaying history or creating another engine | REV-0073 accepted |
 | `WO-0168` / M2-I4 | `CLOSED` | Atomic unit of work, claims, outbox eligibility, receipts | A crash leaves the old whole state or new whole state, never half of each | REV-0115 accepted |
 | `WO-0169` / M2-I5 | `CLOSED` | Startup, reconciliation, owner lock, ADR-023 cold recovery | Restart refuses service until ownership, effects, state, and market evidence are trustworthy | REV-0117 accepted |
-| `WO-0170` / M2-I6 | `CLOSED` | Crash/restore/fault closeout and boundedness proof | The M2 build has reproducible crash, restore, fault, and boundedness evidence | REV-0118 accepted; terminal REV-0119 pending |
-| `WO-0171` / M3-P1 | `PREPARED-CANDIDATE` | Deterministic broker simulator, normalized tape, virtual clock | Future scenarios run the same way every time without touching a real broker | REV-0119 acceptance plus separate M3-P1 activation |
-| `WO-0172` / M3-P2 | `PREPARED-CANDIDATE` | Semantic trace comparator and permanent regression corpus | M3 can prove equivalent behavior and retain minimized failures | Accepted M3-P1 plus separate M3-P2 activation |
+| `WO-0170` / M2-I6 | `CLOSED` | Crash/restore/fault closeout and boundedness proof | The M2 build has reproducible crash, restore, fault, and boundedness evidence | REV-0118 and terminal REV-0119 accepted |
+| `WO-0171` / M3-P1 | `READY-BLOCKED` | Deterministic broker simulator, normalized tape, virtual clock | Future scenarios run the same way every time without touching a real broker | Separate human M3-P1 activation required |
+| `WO-0172` / M3-P2 | `READY-BLOCKED` | Semantic trace comparator and permanent regression corpus | M3 can prove equivalent behavior and retain minimized failures | Accepted M3-P1 plus separate human M3-P2 activation |
 
-`PREPARED-CANDIDATE` means an executable specification exists but carries no implementation
-authority. REV-0119 reviews the combined M2 closeout and these entry contracts. Even after terminal
-acceptance, each M3 order requires a separate human activation, fresh branch, exact predecessor,
-allowed-path inventory, and independent review identity.
+`READY-BLOCKED` means REV-0119 accepted the executable specification but granted no implementation
+authority. Each M3 order still requires a separate human activation, fresh branch, exact
+predecessor, allowed-path inventory, and independent review identity.
 
 ## Mandatory sequence
 
@@ -36,7 +37,7 @@ M2-I1 codec/profile contract [CLOSED]
   -> M2-I4 atomic transition/effect claims [CLOSED]
   -> M2-I5 startup/reconciliation/cold recovery [CLOSED]
   -> M2-I6 crash/restore closeout [CLOSED]
-  -> terminal M2 + M3-entry review [REV-0119 PENDING]
+  -> terminal M2 + M3-entry review [REV-0119 ACCEPTED]
   -> M3-P1 simulator/tape/clock [SEPARATE ACTIVATION REQUIRED]
   -> M3-P2 trace comparator/regression corpus [SEPARATE ACTIVATION REQUIRED]
 ```
