@@ -53,4 +53,3 @@ selection/load plans at both coordinates.
 Any assertion, integrity, fixture, DDL, or other substantive failure ends R6. Root diagnosis may
 continue on canonical source, but no failed proof branch becomes a predecessor. There is no retry
 except a proven environmental interruption with zero tracked changes and a brand-new basetemp.
-

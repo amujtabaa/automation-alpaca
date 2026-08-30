@@ -83,4 +83,3 @@ Unverified: <exact list or NONE>
 
 `ACCEPT` requires all three original P1s closed and zero concrete correction-introduced P0/P1.
 State explicitly that no SQLite/database/held-suite execution occurred in the review seat.
-

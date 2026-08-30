@@ -20,7 +20,7 @@ root correction. It creates no configured or in-memory database and changes no D
 - Corrected boundedness-test SHA-256:
   `1ca281db1aae8b32e3229a0f7beae9bd680be32d99a4eb91878f71d8bd68d860`
 - All other corrected-artifact hashes remain exactly those in R6 packet
-  `d73fe658f725b12b5e959e281ca3a379e030039ef67bd700d7de666b27fdcad3`.
+  `ef7e0b19889d7b5e08c4e7d1fc8736aa051a25a9da4465b5b569d1917299fdba`.
 
 ## Exact execution
 
@@ -34,4 +34,3 @@ New-Item -ItemType Directory -Path .codex-ddl-gate-run\wo0170-rev0118-r7
 Expected collection: seven cases; all must pass. Any assertion, integrity, fixture, DDL, or other
 substantive failure ends R7. Only a proven environmental interruption with zero tracked changes
 may use one new-root retry. No failed or flag-true branch is an implementation predecessor.
-

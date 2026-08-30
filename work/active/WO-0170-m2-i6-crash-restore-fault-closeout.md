@@ -231,3 +231,11 @@ R8 PASSED all seven held cases at proof commit
 `f4571503ad5a3b507b0ee33997d3335c317f68b4`. The final canonical ordinary suite passed all
 2,310 cases, the R2 oracle passed all 61, and all named static/import/governance gates passed.
 The candidate is ready for the finite REV-0118 correction re-review.
+
+REV-0118 finite correction re-review closed all three substantive P1 findings but returned one
+P0: six new evidence Markdown files contained an extra blank line at EOF, so the candidate's exact
+base-to-head `git diff --check` claim was false. The correction removes only those blank lines,
+updates the R7 reference to the changed R6 packet hash, and rebinds every affected manifest and
+ledger hash. Exact checks from both the original reviewed candidate and the final implementation
+source now pass. One narrow same-seat verification may confirm only this correction and no drift;
+it is not another design-review round.

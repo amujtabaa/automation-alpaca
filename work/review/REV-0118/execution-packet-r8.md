@@ -27,4 +27,3 @@ New-Item -ItemType Directory -Path .codex-ddl-gate-run\wo0170-rev0118-r8
 All seven cases must pass. A substantive failure stops. No configured/in-memory database, DDL
 change, migration, runtime composition, credential, broker/network activity, order, promotion,
 master merge, or M3 implementation is authorized.
-

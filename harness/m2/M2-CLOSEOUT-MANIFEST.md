@@ -86,7 +86,7 @@ memory.
 | R2 conformance oracle | 61 passed |
 | R4 fresh-file matrix | 259 passed; packet `048265cf73aff73c1c83bdbf09a1b7bb71db339af2bb9b888d422bba85e02850` |
 | R5 one-cycle driver smoke | 180 passed in 7.29 seconds; process exit 0; summary `NOT_RUN` |
-| R8 final review-correction proof | 7 passed; packet `b5adffd5228398271d30e816e868f39f8e482d1186368cfbeb288069fccac7f9` |
+| R8 final review-correction proof | 7 passed; packet `08427d02ba8e3e25c33ef3cf14e121a95aac2f9b01e7e3704e1579916d159344` |
 | Ruff lint | passed repository check; inaccessible user-owned temp roots emitted warnings only |
 | Ruff format | all 11 changed Python files clean |
 | mypy | success over 99 application files |
@@ -105,13 +105,13 @@ Authoritative execution records:
 - R5 result: `work/review/REV-0118/execution-result-r5.md`, SHA-256
   `80199754f53512437b0497e74e4f3bb484a76b5bd0028d7b056999c6df4754eb`
 - R6 failed-result record: `work/review/REV-0118/execution-result-r6.md`, SHA-256
-  `2d3a7f60a80e50ec98fb96fda08a8267189fa4c59a01b4fc29e1e35a3c72cc34`
+  `03935315da3f2e36d79d6249f5767d7f00af09bbd4c1d0a332275c519ff4241a`
 - R7 passing result: `work/review/REV-0118/execution-result-r7.md`, SHA-256
-  `e3352999d3568adf3ae0d3809075e4e97519c8b1916601c51fe0e3336c13827c`
+  `5bbc1cbe042e31c2bbf1482c8a131934cdf529b9788c0f7a84223f9677b3aa34`
 - R8 final packet: `work/review/REV-0118/execution-packet-r8.md`, SHA-256
-  `b5adffd5228398271d30e816e868f39f8e482d1186368cfbeb288069fccac7f9`
+  `08427d02ba8e3e25c33ef3cf14e121a95aac2f9b01e7e3704e1579916d159344`
 - R8 final result: `work/review/REV-0118/execution-result-r8.md`, SHA-256
-  `15b0b2df7fa4b1ef67751c02e6b7b884468b0be96ad325b5c638c952dde1cf61`
+  `4f4f26c609db486d333c7cbc1a6c1f09d75b4801aa84b4da08157f6ba48a7b9a`
 - R4 matrix proof branch: `codex/m2-wo0170-fault-restore-sqlite-r3` at
   `1ed68fa79961c1a23b27e6da039c344c6cae4667`, tree
   `a4b3dbbd7da6c584ccbde37fd0a00acdb43063a0`

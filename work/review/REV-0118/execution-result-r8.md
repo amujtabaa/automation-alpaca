@@ -26,4 +26,3 @@ predecessors.
 
 No configured or in-memory database, migration, runtime composition, credential, broker/network
 activity, order, promotion, master merge, history rewrite, or M3 implementation occurred.
-

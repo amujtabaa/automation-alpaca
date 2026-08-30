@@ -26,4 +26,3 @@ The DDL remained 190,705 UTF-8 bytes at SHA-256
 `d4df1aaa0a7fed6002c8a55923fb3a35ba948055779dac99bf82e70b6a804c18`; no migration,
 configured/in-memory database, runtime, credential, broker/network activity, order, promotion, or
 M3 implementation occurred.
-

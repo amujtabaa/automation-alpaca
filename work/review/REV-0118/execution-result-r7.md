@@ -27,4 +27,3 @@ canonical remains blob `164de10ad9fef6ce37324840aff59b5b68c07d2a` with exact boo
 The proof branch and generated databases remain quarantined evidence and are not implementation
 predecessors. No migration, runtime composition, credential, broker/network activity, order,
 promotion, master merge, or M3 implementation occurred.
-
